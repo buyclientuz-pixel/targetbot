@@ -2,6 +2,7 @@
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { spawn } from 'node:child_process';
 
 const REQUIRED_ENV_KEYS = ['BOT_TOKEN', 'ADMIN_IDS', 'DEFAULT_TZ', 'FB_APP_ID', 'FB_APP_SECRET'];
 const OPTIONAL_ENV_KEYS = ['FB_LONG_TOKEN', 'WORKER_URL', 'GS_WEBHOOK'];
@@ -82,13 +83,92 @@ function isPlaceholder(value) {
 const args = process.argv.slice(2);
 const strictKv = args.includes('--require-dedicated-kv');
 
+async function listWranglerSecrets() {
+  if (process.env.CHECK_CONFIG_SKIP_WRANGLER === '1') {
+    return { attempted: false, ok: false, names: [], skipped: true };
+  }
+
+  return await new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn('npx', ['wrangler', 'secret', 'list', '--format', 'json'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      resolve({ attempted: true, ok: false, names: [], error: error.message });
+      return;
+    }
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolve({
+          attempted: true,
+          ok: false,
+          names: [],
+          error: stderr.trim() || `wrangler exited with code ${code}`,
+        });
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(stdout || '[]');
+        const names = Array.isArray(parsed)
+          ? parsed
+              .map((item) => (item && typeof item.name === 'string' ? item.name : null))
+              .filter(Boolean)
+          : [];
+        resolve({ attempted: true, ok: true, names });
+      } catch (error) {
+        resolve({ attempted: true, ok: false, names: [], error: error.message });
+      }
+    });
+  });
+}
+
 const envSnapshot = await loadEnvSnapshot();
-const missingEnv = REQUIRED_ENV_KEYS.filter((key) => !hasValue(envSnapshot[key]));
+let missingEnv = REQUIRED_ENV_KEYS.filter((key) => !hasValue(envSnapshot[key]));
+
+const wranglerSecrets = await listWranglerSecrets();
+let remoteCovered = [];
+
+if (missingEnv.length > 0 && wranglerSecrets.ok && wranglerSecrets.names.length > 0) {
+  remoteCovered = missingEnv.filter((key) => wranglerSecrets.names.includes(key));
+  missingEnv = missingEnv.filter((key) => !wranglerSecrets.names.includes(key));
+}
 
 if (missingEnv.length > 0) {
   logStatus('error', `Не заданы переменные окружения: ${missingEnv.join(', ')}`);
 } else {
   logStatus('ok', 'Обязательные переменные окружения заполнены.');
+}
+
+if (remoteCovered.length > 0) {
+  logStatus(
+    'ok',
+    `Секреты, найденные через wrangler (Cloudflare): ${remoteCovered.join(', ')}`,
+  );
+}
+
+if (wranglerSecrets.attempted && !wranglerSecrets.ok && !wranglerSecrets.skipped) {
+  logStatus(
+    'warn',
+    `Не удалось получить список секретов через wrangler: ${wranglerSecrets.error || 'неизвестная ошибка'}`,
+  );
+  logStatus(
+    'warn',
+    'Авторизуйтесь командой "wrangler login" или установите CHECK_CONFIG_SKIP_WRANGLER=1 для пропуска этой проверки.',
+  );
 }
 
 const optionalMissing = OPTIONAL_ENV_KEYS.filter((key) => !hasValue(envSnapshot[key]));
