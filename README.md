@@ -1,89 +1,52 @@
-# Cloudflare Worker Deployment Guide
+# Cloudflare Worker Dashboard
 
-This repository contains the source for the `th-reports` Cloudflare Worker. The steps below explain how to deploy updates using
-Wrangler and how to mirror the Worker that already lives in your Cloudflare account.
+This repository содержит Cloudflare Worker `th-reports`, который теперь выдаёт обновлённую HTML-панель. На главном экране вы видите карточки проектов с чатами Telegram и агрегированный статус биллинга Meta.
 
-## Quick status 
+## Краткий обзор
 
-- ✅  `wrangler.toml` targets the `th-reports` Worker in account `02e61f874be22f0f3a6ee8f97ccccb1d`.
-- ✅  `src/index.ts` now matches the Worker logic that is running in your Cloudflare dashboard.
-- ⏭️  Next action: fill in the KV namespace IDs in `wrangler.toml`, then run `wrangler deploy` to publish from Git.
+- ✅ `wrangler.toml` по‑прежнему нацелен на Worker `th-reports` в аккаунте `02e61f874be22f0f3a6ee8f97ccccb1d`.
+- ✅ `src/index.ts` рендерит UI: карточки проектов формируются по данным из KV (`chat.title`, `accountName`, `tgTopicLink`), статус биллинга нормализуется по мета‑полям.
+- ⏭️ Следующий шаг: убедитесь, что в KV есть актуальные данные, затем задеплойте изменения через `wrangler deploy`.
 
-## Prerequisites  
+## Этапы работы
 
-1. Install [Wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-update/) globally:
+### Этап 1. Подготовить данные в KV
+
+1. В Cloudflare Dashboard откройте **Workers & Pages → th-reports → Settings → Variables and bindings → KV Namespace bindings**.
+2. Проверьте, что указаны namespace ID для `REPORTS_NAMESPACE`, `BILLING_NAMESPACE` и `LOGS_NAMESPACE`. При необходимости обновите их в `wrangler.toml`.
+3. Для карточек проектов создайте записи в `REPORTS_NAMESPACE`. Каждое значение — JSON со структурой:
+   ```json
+   {
+     "projectName": "Название проекта",
+     "accountName": "Meta Business Account",
+     "description": "(опционально) краткое описание",
+     "chats": [
+       {
+         "title": "Чат менеджеров",
+         "tgTopicLink": "https://t.me/c/...."
+       }
+     ]
+   }
+   ```
+   Поля `title` и `tgTopicLink` используются для списка чатов и кнопки «Перейти в чат» внутри карточки.
+4. В `BILLING_NAMESPACE` добавьте ключи `account_status`, `disable_reason`, `balance`, `spend_cap` (строки). Worker автоматически превращает их в нормализованную строку состояния.
+
+### Этап 2. Проверить биллинг Meta
+
+1. Откройте главную страницу Worker (`/`).
+2. Убедитесь, что блок «Статус биллинга» корректно описывает состояние: учитывается `account_status`, причина блокировки (если есть), текущий `balance` и лимит `spend_cap`, а также внутренние показатели `limit` и `spent`.
+3. При необходимости отредактируйте данные в KV и обновите страницу.
+
+### Этап 3. Деплой и тестирование
+
+1. Установите [Wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-update/):
    ```bash
    npm install -g wrangler
    ```
-2. Make sure you have a Cloudflare API token with permission to edit Workers, or be ready to authenticate with `wrangler login`.
+2. Аутентифицируйтесь: `wrangler login` или задайте переменные окружения `CLOUDFLARE_API_TOKEN` и `CLOUDFLARE_ACCOUNT_ID`.
+3. Локальный предпросмотр: `wrangler dev`.
+4. Деплой в облако: `wrangler deploy`. Worker соберёт код из `src/index.ts` и опубликует обновлённый UI на `https://th-reports.obe1kanobe25.workers.dev`.
 
-## One-time setup
+## Автоматизация (опционально)
 
-1. Authenticate Wrangler with your Cloudflare account:
-   ```bash
-   wrangler login
-   ```
-   Alternatively, export the required environment variables if you prefer tokens:
-   ```bash
-   export CLOUDFLARE_API_TOKEN=your_token
-   export CLOUDFLARE_ACCOUNT_ID=02e61f874be22f0f3a6ee8f97ccccb1d
-   ```
-2. Confirm the `wrangler.toml` file contains the correct `account_id` (already set to `02e61f874be22f0f3a6ee8f97ccccb1d`). Update
-other fields such as `main` if you change the entry point file.
-
-## Fill in the KV namespace bindings
-
-Your Worker code reads and writes to three KV namespaces: `REPORTS_NAMESPACE`, `BILLING_NAMESPACE`, and `LOGS_NAMESPACE`. To let
-Wrangler provide those bindings when you deploy from Git:
-
-1. In the Cloudflare dashboard, open **Workers & Pages → th-reports → Settings → Variables and bindings → KV Namespace bindings**.
-   *The binding names must match exactly (e.g., `REPORTS_NAMESPACE`).*
-2. Click each binding to reveal its namespace ID, or go to **Workers KV → Namespaces** and copy the `Namespace ID` from the table.
-   You can also list them from the terminal:
-   ```bash
-   wrangler kv namespace list
-   ```
-3. Open `wrangler.toml` and replace the placeholders:
-   ```toml
-   [[kv_namespaces]]
-   binding = "REPORTS_NAMESPACE"
-   id = "<paste the REPORTS namespace ID here>"
-
-   [[kv_namespaces]]
-   binding = "BILLING_NAMESPACE"
-   id = "<paste the BILLING namespace ID here>"
-
-   [[kv_namespaces]]
-   binding = "LOGS_NAMESPACE"
-   id = "<paste the LOGS namespace ID here>"
-   ```
-   If you want to use `wrangler dev`, you can also copy the **Preview ID** into the commented `preview_id` lines.
-4. Save the file. Wrangler will now inject the bindings so `env.REPORTS_NAMESPACE`, `env.BILLING_NAMESPACE`, and
-   `env.LOGS_NAMESPACE` are available during local development and deployment.
-
-## Deploying the Worker
-
-From the repository root, run:
-```bash
-wrangler deploy
-```
-Wrangler will bundle the code in `src/index.ts` and publish it to your Worker at:
-```
-https://th-reports.obe1kanobe25.workers.dev
-```
-
-## Testing locally
-
-Use Wrangler's development server to test changes before deploying:
-```bash
-wrangler dev
-```
-This starts a local preview where requests are proxied through Cloudflare, letting you iterate quickly. Any KV bindings or environment variables declared in `wrangler.toml` will be available during the preview session.
-
-## Updating the Worker code
-
-The repository now mirrors the code that is live in Cloudflare. Modify `src/index.ts` to implement new features or bug fixes, then repeat the deploy step to push the new version live.
-
-## Automated deployments (optional)
-
-If you keep this project in a Git repository, you can configure CI/CD (e.g., GitHub Actions) to run `wrangler deploy` on every push to `main`. Store the Cloudflare API token and account ID in the CI secrets to keep them secure.
+Настройте CI (например, GitHub Actions), чтобы запускать `wrangler deploy` при каждом push в `main`. Храните API-токен и account ID в секретах пайплайна.
