@@ -949,6 +949,68 @@ async function handleUserStateMessage(env, message, textContent) {
       return { handled: true, step: 'choose_alerts', info: 'await_alert_buttons' };
     }
 
+    if (state.step === 'choose_automation') {
+      await telegramSendMessage(
+        env,
+        message,
+        'Настройте автоотчёты, сводник и автопаузу с помощью кнопок. Текст не требуется.',
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'choose_automation', info: 'await_automation_buttons' };
+    }
+
+    if (state.step === 'await_autopause_manual') {
+      const rawValue = String(textContent ?? '').trim();
+      if (!rawValue) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Введите число дней (1–30) или «нет», чтобы отключить автопаузу.',
+          { disable_reply: true },
+        );
+        return { handled: true, step: 'await_autopause_manual', error: 'autopause_empty' };
+      }
+
+      const lower = rawValue.toLowerCase();
+      const payload = { ...(state.data ?? {}) };
+      payload.active = payload.active !== false;
+      payload.weekly = cloneWeeklyConfig(payload.weekly);
+      payload.autopause = cloneAutopauseConfig(payload.autopause);
+
+      if (['нет', 'none', 'off', 'disable', 'stop', 'выкл'].includes(lower)) {
+        payload.autopause.enabled = false;
+      } else {
+        const parsed = Number(rawValue.replace(',', '.'));
+        if (!Number.isFinite(parsed)) {
+          await telegramSendMessage(
+            env,
+            message,
+            'Нужно число дней (1–30) или «нет». Попробуйте снова.',
+            { disable_reply: true },
+          );
+          return { handled: true, step: 'await_autopause_manual', error: 'autopause_invalid_number' };
+        }
+
+        payload.autopause.enabled = true;
+        payload.autopause.days = normalizeAutopauseDays(parsed);
+      }
+
+      await saveUserState(env, uid, { mode: 'create_project', step: 'choose_automation', data: payload });
+
+      const resultText = payload.autopause.enabled
+        ? `Автопауза установлена на ${payload.autopause.days} дн.`
+        : 'Автопауза отключена.';
+      await telegramSendMessage(env, message, resultText, { disable_reply: true });
+
+      const view = buildProjectAutomationSetupPrompt(payload);
+      await telegramSendMessage(env, message, view.text, {
+        reply_markup: view.reply_markup,
+        disable_reply: true,
+      });
+
+      return { handled: true, step: 'choose_automation' };
+    }
+
     return { handled: false, reason: 'unknown_step' };
   }
 
@@ -2735,6 +2797,30 @@ function cloneAlertConfig(source = {}) {
   };
 }
 
+function cloneWeeklyConfig(source = {}) {
+  const base = source || {};
+  return {
+    enabled: base.enabled !== false,
+    mode: base.mode === 'week_yesterday' ? 'week_yesterday' : 'week_today',
+  };
+}
+
+function normalizeAutopauseDays(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 3;
+  }
+  const rounded = Math.round(numeric);
+  return Math.min(AUTOPAUSE_MAX_DAYS, Math.max(1, rounded));
+}
+
+function cloneAutopauseConfig(source = {}) {
+  const base = source || {};
+  const enabled = base.enabled === true;
+  const days = normalizeAutopauseDays(base.days);
+  return { enabled, days };
+}
+
 function buildProjectBillingPrompt(data = {}, options = {}) {
   const billingStatus = data.billing === 'paused' ? 'paused' : 'paid';
   const lines = [
@@ -2881,6 +2967,82 @@ function buildProjectAlertsSetupPrompt(data = {}) {
 
   inline_keyboard.push([
     { text: '← Назад', callback_data: 'proj:create:kpi:back' },
+    { text: 'Далее', callback_data: 'proj:create:automation:start' },
+  ]);
+
+  inline_keyboard.push([
+    { text: 'Отмена', callback_data: 'proj:create:cancel' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function buildProjectAutomationSetupPrompt(data = {}, options = {}) {
+  const active = data.active !== false;
+  const weekly = cloneWeeklyConfig(data.weekly);
+  const autopause = data.autopause ? cloneAutopauseConfig(data.autopause) : cloneAutopauseConfig();
+
+  const lines = [
+    '<b>Шаг 9.</b> Автоотчёты и дополнительные сценарии.',
+    '',
+    'Задайте состояние автоотчётов, еженедельного сводника и автопаузы по KPI.',
+    '',
+    `Автоотчёты: ${active ? 'включены' : 'выключены'}`,
+    `Сводник: ${formatWeeklyLabel(weekly)}`,
+    `Автопауза: ${formatAutopauseLabel(autopause)}`,
+  ];
+
+  if (options.awaitingAutopause) {
+    lines.push('', 'Введите число дней (1–30) или «нет», чтобы отключить автопаузу.');
+  }
+
+  const inline_keyboard = [];
+
+  inline_keyboard.push([
+    {
+      text: active ? '🔕 Выключить автоотчёты' : '🔔 Включить автоотчёты',
+      callback_data: 'proj:create:automation:active:toggle',
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: weekly.enabled ? '📬 Сводник: выкл' : '📬 Сводник: вкл',
+      callback_data: 'proj:create:automation:weekly:toggle',
+    },
+    {
+      text: weekly.mode === 'week_yesterday' ? 'Режим: неделя+сегодня' : 'Режим: неделя+вчера',
+      callback_data: 'proj:create:automation:weekly:mode',
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: autopause.enabled ? '⏸ Автопауза выкл' : '⏸ Автопауза вкл',
+      callback_data: 'proj:create:automation:autopause:toggle',
+    },
+    {
+      text: `Порог: ${formatAutopauseLabel(autopause)}`,
+      callback_data: 'proj:create:automation:autopause:manual',
+    },
+  ]);
+
+  inline_keyboard.push(
+    AUTOPAUSE_PRESET_DAYS.map((days) => ({
+      text: `${days} дн.`,
+      callback_data: `proj:create:automation:autopause:set:${days}`,
+    })),
+  );
+
+  inline_keyboard.push([
+    { text: '♻️ Сбросить автопаузу', callback_data: 'proj:create:automation:autopause:reset' },
+  ]);
+
+  inline_keyboard.push([
+    { text: '← Назад', callback_data: 'proj:create:automation:back' },
     { text: 'Создать проект', callback_data: 'proj:create:finish' },
   ]);
 
@@ -2914,6 +3076,10 @@ async function completeProjectCreation(env, uid, message, data = {}, overrides =
   if (alertsConfig) {
     payload.alerts = cloneAlertConfig(alertsConfig);
   }
+
+  payload.active = overrides.active ?? (data.active !== false);
+  payload.weekly = cloneWeeklyConfig(overrides.weekly ?? data.weekly ?? {});
+  payload.autopause = cloneAutopauseConfig(overrides.autopause ?? data.autopause ?? {});
 
   if (!payload.code || !payload.chat_id || !payload.act) {
     await clearUserState(env, uid);
@@ -3531,6 +3697,106 @@ async function handleCallbackQuery(env, callbackQuery) {
     await saveUserState(env, uid, { mode: 'create_project', step: 'choose_alerts', data: payload });
 
     const view = buildProjectAlertsSetupPrompt(payload);
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data === 'proj:create:automation:start') {
+    const state = await loadUserState(env, uid);
+    if (
+      !state ||
+      state.mode !== 'create_project' ||
+      !['choose_alerts', 'choose_automation', 'await_autopause_manual'].includes(state.step)
+    ) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    payload.active = payload.active !== false;
+    payload.weekly = cloneWeeklyConfig(payload.weekly);
+    payload.autopause = cloneAutopauseConfig(payload.autopause);
+
+    await saveUserState(env, uid, { mode: 'create_project', step: 'choose_automation', data: payload });
+
+    const view = buildProjectAutomationSetupPrompt(payload);
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data === 'proj:create:automation:back') {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || !['choose_alerts', 'choose_automation'].includes(state.step)) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    await saveUserState(env, uid, { mode: 'create_project', step: 'choose_alerts', data: payload });
+    const view = buildProjectAlertsSetupPrompt(payload);
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:create:automation:')) {
+    const [, , , group, action = '', arg] = data.split(':');
+    const state = await loadUserState(env, uid);
+    if (
+      !state ||
+      state.mode !== 'create_project' ||
+      !['choose_automation', 'await_autopause_manual'].includes(state.step)
+    ) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    payload.active = payload.active !== false;
+    payload.weekly = cloneWeeklyConfig(payload.weekly);
+    payload.autopause = cloneAutopauseConfig(payload.autopause);
+
+    if (group === 'active') {
+      payload.active = !payload.active;
+    } else if (group === 'weekly') {
+      if (action === 'toggle') {
+        payload.weekly.enabled = !payload.weekly.enabled;
+      } else if (action === 'mode') {
+        payload.weekly.mode = payload.weekly.mode === 'week_yesterday' ? 'week_today' : 'week_yesterday';
+      }
+    } else if (group === 'autopause') {
+      if (action === 'toggle') {
+        payload.autopause.enabled = !payload.autopause.enabled;
+      } else if (action === 'set') {
+        const days = normalizeAutopauseDays(Number(arg));
+        payload.autopause.enabled = true;
+        payload.autopause.days = days;
+      } else if (action === 'manual') {
+        await saveUserState(env, uid, {
+          mode: 'create_project',
+          step: 'await_autopause_manual',
+          data: payload,
+        });
+        const view = buildProjectAutomationSetupPrompt(payload, { awaitingAutopause: true });
+        return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+          reply_markup: view.reply_markup,
+        });
+      } else if (action === 'reset') {
+        payload.autopause = cloneAutopauseConfig();
+      }
+    }
+
+    await saveUserState(env, uid, { mode: 'create_project', step: 'choose_automation', data: payload });
+
+    const view = buildProjectAutomationSetupPrompt(payload);
     return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
       reply_markup: view.reply_markup,
     });
