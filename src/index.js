@@ -92,6 +92,23 @@ const AD_INSIGHTS_FIELDS = [
   'inline_link_clicks',
   'actions',
 ];
+
+function sanitizeInsightsFields(fields = []) {
+  const blacklist = new Set(['landing_page_views']);
+  const unique = new Set();
+  const safe = [];
+
+  for (const field of Array.isArray(fields) ? fields : []) {
+    const trimmed = typeof field === 'string' ? field.trim() : '';
+    if (!trimmed || blacklist.has(trimmed) || unique.has(trimmed)) {
+      continue;
+    }
+    unique.add(trimmed);
+    safe.push(trimmed);
+  }
+
+  return safe;
+}
 const DEFAULT_REPORT_METRIC = {
   label: 'Результаты',
   short: 'result',
@@ -4365,7 +4382,7 @@ async function fetchCampaignInsights(env, project, token, range) {
   const params = {
     level: 'campaign',
     time_range: JSON.stringify({ since: range.since, until: range.until }),
-    fields: REPORT_INSIGHTS_FIELDS.join(','),
+    fields: sanitizeInsightsFields(REPORT_INSIGHTS_FIELDS).join(','),
     limit: '200',
   };
 
@@ -4450,7 +4467,7 @@ async function fetchAdInsights(env, project, token, range) {
   const params = {
     level: 'ad',
     time_range: JSON.stringify({ since: range.since, until: range.until }),
-    fields: AD_INSIGHTS_FIELDS.join(','),
+    fields: sanitizeInsightsFields(AD_INSIGHTS_FIELDS).join(','),
     limit: '200',
   };
 
