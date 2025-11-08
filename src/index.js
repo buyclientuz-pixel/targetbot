@@ -444,6 +444,12 @@ function normalizeAccountId(input = '') {
   return raw;
 }
 
+function normalizeCampaignId(input = '') {
+  const raw = String(input ?? '').trim();
+  if (!raw) return '';
+  return raw.replace(/^act_/i, '');
+}
+
 function createProjectDraft(data = {}) {
   return normalizeProject({
     code: data.code ?? '',
@@ -743,6 +749,33 @@ async function graphGet(path, { token, params = {} } = {}) {
   }
 
   return fetchJsonWithTimeout(url.toString(), { method: 'GET' }, META_TIMEOUT_MS);
+}
+
+async function graphPost(path, { token, params = {}, body = {} } = {}) {
+  const url = new URL(`https://graph.facebook.com/${META_API_VERSION}/${path}`);
+  if (token) {
+    url.searchParams.set('access_token', token);
+  }
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === 'undefined' || value === null) continue;
+    url.searchParams.set(key, String(value));
+  }
+
+  const form = new URLSearchParams();
+  for (const [key, value] of Object.entries(body)) {
+    if (typeof value === 'undefined' || value === null) continue;
+    form.set(key, String(value));
+  }
+
+  return fetchJsonWithTimeout(
+    url.toString(),
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    },
+    META_TIMEOUT_MS,
+  );
 }
 
 async function exchangeCodeForLongToken(env, code, redirectUri) {
@@ -2420,7 +2453,7 @@ function ensureWorkerUrl(env) {
   if (typeof env.WORKER_URL === 'string' && env.WORKER_URL.trim().length > 0) {
     return env.WORKER_URL.replace(/\/$/, '');
   }
-  return 'https://example.com';
+  return 'https://th-reports.obe1kanobe25.workers.dev';
 }
 
 function isAdmin(env, userId) {
@@ -4432,6 +4465,37 @@ async function runCreativeFatigueAlert(env, project, { token, timezone, hm, curr
   }
 }
 
+async function pauseProjectCampaigns(env, project, { token } = {}) {
+  if (!token) {
+    throw new Error('Meta токен недоступен.');
+  }
+
+  const campaigns = Array.isArray(project?.campaigns) ? project.campaigns : [];
+  const ids = Array.from(new Set(campaigns.map((value) => normalizeCampaignId(value)).filter(Boolean)));
+
+  if (!ids.length) {
+    return { ok: [], failed: [], reason: 'no_campaigns' };
+  }
+
+  const ok = [];
+  const failed = [];
+
+  for (const campaignId of ids) {
+    try {
+      const response = await graphPost(campaignId, { token, body: { status: 'PAUSED' } });
+      if (response?.success === false) {
+        throw new Error('Meta не подтвердила паузу кампании');
+      }
+      ok.push(campaignId);
+    } catch (error) {
+      console.error('pauseProjectCampaigns error', project.code, campaignId, error);
+      failed.push({ id: campaignId, error: error?.message ?? String(error) });
+    }
+  }
+
+  return { ok, failed };
+}
+
 async function runAutopauseCheck(env, project, { token, timezone, hm }) {
   if (!project?.autopause?.enabled) {
     return;
@@ -4511,7 +4575,25 @@ async function runAutopauseCheck(env, project, { token, timezone, hm }) {
       'Проверьте кампании и рассмотрите автопаузу в карточке проекта.',
     ];
 
-    await telegramNotifyAdmins(env, lines.join('\n'));
+    let extra = {};
+    if (Array.isArray(project?.campaigns) && project.campaigns.length > 0) {
+      lines.push('');
+      lines.push('Можно сразу поставить выбранные кампании на паузу.');
+      extra = {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '⏸ Поставить кампании на паузу',
+                callback_data: `proj:autopause:apply:${project.code}`,
+              },
+            ],
+          ],
+        },
+      };
+    }
+
+    await telegramNotifyAdmins(env, lines.join('\n'), extra);
 
     if (env.DB) {
       await env.DB.put(alertKey, '1', { expirationTtl: AUTOPAUSE_ALERT_TTL_SECONDS });
@@ -4692,6 +4774,15 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
       callback_data: `proj:autopause:open:${project.code}`,
     },
   ]);
+
+  if (project.campaigns.length) {
+    inline_keyboard.push([
+      {
+        text: '⏸ Поставить кампании на паузу',
+        callback_data: `proj:autopause:apply:${project.code}`,
+      },
+    ]);
+  }
 
   inline_keyboard.push([
     { text: '🎯 KPI', callback_data: `proj:kpi:open:${project.code}` },
@@ -6997,6 +7088,76 @@ async function handleCallbackQuery(env, callbackQuery) {
     });
 
     return editMessageWithProject(env, message, code);
+  }
+
+  if (data.startsWith('proj:autopause:apply:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await telegramAnswerCallback(env, callbackQuery, '⏳ Пытаюсь поставить кампании на паузу…');
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      const targetMessage = callbackQuery.message ?? { chat: { id: callbackQuery.from?.id } };
+      await telegramSendMessage(env, targetMessage, 'Проект не найден. Обновите список проектов.', {
+        disable_reply: true,
+      });
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    if (!Array.isArray(project.campaigns) || project.campaigns.length === 0) {
+      const targetMessage = callbackQuery.message ?? { chat: { id: callbackQuery.from?.id } };
+      await telegramSendMessage(env, targetMessage, 'В проекте не выбраны кампании для автопаузы.', {
+        disable_reply: true,
+      });
+      return { ok: false, error: 'no_campaigns' };
+    }
+
+    const { token } = await resolveMetaToken(env);
+    if (!token) {
+      const targetMessage = callbackQuery.message ?? { chat: { id: callbackQuery.from?.id } };
+      await telegramSendMessage(env, targetMessage, 'Meta-токен не найден. Подключите Meta и попробуйте снова.', {
+        disable_reply: true,
+      });
+      return { ok: false, error: 'token_missing' };
+    }
+
+    let summary = '';
+    try {
+      const result = await pauseProjectCampaigns(env, project, { token });
+      if (result.reason === 'no_campaigns' || (result.ok.length === 0 && result.failed.length === 0)) {
+        summary = 'Нет кампаний, которые можно поставить на паузу. Проверьте настройки проекта.';
+      } else {
+        const lines = [
+          '⏸ <b>Автопауза кампаний</b>',
+          `Проект #${escapeHtml(project.code)} — кампаний на паузе: ${result.ok.length}.`,
+        ];
+        if (result.failed.length) {
+          lines.push('Ошибки:');
+          for (const item of result.failed.slice(0, 5)) {
+            lines.push(`• ${escapeHtml(item.id)} — ${escapeHtml(item.error)}`);
+          }
+          if (result.failed.length > 5) {
+            lines.push('…');
+          }
+        }
+        summary = lines.join('\n');
+      }
+    } catch (error) {
+      console.error('autopause apply error', project.code, error);
+      summary = `Не удалось поставить кампании на паузу: ${escapeHtml(error?.message ?? String(error))}`;
+    }
+
+    const targetMessage = callbackQuery.message ?? { chat: { id: callbackQuery.from?.id } };
+    await telegramSendMessage(env, targetMessage, summary, {
+      disable_reply: true,
+    });
+
+    return { ok: true };
   }
 
   if (data.startsWith('proj:autopause:open:')) {
