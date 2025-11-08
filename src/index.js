@@ -26,6 +26,8 @@ const REPORT_ARCHIVE_PAGE_SIZE = 5;
 const REPORT_ARCHIVE_MAX_KEYS = 200;
 const REPORT_PRESET_PREFIX = 'report_preset:';
 const REPORT_PRESET_LIMIT = 12;
+const DIGEST_PRESET_PREFIX = 'digest_preset:';
+const DIGEST_PRESET_LIMIT = 12;
 const REPORT_PREVIEW_MAX_LENGTH = 3600;
 const AUTO_REPORT_FLAG_PREFIX = 'flag:auto_report:';
 const WEEKLY_REPORT_FLAG_PREFIX = 'flag:weekly_report:';
@@ -174,6 +176,14 @@ function sanitizeReportPresetName(input) {
 
 function createReportPresetId() {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function sanitizeDigestPresetName(input) {
+  return sanitizeReportPresetName(input);
+}
+
+function createDigestPresetId() {
+  return createReportPresetId();
 }
 
 function resolveKvBinding(env, bindingName, fallbackBinding = 'DB') {
@@ -366,6 +376,10 @@ function getReportArchiveKey(code, stamp) {
 
 function getReportPresetKey(uid) {
   return `${REPORT_PRESET_PREFIX}${uid}`;
+}
+
+function getDigestPresetKey(uid) {
+  return `${DIGEST_PRESET_PREFIX}${uid}`;
 }
 
 function getAutoReportFlagKey(code, ymd, hm) {
@@ -873,6 +887,144 @@ async function deleteReportPreset(env, uid, presetId) {
   }
 
   await saveReportPresets(env, uid, next);
+  return true;
+}
+
+function normalizeDigestPresetRecord(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+
+  const name = sanitizeDigestPresetName(raw.name ?? '');
+  if (!name) {
+    return null;
+  }
+
+  const allowedPeriods = new Set(PERIOD_OPTIONS.map((option) => option.value));
+  const period = allowedPeriods.has(raw.period) ? raw.period : 'yesterday';
+  const createdAt = typeof raw.created_at === 'string' && raw.created_at ? raw.created_at : new Date().toISOString();
+  const updatedAt = typeof raw.updated_at === 'string' && raw.updated_at ? raw.updated_at : createdAt;
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : createDigestPresetId();
+
+  return {
+    id,
+    name,
+    period,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  };
+}
+
+function sortDigestPresets(presets = []) {
+  return presets
+    .slice()
+    .sort((left, right) => {
+      const leftStamp = Date.parse(left.updated_at ?? left.created_at ?? 0);
+      const rightStamp = Date.parse(right.updated_at ?? right.created_at ?? 0);
+      const safeLeft = Number.isFinite(leftStamp) ? leftStamp : 0;
+      const safeRight = Number.isFinite(rightStamp) ? rightStamp : 0;
+      return safeRight - safeLeft;
+    });
+}
+
+async function loadDigestPresets(env, uid) {
+  const kv = getReportsKv(env);
+  if (!kv || !uid) {
+    return [];
+  }
+
+  try {
+    const raw = await kv.get(getDigestPresetKey(uid));
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    const normalized = parsed
+      .map((entry) => normalizeDigestPresetRecord(entry))
+      .filter((entry) => entry !== null);
+
+    return sortDigestPresets(normalized);
+  } catch (error) {
+    console.error('loadDigestPresets error', error);
+    return [];
+  }
+}
+
+async function saveDigestPresets(env, uid, presets) {
+  const kv = getReportsKv(env);
+  if (!kv || !uid) {
+    return;
+  }
+
+  const normalized = Array.isArray(presets)
+    ? presets.map((entry) => normalizeDigestPresetRecord(entry)).filter((entry) => entry !== null)
+    : [];
+
+  const ordered = sortDigestPresets(normalized).slice(0, DIGEST_PRESET_LIMIT);
+  await kv.put(getDigestPresetKey(uid), JSON.stringify(ordered));
+}
+
+async function upsertDigestPreset(env, uid, payload) {
+  const kv = getReportsKv(env);
+  if (!kv || !uid) {
+    return null;
+  }
+
+  const name = sanitizeDigestPresetName(payload?.name ?? '');
+  if (!name) {
+    return null;
+  }
+
+  const allowedPeriods = new Set(PERIOD_OPTIONS.map((option) => option.value));
+  const period = allowedPeriods.has(payload?.period) ? payload.period : 'yesterday';
+  const now = new Date().toISOString();
+
+  const current = await loadDigestPresets(env, uid);
+  const existingIndex = current.findIndex((entry) => entry.name.toLowerCase() === name.toLowerCase());
+
+  if (existingIndex >= 0) {
+    const updated = {
+      ...current[existingIndex],
+      name,
+      period,
+      updated_at: now,
+    };
+    current.splice(existingIndex, 1, updated);
+    await saveDigestPresets(env, uid, current);
+    return updated;
+  }
+
+  const entry = {
+    id: createDigestPresetId(),
+    name,
+    period,
+    created_at: now,
+    updated_at: now,
+  };
+
+  const next = [entry, ...current].slice(0, DIGEST_PRESET_LIMIT);
+  await saveDigestPresets(env, uid, next);
+  return entry;
+}
+
+async function deleteDigestPreset(env, uid, presetId) {
+  const kv = getReportsKv(env);
+  if (!kv || !uid || !presetId) {
+    return false;
+  }
+
+  const current = await loadDigestPresets(env, uid);
+  const next = current.filter((entry) => entry.id !== presetId);
+  if (next.length === current.length) {
+    return false;
+  }
+
+  await saveDigestPresets(env, uid, next);
   return true;
 }
 
@@ -2520,6 +2672,48 @@ async function handleUserStateMessage(env, message, textContent) {
       return { handled: true, error: 'project_not_found' };
     }
 
+    if (state.step === 'await_preset_name') {
+      const presetName = sanitizeDigestPresetName(textContent);
+      if (!presetName || presetName.length < 2) {
+        await telegramSendMessage(env, message, 'Название должно содержать от 2 до 60 символов.', {
+          disable_reply: true,
+        });
+        return { handled: true, error: 'digest_preset_name_invalid' };
+      }
+
+      const normalizedState = createDigestState(project, state);
+      const preset = await upsertDigestPreset(env, uid, {
+        name: presetName,
+        period: normalizedState.period,
+      });
+
+      const nextState = createDigestState(project, { ...state, step: 'menu' });
+      await saveUserState(env, uid, nextState);
+
+      if (preset) {
+        await telegramSendMessage(env, message, `Пресет «${escapeHtml(preset.name)}» сохранён.`, {
+          disable_reply: true,
+          parse_mode: 'HTML',
+        });
+      } else {
+        await telegramSendMessage(env, message, 'Не удалось сохранить пресет. Попробуйте ещё раз.', {
+          disable_reply: true,
+        });
+      }
+
+      if (state.message_chat_id && state.message_id) {
+        await editMessageWithDigestOptions(
+          env,
+          { chat: { id: state.message_chat_id }, message_id: state.message_id },
+          code,
+          nextState,
+          { timezone: env.DEFAULT_TZ || 'UTC', awaitingPresetName: false },
+        );
+      }
+
+      return { handled: true, step: 'digest_preset_saved' };
+    }
+
     await telegramSendMessage(env, message, 'Используйте кнопки меню дайджеста для настроек и отправки.', {
       disable_reply: true,
     });
@@ -2529,7 +2723,8 @@ async function handleUserStateMessage(env, message, textContent) {
         env,
         { chat: { id: state.message_chat_id }, message_id: state.message_id },
         code,
-        { timezone: env.DEFAULT_TZ || 'UTC' },
+        state,
+        { timezone: env.DEFAULT_TZ || 'UTC', awaitingPresetName: state.step === 'await_preset_name' },
       );
     }
 
@@ -5870,6 +6065,26 @@ async function runManualWeeklyDigestAction(env, project, { timezone } = {}) {
   return { ok: true };
 }
 
+async function runManualDigestAction(env, project, { timezone } = {}) {
+  const tz = timezone || env.DEFAULT_TZ || 'UTC';
+  const { token } = await resolveMetaToken(env);
+  if (!token) {
+    throw new Error('Meta токен не найден. Подключите Meta в админ-панели.');
+  }
+
+  const period = project.period ?? 'today';
+  const range = getPeriodRange(period, tz);
+  if (!range) {
+    throw new Error('Не удалось определить период для дайджеста. Проверьте настройки проекта.');
+  }
+
+  const accountMeta = await loadAccountMeta(env, project.act?.replace(/^act_/i, '') ?? project.act);
+  const currency = getCurrencyFromMeta(accountMeta);
+  await sendProjectDigest(env, project, { period, range, token, currency });
+
+  return { period, range, currency };
+}
+
 async function runManualAlertsAction(env, project, { timezone } = {}) {
   const tz = timezone || env.DEFAULT_TZ || 'UTC';
   const { token } = await resolveMetaToken(env);
@@ -6196,13 +6411,14 @@ function renderProjectActionsMenu(project, options = {}) {
   const inline_keyboard = [];
   inline_keyboard.push([
     { text: '📤 Автоотчёт в чат', callback_data: `proj:actions:auto:${project.code}` },
+    { text: '📬 Дайджест в чат', callback_data: `proj:actions:digest:${project.code}` },
+  ]);
+  inline_keyboard.push([
     { text: '📅 Сводник', callback_data: `proj:actions:weekly:${project.code}` },
-  ]);
-  inline_keyboard.push([
     { text: '⚠ Проверить алерты', callback_data: `proj:actions:alerts:${project.code}` },
-    { text: '🤖 Проверить автопаузу', callback_data: `proj:actions:autopause:${project.code}` },
   ]);
   inline_keyboard.push([
+    { text: '🤖 Проверить автопаузу', callback_data: `proj:actions:autopause:${project.code}` },
     { text: '🧹 Сбросить флаги отчётов', callback_data: `proj:actions:reset:${project.code}` },
   ]);
   inline_keyboard.push([{ text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` }]);
@@ -6622,13 +6838,18 @@ function renderDigestOptions(project, options = {}, context = {}) {
   const normalized = normalizeDigestOptions(project, options);
   const range = getPeriodRange(normalized.period, timezone);
   const periodLabel = getPeriodLabel(normalized.period);
+  const awaitingPresetName = context.awaitingPresetName === true;
 
   const lines = [
     `<b>Дайджест #${escapeHtml(project.code)}</b>`,
     `Период: ${escapeHtml(periodLabel)}${range ? ` (${range.since}–${range.until})` : ''}`,
     '',
-    'Выберите период и решите, куда отправить дайджест.',
+    'Выберите период, сохраните пресет или сразу отправьте дайджест.',
   ];
+
+  if (awaitingPresetName) {
+    lines.push('', 'Отправьте название пресета (2–60 символов). Оно будет доступно только вам.');
+  }
 
   const periodButtons = PERIOD_OPTIONS.map((option) => ({
     text: option.value === normalized.period ? `✅ ${option.label}` : option.label,
@@ -6639,6 +6860,12 @@ function renderDigestOptions(project, options = {}, context = {}) {
   for (const chunk of chunkArray(periodButtons, 3)) {
     inline_keyboard.push(chunk);
   }
+
+  const saveLabel = awaitingPresetName ? '⌛ Жду название…' : '💾 Сохранить пресет';
+  inline_keyboard.push([
+    { text: saveLabel, callback_data: `proj:digest:preset_save:${project.code}` },
+    { text: '🎛 Мои пресеты', callback_data: `proj:digest:preset_menu:${project.code}` },
+  ]);
 
   inline_keyboard.push([
     { text: '👁 Просмотр в панели', callback_data: `proj:digest:preview:${project.code}` },
@@ -6654,7 +6881,53 @@ function renderDigestOptions(project, options = {}, context = {}) {
   };
 }
 
-async function editMessageWithDigestOptions(env, message, code, options = {}) {
+function renderDigestPresetMenu(project, presets = [], context = {}) {
+  const timezone = context.timezone || 'UTC';
+  const notice = context.notice ? String(context.notice) : null;
+  const lines = [`<b>Пресеты дайджестов #${escapeHtml(project.code)}</b>`];
+
+  if (notice) {
+    lines.push('', escapeHtml(notice));
+  }
+
+  if (!presets.length) {
+    lines.push('', 'Пока нет сохранённых пресетов. Нажмите «💾 Сохранить пресет» в меню дайджеста.');
+  } else {
+    lines.push('', 'Сохранённые пресеты:');
+    for (const preset of presets) {
+      const label = getPeriodLabel(preset.period);
+      const updated = preset.updated_at
+        ? formatDateTimeLabel(preset.updated_at, timezone)
+        : null;
+      const suffix = updated ? ` · ${escapeHtml(updated)}` : '';
+      lines.push(`• <b>${escapeHtml(preset.name)}</b> — ${escapeHtml(label)}${suffix}`);
+    }
+  }
+
+  const inline_keyboard = [];
+  for (const preset of presets) {
+    inline_keyboard.push([
+      {
+        text: `▶️ ${preset.name}`,
+        callback_data: `proj:digest:preset_apply:${project.code}:${preset.id}`,
+      },
+      {
+        text: '🗑 Удалить',
+        callback_data: `proj:digest:preset_delete:${project.code}:${preset.id}`,
+      },
+    ]);
+  }
+
+  inline_keyboard.push([{ text: '↩️ К настройкам дайджеста', callback_data: `proj:digest:open:${project.code}` }]);
+  inline_keyboard.push([{ text: '← К проекту', callback_data: `proj:detail:${project.code}` }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithDigestOptions(env, message, code, options = {}, context = {}) {
   const chatId = message?.chat?.id;
   const messageId = message?.message_id;
   if (!chatId || !messageId) {
@@ -6671,7 +6944,8 @@ async function editMessageWithDigestOptions(env, message, code, options = {}) {
     return { ok: false, error: 'project_not_found' };
   }
 
-  const view = renderDigestOptions(project, options, { timezone: env.DEFAULT_TZ || 'UTC' });
+  const timezone = context.timezone || env.DEFAULT_TZ || 'UTC';
+  const view = renderDigestOptions(project, options, { ...context, timezone });
   await telegramEditMessage(env, chatId, messageId, view.text, {
     reply_markup: view.reply_markup,
   });
@@ -10217,8 +10491,11 @@ async function handleCallbackQuery(env, callbackQuery) {
     };
 
     if (action === 'open') {
-      await ensureState({ step: 'menu' });
-      return editMessageWithDigestOptions(env, message, code, { timezone });
+      const nextState = await ensureState({ step: 'menu' });
+      return editMessageWithDigestOptions(env, message, code, nextState, {
+        timezone,
+        awaitingPresetName: nextState.step === 'await_preset_name',
+      });
     }
 
     if (action === 'period') {
@@ -10229,9 +10506,58 @@ async function handleCallbackQuery(env, callbackQuery) {
         return { ok: false, error: 'invalid_period' };
       }
 
-      await ensureState({ period: periodValue, step: 'menu' });
+      const nextState = await ensureState({ period: periodValue, step: 'menu' });
       await telegramAnswerCallback(env, callbackQuery, 'Период обновлён.');
-      return editMessageWithDigestOptions(env, message, code, { timezone });
+      return editMessageWithDigestOptions(env, message, code, nextState, { timezone });
+    }
+
+    if (action === 'preset_menu') {
+      await telegramAnswerCallback(env, callbackQuery, 'Открываю пресеты...');
+      const presets = await loadDigestPresets(env, uid);
+      const view = renderDigestPresetMenu(project, presets, { timezone });
+      await ensureState({ step: 'menu' });
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+        parse_mode: 'HTML',
+      });
+    }
+
+    if (action === 'preset_save') {
+      const nextState = await ensureState({ step: 'await_preset_name' });
+      await telegramAnswerCallback(env, callbackQuery, 'Пришлите название пресета сообщением.');
+      return editMessageWithDigestOptions(env, message, code, nextState, {
+        timezone,
+        awaitingPresetName: true,
+      });
+    }
+
+    if (action === 'preset_apply') {
+      const presetId = parts[4] ?? '';
+      const presets = await loadDigestPresets(env, uid);
+      const preset = presets.find((entry) => entry.id === presetId);
+      if (!preset) {
+        await telegramAnswerCallback(env, callbackQuery, 'Пресет не найден.');
+        return { ok: false, error: 'digest_preset_missing' };
+      }
+
+      const nextState = await ensureState({ period: preset.period, step: 'menu' });
+      await telegramAnswerCallback(env, callbackQuery, `Пресет «${preset.name}» применён.`);
+      return editMessageWithDigestOptions(env, message, code, nextState, { timezone });
+    }
+
+    if (action === 'preset_delete') {
+      const presetId = parts[4] ?? '';
+      const removed = await deleteDigestPreset(env, uid, presetId);
+      const presets = await loadDigestPresets(env, uid);
+      const view = renderDigestPresetMenu(project, presets, {
+        timezone,
+        notice: removed ? 'Пресет удалён.' : 'Не удалось удалить пресет.',
+      });
+      await telegramAnswerCallback(env, callbackQuery, removed ? 'Удалено.' : 'Не удалось удалить.');
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+        parse_mode: 'HTML',
+      });
     }
 
     const state = await ensureState({ step: 'menu' });
@@ -10600,6 +10926,25 @@ async function handleCallbackQuery(env, callbackQuery) {
       } catch (error) {
         console.error('proj:actions:auto error', error);
         const msg = error?.message ?? 'Не удалось отправить отчёт.';
+        await telegramSendMessage(env, message, `⚠️ ${escapeHtml(msg)}`, { disable_reply: true, parse_mode: 'HTML' });
+        return reopenMenu(`⚠️ ${escapeHtml(msg)}`);
+      }
+    }
+
+    if (action === 'digest') {
+      await telegramAnswerCallback(env, callbackQuery, 'Готовим дайджест...');
+      try {
+        const result = await runManualDigestAction(env, project, { timezone });
+        const periodLabel = getPeriodLabel(result.period);
+        const lines = [
+          `✅ Дайджест отправлен для #${escapeHtml(project.code)}.`,
+          `Период: ${escapeHtml(periodLabel)}${result.range ? ` (${result.range.since}–${result.range.until})` : ''}`,
+        ];
+        await telegramSendMessage(env, message, lines.join('\n'), { disable_reply: true, parse_mode: 'HTML' });
+        return reopenMenu('✅ Дайджест отправлен.');
+      } catch (error) {
+        console.error('proj:actions:digest error', error);
+        const msg = error?.message ?? 'Не удалось отправить дайджест.';
         await telegramSendMessage(env, message, `⚠️ ${escapeHtml(msg)}`, { disable_reply: true, parse_mode: 'HTML' });
         return reopenMenu(`⚠️ ${escapeHtml(msg)}`);
       }
