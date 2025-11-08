@@ -92,7 +92,7 @@ If the bot is already live in Cloudflare:
 ## Useful KV keys
 
 * `project:<code>` — Project configuration (Meta account, schedule, KPI settings, etc.).
-* `chat:<chat_id>:<thread_id>` — Registered Telegram chat/thread metadata.
+* `chat-<chat_id>:<thread_id>` — Registered Telegram chat/thread metadata (legacy keys `chat:<chat_id>:<thread_id>` are read automatically).
 * `report:<code>:<timestamp>` — Archived HTML/CSV reports.
 * `portal:<code>:sig` — Shared secret for the read-only portal.
 * `acct:<act_id>` — Cached Meta account metadata.

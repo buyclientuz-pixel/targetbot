@@ -264,22 +264,73 @@ const saveProject = async (DB: KVNamespace, code: string, project: StoredProject
 
 const removeProject = (DB: KVNamespace, code: string) => DB.delete(`project:${code}`);
 
-const saveChat = (DB: KVNamespace, chatId: number, threadId: number, meta: any) =>
-  DB.put(`chat:${chatId}:${threadId}`, JSON.stringify(meta));
+const chatKeyPrimary = (chatId: number, threadId: number) => `chat-${chatId}:${threadId}`;
+const chatKeyLegacy = (chatId: number, threadId: number) => `chat:${chatId}:${threadId}`;
+
+const parseChatKey = (name: string) => {
+  const normaliseThread = (value?: string) => {
+    if (value == null || value === '') return 0;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  if (name.startsWith('chat-')) {
+    const [chat, thread] = name.slice('chat-'.length).split(':');
+    if (!chat) return null;
+    return { chat_id: Number(chat), thread_id: normaliseThread(thread) };
+  }
+  if (name.startsWith('chat:')) {
+    const [, chat, thread] = name.split(':');
+    if (!chat) return null;
+    return { chat_id: Number(chat), thread_id: normaliseThread(thread) };
+  }
+  return null;
+};
+
+const saveChat = async (DB: KVNamespace, chatId: number, threadId: number, meta: any) => {
+  const primaryKey = chatKeyPrimary(chatId, threadId);
+  await DB.put(primaryKey, JSON.stringify(meta));
+
+  const legacyKey = chatKeyLegacy(chatId, threadId);
+  if (primaryKey !== legacyKey) {
+    await DB.delete(legacyKey);
+  }
+};
 
 const getChat = async (DB: KVNamespace, chatId: number, threadId: number) => {
-  const raw = await DB.get(`chat:${chatId}:${threadId}`);
-  return raw ? JSON.parse(raw) : null;
+  const primary = await DB.get(chatKeyPrimary(chatId, threadId));
+  if (primary) return JSON.parse(primary);
+
+  const legacy = await DB.get(chatKeyLegacy(chatId, threadId));
+  return legacy ? JSON.parse(legacy) : null;
 };
 
 const listChats = async (DB: KVNamespace) => {
-  const { keys } = await DB.list({ prefix: 'chat:' });
+  const seen = new Set<string>();
   const rows: any[] = [];
-  for (const key of keys) {
-    const [_, chat, thread] = key.name.split(':');
-    const data = JSON.parse((await DB.get(key.name)) || '{}');
-    rows.push({ chat_id: Number(chat), thread_id: Number(thread), ...data });
-  }
+
+  const collect = async (prefix: string) => {
+    let cursor: string | undefined;
+    do {
+      const res: any = await DB.list({ prefix, cursor });
+      for (const key of res.keys || []) {
+        const parsed = parseChatKey(key.name);
+        if (!parsed) continue;
+        const ref = `${parsed.chat_id}:${parsed.thread_id}`;
+        if (seen.has(ref)) continue;
+        const raw = await DB.get(key.name);
+        if (!raw) continue;
+        const data = JSON.parse(raw);
+        seen.add(ref);
+        rows.push({ chat_id: parsed.chat_id, thread_id: parsed.thread_id, ...data });
+      }
+      cursor = res.list_complete ? undefined : res.cursor;
+    } while (cursor);
+  };
+
+  await collect('chat-');
+  await collect('chat:');
+
   return rows;
 };
 
