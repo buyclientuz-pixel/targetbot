@@ -29,6 +29,8 @@ const AUTO_REPORT_FLAG_PREFIX = 'flag:auto_report:';
 const WEEKLY_REPORT_FLAG_PREFIX = 'flag:weekly_report:';
 const REPORT_FLAG_TTL_SECONDS = 60 * 60 * 24 * 3;
 const WEEKLY_FLAG_TTL_SECONDS = 60 * 60 * 24 * 14;
+const PORTAL_PREFIX = 'portal:';
+const PORTAL_SIG_BYTES = 24;
 const PROJECT_CODE_PATTERN = /^[a-z0-9_-]{3,32}$/i;
 const PERIOD_OPTIONS = [
   { value: 'today', label: 'Сегодня' },
@@ -289,6 +291,10 @@ function getAutopauseStreakKey(code) {
 
 function getAutopauseAlertFlagKey(code, suffix) {
   return `${ALERT_FLAG_PREFIX}${code}:autopause:${suffix}`;
+}
+
+function getPortalKey(code) {
+  return `${PORTAL_PREFIX}${code}`;
 }
 
 function buildHelpMessage() {
@@ -649,6 +655,47 @@ async function loadAccountMeta(env, accountId) {
     console.error('loadAccountMeta error', error);
     return null;
   }
+}
+
+async function loadPortalRecord(env, code) {
+  if (!env.DB || !code) return null;
+  try {
+    const raw = await env.DB.get(getPortalKey(code));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed ? parsed : null;
+  } catch (error) {
+    console.error('loadPortalRecord error', error);
+    return null;
+  }
+}
+
+async function savePortalRecord(env, code, record = {}) {
+  if (!env.DB || !code) return;
+  await env.DB.put(getPortalKey(code), JSON.stringify(record ?? {}));
+}
+
+async function deletePortalRecord(env, code) {
+  if (!env.DB || !code) return;
+  try {
+    await env.DB.delete(getPortalKey(code));
+  } catch (error) {
+    console.error('deletePortalRecord error', error);
+  }
+}
+
+function generatePortalSignature() {
+  const cryptoObj = globalThis?.crypto;
+  const buffer = new Uint8Array(PORTAL_SIG_BYTES);
+  if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+    cryptoObj.getRandomValues(buffer);
+  } else {
+    for (let index = 0; index < buffer.length; index += 1) {
+      buffer[index] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  return Array.from(buffer, (value) => value.toString(16).padStart(2, '0')).join('');
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = TELEGRAM_TIMEOUT_MS) {
@@ -2627,6 +2674,27 @@ function formatAlertsLabel(alerts = {}) {
   return `вкл · billing: ${timesLabel} · zero-spend: ${zeroLabel}`;
 }
 
+function formatPortalLabel(portalRecord, timezone = 'UTC') {
+  if (!portalRecord?.sig) {
+    return 'выкл';
+  }
+
+  if (portalRecord?.updated_at) {
+    return `вкл (обновлено ${formatDateTimeLabel(portalRecord.updated_at, timezone)})`;
+  }
+
+  return 'вкл';
+}
+
+function buildPortalUrl(env, code, portalRecord) {
+  if (!portalRecord?.sig) {
+    return null;
+  }
+
+  const baseUrl = ensureWorkerUrl(env);
+  return `${baseUrl}/p/${encodeURIComponent(code)}?sig=${encodeURIComponent(portalRecord.sig)}`;
+}
+
 function formatKpiLabel(kpi = {}) {
   const parts = [];
   parts.push(`CPL: ${kpi?.cpl ?? '—'}`);
@@ -4549,7 +4617,8 @@ async function processWeeklyReport(env, project, { token, timezone }) {
   return { ok: true };
 }
 
-function renderProjectDetails(project, chatRecord) {
+function renderProjectDetails(project, chatRecord, portalRecord = null, options = {}) {
+  const timezone = options.timezone || 'UTC';
   const timesLabel = project.times.length ? project.times.join(', ') : '—';
   const chatInfo = project.chat_id
     ? formatChatReference({
@@ -4578,6 +4647,7 @@ function renderProjectDetails(project, chatRecord) {
   lines.push(`Сводник: ${escapeHtml(formatWeeklyLabel(project.weekly))}`);
   lines.push(`Автопауза: ${escapeHtml(formatAutopauseLabel(project.autopause))}`);
   lines.push(`Alerts: ${escapeHtml(formatAlertsLabel(project.alerts))}`);
+  lines.push(`Портал: ${escapeHtml(formatPortalLabel(portalRecord, timezone))}`);
   lines.push(`Оплата: ${escapeHtml(formatDateLabel(project.billing_paid_at))}`);
   lines.push(`Следующая оплата: ${escapeHtml(formatDateLabel(project.billing_next_at))}`);
   const inline_keyboard = [];
@@ -4633,6 +4703,7 @@ function renderProjectDetails(project, chatRecord) {
   ]);
   inline_keyboard.push([
     { text: '🗂 Архив', callback_data: `proj:archive:open:${project.code}` },
+    { text: '🌐 Портал', callback_data: `proj:portal:open:${project.code}` },
   ]);
   inline_keyboard.push([
     { text: '📦 Кампании', callback_data: `proj:detail:todo:campaigns:${project.code}` },
@@ -4644,6 +4715,88 @@ function renderProjectDetails(project, chatRecord) {
     text: lines.join('\n'),
     reply_markup: { inline_keyboard },
   };
+}
+
+function renderPortalMenu(env, project, portalRecord, options = {}) {
+  const timezone = options.timezone || 'UTC';
+  const link = buildPortalUrl(env, project.code, portalRecord);
+  const updatedLabel = portalRecord?.updated_at ? formatDateTimeLabel(portalRecord.updated_at, timezone) : null;
+  const defaultPeriod = getPeriodLabel(project.period ?? 'yesterday');
+
+  const lines = [`<b>Клиентский портал #${escapeHtml(project.code)}</b>`];
+
+  if (link) {
+    lines.push('Статус: активен.');
+    lines.push(`Ссылка: <code>${escapeHtml(link)}</code>`);
+    lines.push(`Период по умолчанию: ${escapeHtml(defaultPeriod)}.`);
+    if (updatedLabel) {
+      lines.push(`Обновлено: ${escapeHtml(updatedLabel)}.`);
+    }
+    lines.push('');
+    lines.push('У кого есть ссылка — у того есть доступ к отчётам без внутренних KPI. При обновлении токена старая ссылка перестанет работать.');
+  } else {
+    lines.push('Портал выключен. Создайте ссылку, чтобы поделиться дашбордом с клиентом.');
+  }
+
+  const inline_keyboard = [];
+
+  if (link) {
+    inline_keyboard.push([
+      { text: '♻️ Обновить ссылку', callback_data: `proj:portal:rotate:${project.code}` },
+      { text: '🚫 Отключить', callback_data: `proj:portal:disable:${project.code}` },
+    ]);
+    inline_keyboard.push([
+      { text: '📤 В чат клиента', callback_data: `proj:portal:send:${project.code}` },
+      { text: '📨 Получить ссылку здесь', callback_data: `proj:portal:dm:${project.code}` },
+    ]);
+    inline_keyboard.push([
+      { text: '🌐 Открыть', url: link },
+      { text: '🔄 Обновить экран', callback_data: `proj:portal:refresh:${project.code}` },
+    ]);
+  } else {
+    inline_keyboard.push([
+      { text: '🔗 Создать ссылку', callback_data: `proj:portal:create:${project.code}` },
+    ]);
+  }
+
+  inline_keyboard.push([{ text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` }]);
+  inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithPortal(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Возможно, он был удалён.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  const chatRecord = project.chat_id
+    ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
+    : null;
+  const portalRecord = await loadPortalRecord(env, project.code);
+  const timezone = options.timezone || env.DEFAULT_TZ || 'UTC';
+  const view = renderPortalMenu(env, project, portalRecord, { timezone });
+
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  return { ok: true, project, portalRecord };
 }
 
 function getPeriodLabel(period) {
@@ -5384,13 +5537,14 @@ async function editMessageWithProject(env, message, code) {
   const chatRecord = project.chat_id
     ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
     : null;
-
-  const details = renderProjectDetails(project, chatRecord);
+  const portalRecord = await loadPortalRecord(env, project.code);
+  const timezone = env.DEFAULT_TZ || 'UTC';
+  const details = renderProjectDetails(project, chatRecord, portalRecord, { timezone });
   await telegramEditMessage(env, chatId, messageId, details.text, {
     reply_markup: details.reply_markup,
   });
 
-  return { ok: true, project, chatRecord };
+  return { ok: true, project, chatRecord, portalRecord };
 }
 
 async function editMessageWithSchedule(env, message, code, options = {}) {
@@ -7561,6 +7715,108 @@ async function handleCallbackQuery(env, callbackQuery) {
     return { ok: false, error: 'unknown_report_action' };
   }
 
+  if (data.startsWith('proj:portal:')) {
+    const parts = data.split(':');
+    const action = parts[2] ?? '';
+    const rawCode = parts[3] ?? '';
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const timezone = env.DEFAULT_TZ || 'UTC';
+
+    if (action === 'open') {
+      await telegramAnswerCallback(env, callbackQuery, 'Открываю портал...');
+      return editMessageWithPortal(env, message, code, { timezone });
+    }
+
+    if (action === 'refresh') {
+      await telegramAnswerCallback(env, callbackQuery, 'Обновляю портал...');
+      return editMessageWithPortal(env, message, code, { timezone });
+    }
+
+    if (action === 'create' || action === 'rotate') {
+      const existing = await loadPortalRecord(env, code);
+      const nowIso = new Date().toISOString();
+      const record = {
+        sig: generatePortalSignature(),
+        created_at: existing?.created_at ?? nowIso,
+        updated_at: nowIso,
+      };
+      if (existing?.sig) {
+        record.rotated_at = nowIso;
+      }
+      await savePortalRecord(env, code, record);
+      await telegramAnswerCallback(
+        env,
+        callbackQuery,
+        existing?.sig ? 'Ссылка обновлена.' : 'Портал включён.',
+      );
+      return editMessageWithPortal(env, message, code, { timezone });
+    }
+
+    if (action === 'disable') {
+      await deletePortalRecord(env, code);
+      await telegramAnswerCallback(env, callbackQuery, 'Портал отключён.');
+      return editMessageWithPortal(env, message, code, { timezone });
+    }
+
+    if (action === 'send' || action === 'dm') {
+      const project = await loadProject(env, code);
+      if (!project) {
+        await telegramAnswerCallback(env, callbackQuery, 'Проект не найден.');
+        return { ok: false, error: 'project_not_found' };
+      }
+
+      const portalRecord = await loadPortalRecord(env, code);
+      const link = buildPortalUrl(env, code, portalRecord);
+      if (!link) {
+        await telegramAnswerCallback(env, callbackQuery, 'Сначала включите портал.');
+        return editMessageWithPortal(env, message, code, { timezone });
+      }
+
+      if (action === 'send') {
+        const shareLines = [
+          `🌐 <b>Портал клиента #${escapeHtml(project.code)}</b>`,
+          `<a href="${escapeHtml(link)}">${escapeHtml(link)}</a>`,
+          '',
+          `Период по умолчанию: ${escapeHtml(getPeriodLabel(project.period ?? 'yesterday'))}.`,
+        ];
+
+        try {
+          await telegramSendToProject(env, project, shareLines.join('\n'), {
+            disable_web_page_preview: false,
+          });
+          await telegramAnswerCallback(env, callbackQuery, 'Ссылка отправлена клиенту.');
+        } catch (error) {
+          console.error('proj:portal:send error', error);
+          await telegramAnswerCallback(env, callbackQuery, 'Не удалось отправить ссылку в чат клиента.');
+        }
+
+        return editMessageWithPortal(env, message, code, { timezone });
+      }
+
+      if (action === 'dm') {
+        const dmText = [
+          `Ссылка на портал <b>#${escapeHtml(project.code)}</b>:`,
+          `<code>${escapeHtml(link)}</code>`,
+        ].join('\n');
+
+        await telegramSendMessage(env, message, dmText, {
+          disable_reply: true,
+          disable_web_page_preview: true,
+        });
+        await telegramAnswerCallback(env, callbackQuery, 'Ссылка отправлена в этот чат.');
+        return editMessageWithPortal(env, message, code, { timezone });
+      }
+    }
+
+    await telegramAnswerCallback(env, callbackQuery, 'Действие не реализовано.');
+    return { ok: false, error: 'unknown_portal_action' };
+  }
+
   if (data.startsWith('proj:archive:')) {
     const parts = data.split(':');
     const action = parts[2] ?? '';
@@ -7724,7 +7980,9 @@ async function handleCallbackQuery(env, callbackQuery) {
       ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
       : null;
 
-    const details = renderProjectDetails(project, chatRecord);
+    const portalRecord = await loadPortalRecord(env, project.code);
+    const timezone = env.DEFAULT_TZ || 'UTC';
+    const details = renderProjectDetails(project, chatRecord, portalRecord, { timezone });
     return telegramEditMessage(env, message.chat.id, message.message_id, details.text, {
       reply_markup: details.reply_markup,
     });
@@ -7737,8 +7995,302 @@ async function handleCallbackQuery(env, callbackQuery) {
   });
 }
 
-async function handlePortal(request) {
-  return html('<p>Портал ещё не реализован. Добавьте read-only отчёт согласно ТЗ.</p>', { status: 501 });
+function renderPortalErrorPage(message) {
+  const safeMessage = escapeHtml(message ?? 'Портал недоступен.');
+  return `<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>Портал недоступен — th-reports</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f3f4f6; color: #111827; margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
+      .card { background: #fff; padding: 32px 28px; border-radius: 16px; box-shadow: 0 10px 40px rgba(15, 23, 42, 0.12); max-width: 480px; }
+      h1 { font-size: 24px; margin: 0 0 12px; }
+      p { margin: 0; color: #4b5563; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Портал недоступен</h1>
+      <p>${safeMessage}</p>
+    </div>
+  </body>
+</html>`;
+}
+
+function renderPortalPage({
+  project,
+  chatRecord,
+  portalRecord,
+  period,
+  range,
+  timezone,
+  baseUrl,
+  currency = 'USD',
+  reportData = null,
+  accountMeta = null,
+  error = null,
+  generatedAt = new Date(),
+  totalInsights = 0,
+}) {
+  const projectTitle = chatRecord?.title ? chatRecord.title : `Проект #${project.code}`;
+  const accountName = accountMeta?.name ? accountMeta.name : project.act || '—';
+  const periodLabel = getPeriodLabel(period);
+  const rangeLabel = range ? `${range.since} — ${range.until}` : '';
+  const nextBilling = formatDateLabel(project.billing_next_at);
+  const billingStatus = project.billing ?? 'paid';
+  const generatedLabel = formatDateTimeLabel(generatedAt, timezone);
+  const portalUpdatedLabel = portalRecord?.updated_at
+    ? formatDateTimeLabel(portalRecord.updated_at, timezone)
+    : null;
+
+  const navLinks = PERIOD_OPTIONS.map((option) => {
+    const navUrl = new URL(baseUrl.toString());
+    navUrl.searchParams.set('period', option.value);
+    if (portalRecord?.sig) {
+      navUrl.searchParams.set('sig', portalRecord.sig);
+    }
+    const classes = ['pill'];
+    if (option.value === period) {
+      classes.push('active');
+    }
+    return `<a class="${classes.join(' ')}" href="${escapeHtml(navUrl.toString())}">${escapeHtml(option.label)}</a>`;
+  }).join('');
+
+  let tableHtml = '';
+  if (error) {
+    tableHtml = `<div class="alert">${escapeHtml(error)}</div>`;
+  } else {
+    const rows = [];
+    if (reportData?.rows?.length) {
+      for (const row of reportData.rows) {
+        const badge = row.metric?.label ? `<span class="badge">${escapeHtml(row.metric.label)}</span>` : '';
+        rows.push(
+          `<tr>
+            <td>${escapeHtml(row.name)}${badge}</td>
+            <td class="num">${escapeHtml(formatCurrency(row.spend, currency))}</td>
+            <td class="num">${escapeHtml(formatNumber(row.results))}</td>
+            <td class="num">${escapeHtml(formatCpa(row.cpa, currency))}</td>
+          </tr>`,
+        );
+      }
+    } else {
+      rows.push(
+        '<tr><td class="muted" colspan="4">Данных нет за выбранный период.</td></tr>',
+      );
+    }
+
+    const totalRow = `<tr class="total">
+      <td>Итого</td>
+      <td class="num">${escapeHtml(formatCurrency(reportData?.totalSpend ?? 0, currency))}</td>
+      <td class="num">${escapeHtml(formatNumber(reportData?.totalResults ?? 0))}</td>
+      <td class="num">${escapeHtml(formatCpa(reportData?.totalCpa ?? null, currency))}</td>
+    </tr>`;
+
+    tableHtml = `<table>
+      <thead>
+        <tr>
+          <th>Кампания</th>
+          <th class="num">Spend</th>
+          <th class="num">Результаты</th>
+          <th class="num">CPA</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.join('')}
+        ${totalRow}
+      </tbody>
+    </table>`;
+  }
+
+  const summaryItems = !error
+    ? [
+        { label: 'Spend', value: formatCurrency(reportData?.totalSpend ?? 0, currency) },
+        { label: 'Результаты', value: formatNumber(reportData?.totalResults ?? 0) },
+        { label: 'CPA ср.', value: formatCpa(reportData?.totalCpa ?? null, currency) },
+        { label: 'Кампаний', value: formatNumber(reportData?.rows?.length ?? 0) },
+      ]
+    : [];
+
+  const summaryHtml = summaryItems.length
+    ? `<div class="summary">${summaryItems
+        .map(
+          (item) =>
+            `<div class="summary-item"><div class="label">${escapeHtml(item.label)}</div><div class="value">${escapeHtml(item.value)}</div></div>`,
+        )
+        .join('')}</div>`
+    : '';
+
+  const infoParts = [
+    `Следующая оплата: <strong>${escapeHtml(nextBilling)}</strong>`,
+    `Статус биллинга: ${escapeHtml(billingStatus)}`,
+    `Обновлено: ${escapeHtml(generatedLabel)} (${escapeHtml(timezone)})`,
+  ];
+  if (portalUpdatedLabel) {
+    infoParts.push(`Ссылка активна с ${escapeHtml(portalUpdatedLabel)}`);
+  }
+  infoParts.push(`Источник: Meta Ads API · Кампаний в отчёте: ${escapeHtml(formatNumber(reportData?.rows?.length ?? 0))}/${escapeHtml(formatNumber(totalInsights))}`);
+
+  return `<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(projectTitle)} — портал th-reports</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; background: #f6f7fb; color: #111827; }
+      .container { max-width: 960px; margin: 0 auto; padding: 32px 16px 48px; }
+      header { margin-bottom: 12px; }
+      h1 { font-size: 26px; margin: 0 0 8px; }
+      .meta { margin: 0; color: #6b7280; font-size: 14px; }
+      .nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 16px; }
+      .pill { display: inline-block; padding: 8px 14px; border-radius: 999px; background: #fff; border: 1px solid #d4d7dd; text-decoration: none; color: #1f2937; transition: all .15s ease; }
+      .pill:hover { border-color: #6366f1; color: #312e81; }
+      .pill.active { background: #111827; color: #fff; border-color: #111827; }
+      .panel { background: #fff; border-radius: 18px; padding: 20px 22px; box-shadow: 0 12px 36px rgba(15, 23, 42, 0.12); }
+      table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+      th, td { padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: left; }
+      th { color: #6b7280; font-weight: 600; }
+      td.num { text-align: right; font-variant-numeric: tabular-nums; }
+      tr.total td { font-weight: 600; background: #f9fafb; }
+      .badge { display: inline-block; margin-left: 6px; padding: 4px 10px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 600; }
+      .summary { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 20px; }
+      .summary-item { flex: 1 1 160px; background: #f9fafb; border-radius: 14px; padding: 14px 16px; }
+      .summary-item .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7280; }
+      .summary-item .value { font-size: 20px; font-weight: 600; margin-top: 6px; }
+      .notice { margin-top: 18px; font-size: 13px; color: #6b7280; }
+      .alert { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; padding: 14px 16px; border-radius: 14px; }
+      .muted { text-align: center; color: #6b7280; font-style: italic; }
+      @media (max-width: 720px) {
+        .summary-item { flex: 1 1 140px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>${escapeHtml(projectTitle)}</h1>
+        <p class="meta">Аккаунт: <strong>${escapeHtml(accountName)}</strong> · Период: ${escapeHtml(periodLabel)} (${escapeHtml(rangeLabel)})</p>
+      </header>
+      <div class="nav">${navLinks}</div>
+      <div class="panel">
+        ${tableHtml}
+        ${summaryHtml}
+      </div>
+      <p class="notice">${infoParts.join(' · ')}</p>
+    </div>
+  </body>
+</html>`;
+}
+
+async function handlePortal(request, env) {
+  if (!env.DB) {
+    return html(renderPortalErrorPage('Хранилище данных временно недоступно.'), { status: 500 });
+  }
+
+  const url = new URL(request.url);
+  const segments = url.pathname.split('/').filter(Boolean);
+  if (segments.length < 2 || segments[0] !== 'p') {
+    return notFound();
+  }
+
+  const code = sanitizeProjectCode(segments[1] ?? '');
+  if (!isValidProjectCode(code)) {
+    return notFound();
+  }
+
+  const signature = url.searchParams.get('sig') ?? '';
+  const portalRecord = await loadPortalRecord(env, code);
+  if (!portalRecord?.sig || signature !== portalRecord.sig) {
+    return html(renderPortalErrorPage('Проверьте ссылку или запросите новую у менеджера.'), { status: 403 });
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    return html(renderPortalErrorPage('Проект не найден или был удалён.'), { status: 404 });
+  }
+
+  const chatRecord = project.chat_id
+    ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
+    : null;
+  const timezone = env.DEFAULT_TZ || 'UTC';
+  const allowedPeriods = new Set(PERIOD_OPTIONS.map((option) => option.value));
+  let period = url.searchParams.get('period') ?? project.period ?? 'yesterday';
+  if (!allowedPeriods.has(period)) {
+    period = allowedPeriods.has(project.period ?? '') ? project.period : 'yesterday';
+  }
+
+  let range = getPeriodRange(period, timezone);
+  if (!range) {
+    period = 'yesterday';
+    range = getPeriodRange(period, timezone) ?? { since: '', until: '', label: 'период' };
+  }
+
+  const { token } = await resolveMetaToken(env);
+  if (!token) {
+    const markup = renderPortalPage({
+      project,
+      chatRecord,
+      portalRecord,
+      period,
+      range,
+      timezone,
+      baseUrl: url,
+      currency: 'USD',
+      error: 'Meta токен не найден. Подключите Meta в админ-панели.',
+      generatedAt: new Date(),
+      totalInsights: 0,
+    });
+    return html(markup, { status: 503 });
+  }
+
+  const accountMeta = await loadAccountMeta(env, project.act?.replace(/^act_/i, '') ?? project.act);
+  const currency = getCurrencyFromMeta(accountMeta);
+  const generatedAt = new Date();
+
+  try {
+    const payload = await buildProjectReport(env, project, {
+      period,
+      range,
+      token,
+      currency,
+      filters: {},
+    });
+
+    const markup = renderPortalPage({
+      project,
+      chatRecord,
+      portalRecord,
+      period,
+      range,
+      timezone,
+      baseUrl: url,
+      currency,
+      reportData: payload.reportData,
+      accountMeta,
+      generatedAt,
+      totalInsights: payload.insights?.length ?? 0,
+    });
+    return html(markup);
+  } catch (error) {
+    console.error('handlePortal build report error', error);
+    const markup = renderPortalPage({
+      project,
+      chatRecord,
+      portalRecord,
+      period,
+      range,
+      timezone,
+      baseUrl: url,
+      currency,
+      accountMeta,
+      error: error?.message ?? 'Не удалось получить данные Meta. Попробуйте позже.',
+      generatedAt,
+      totalInsights: 0,
+    });
+    return html(markup, { status: 502 });
+  }
 }
 
 async function handleRoot() {
@@ -7779,7 +8331,7 @@ export default {
     }
 
     if (pathname.startsWith('/p/')) {
-      return handlePortal(request);
+      return handlePortal(request, env);
     }
 
     return notFound();
