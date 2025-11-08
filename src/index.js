@@ -2187,6 +2187,47 @@ async function handleUserStateMessage(env, message, textContent) {
     return { handled: true, step: 'report_min_spend_updated' };
   }
 
+  if (state.mode === 'digest_options') {
+    const code = sanitizeProjectCode(state.code);
+    if (!isValidProjectCode(code)) {
+      await clearUserState(env, uid);
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Откройте карточку и выберите «📬 Дайджест» заново.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'digest_state_invalid' };
+    }
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      await clearUserState(env, uid);
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Откройте карточку и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'project_not_found' };
+    }
+
+    await telegramSendMessage(env, message, 'Используйте кнопки меню дайджеста для настроек и отправки.', {
+      disable_reply: true,
+    });
+
+    if (state.message_chat_id && state.message_id) {
+      await editMessageWithDigestOptions(
+        env,
+        { chat: { id: state.message_chat_id }, message_id: state.message_id },
+        code,
+        { timezone: env.DEFAULT_TZ || 'UTC' },
+      );
+    }
+
+    return { handled: true, info: 'digest_prompt_repeat' };
+  }
+
   return { handled: false, reason: 'unknown_mode' };
 }
 
@@ -3488,12 +3529,24 @@ async function sendProjectReport(
   };
 }
 
-async function sendProjectDigest(env, project, { period, range, token, currency }) {
+async function buildProjectDigest(env, project, { period, range, token, currency }) {
   const insights = await fetchCampaignInsights(env, project, token, range);
   const reportData = buildReportRows(insights, currency);
   const message = buildDigestMessage(project, range, reportData, currency);
-  await telegramSendToProject(env, project, message, {});
-  return { insightsCount: insights.length };
+  return {
+    period,
+    range,
+    currency,
+    insights,
+    reportData,
+    message,
+  };
+}
+
+async function sendProjectDigest(env, project, { period, range, token, currency }) {
+  const payload = await buildProjectDigest(env, project, { period, range, token, currency });
+  await telegramSendToProject(env, project, payload.message, {});
+  return { insightsCount: payload.insights.length, payload };
 }
 
 async function telegramNotifyAdmins(env, textContent, extra = {}) {
@@ -4933,6 +4986,7 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
   inline_keyboard.push([
     { text: '💵 Оплата', callback_data: `proj:billing:open:${project.code}` },
     { text: '📤 Отчёт', callback_data: `proj:report:open:${project.code}` },
+    { text: '📬 Дайджест', callback_data: `proj:digest:open:${project.code}` },
   ]);
   inline_keyboard.push([
     { text: '🗂 Архив', callback_data: `proj:archive:open:${project.code}` },
@@ -5227,6 +5281,100 @@ async function editMessageWithReportOptions(env, message, code, options = {}) {
   });
 
   return { ok: true, project };
+}
+
+function normalizeDigestOptions(project, options = {}) {
+  const defaults = {
+    period: project.period ?? 'yesterday',
+  };
+
+  const allowed = new Set(PERIOD_OPTIONS.map((option) => option.value));
+  const periodCandidate = typeof options.period === 'string' ? options.period : defaults.period;
+  const period = allowed.has(periodCandidate) ? periodCandidate : defaults.period;
+
+  return { period };
+}
+
+function createDigestState(project, overrides = {}) {
+  const normalized = normalizeDigestOptions(project, overrides);
+  const state = {
+    mode: 'digest_options',
+    code: project.code,
+    step: overrides.step ?? 'menu',
+    period: normalized.period,
+  };
+
+  if (typeof overrides.message_chat_id !== 'undefined') {
+    state.message_chat_id = overrides.message_chat_id;
+  }
+
+  if (typeof overrides.message_id !== 'undefined') {
+    state.message_id = overrides.message_id;
+  }
+
+  return state;
+}
+
+function renderDigestOptions(project, options = {}, context = {}) {
+  const timezone = context.timezone || 'UTC';
+  const normalized = normalizeDigestOptions(project, options);
+  const range = getPeriodRange(normalized.period, timezone);
+  const periodLabel = getPeriodLabel(normalized.period);
+
+  const lines = [
+    `<b>Дайджест #${escapeHtml(project.code)}</b>`,
+    `Период: ${escapeHtml(periodLabel)}${range ? ` (${range.since}–${range.until})` : ''}`,
+    '',
+    'Выберите период и решите, куда отправить дайджест.',
+  ];
+
+  const periodButtons = PERIOD_OPTIONS.map((option) => ({
+    text: option.value === normalized.period ? `✅ ${option.label}` : option.label,
+    callback_data: `proj:digest:period:${project.code}:${option.value}`,
+  }));
+
+  const inline_keyboard = [];
+  for (const chunk of chunkArray(periodButtons, 3)) {
+    inline_keyboard.push(chunk);
+  }
+
+  inline_keyboard.push([
+    { text: '👁 Просмотр в панели', callback_data: `proj:digest:preview:${project.code}` },
+    { text: '📬 В чат', callback_data: `proj:digest:send:${project.code}` },
+  ]);
+
+  inline_keyboard.push([{ text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` }]);
+  inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithDigestOptions(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Возможно, он был удалён.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  const view = renderDigestOptions(project, options, { timezone: env.DEFAULT_TZ || 'UTC' });
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  return { ok: true };
 }
 
 async function clearPendingReportState(env, uid, code) {
@@ -8212,6 +8360,121 @@ async function handleCallbackQuery(env, callbackQuery) {
 
     await telegramAnswerCallback(env, callbackQuery, 'Действие не реализовано.');
     return { ok: false, error: 'unknown_report_action' };
+  }
+
+  if (data.startsWith('proj:digest:')) {
+    const parts = data.split(':');
+    const action = parts[2] ?? '';
+    const rawCode = parts[3] ?? '';
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const timezone = env.DEFAULT_TZ || 'UTC';
+    const project = await loadProject(env, code);
+    if (!project) {
+      await telegramSendMessage(env, message, `Проект <b>#${escapeHtml(code)}</b> не найден. Обновите список проектов.`, {
+        disable_reply: true,
+      });
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    const ensureState = async (patch = {}) => {
+      const current = await loadUserState(env, uid);
+      const merged = createDigestState(project, {
+        ...(current?.mode === 'digest_options' && current.code === code ? current : {}),
+        ...patch,
+        message_chat_id: message.chat.id,
+        message_id: message.message_id,
+      });
+      await saveUserState(env, uid, merged);
+      return merged;
+    };
+
+    if (action === 'open') {
+      await ensureState({ step: 'menu' });
+      return editMessageWithDigestOptions(env, message, code, { timezone });
+    }
+
+    if (action === 'period') {
+      const periodValue = parts[4] ?? '';
+      const allowed = new Set(PERIOD_OPTIONS.map((option) => option.value));
+      if (!allowed.has(periodValue)) {
+        await telegramAnswerCallback(env, callbackQuery, 'Период не поддерживается.');
+        return { ok: false, error: 'invalid_period' };
+      }
+
+      await ensureState({ period: periodValue, step: 'menu' });
+      await telegramAnswerCallback(env, callbackQuery, 'Период обновлён.');
+      return editMessageWithDigestOptions(env, message, code, { timezone });
+    }
+
+    const state = await ensureState({ step: 'menu' });
+    const period = state.period ?? project.period ?? 'yesterday';
+    const range = getPeriodRange(period, timezone);
+    if (!range) {
+      await telegramSendMessage(env, message, 'Не удалось вычислить период для дайджеста.', { disable_reply: true });
+      return { ok: false, error: 'range_failed' };
+    }
+
+    const { token } = await resolveMetaToken(env);
+    if (!token) {
+      await telegramSendMessage(env, message, 'Meta не подключена. Перейдите в /admin и подключите профиль.', {
+        disable_reply: true,
+      });
+      return { ok: false, error: 'meta_missing' };
+    }
+
+    const accountMeta = await loadAccountMeta(env, project.act?.replace(/^act_/i, '') ?? project.act);
+    const currency = getCurrencyFromMeta(accountMeta);
+
+    if (action === 'preview') {
+      await telegramAnswerCallback(env, callbackQuery, 'Готовим дайджест...');
+
+      try {
+        const payload = await buildProjectDigest(env, project, { period, range, token, currency });
+        const summaryLines = [
+          `<b>Предпросмотр дайджеста #${escapeHtml(project.code)}</b>`,
+          `Период: ${escapeHtml(getPeriodLabel(period))}${range ? ` (${range.since}–${range.until})` : ''}`,
+          '',
+          payload.message,
+        ];
+
+        await telegramSendMessage(env, message, summaryLines.join('\n'), {
+          disable_reply: true,
+        });
+      } catch (error) {
+        console.error('proj:digest:preview error', error);
+        await telegramSendMessage(env, message, `Не удалось подготовить дайджест: ${escapeHtml(error?.message ?? 'ошибка')}`, {
+          disable_reply: true,
+        });
+      }
+
+      return editMessageWithDigestOptions(env, message, code, { timezone });
+    }
+
+    if (action === 'send') {
+      await telegramAnswerCallback(env, callbackQuery, 'Готовим дайджест...');
+
+      try {
+        await sendProjectDigest(env, project, { period, range, token, currency });
+        await telegramSendMessage(env, message, `Дайджест по <b>#${escapeHtml(project.code)}</b> отправлен в чат.`, {
+          disable_reply: true,
+        });
+      } catch (error) {
+        console.error('proj:digest:send error', error);
+        await telegramSendMessage(env, message, `Не удалось подготовить дайджест: ${escapeHtml(error?.message ?? 'ошибка')}`, {
+          disable_reply: true,
+        });
+      }
+
+      return editMessageWithDigestOptions(env, message, code, { timezone });
+    }
+
+    await telegramAnswerCallback(env, callbackQuery, 'Действие не реализовано.');
+    return { ok: false, error: 'unknown_digest_action' };
   }
 
   if (data.startsWith('proj:campaigns:')) {
