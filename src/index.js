@@ -1856,6 +1856,83 @@ async function handleUserStateMessage(env, message, textContent) {
     return { handled: true, step: 'kpi_updated' };
   }
 
+  if (state.mode === 'report_options') {
+    const code = sanitizeProjectCode(state.code);
+    if (!isValidProjectCode(code)) {
+      await clearUserState(env, uid);
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Откройте карточку и выберите «📤 Отчёт» заново.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'report_state_invalid' };
+    }
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      await clearUserState(env, uid);
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Откройте карточку и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'project_not_found' };
+    }
+
+    if (state.step !== 'await_min_spend') {
+      await telegramSendMessage(env, message, 'Используйте кнопки меню отчёта для настройки.', {
+        disable_reply: true,
+      });
+      return { handled: true, info: 'report_idle' };
+    }
+
+    const rawValue = textContent.trim();
+    const lower = rawValue.toLowerCase();
+    let minSpend = null;
+    let cleared = false;
+
+    if (!rawValue || ['нет', 'none', 'off', 'clear', '-'].includes(lower)) {
+      minSpend = null;
+      cleared = true;
+    } else {
+      minSpend = sanitizeMinSpend(rawValue);
+      if (minSpend === null) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Введите число (например, 25 или 12.5) либо «нет» для сброса фильтра.',
+          { disable_reply: true },
+        );
+        return { handled: true, error: 'report_invalid_min_spend' };
+      }
+    }
+
+    const nextState = createReportState(project, {
+      ...state,
+      minSpend,
+      step: 'menu',
+    });
+    await saveUserState(env, uid, nextState);
+
+    const responseText = cleared
+      ? 'Фильтр по минимальному расходу очищен.'
+      : `Мин. расход установлен на ≥ ${formatNumber(minSpend)}.`;
+    await telegramSendMessage(env, message, responseText, { disable_reply: true });
+
+    if (state.message_chat_id && state.message_id) {
+      await editMessageWithReportOptions(
+        env,
+        { chat: { id: state.message_chat_id }, message_id: state.message_id },
+        code,
+        { preserveAwait: true, uid, timezone: env.DEFAULT_TZ || 'UTC' },
+      );
+    }
+
+    return { handled: true, step: 'report_min_spend_updated' };
+  }
+
   return { handled: false, reason: 'unknown_mode' };
 }
 
@@ -2577,6 +2654,26 @@ function formatNumber(value) {
   return formatter.format(Number.isFinite(value) ? value : 0);
 }
 
+function sanitizeMinSpend(value) {
+  if (value === null || typeof value === 'undefined') {
+    return null;
+  }
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) {
+      return null;
+    }
+    return Math.round(value * 100) / 100;
+  }
+
+  const normalized = Number(String(value).replace(',', '.'));
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    return null;
+  }
+
+  return Math.round(normalized * 100) / 100;
+}
+
 function formatCurrency(amount, currency = 'USD') {
   const safe = Number(amount) || 0;
   const symbol = CURRENCY_SYMBOLS[currency] ?? `${currency} `;
@@ -2588,6 +2685,12 @@ function formatCpa(amount, currency = 'USD') {
     return '—';
   }
   return formatCurrency(amount, currency);
+}
+
+function normalizeReportFilters(filters = {}) {
+  const minSpend = sanitizeMinSpend(filters?.minSpend ?? filters?.min_spend);
+  const onlyPositive = Boolean(filters?.onlyPositive ?? filters?.only_positive);
+  return { minSpend, onlyPositive };
 }
 
 function getCurrencyFromMeta(meta) {
@@ -2711,6 +2814,32 @@ async function fetchCampaignInsights(env, project, token, range) {
   return items;
 }
 
+function applyReportFilters(insights = [], filters = {}) {
+  const normalized = normalizeReportFilters(filters);
+  const result = [];
+
+  for (const item of Array.isArray(insights) ? insights : []) {
+    if (!item || typeof item !== 'object') continue;
+
+    const spend = Number(item.spend) || 0;
+    if (normalized.minSpend !== null && Number.isFinite(normalized.minSpend) && spend < normalized.minSpend) {
+      continue;
+    }
+
+    if (normalized.onlyPositive) {
+      const metric = pickMetricForObjective(item.objective);
+      const results = extractActionCount(item.actions ?? [], metric.actions);
+      if (results <= 0) {
+        continue;
+      }
+    }
+
+    result.push(item);
+  }
+
+  return result;
+}
+
 function buildReportRows(insights = [], currency = 'USD') {
   const rows = [];
   const metricShortNames = new Set();
@@ -2825,11 +2954,9 @@ async function telegramSendToProject(env, project, textContent, extra = {}) {
 }
 
 async function sendProjectReport(env, project, { period, range, token, currency }) {
-  const insights = await fetchCampaignInsights(env, project, token, range);
-  const reportData = buildReportRows(insights, currency);
-  const message = buildReportMessage(project, range, reportData, currency);
-  await telegramSendToProject(env, project, message, {});
-  return { insightsCount: insights.length };
+  const payload = await buildProjectReport(env, project, { period, range, token, currency });
+  await telegramSendToProject(env, project, payload.message, {});
+  return { insightsCount: payload.filteredInsights.length };
 }
 
 async function sendProjectDigest(env, project, { period, range, token, currency }) {
@@ -2838,6 +2965,21 @@ async function sendProjectDigest(env, project, { period, range, token, currency 
   const message = buildDigestMessage(project, range, reportData, currency);
   await telegramSendToProject(env, project, message, {});
   return { insightsCount: insights.length };
+}
+
+async function buildProjectReport(env, project, { period, range, token, currency, filters }) {
+  const insights = await fetchCampaignInsights(env, project, token, range);
+  const appliedFilters = normalizeReportFilters(filters ?? {});
+  const filteredInsights = applyReportFilters(insights, appliedFilters);
+  const reportData = buildReportRows(filteredInsights, currency);
+  const message = buildReportMessage(project, range, reportData, currency);
+  return {
+    message,
+    reportData,
+    insights,
+    filteredInsights,
+    filters: appliedFilters,
+  };
 }
 
 function renderProjectDetails(project, chatRecord) {
@@ -2920,7 +3062,7 @@ function renderProjectDetails(project, chatRecord) {
   ]);
   inline_keyboard.push([
     { text: '💵 Оплата', callback_data: `proj:billing:open:${project.code}` },
-    { text: '📤 Отчёт', callback_data: `proj:report:send:${project.code}` },
+    { text: '📤 Отчёт', callback_data: `proj:report:open:${project.code}` },
   ]);
   inline_keyboard.push([
     { text: '📦 Кампании', callback_data: `proj:detail:todo:campaigns:${project.code}` },
@@ -2932,6 +3074,195 @@ function renderProjectDetails(project, chatRecord) {
     text: lines.join('\n'),
     reply_markup: { inline_keyboard },
   };
+}
+
+function getPeriodLabel(period) {
+  const option = PERIOD_OPTIONS.find((item) => item.value === period);
+  return option ? option.label : period;
+}
+
+function describeReportFilters(filters = {}) {
+  const parts = [];
+  parts.push(
+    `мин. расход ${filters.minSpend !== null && Number.isFinite(filters.minSpend)
+      ? `≥ ${formatNumber(filters.minSpend)}`
+      : 'не задан'}`,
+  );
+  parts.push(filters.onlyPositive ? 'только с результатом' : 'включая 0 результатов');
+  return parts.join(', ');
+}
+
+function createReportState(project, overrides = {}) {
+  const normalized = normalizeReportOptions(project, overrides);
+  const state = {
+    mode: 'report_options',
+    code: project.code,
+    step: overrides.step ?? 'menu',
+    period: normalized.period,
+    minSpend: normalized.minSpend,
+    onlyPositive: normalized.onlyPositive,
+  };
+
+  if (typeof overrides.message_chat_id !== 'undefined') {
+    state.message_chat_id = overrides.message_chat_id;
+  }
+
+  if (typeof overrides.message_id !== 'undefined') {
+    state.message_id = overrides.message_id;
+  }
+
+  return state;
+}
+
+function normalizeReportOptions(project, options = {}) {
+  const defaults = {
+    period: project.period ?? 'yesterday',
+    minSpend: null,
+    onlyPositive: false,
+  };
+
+  const allowed = new Set(PERIOD_OPTIONS.map((option) => option.value));
+  const periodCandidate = typeof options.period === 'string' ? options.period : defaults.period;
+  const period = allowed.has(periodCandidate) ? periodCandidate : defaults.period;
+
+  const filters = normalizeReportFilters({
+    minSpend: options.minSpend ?? options.min_spend ?? defaults.minSpend,
+    onlyPositive: options.onlyPositive ?? options.only_positive ?? defaults.onlyPositive,
+  });
+
+  return {
+    period,
+    minSpend: filters.minSpend,
+    onlyPositive: filters.onlyPositive,
+  };
+}
+
+function renderReportOptions(project, options = {}, context = {}) {
+  const timezone = context.timezone || 'UTC';
+  const normalized = normalizeReportOptions(project, options);
+  const range = getPeriodRange(normalized.period, timezone);
+  const periodLabel = getPeriodLabel(normalized.period);
+  const awaitingMinSpend = context.awaitingMinSpend === true;
+
+  const lines = [
+    `<b>Отчёт #${escapeHtml(project.code)}</b>`,
+    `Период: ${escapeHtml(periodLabel)}${range ? ` (${range.since}–${range.until})` : ''}`,
+    '',
+    'Фильтры:',
+    `• Мин. расход: ${normalized.minSpend !== null ? `≥ ${formatNumber(normalized.minSpend)}` : 'не задан'}`,
+    `• Только с результатами: ${normalized.onlyPositive ? 'да' : 'нет'}`,
+  ];
+
+  if (awaitingMinSpend) {
+    lines.push('');
+    lines.push('Отправьте минимальный расход числом, например <code>25</code> или <code>12.5</code>.');
+  } else {
+    lines.push('');
+    lines.push('Выберите период, настройте фильтры и решите, куда отправить отчёт.');
+  }
+
+  const inline_keyboard = [];
+  const periodButtons = PERIOD_OPTIONS.map((option) => ({
+    text: option.value === normalized.period ? `✅ ${option.label}` : option.label,
+    callback_data: `proj:report:period:${project.code}:${option.value}`,
+  }));
+
+  for (const chunk of chunkArray(periodButtons, 3)) {
+    inline_keyboard.push(chunk);
+  }
+
+  inline_keyboard.push([
+    { text: '✏️ Мин. расход', callback_data: `proj:report:min:${project.code}:set` },
+    {
+      text:
+        normalized.minSpend !== null && Number.isFinite(normalized.minSpend)
+          ? `Очистить (${formatNumber(normalized.minSpend)})`
+          : 'Сбросить фильтр',
+      callback_data: `proj:report:min:${project.code}:clear`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: normalized.onlyPositive ? '✅ Только с результатом' : 'Включая 0 результатов',
+      callback_data: `proj:report:positive:${project.code}`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    { text: '👁 Просмотр в панели', callback_data: `proj:report:preview:${project.code}` },
+    { text: '📤 В чат', callback_data: `proj:report:send:${project.code}` },
+  ]);
+
+  inline_keyboard.push([{ text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` }]);
+  inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  if (awaitingMinSpend) {
+    inline_keyboard.unshift([
+      { text: '❌ Отменить ввод', callback_data: `proj:report:min:${project.code}:cancel` },
+    ]);
+  }
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithReportOptions(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Вернитесь в список проектов.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  let awaitingMinSpend = options.awaitingMinSpend === true;
+  let currentOptions = options.values ?? {};
+
+  if (options.preserveAwait && options.uid) {
+    const state = await loadUserState(env, options.uid);
+    if (
+      state?.mode === 'report_options' &&
+      state.code === code &&
+      state.message_id === messageId &&
+      state.message_chat_id === chatId
+    ) {
+      currentOptions = {
+        period: state.period,
+        minSpend: state.minSpend,
+        onlyPositive: state.onlyPositive,
+      };
+      if (!awaitingMinSpend && state.step === 'await_min_spend') {
+        awaitingMinSpend = true;
+      }
+    }
+  }
+
+  const timezone = options.timezone || env.DEFAULT_TZ || 'UTC';
+  const view = renderReportOptions(project, currentOptions, { timezone, awaitingMinSpend });
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  return { ok: true, project };
+}
+
+async function clearPendingReportState(env, uid, code) {
+  if (!uid) return;
+  const state = await loadUserState(env, uid);
+  if (state?.mode === 'report_options' && (!code || state.code === code)) {
+    await clearUserState(env, uid);
+  }
 }
 
 function renderScheduleEditor(project, options = {}) {
@@ -5479,16 +5810,17 @@ async function handleCallbackQuery(env, callbackQuery) {
     return editMessageWithKpi(env, message, code, { preserveAwait: false });
   }
 
-  if (data.startsWith('proj:report:send:')) {
-    const [, , , rawCode = ''] = data.split(':');
+  if (data.startsWith('proj:report:')) {
+    const parts = data.split(':');
+    const action = parts[2] ?? '';
+    const rawCode = parts[3] ?? '';
     const code = sanitizeProjectCode(rawCode);
     if (!isValidProjectCode(code)) {
       await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
       return { ok: false, error: 'invalid_project_code' };
     }
 
-    await telegramAnswerCallback(env, callbackQuery, 'Готовим отчёт...');
-
+    const timezone = env.DEFAULT_TZ || 'UTC';
     const project = await loadProject(env, code);
     if (!project) {
       await telegramSendMessage(env, message, `Проект <b>#${escapeHtml(code)}</b> не найден. Обновите список проектов.`, {
@@ -5497,8 +5829,78 @@ async function handleCallbackQuery(env, callbackQuery) {
       return { ok: false, error: 'project_not_found' };
     }
 
-    const period = project.period ?? 'yesterday';
-    const timezone = env.DEFAULT_TZ || 'UTC';
+    const ensureState = async (patch = {}) => {
+      const current = await loadUserState(env, uid);
+      const merged = createReportState(project, {
+        ...(current?.mode === 'report_options' && current.code === code ? current : {}),
+        ...patch,
+        message_chat_id: message.chat.id,
+        message_id: message.message_id,
+      });
+      await saveUserState(env, uid, merged);
+      return merged;
+    };
+
+    if (action === 'open') {
+      await ensureState({ step: 'menu' });
+      return editMessageWithReportOptions(env, message, code, { preserveAwait: true, uid, timezone });
+    }
+
+    if (action === 'period') {
+      const periodValue = parts[4] ?? '';
+      const allowed = new Set(PERIOD_OPTIONS.map((option) => option.value));
+      if (!allowed.has(periodValue)) {
+        await telegramAnswerCallback(env, callbackQuery, 'Период не поддерживается.');
+        return { ok: false, error: 'invalid_period' };
+      }
+
+      await ensureState({ period: periodValue, step: 'menu' });
+      await telegramAnswerCallback(env, callbackQuery, 'Период обновлён.');
+      return editMessageWithReportOptions(env, message, code, { preserveAwait: true, uid, timezone });
+    }
+
+    if (action === 'min') {
+      const operation = parts[4] ?? '';
+      if (operation === 'set') {
+        await ensureState({ step: 'await_min_spend' });
+        await telegramAnswerCallback(env, callbackQuery, 'Введите значение сообщением.');
+        return editMessageWithReportOptions(env, message, code, {
+          awaitingMinSpend: true,
+          preserveAwait: true,
+          uid,
+          timezone,
+        });
+      }
+
+      if (operation === 'clear') {
+        await ensureState({ minSpend: null, step: 'menu' });
+        await telegramAnswerCallback(env, callbackQuery, 'Фильтр по расходу очищен.');
+        return editMessageWithReportOptions(env, message, code, {
+          preserveAwait: true,
+          uid,
+          timezone,
+        });
+      }
+
+      if (operation === 'cancel') {
+        await ensureState({ step: 'menu' });
+        await telegramAnswerCallback(env, callbackQuery, 'Ввод отменён.');
+        return editMessageWithReportOptions(env, message, code, { preserveAwait: true, uid, timezone });
+      }
+
+      await telegramAnswerCallback(env, callbackQuery, 'Действие не поддерживается.');
+      return { ok: false, error: 'unknown_report_min_action' };
+    }
+
+    if (action === 'positive') {
+      const current = await ensureState({});
+      await ensureState({ onlyPositive: !current.onlyPositive, step: 'menu' });
+      await telegramAnswerCallback(env, callbackQuery, 'Фильтр обновлён.');
+      return editMessageWithReportOptions(env, message, code, { preserveAwait: true, uid, timezone });
+    }
+
+    const state = await ensureState({ step: 'menu' });
+    const period = state.period ?? project.period ?? 'yesterday';
     const range = getPeriodRange(period, timezone);
     if (!range) {
       await telegramSendMessage(env, message, 'Не удалось вычислить период для отчёта.', { disable_reply: true });
@@ -5515,20 +5917,61 @@ async function handleCallbackQuery(env, callbackQuery) {
 
     const accountMeta = await loadAccountMeta(env, project.act?.replace(/^act_/i, '') ?? project.act);
     const currency = getCurrencyFromMeta(accountMeta);
+    const filters = { minSpend: state.minSpend, onlyPositive: state.onlyPositive };
 
-    try {
-      await sendProjectReport(env, project, { period, range, token, currency });
-      await telegramSendMessage(env, message, `Отчёт по <b>#${escapeHtml(project.code)}</b> отправлен в привязанный чат.`, {
-        disable_reply: true,
-      });
-    } catch (error) {
-      console.error('proj:report:send error', error);
-      await telegramSendMessage(env, message, `Не удалось подготовить отчёт: ${escapeHtml(error?.message ?? 'ошибка')}`, {
-        disable_reply: true,
-      });
+    if (action === 'preview') {
+      await telegramAnswerCallback(env, callbackQuery, 'Готовим отчёт...');
+
+      try {
+        const payload = await buildProjectReport(env, project, { period, range, token, currency, filters });
+        const summaryLines = [
+          `<b>Предпросмотр отчёта #${escapeHtml(project.code)}</b>`,
+          `Период: ${escapeHtml(getPeriodLabel(period))}${range ? ` (${range.since}–${range.until})` : ''}`,
+          `Фильтры: ${escapeHtml(describeReportFilters(payload.filters))}`,
+          `Кампаний: ${payload.filteredInsights.length}/${payload.insights.length}`,
+          '',
+          payload.message,
+        ];
+
+        await telegramSendMessage(env, message, summaryLines.join('\n'), {
+          disable_reply: true,
+        });
+      } catch (error) {
+        console.error('proj:report:preview error', error);
+        await telegramSendMessage(env, message, `Не удалось подготовить отчёт: ${escapeHtml(error?.message ?? 'ошибка')}`, {
+          disable_reply: true,
+        });
+      }
+
+      return editMessageWithReportOptions(env, message, code, { preserveAwait: true, uid, timezone });
     }
 
-    return editMessageWithProject(env, message, project.code);
+    if (action === 'send') {
+      await telegramAnswerCallback(env, callbackQuery, 'Готовим отчёт...');
+
+      try {
+        const payload = await buildProjectReport(env, project, { period, range, token, currency, filters });
+        await telegramSendToProject(env, project, payload.message, {});
+        await telegramSendMessage(
+          env,
+          message,
+          `Отчёт по <b>#${escapeHtml(project.code)}</b> отправлен в чат. Фильтры: ${escapeHtml(
+            describeReportFilters(payload.filters),
+          )}.`,
+          { disable_reply: true },
+        );
+      } catch (error) {
+        console.error('proj:report:send error', error);
+        await telegramSendMessage(env, message, `Не удалось подготовить отчёт: ${escapeHtml(error?.message ?? 'ошибка')}`, {
+          disable_reply: true,
+        });
+      }
+
+      return editMessageWithReportOptions(env, message, code, { preserveAwait: true, uid, timezone });
+    }
+
+    await telegramAnswerCallback(env, callbackQuery, 'Действие не реализовано.');
+    return { ok: false, error: 'unknown_report_action' };
   }
 
   if (data.startsWith('proj:detail:todo:')) {
@@ -5582,6 +6025,7 @@ async function handleCallbackQuery(env, callbackQuery) {
       return { ok: false, error: 'project_not_found' };
     }
 
+    await clearPendingReportState(env, uid, code);
     const chatRecord = project.chat_id
       ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
       : null;
