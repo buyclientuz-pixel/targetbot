@@ -73,7 +73,6 @@ const REPORT_INSIGHTS_FIELDS = [
   'impressions',
   'reach',
   'inline_link_clicks',
-  'landing_page_views',
   'clicks',
   'ctr',
   'frequency',
