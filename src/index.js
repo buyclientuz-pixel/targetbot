@@ -43,6 +43,17 @@ const ALERT_ZERO_PRESET_TIMES = ['11:00', '12:00', '13:00'];
 const META_TIMEOUT_MS = 9000;
 const META_API_VERSION = 'v19.0';
 const REPORT_MAX_PAGES = 25;
+const ALERT_FLAG_PREFIX = 'flag:alert:';
+const ALERT_DEFAULT_TTL_SECONDS = 60 * 60 * 6;
+const ALERT_ZERO_TTL_SECONDS = 60 * 60 * 20;
+const ALERT_ANOMALY_TTL_SECONDS = 60 * 60 * 6;
+const ANOMALY_CHECK_TIMES = ['11:00', '17:00'];
+const CREATIVE_FATIGUE_MIN_SPEND = 30;
+const CREATIVE_FATIGUE_MIN_RESULTS = 1;
+const CREATIVE_FATIGUE_CTR_THRESHOLD = 0.5; // %
+const AUTOPAUSE_STREAK_PREFIX = 'autopause:streak:';
+const AUTOPAUSE_CHECK_TIME = '19:30';
+const AUTOPAUSE_ALERT_TTL_SECONDS = 60 * 60 * 20;
 const REPORT_INSIGHTS_FIELDS = [
   'campaign_id',
   'campaign_name',
@@ -51,6 +62,7 @@ const REPORT_INSIGHTS_FIELDS = [
   'impressions',
   'clicks',
   'ctr',
+  'frequency',
   'actions',
 ];
 const DEFAULT_REPORT_METRIC = {
@@ -264,6 +276,18 @@ function getWeeklyReportFlagKey(code, ymd) {
   return `${WEEKLY_REPORT_FLAG_PREFIX}${code}:${ymd}`;
 }
 
+function getAlertFlagKey(code, type, suffix) {
+  return `${ALERT_FLAG_PREFIX}${code}:${type}:${suffix}`;
+}
+
+function getAutopauseStreakKey(code) {
+  return `${AUTOPAUSE_STREAK_PREFIX}${code}`;
+}
+
+function getAutopauseAlertFlagKey(code, suffix) {
+  return `${ALERT_FLAG_PREFIX}${code}:autopause:${suffix}`;
+}
+
 function buildHelpMessage() {
   return [
     'Привет! Это каркас бота отчётов по Meta Ads.',
@@ -451,6 +475,23 @@ function formatProjectSummary(project) {
   parts.push(`Период: ${escapeHtml(project.period)} · время: ${escapeHtml(project.times.join(', '))}`);
   parts.push(`Статус: ${project.active ? 'активен' : 'выкл.'} · биллинг: ${escapeHtml(project.billing)}`);
   return parts.join('\n');
+}
+
+async function buildProjectAlertContext(env, project) {
+  const chatRecord = project.chat_id ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0) : null;
+  const chatLabel = chatRecord?.title
+    ? chatRecord.title
+    : project.chat_id
+    ? `chat ${project.chat_id}`
+    : 'чат не привязан';
+  const accountLabel = project.act ? project.act : 'нет аккаунта';
+
+  return {
+    chatRecord,
+    chatLabel,
+    accountLabel,
+    header: `#${escapeHtml(project.code)} · ${escapeHtml(chatLabel)} · act <code>${escapeHtml(accountLabel)}</code>`,
+  };
 }
 
 async function loadProject(env, code) {
@@ -769,6 +810,34 @@ async function syncUserAdAccounts(env, uid, token) {
   } catch (error) {
     console.error('syncUserAdAccounts error', error);
     return { ok: false, error: error?.message || 'unknown_error' };
+  }
+}
+
+async function fetchAccountHealthSummary(env, project, token) {
+  const actId = normalizeAccountId(project?.act ?? '');
+  if (!actId) {
+    return null;
+  }
+
+  const fields = [
+    'id',
+    'name',
+    'account_status',
+    'disable_reason',
+    'is_prepay_account',
+    'balance',
+    'spend_cap',
+    'amount_spent',
+    'currency',
+    'funding_source_details{display_string}',
+  ].join(',');
+
+  try {
+    const payload = await graphGet(actId, { token, params: { fields } });
+    return payload ?? null;
+  } catch (error) {
+    console.error('fetchAccountHealthSummary error', project?.code, error);
+    return null;
   }
 }
 
@@ -2929,6 +2998,65 @@ async function fetchCampaignInsights(env, project, token, range) {
   return items;
 }
 
+async function fetchActiveCampaigns(env, project, token, { limit = 200 } = {}) {
+  const actId = normalizeAccountId(project?.act ?? '');
+  if (!actId) {
+    return [];
+  }
+
+  const params = {
+    fields: 'id,name,status,effective_status',
+    limit: String(limit),
+  };
+
+  const items = [];
+  let nextUrl = null;
+
+  for (let page = 0; page < REPORT_MAX_PAGES; page += 1) {
+    const payload = nextUrl
+      ? await fetchJsonWithTimeout(nextUrl, { method: 'GET' }, META_TIMEOUT_MS)
+      : await graphGet(`${actId}/campaigns`, { token, params });
+
+    if (Array.isArray(payload?.data)) {
+      items.push(...payload.data);
+    }
+
+    if (!payload?.paging?.next) {
+      break;
+    }
+
+    nextUrl = payload.paging.next;
+  }
+
+  const allowedIds = new Set(
+    Array.isArray(project?.campaigns) && project.campaigns.length ? project.campaigns.map(String) : [],
+  );
+
+  const normalized = [];
+  for (const row of items) {
+    const id = String(row?.id ?? '').replace(/^act_/, '');
+    if (!id) continue;
+    if (allowedIds.size && !allowedIds.has(row.id) && !allowedIds.has(id)) continue;
+
+    normalized.push({
+      id: row.id ?? id,
+      name: row.name ?? `Campaign ${id}`,
+      status: row.status ?? null,
+      effective_status: row.effective_status ?? null,
+    });
+  }
+
+  return normalized;
+}
+
+function isCampaignEffectivelyActive(row) {
+  const effective = String(row?.effective_status ?? '').toUpperCase();
+  if (!effective) return false;
+  if (effective.includes('ACTIVE')) return true;
+  if (effective.includes('IN_PROCESS')) return true;
+  return false;
+}
+
 function applyReportFilters(insights = [], filters = {}) {
   const normalized = normalizeReportFilters(filters);
   const result = [];
@@ -2998,6 +3126,14 @@ function buildReportRows(insights = [], currency = 'USD') {
   const totalLine = `<b>ИТОГО:</b> ${formatCurrency(totalSpend, currency)} | ${formatNumber(totalResults)} | ${totalMetricCode} ср: ${formatCpa(totalCpa, currency)}`;
 
   return { rows: sorted, lines, totalSpend, totalResults, totalCpa, totalLine };
+}
+
+function sumSpend(insights = []) {
+  let total = 0;
+  for (const row of Array.isArray(insights) ? insights : []) {
+    total += Number(row?.spend) || 0;
+  }
+  return total;
 }
 
 function buildReportMessage(project, range, reportData, currency = 'USD') {
@@ -3146,6 +3282,32 @@ async function sendProjectDigest(env, project, { period, range, token, currency 
   return { insightsCount: insights.length };
 }
 
+async function telegramNotifyAdmins(env, textContent, extra = {}) {
+  const admins = parseAdminIds(env);
+  if (!admins.length) {
+    return [];
+  }
+
+  const results = [];
+  for (const adminId of admins) {
+    try {
+      await telegramRequest(env, 'sendMessage', {
+        chat_id: adminId,
+        text: textContent,
+        parse_mode: extra.parse_mode ?? 'HTML',
+        disable_notification: extra.disable_notification ?? false,
+        reply_markup: extra.reply_markup ?? undefined,
+      });
+      results.push({ adminId, ok: true });
+    } catch (error) {
+      console.error('telegramNotifyAdmins error', adminId, error);
+      results.push({ adminId, ok: false, error: error?.message ?? String(error) });
+    }
+  }
+
+  return results;
+}
+
 async function buildProjectReport(env, project, { period, range, token, currency, filters }) {
   const insights = await fetchCampaignInsights(env, project, token, range);
   const appliedFilters = normalizeReportFilters(filters ?? {});
@@ -3237,6 +3399,45 @@ async function archiveReportRecord(env, project, { payload, period, range, origi
   const key = getReportArchiveKey(project.code, Date.now());
   await env.DB.put(key, JSON.stringify(record), { expirationTtl: REPORT_ARCHIVE_TTL_SECONDS });
   return key;
+}
+
+async function loadAutopauseState(env, code) {
+  if (!env.DB) {
+    return { count: 0, last_ymd: null };
+  }
+
+  try {
+    const raw = await env.DB.get(getAutopauseStreakKey(code));
+    if (!raw) {
+      return { count: 0, last_ymd: null };
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      count: Number.isFinite(parsed?.count) ? Number(parsed.count) : 0,
+      last_ymd: typeof parsed?.last_ymd === 'string' ? parsed.last_ymd : null,
+    };
+  } catch (error) {
+    console.error('loadAutopauseState error', code, error);
+    return { count: 0, last_ymd: null };
+  }
+}
+
+async function saveAutopauseState(env, code, state) {
+  if (!env.DB) {
+    return;
+  }
+
+  try {
+    await env.DB.put(
+      getAutopauseStreakKey(code),
+      JSON.stringify({
+        count: Number.isFinite(state?.count) ? Number(state.count) : 0,
+        last_ymd: typeof state?.last_ymd === 'string' ? state.last_ymd : null,
+      }),
+    );
+  } catch (error) {
+    console.error('saveAutopauseState error', code, error);
+  }
 }
 
 async function hasReportFlag(env, key) {
@@ -3369,6 +3570,503 @@ async function sendWeeklyDigest(env, project, { token, timezone, currency }) {
 
   return { ok: true };
 }
+
+function shouldCheckBillingNow(project, hm) {
+  if (!project?.alerts || project.alerts.enabled === false) {
+    return false;
+  }
+
+  const times = Array.isArray(project.alerts.billing_times) && project.alerts.billing_times.length
+    ? project.alerts.billing_times
+    : ALERT_BILLING_DEFAULT_TIMES;
+  return times.includes(hm);
+}
+
+function shouldCheckZeroSpendNow(project, hm) {
+  if (!project?.alerts || project.alerts.enabled === false) {
+    return false;
+  }
+
+  const target = typeof project.alerts.no_spend_by === 'string' ? project.alerts.no_spend_by : null;
+  if (!target || !target.trim()) {
+    return false;
+  }
+
+  return target === hm;
+}
+
+function shouldRunAnomalyChecksNow(project, hm) {
+  if (!project?.alerts || project.alerts.enabled === false) {
+    return false;
+  }
+  return ANOMALY_CHECK_TIMES.includes(hm);
+}
+
+async function runProjectAlerts(env, project, { token, timezone, hm }) {
+  if (!project?.alerts || project.alerts.enabled === false) {
+    return;
+  }
+
+  if (!project?.act) {
+    return;
+  }
+
+  const currencyCache = runProjectAlerts.currencyCache || new Map();
+  const currency = await resolveProjectCurrency(env, project, currencyCache);
+
+  const tasks = [];
+
+  if (shouldCheckBillingNow(project, hm)) {
+    tasks.push(
+      runBillingAlert(env, project, { token, timezone }).catch((error) => {
+        console.error('billing alert error', project.code, error);
+      }),
+    );
+  }
+
+  if (shouldCheckZeroSpendNow(project, hm)) {
+    tasks.push(
+      runZeroSpendAlert(env, project, { token, timezone }).catch((error) => {
+        console.error('zero-spend alert error', project.code, error);
+      }),
+    );
+  }
+
+  if (shouldRunAnomalyChecksNow(project, hm)) {
+    tasks.push(
+      runAnomalyAlert(env, project, { token, timezone, hm, currency }).catch((error) => {
+        console.error('anomaly alert error', project.code, error);
+      }),
+    );
+    tasks.push(
+      runCreativeFatigueAlert(env, project, { token, timezone, hm, currency }).catch((error) => {
+        console.error('fatigue alert error', project.code, error);
+      }),
+    );
+  }
+
+  if (tasks.length) {
+    await Promise.all(tasks);
+  }
+}
+
+runProjectAlerts.currencyCache = new Map();
+
+async function runBillingAlert(env, project, { token, timezone }) {
+  const summary = await fetchAccountHealthSummary(env, project, token);
+  if (!summary) {
+    return;
+  }
+
+  const issues = [];
+  const statusCode = Number(summary.account_status);
+  const disableReason = summary.disable_reason;
+  const isPrepay = summary.is_prepay_account === true || summary.is_prepay_account === 'true';
+  const balance = Number(summary.balance ?? 0);
+  const spendCap = Number(summary.spend_cap ?? 0);
+  const amountSpent = Number(summary.amount_spent ?? 0);
+
+  const problematicStatuses = new Set([2, 3, 7, 8, 9, 1002]);
+  if (Number.isFinite(statusCode) && problematicStatuses.has(statusCode)) {
+    issues.push(`Статус аккаунта: ${statusCode}`);
+  }
+
+  if (disableReason && String(disableReason) !== '0') {
+    issues.push(`Disable reason: ${disableReason}`);
+  }
+
+  if (isPrepay && balance <= 0) {
+    issues.push('Баланс предоплаты ≤ 0');
+  }
+
+  if (spendCap > 0 && amountSpent >= spendCap) {
+    issues.push('Достигнут spend cap');
+  }
+
+  if (!issues.length) {
+    return;
+  }
+
+  const today = getTodayYmd(timezone);
+  const digest = JSON.stringify({ statusCode, disableReason, isPrepay, balance, spendCap, amountSpent });
+  const flagKey = getAlertFlagKey(project.code, 'billing', today);
+
+  if (env.DB) {
+    const previous = await env.DB.get(flagKey);
+    if (previous === digest) {
+      return;
+    }
+  }
+
+  const context = await buildProjectAlertContext(env, project);
+  const lines = [
+    '⚠️ <b>Проблема биллинга/доставки</b>',
+    context.header,
+    '',
+    ...issues.map((line) => `• ${escapeHtml(line)}`),
+    '',
+    `Статус: ${escapeHtml(String(summary.account_status ?? '—'))}`,
+  ];
+
+  if (summary.funding_source_details?.display_string) {
+    lines.push(`Источник: ${escapeHtml(summary.funding_source_details.display_string)}`);
+  }
+
+  await telegramNotifyAdmins(env, lines.join('\n'));
+
+  if (env.DB) {
+    await env.DB.put(flagKey, digest, { expirationTtl: ALERT_DEFAULT_TTL_SECONDS });
+  }
+}
+
+async function runZeroSpendAlert(env, project, { token, timezone }) {
+  const range = getPeriodRange('today', timezone);
+  if (!range) {
+    return;
+  }
+
+  const insights = await fetchCampaignInsights(env, project, token, range);
+  const totalSpend = sumSpend(insights);
+  if (totalSpend > 0.1) {
+    return;
+  }
+
+  const campaigns = await fetchActiveCampaigns(env, project, token);
+  const active = campaigns.filter(isCampaignEffectivelyActive);
+  if (!active.length) {
+    return;
+  }
+
+  const today = getTodayYmd(timezone);
+  const flagKey = getAlertFlagKey(project.code, 'zero', today);
+  if (env.DB) {
+    const seen = await env.DB.get(flagKey);
+    if (seen) {
+      return;
+    }
+  }
+
+  const context = await buildProjectAlertContext(env, project);
+  const listed = active.slice(0, 5).map((row) => `• ${escapeHtml(row.name || row.id)} (${escapeHtml(row.effective_status || '—')})`);
+
+  const lines = [
+    '⚠️ <b>После контрольного времени расход = 0</b>',
+    context.header,
+    '',
+    'Сегодня расход по выбранным кампаниям не обнаружен, несмотря на активный статус.',
+  ];
+
+  if (listed.length) {
+    lines.push('', '<b>Активные кампании:</b>', ...listed);
+    if (active.length > listed.length) {
+      lines.push('…');
+    }
+  }
+
+  await telegramNotifyAdmins(env, lines.join('\n'));
+
+  if (env.DB) {
+    await env.DB.put(flagKey, '1', { expirationTtl: ALERT_ZERO_TTL_SECONDS });
+  }
+}
+
+async function runAnomalyAlert(env, project, { token, timezone, hm, currency = 'USD' }) {
+  const todayRange = getPeriodRange('today', timezone);
+  const yesterdayRange = getPeriodRange('yesterday', timezone);
+  if (!todayRange || !yesterdayRange) {
+    return;
+  }
+
+  const [todayInsights, yesterdayInsights] = await Promise.all([
+    fetchCampaignInsights(env, project, token, todayRange),
+    fetchCampaignInsights(env, project, token, yesterdayRange),
+  ]);
+
+  if (!todayInsights.length) {
+    return;
+  }
+
+  const prevById = new Map();
+  for (const row of yesterdayInsights) {
+    if (!row?.campaign_id) continue;
+    prevById.set(row.campaign_id, row);
+  }
+
+  const threshold = {
+    cpl: Number.isFinite(project?.anomaly?.cpl_jump) ? Number(project.anomaly.cpl_jump) : 0.5,
+    ctr: Number.isFinite(project?.anomaly?.ctr_drop) ? Number(project.anomaly.ctr_drop) : 0.4,
+    impr: Number.isFinite(project?.anomaly?.impr_drop) ? Number(project.anomaly.impr_drop) : 0.5,
+    freq: Number.isFinite(project?.anomaly?.freq) ? Number(project.anomaly.freq) : 3.5,
+  };
+
+  const alerts = [];
+
+  for (const row of todayInsights) {
+    const prev = row?.campaign_id ? prevById.get(row.campaign_id) : null;
+    const metric = pickMetricForObjective(row?.objective);
+    const todaySpend = Number(row?.spend) || 0;
+    const prevSpend = Number(prev?.spend) || 0;
+    const todayResults = extractActionCount(row?.actions ?? [], metric.actions);
+    const prevResults = extractActionCount(prev?.actions ?? [], metric.actions);
+    const todayCpa = todayResults > 0 ? todaySpend / todayResults : Number.POSITIVE_INFINITY;
+    const prevCpa = prevResults > 0 ? prevSpend / prevResults : Number.POSITIVE_INFINITY;
+    const todayCtr = Number(row?.ctr) || 0;
+    const prevCtr = Number(prev?.ctr) || 0;
+    const todayImpr = Number(row?.impressions) || 0;
+    const prevImpr = Number(prev?.impressions) || 0;
+    const todayFreq = Number(row?.frequency) || 0;
+
+    const triggers = [];
+
+    if (Number.isFinite(prevCpa) && prevCpa > 0 && Number.isFinite(todayCpa)) {
+      const delta = (todayCpa - prevCpa) / prevCpa;
+      if (delta >= threshold.cpl) {
+        triggers.push(`CPA ↑ на ${(delta * 100).toFixed(0)}% (до ${formatCpa(todayCpa, currency)})`);
+      }
+    } else if (!Number.isFinite(todayCpa) && todaySpend > 0) {
+      triggers.push('CPA отсутствует при расходе');
+    }
+
+    if (prevCtr > 0) {
+      const dropCtr = (prevCtr - todayCtr) / prevCtr;
+      if (dropCtr >= threshold.ctr) {
+        triggers.push(`CTR ↓ на ${(dropCtr * 100).toFixed(0)}% (до ${todayCtr.toFixed(2)}%)`);
+      }
+    }
+
+    if (prevImpr > 0) {
+      const dropImpr = (prevImpr - todayImpr) / prevImpr;
+      if (dropImpr >= threshold.impr) {
+        triggers.push(`Показы ↓ на ${(dropImpr * 100).toFixed(0)}%`);
+      }
+    }
+
+    if (todayFreq > threshold.freq) {
+      triggers.push(`Frequency ${todayFreq.toFixed(2)} > ${threshold.freq}`);
+    }
+
+    if (triggers.length) {
+      alerts.push({
+        name: row?.campaign_name ?? row?.campaign_id ?? '—',
+        spend: todaySpend,
+        triggers,
+      });
+    }
+  }
+
+  if (!alerts.length) {
+    return;
+  }
+
+  alerts.sort((a, b) => b.spend - a.spend);
+  const top = alerts.slice(0, 5);
+
+  const today = getTodayYmd(timezone);
+  const flagKey = getAlertFlagKey(project.code, 'anomaly', `${today}:${hm}`);
+  if (env.DB) {
+    const seen = await env.DB.get(flagKey);
+    if (seen) {
+      return;
+    }
+  }
+
+  const context = await buildProjectAlertContext(env, project);
+  const lines = [
+    '⚠️ <b>Аномалии метрик кампаний</b>',
+    context.header,
+    '',
+    ...top.map((item) => `• ${escapeHtml(item.name)} — ${escapeHtml(item.triggers.join('; '))}`),
+  ];
+
+  if (alerts.length > top.length) {
+    lines.push('…');
+  }
+
+  await telegramNotifyAdmins(env, lines.join('\n'));
+
+  if (env.DB) {
+    await env.DB.put(flagKey, '1', { expirationTtl: ALERT_ANOMALY_TTL_SECONDS });
+  }
+}
+
+async function runCreativeFatigueAlert(env, project, { token, timezone, hm, currency = 'USD' }) {
+  const range = getPeriodRange('last_7d', timezone);
+  if (!range) {
+    return;
+  }
+
+  const insights = await fetchCampaignInsights(env, project, token, range);
+  if (!insights.length) {
+    return;
+  }
+
+  const freqThreshold = Number.isFinite(project?.anomaly?.freq) ? Number(project.anomaly.freq) : 3.5;
+  const kpiCpl = Number(project?.kpi?.cpl);
+
+  const fatigued = [];
+
+  for (const row of insights) {
+    const freq = Number(row?.frequency) || 0;
+    const ctr = Number(row?.ctr) || 0;
+    const spend = Number(row?.spend) || 0;
+    const metric = pickMetricForObjective(row?.objective);
+    const results = extractActionCount(row?.actions ?? [], metric.actions);
+    const cpa = results > 0 ? spend / results : Number.POSITIVE_INFINITY;
+
+    if (spend < CREATIVE_FATIGUE_MIN_SPEND) {
+      continue;
+    }
+
+    if (freq <= freqThreshold || ctr > CREATIVE_FATIGUE_CTR_THRESHOLD) {
+      continue;
+    }
+
+    let cpaProblem = false;
+    if (Number.isFinite(kpiCpl) && kpiCpl > 0) {
+      cpaProblem = !Number.isFinite(cpa) || cpa > kpiCpl * 1.2;
+    } else {
+      cpaProblem = !Number.isFinite(cpa) || results <= CREATIVE_FATIGUE_MIN_RESULTS;
+    }
+
+    if (!cpaProblem) {
+      continue;
+    }
+
+    fatigued.push({
+      name: row?.campaign_name ?? row?.campaign_id ?? '—',
+      freq,
+      ctr,
+      cpa,
+      spend,
+      results,
+    });
+  }
+
+  if (!fatigued.length) {
+    return;
+  }
+
+  fatigued.sort((a, b) => b.freq - a.freq || b.spend - a.spend);
+  const top = fatigued.slice(0, 5);
+
+  const today = getTodayYmd(timezone);
+  const flagKey = getAlertFlagKey(project.code, 'fatigue', `${today}:${hm}`);
+  if (env.DB) {
+    const seen = await env.DB.get(flagKey);
+    if (seen) {
+      return;
+    }
+  }
+
+  const context = await buildProjectAlertContext(env, project);
+  const lines = [
+    '⚠️ <b>Усталость креативов</b>',
+    context.header,
+    '',
+    ...top.map((item) =>
+      `• ${escapeHtml(item.name)} — freq ${item.freq.toFixed(2)}, CTR ${item.ctr.toFixed(2)}%, CPA ${formatCpa(item.cpa, currency)}`,
+    ),
+  ];
+
+  if (fatigued.length > top.length) {
+    lines.push('…');
+  }
+
+  await telegramNotifyAdmins(env, lines.join('\n'));
+
+  if (env.DB) {
+    await env.DB.put(flagKey, '1', { expirationTtl: ALERT_ANOMALY_TTL_SECONDS });
+  }
+}
+
+async function runAutopauseCheck(env, project, { token, timezone, hm }) {
+  if (!project?.autopause?.enabled) {
+    return;
+  }
+
+  if (hm !== AUTOPAUSE_CHECK_TIME) {
+    return;
+  }
+
+  const kpiCpl = Number(project?.kpi?.cpl);
+  if (!Number.isFinite(kpiCpl) || kpiCpl <= 0) {
+    return;
+  }
+
+  if (!project?.act) {
+    return;
+  }
+
+  const range = getPeriodRange('yesterday', timezone);
+  if (!range) {
+    return;
+  }
+
+  const currencyCache = runAutopauseCheck.currencyCache || new Map();
+  const currency = await resolveProjectCurrency(env, project, currencyCache);
+  const payload = await buildProjectReport(env, project, {
+    period: 'yesterday',
+    range,
+    token,
+    currency,
+    filters: {},
+  });
+
+  const spend = payload.reportData?.totalSpend ?? 0;
+  const results = payload.reportData?.totalResults ?? 0;
+  const cpa = results > 0 ? spend / results : Number.POSITIVE_INFINITY;
+  const processedDay = range.until;
+
+  const state = await loadAutopauseState(env, project.code);
+  if (state.last_ymd === processedDay) {
+    return;
+  }
+
+  let streak = 0;
+  if (!Number.isFinite(cpa) || cpa > kpiCpl) {
+    const expectedPrev = shiftYmd(processedDay, -1);
+    if (state.last_ymd === expectedPrev) {
+      streak = (state.count ?? 0) + 1;
+    } else {
+      streak = 1;
+    }
+  } else {
+    streak = 0;
+  }
+
+  await saveAutopauseState(env, project.code, { count: streak, last_ymd: processedDay });
+
+  const threshold = Number.isFinite(project?.autopause?.days) && project.autopause.days > 0
+    ? Number(project.autopause.days)
+    : 3;
+
+  if (streak >= threshold) {
+    const alertKey = getAutopauseAlertFlagKey(project.code, processedDay);
+    if (env.DB) {
+      const seen = await env.DB.get(alertKey);
+      if (seen) {
+        return;
+      }
+    }
+
+    const context = await buildProjectAlertContext(env, project);
+    const lines = [
+      '⚠️ <b>CPA выше KPI несколько дней подряд</b>',
+      context.header,
+      '',
+      `Последние ${streak} дн. подряд CPA ${formatCpa(cpa, currency)} > KPI ${formatCpa(kpiCpl, currency)}.`,
+      'Проверьте кампании и рассмотрите автопаузу в карточке проекта.',
+    ];
+
+    await telegramNotifyAdmins(env, lines.join('\n'));
+
+    if (env.DB) {
+      await env.DB.put(alertKey, '1', { expirationTtl: AUTOPAUSE_ALERT_TTL_SECONDS });
+    }
+  }
+}
+
+runAutopauseCheck.currencyCache = new Map();
 
 async function resolveProjectCurrency(env, project, cache) {
   const accountId = project?.act ? String(project.act).replace(/^act_/i, '') : '';
@@ -6605,7 +7303,10 @@ export default {
       return;
     }
 
-    processAutoReport.currencyCache = new Map();
+    const currencyCache = new Map();
+    processAutoReport.currencyCache = currencyCache;
+    runProjectAlerts.currencyCache = currencyCache;
+    runAutopauseCheck.currencyCache = currencyCache;
 
     for (const project of projects) {
       if (project?.code) {
@@ -6624,6 +7325,18 @@ export default {
             }),
           );
         }
+
+        ctx.waitUntil(
+          runProjectAlerts(env, project, { token, timezone, hm }).catch((error) => {
+            console.error('scheduled alerts error', project.code, error);
+          }),
+        );
+
+        ctx.waitUntil(
+          runAutopauseCheck(env, project, { token, timezone, hm }).catch((error) => {
+            console.error('scheduled autopause error', project.code, error);
+          }),
+        );
       }
     }
   },
