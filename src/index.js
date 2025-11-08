@@ -24,6 +24,8 @@ const REPORT_ARCHIVE_PREFIX = 'report:';
 const REPORT_ARCHIVE_TTL_SECONDS = 60 * 60 * 24 * 90; // 90 дней
 const REPORT_ARCHIVE_PAGE_SIZE = 5;
 const REPORT_ARCHIVE_MAX_KEYS = 200;
+const REPORT_PRESET_PREFIX = 'report_preset:';
+const REPORT_PRESET_LIMIT = 12;
 const REPORT_PREVIEW_MAX_LENGTH = 3600;
 const AUTO_REPORT_FLAG_PREFIX = 'flag:auto_report:';
 const WEEKLY_REPORT_FLAG_PREFIX = 'flag:weekly_report:';
@@ -160,6 +162,18 @@ function escapeHtml(input = '') {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function sanitizeReportPresetName(input) {
+  if (typeof input !== 'string') {
+    return '';
+  }
+
+  return input.replace(/\s+/g, ' ').trim().slice(0, 60);
+}
+
+function createReportPresetId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function resolveKvBinding(env, bindingName, fallbackBinding = 'DB') {
@@ -348,6 +362,10 @@ function getAccountMetaKey(accountId) {
 
 function getReportArchiveKey(code, stamp) {
   return `${REPORT_ARCHIVE_PREFIX}${code}:${stamp}`;
+}
+
+function getReportPresetKey(uid) {
+  return `${REPORT_PRESET_PREFIX}${uid}`;
 }
 
 function getAutoReportFlagKey(code, ymd, hm) {
@@ -695,6 +713,167 @@ async function clearUserState(env, uid) {
   const kv = getPrimaryKv(env);
   if (!kv || !uid) return;
   await kv.delete(getStateKey(uid));
+}
+
+function normalizeReportPresetRecord(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+
+  const name = sanitizeReportPresetName(raw.name ?? '');
+  if (!name) {
+    return null;
+  }
+
+  const allowedPeriods = new Set(PERIOD_OPTIONS.map((option) => option.value));
+  const period = allowedPeriods.has(raw.period) ? raw.period : 'yesterday';
+
+  let minSpend = null;
+  if (raw.minSpend !== null && typeof raw.minSpend !== 'undefined') {
+    const value = Number(raw.minSpend);
+    minSpend = Number.isFinite(value) && value >= 0 ? Number(value.toFixed(2)) : null;
+  }
+
+  const onlyPositive = raw.onlyPositive === true;
+  const createdAt = typeof raw.created_at === 'string' && raw.created_at ? raw.created_at : new Date().toISOString();
+  const updatedAt = typeof raw.updated_at === 'string' && raw.updated_at ? raw.updated_at : createdAt;
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : createReportPresetId();
+
+  return {
+    id,
+    name,
+    period,
+    minSpend,
+    onlyPositive,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  };
+}
+
+function sortReportPresets(presets = []) {
+  return presets
+    .slice()
+    .sort((left, right) => {
+      const leftStamp = Date.parse(left.updated_at ?? left.created_at ?? 0);
+      const rightStamp = Date.parse(right.updated_at ?? right.created_at ?? 0);
+      const safeLeft = Number.isFinite(leftStamp) ? leftStamp : 0;
+      const safeRight = Number.isFinite(rightStamp) ? rightStamp : 0;
+      return safeRight - safeLeft;
+    });
+}
+
+async function loadReportPresets(env, uid) {
+  const kv = getReportsKv(env);
+  if (!kv || !uid) {
+    return [];
+  }
+
+  try {
+    const raw = await kv.get(getReportPresetKey(uid));
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    const normalized = parsed
+      .map((entry) => normalizeReportPresetRecord(entry))
+      .filter((entry) => entry !== null);
+
+    return sortReportPresets(normalized);
+  } catch (error) {
+    console.error('loadReportPresets error', error);
+    return [];
+  }
+}
+
+async function saveReportPresets(env, uid, presets) {
+  const kv = getReportsKv(env);
+  if (!kv || !uid) {
+    return;
+  }
+
+  const normalized = Array.isArray(presets)
+    ? presets.map((entry) => normalizeReportPresetRecord(entry)).filter((entry) => entry !== null)
+    : [];
+
+  const ordered = sortReportPresets(normalized).slice(0, REPORT_PRESET_LIMIT);
+
+  await kv.put(getReportPresetKey(uid), JSON.stringify(ordered));
+}
+
+async function upsertReportPreset(env, uid, payload) {
+  const kv = getReportsKv(env);
+  if (!kv || !uid) {
+    return null;
+  }
+
+  const name = sanitizeReportPresetName(payload?.name ?? '');
+  if (!name) {
+    return null;
+  }
+
+  const allowedPeriods = new Set(PERIOD_OPTIONS.map((option) => option.value));
+  const period = allowedPeriods.has(payload?.period) ? payload.period : 'yesterday';
+
+  let minSpend = null;
+  if (payload?.minSpend !== null && typeof payload?.minSpend !== 'undefined') {
+    const value = Number(payload.minSpend);
+    minSpend = Number.isFinite(value) && value >= 0 ? Number(value.toFixed(2)) : null;
+  }
+
+  const onlyPositive = payload?.onlyPositive === true;
+  const now = new Date().toISOString();
+
+  const current = await loadReportPresets(env, uid);
+  const existingIndex = current.findIndex((entry) => entry.name.toLowerCase() === name.toLowerCase());
+
+  if (existingIndex >= 0) {
+    const updated = {
+      ...current[existingIndex],
+      name,
+      period,
+      minSpend,
+      onlyPositive,
+      updated_at: now,
+    };
+    current.splice(existingIndex, 1, updated);
+    await saveReportPresets(env, uid, current);
+    return updated;
+  }
+
+  const entry = {
+    id: createReportPresetId(),
+    name,
+    period,
+    minSpend,
+    onlyPositive,
+    created_at: now,
+    updated_at: now,
+  };
+
+  const next = [entry, ...current].slice(0, REPORT_PRESET_LIMIT);
+  await saveReportPresets(env, uid, next);
+  return entry;
+}
+
+async function deleteReportPreset(env, uid, presetId) {
+  const kv = getReportsKv(env);
+  if (!kv || !uid || !presetId) {
+    return false;
+  }
+
+  const current = await loadReportPresets(env, uid);
+  const next = current.filter((entry) => entry.id !== presetId);
+  if (next.length === current.length) {
+    return false;
+  }
+
+  await saveReportPresets(env, uid, next);
+  return true;
 }
 
 async function loadUserProfile(env, uid) {
@@ -2218,56 +2397,102 @@ async function handleUserStateMessage(env, message, textContent) {
       return { handled: true, error: 'project_not_found' };
     }
 
-    if (state.step !== 'await_min_spend') {
-      await telegramSendMessage(env, message, 'Используйте кнопки меню отчёта для настройки.', {
-        disable_reply: true,
-      });
-      return { handled: true, info: 'report_idle' };
-    }
+    if (state.step === 'await_min_spend') {
+      const rawValue = textContent.trim();
+      const lower = rawValue.toLowerCase();
+      let minSpend = null;
+      let cleared = false;
 
-    const rawValue = textContent.trim();
-    const lower = rawValue.toLowerCase();
-    let minSpend = null;
-    let cleared = false;
-
-    if (!rawValue || ['нет', 'none', 'off', 'clear', '-'].includes(lower)) {
-      minSpend = null;
-      cleared = true;
-    } else {
-      minSpend = sanitizeMinSpend(rawValue);
-      if (minSpend === null) {
-        await telegramSendMessage(
-          env,
-          message,
-          'Введите число (например, 25 или 12.5) либо «нет» для сброса фильтра.',
-          { disable_reply: true },
-        );
-        return { handled: true, error: 'report_invalid_min_spend' };
+      if (!rawValue || ['нет', 'none', 'off', 'clear', '-'].includes(lower)) {
+        minSpend = null;
+        cleared = true;
+      } else {
+        minSpend = sanitizeMinSpend(rawValue);
+        if (minSpend === null) {
+          await telegramSendMessage(
+            env,
+            message,
+            'Введите число (например, 25 или 12.5) либо «нет» для сброса фильтра.',
+            { disable_reply: true },
+          );
+          return { handled: true, error: 'report_invalid_min_spend' };
+        }
       }
+
+      const nextState = createReportState(project, {
+        ...state,
+        minSpend,
+        step: 'menu',
+      });
+      await saveUserState(env, uid, nextState);
+
+      const responseText = cleared
+        ? 'Фильтр по минимальному расходу очищен.'
+        : `Мин. расход установлен на ≥ ${formatNumber(minSpend)}.`;
+      await telegramSendMessage(env, message, responseText, { disable_reply: true });
+
+      if (state.message_chat_id && state.message_id) {
+        await editMessageWithReportOptions(
+          env,
+          { chat: { id: state.message_chat_id }, message_id: state.message_id },
+          code,
+          { preserveAwait: true, uid, timezone: env.DEFAULT_TZ || 'UTC' },
+        );
+      }
+
+      return { handled: true, step: 'report_min_spend_updated' };
     }
 
-    const nextState = createReportState(project, {
-      ...state,
-      minSpend,
-      step: 'menu',
+    if (state.step === 'await_preset_name') {
+      const presetName = sanitizeReportPresetName(textContent);
+      if (!presetName || presetName.length < 2) {
+        await telegramSendMessage(env, message, 'Название должно содержать от 2 до 60 символов.', {
+          disable_reply: true,
+        });
+        return { handled: true, error: 'report_preset_name_invalid' };
+      }
+
+      const normalizedState = createReportState(project, state);
+      const preset = await upsertReportPreset(env, uid, {
+        name: presetName,
+        period: normalizedState.period,
+        minSpend: normalizedState.minSpend,
+        onlyPositive: normalizedState.onlyPositive,
+      });
+
+      const nextState = createReportState(project, {
+        ...state,
+        step: 'menu',
+      });
+      await saveUserState(env, uid, nextState);
+
+      if (preset) {
+        await telegramSendMessage(env, message, `Пресет «${escapeHtml(preset.name)}» сохранён.`, {
+          disable_reply: true,
+          parse_mode: 'HTML',
+        });
+      } else {
+        await telegramSendMessage(env, message, 'Не удалось сохранить пресет. Попробуйте ещё раз.', {
+          disable_reply: true,
+        });
+      }
+
+      if (state.message_chat_id && state.message_id) {
+        await editMessageWithReportOptions(
+          env,
+          { chat: { id: state.message_chat_id }, message_id: state.message_id },
+          code,
+          { preserveAwait: true, uid, timezone: env.DEFAULT_TZ || 'UTC' },
+        );
+      }
+
+      return { handled: true, step: 'report_preset_saved' };
+    }
+
+    await telegramSendMessage(env, message, 'Используйте кнопки меню отчёта для настройки.', {
+      disable_reply: true,
     });
-    await saveUserState(env, uid, nextState);
-
-    const responseText = cleared
-      ? 'Фильтр по минимальному расходу очищен.'
-      : `Мин. расход установлен на ≥ ${formatNumber(minSpend)}.`;
-    await telegramSendMessage(env, message, responseText, { disable_reply: true });
-
-    if (state.message_chat_id && state.message_id) {
-      await editMessageWithReportOptions(
-        env,
-        { chat: { id: state.message_chat_id }, message_id: state.message_id },
-        code,
-        { preserveAwait: true, uid, timezone: env.DEFAULT_TZ || 'UTC' },
-      );
-    }
-
-    return { handled: true, step: 'report_min_spend_updated' };
+    return { handled: true, info: 'report_idle' };
   }
 
   if (state.mode === 'digest_options') {
@@ -5441,6 +5666,7 @@ function renderReportOptions(project, options = {}, context = {}) {
   const range = getPeriodRange(normalized.period, timezone);
   const periodLabel = getPeriodLabel(normalized.period);
   const awaitingMinSpend = context.awaitingMinSpend === true;
+  const awaitingPresetName = context.awaitingPresetName === true;
 
   const lines = [
     `<b>Отчёт #${escapeHtml(project.code)}</b>`,
@@ -5454,6 +5680,9 @@ function renderReportOptions(project, options = {}, context = {}) {
   if (awaitingMinSpend) {
     lines.push('');
     lines.push('Отправьте минимальный расход числом, например <code>25</code> или <code>12.5</code>.');
+  } else if (awaitingPresetName) {
+    lines.push('');
+    lines.push('Отправьте название пресета (2–60 символов). Оно будет доступно только вам.');
   } else {
     lines.push('');
     lines.push('Выберите период, настройте фильтры и решите, куда отправить отчёт.');
@@ -5481,6 +5710,11 @@ function renderReportOptions(project, options = {}, context = {}) {
   ]);
 
   inline_keyboard.push([
+    { text: '⭐ Сохранить пресет', callback_data: `proj:report:preset:save:${project.code}` },
+    { text: '📚 Пресеты', callback_data: `proj:report:preset:list:${project.code}` },
+  ]);
+
+  inline_keyboard.push([
     {
       text: normalized.onlyPositive ? '✅ Только с результатом' : 'Включая 0 результатов',
       callback_data: `proj:report:positive:${project.code}`,
@@ -5498,6 +5732,10 @@ function renderReportOptions(project, options = {}, context = {}) {
   if (awaitingMinSpend) {
     inline_keyboard.unshift([
       { text: '❌ Отменить ввод', callback_data: `proj:report:min:${project.code}:cancel` },
+    ]);
+  } else if (awaitingPresetName) {
+    inline_keyboard.unshift([
+      { text: '❌ Отменить ввод', callback_data: `proj:report:preset:cancel:${project.code}` },
     ]);
   }
 
@@ -5525,6 +5763,7 @@ async function editMessageWithReportOptions(env, message, code, options = {}) {
   }
 
   let awaitingMinSpend = options.awaitingMinSpend === true;
+  let awaitingPresetName = options.awaitingPresetName === true;
   let currentOptions = options.values ?? {};
 
   if (options.preserveAwait && options.uid) {
@@ -5540,19 +5779,103 @@ async function editMessageWithReportOptions(env, message, code, options = {}) {
         minSpend: state.minSpend,
         onlyPositive: state.onlyPositive,
       };
-      if (!awaitingMinSpend && state.step === 'await_min_spend') {
-        awaitingMinSpend = true;
-      }
+      awaitingMinSpend = awaitingMinSpend || state.step === 'await_min_spend';
+      awaitingPresetName = awaitingPresetName || state.step === 'await_preset_name';
     }
   }
 
   const timezone = options.timezone || env.DEFAULT_TZ || 'UTC';
-  const view = renderReportOptions(project, currentOptions, { timezone, awaitingMinSpend });
+  const view = renderReportOptions(project, currentOptions, { timezone, awaitingMinSpend, awaitingPresetName });
   await telegramEditMessage(env, chatId, messageId, view.text, {
     reply_markup: view.reply_markup,
   });
 
   return { ok: true, project };
+}
+
+function renderReportPresetMenu(project, presets = [], context = {}) {
+  const timezone = context.timezone || 'UTC';
+  const lines = [`<b>Пресеты отчётов #${escapeHtml(project.code)}</b>`];
+
+  if (!presets.length) {
+    lines.push('Пока нет сохранённых пресетов. Настройте фильтры и нажмите «⭐ Сохранить пресет».');
+  } else {
+    lines.push('Выберите пресет, чтобы применить фильтры, либо удалите лишние.');
+    lines.push('');
+    for (const preset of presets) {
+      const periodLabel = getPeriodLabel(preset.period ?? project.period ?? 'yesterday');
+      const filtersLabel = describeReportFilters({
+        minSpend: preset.minSpend,
+        onlyPositive: preset.onlyPositive,
+      });
+      const updatedAt = preset.updated_at ?? preset.created_at ?? null;
+      const updatedLabel = updatedAt ? formatDateTimeLabel(updatedAt, timezone) : null;
+      const parts = [`• <b>${escapeHtml(preset.name)}</b> — ${escapeHtml(periodLabel)}`, filtersLabel];
+      if (updatedLabel) {
+        parts.push(`обновлён: ${escapeHtml(updatedLabel)}`);
+      }
+      lines.push(parts.join(', '));
+    }
+  }
+
+  const inline_keyboard = [];
+
+  for (const preset of presets) {
+    inline_keyboard.push([
+      {
+        text: `✅ ${preset.name.length > 16 ? `${preset.name.slice(0, 15)}…` : preset.name}`,
+        callback_data: `proj:report:preset:apply:${project.code}:${preset.id}`,
+      },
+      {
+        text: '🗑 Удалить',
+        callback_data: `proj:report:preset:delete:${project.code}:${preset.id}`,
+      },
+    ]);
+  }
+
+  inline_keyboard.push([
+    { text: '➕ Новый пресет', callback_data: `proj:report:preset:save:${project.code}` },
+    { text: '↩️ К отчёту', callback_data: `proj:report:open:${project.code}` },
+  ]);
+  inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithReportPresetMenu(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Вернитесь к списку проектов.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  const uid = options.uid;
+  const presets = Array.isArray(options.presets) && options.presets.length
+    ? options.presets
+    : uid
+      ? await loadReportPresets(env, uid)
+      : [];
+
+  const timezone = options.timezone || env.DEFAULT_TZ || 'UTC';
+  const view = renderReportPresetMenu(project, presets, { timezone });
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  return { ok: true, project, presets };
 }
 
 function normalizeDigestOptions(project, options = {}) {
@@ -8544,6 +8867,73 @@ async function handleCallbackQuery(env, callbackQuery) {
 
       await telegramAnswerCallback(env, callbackQuery, 'Действие не поддерживается.');
       return { ok: false, error: 'unknown_report_min_action' };
+    }
+
+    if (action === 'preset') {
+      const operation = parts[4] ?? '';
+
+      if (operation === 'save') {
+        await ensureState({ step: 'await_preset_name' });
+        await telegramAnswerCallback(env, callbackQuery, 'Отправьте название пресета сообщением.');
+        return editMessageWithReportOptions(env, message, code, {
+          preserveAwait: true,
+          awaitingPresetName: true,
+          uid,
+          timezone,
+        });
+      }
+
+      if (operation === 'cancel') {
+        await ensureState({ step: 'menu' });
+        await telegramAnswerCallback(env, callbackQuery, 'Сохранение пресета отменено.');
+        return editMessageWithReportOptions(env, message, code, { preserveAwait: true, uid, timezone });
+      }
+
+      if (operation === 'list') {
+        await ensureState({ step: 'preset_menu' });
+        const presets = await loadReportPresets(env, uid);
+        await telegramAnswerCallback(env, callbackQuery, 'Список пресетов.');
+        return editMessageWithReportPresetMenu(env, message, code, {
+          presets,
+          uid,
+          timezone,
+        });
+      }
+
+      if (operation === 'apply') {
+        const presetId = parts[5] ?? '';
+        const presets = await loadReportPresets(env, uid);
+        const preset = presets.find((entry) => entry.id === presetId);
+        if (!preset) {
+          await telegramAnswerCallback(env, callbackQuery, 'Пресет не найден.');
+          return { ok: false, error: 'report_preset_missing' };
+        }
+
+        await ensureState({
+          period: preset.period,
+          minSpend: preset.minSpend,
+          onlyPositive: preset.onlyPositive,
+          step: 'menu',
+        });
+        await telegramAnswerCallback(env, callbackQuery, `Пресет «${preset.name}» применён.`);
+        return editMessageWithReportOptions(env, message, code, { preserveAwait: true, uid, timezone });
+      }
+
+      if (operation === 'delete') {
+        const presetId = parts[5] ?? '';
+        const removed = await deleteReportPreset(env, uid, presetId);
+        const presets = await loadReportPresets(env, uid);
+        await ensureState({ step: 'preset_menu' });
+        await telegramAnswerCallback(env, callbackQuery, removed ? 'Пресет удалён.' : 'Пресет не найден.');
+        return editMessageWithReportPresetMenu(env, message, code, {
+          presets,
+          uid,
+          timezone,
+        });
+      }
+
+      await telegramAnswerCallback(env, callbackQuery, 'Действие с пресетом не поддерживается.');
+      return { ok: false, error: 'unknown_report_preset_action' };
     }
 
     if (action === 'positive') {
