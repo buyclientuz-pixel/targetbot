@@ -1,21 +1,21 @@
-# Targetbot Cloudflare Worker Scaffold
+# Targetbot — этап 1: скелет воркера
 
-This repository has been reset to a clean starting point for rebuilding the Meta Ads reporting bot. The current contents provide a minimal runnable Worker plus deployment scaffolding.
+Репозиторий очищен и разворачивается заново для проекта «CI → GitHub → Cloudflare Workers → Telegram-бот отчётов по рекламе Meta». На текущем этапе добавлен минимальный каркас с основными маршрутами и проверками окружения.
 
-## What is included
-- **Cloudflare Worker entrypoint** at `src/index.js` that responds to `/health` and returns a placeholder JSON payload for all other routes.
-- **Wrangler configuration** (`wrangler.toml`) targeting the `th-reports` Worker, enabling Node.js compatibility, wiring cron triggers, and reserving KV bindings for existing namespaces.
-- **GitHub Actions workflow** (`.github/workflows/deploy.yml`) for automated deploys with Wrangler 4 once repository secrets are configured.
-- **npm scripts** (`package.json`) for local `wrangler dev` and `wrangler deploy` commands.
+## Что уже сделано
+- Базовый воркер (`src/index.js`) с маршрутами `/health`, `/`, `/tg`, `/fb_auth`, `/fb_cb`, `/fb_debug`, `/p/{code}` и заглушками для дальнейшей доработки.
+- Проверка обязательных переменных окружения и отладочная HTML-страница для `/fb_debug`.
+- Заготовка редиректа на OAuth Meta (`/fb_auth`) и базовая валидация вебхука Telegram.
+- Конфигурация Wrangler (`wrangler.toml`) с кроном, включённой Node.js-совместимостью и плейсхолдерами KV привязок.
+- Сценарии npm (`npm run dev`, `npm run deploy`) и GitHub Actions workflow для автоматического деплоя через Wrangler.
 
-## Next steps
-1. Populate the real KV namespace IDs in `wrangler.toml` (`REPORTS_NAMESPACE`, `BILLING_NAMESPACE`, `LOGS_NAMESPACE`, `DB`). The IDs shown in the Cloudflare dashboard screenshot should be used. Preview IDs are optional.
-2. Install dependencies locally and run the Worker in development mode:
-   ```bash
-   npm install
-   npm run dev
-   ```
-3. Replace the placeholder logic inside `src/index.js` with the production Telegram bot implementation. Do this incrementally so each feature can be tested in isolation.
-4. Configure the GitHub Actions secrets (`CF_API_TOKEN`, `CF_ACCOUNT_ID`, etc.) before enabling automatic deploys.
+## Что нужно сделать дальше
+1. **Заполнить реальные Namespace ID** для всех KV в `wrangler.toml` (REPORTS_NAMESPACE, BILLING_NAMESPACE, LOGS_NAMESPACE, DB).
+2. **Настроить переменные окружения** на стороне Cloudflare: `BOT_TOKEN`, `ADMIN_IDS`, `FB_APP_ID`, `FB_APP_SECRET`, `DEFAULT_TZ`, `WORKER_URL`, `FB_LONG_TOKEN` (опционально), `GS_WEBHOOK` (опционально).
+3. **Реализовать обработчик Telegram**: команды `/start`, `/help`, `/register`, `/admin`, `/report`, `/digest`, callback-кнопки и сохранение состояния в KV.
+4. **Добавить работу с Meta OAuth** в `/fb_cb`: обмен кода на токен, обогащение данных аккаунтов и сохранение в KV.
+5. **Собрать проекты и расписания**: CRUD для `project:<code>`, автопаузы, алерты, автоотчёты, архивация HTML/CSV.
+6. **Реализовать клиентский портал `/p/{code}?sig=...`** с HTML-дашбордом и управлением сигнатурами.
+7. **Заполнить README** подробностями по настройке, CI/CD и эксплуатации по мере добавления функциональности.
 
-Until the Worker logic is rebuilt, deployments will succeed but only serve the scaffold responses. Update the README as new functionality is added.
+Переходите к следующим этапам постепенно, проверяя работоспособность каждого блока командой `npm run dev` и тестовым деплоем `npm run deploy` (при готовности секретов).
