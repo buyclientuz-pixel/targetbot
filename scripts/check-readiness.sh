@@ -9,6 +9,21 @@ if [[ -n "$placeholder_lines" ]]; then
   echo >&2
   echo "Fill in the real Namespace IDs from Cloudflare Workers → Settings → Variables and bindings → KV Namespace bindings." >&2
   echo "You can also run 'wrangler kv namespace list' to copy the IDs for each binding." >&2
+
+  if command -v wrangler >/dev/null 2>&1; then
+    if output=$(wrangler kv namespace list 2>&1); then
+      echo >&2
+      echo "Available KV namespaces from 'wrangler kv namespace list':" >&2
+      echo "$output" >&2
+    else
+      echo >&2
+      echo "(Tried to run 'wrangler kv namespace list' but it failed; ensure you are logged in with 'wrangler login'.)" >&2
+    fi
+  else
+    echo >&2
+    echo "Install Wrangler first so you can list namespace IDs: npm install -g wrangler" >&2
+  fi
+
   echo >&2
   echo "Update these bindings in wrangler.toml:" >&2
   printf '  • %s\n' "REPORTS_NAMESPACE" "BILLING_NAMESPACE" "LOGS_NAMESPACE" >&2
