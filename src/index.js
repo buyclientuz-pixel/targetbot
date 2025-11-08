@@ -864,6 +864,144 @@ function formatChatLine(chat) {
   return `• <code>${chat.chat_id}</code> · thread <code>${thread}</code>${title}`;
 }
 
+function formatChatReference(chat) {
+  if (!chat?.chat_id) {
+    return 'не привязан';
+  }
+
+  const title = chat.title ? ` — ${escapeHtml(chat.title)}` : '';
+  const thread = chat.thread_id ?? 0;
+  return `<code>${chat.chat_id}</code> · thread <code>${thread}</code>${title}`;
+}
+
+async function loadChatRecord(env, chatId, threadId = 0) {
+  if (!env.DB || !Number.isFinite(Number(chatId))) {
+    return null;
+  }
+
+  try {
+    const raw = await env.DB.get(getChatKey(chatId, threadId));
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error('loadChatRecord error', error);
+    return null;
+  }
+}
+
+function formatWeeklyLabel(weekly = {}) {
+  if (!weekly?.enabled) {
+    return 'выкл';
+  }
+
+  return weekly.mode === 'week_yesterday'
+    ? 'вкл (неделя + вчера)'
+    : 'вкл (неделя + сегодня)';
+}
+
+function formatAutopauseLabel(autopause = {}) {
+  if (!autopause?.enabled) {
+    return 'выкл';
+  }
+
+  const days = Number.isFinite(autopause.days) ? Number(autopause.days) : 3;
+  return `вкл (${days} дн.)`;
+}
+
+function formatAlertsLabel(alerts = {}) {
+  if (alerts?.enabled === false) {
+    return 'выкл';
+  }
+
+  const times = Array.isArray(alerts?.billing_times) && alerts.billing_times.length
+    ? alerts.billing_times.join(', ')
+    : '—';
+  const zeroSpend = alerts?.no_spend_by ?? '—';
+  return `вкл · billing: ${times} · zero-spend: ${zeroSpend}`;
+}
+
+function formatKpiLabel(kpi = {}) {
+  const parts = [];
+  parts.push(`CPL: ${kpi?.cpl ?? '—'}`);
+  parts.push(`Л/д: ${kpi?.leads_per_day ?? '—'}`);
+  parts.push(`Бюд/д: ${kpi?.daily_budget ?? '—'}`);
+  return parts.join(' · ');
+}
+
+function formatDateLabel(value) {
+  if (!value) {
+    return '—';
+  }
+
+  try {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString().slice(0, 10);
+    }
+  } catch (error) {
+    console.error('formatDateLabel error', error);
+  }
+
+  return String(value);
+}
+
+function renderProjectDetails(project, chatRecord) {
+  const timesLabel = project.times.length ? project.times.join(', ') : '—';
+  const chatInfo = project.chat_id
+    ? formatChatReference({
+        chat_id: project.chat_id,
+        thread_id: project.thread_id ?? 0,
+        title: chatRecord?.title ?? null,
+      })
+    : 'не привязан';
+
+  const lines = [
+    `<b>Проект #${escapeHtml(project.code)}</b>`,
+    `Аккаунт: <code>${escapeHtml(project.act || '—')}</code>`,
+    `Чат: ${chatInfo}`,
+  ];
+
+  if (chatRecord?.thread_name) {
+    lines.push(`Тема: ${escapeHtml(chatRecord.thread_name)}`);
+  }
+
+  lines.push(`Период: ${escapeHtml(project.period)} · расписание: ${escapeHtml(timesLabel)}`);
+  lines.push(`Тихие выходные: ${project.mute_weekends ? 'вкл' : 'выкл'}`);
+  lines.push(`Статус автоотчёта: ${project.active ? 'активен' : 'выключен'}`);
+  lines.push(`Статус биллинга: ${escapeHtml(project.billing)}`);
+  lines.push(`Выбрано кампаний: ${project.campaigns.length}`);
+  lines.push(`KPI: ${escapeHtml(formatKpiLabel(project.kpi))}`);
+  lines.push(`Сводник: ${escapeHtml(formatWeeklyLabel(project.weekly))}`);
+  lines.push(`Автопауза: ${escapeHtml(formatAutopauseLabel(project.autopause))}`);
+  lines.push(`Alerts: ${escapeHtml(formatAlertsLabel(project.alerts))}`);
+  lines.push(`Оплата: ${escapeHtml(formatDateLabel(project.billing_paid_at))}`);
+  lines.push(`Следующая оплата: ${escapeHtml(formatDateLabel(project.billing_next_at))}`);
+  lines.push('');
+  lines.push('Действия ниже пока выводят подсказку — функциональность будет добавляться поэтапно.');
+
+  const inline_keyboard = [];
+
+  inline_keyboard.push([
+    { text: '⏱ Расписание', callback_data: `proj:detail:todo:schedule:${project.code}` },
+    { text: '🎯 KPI', callback_data: `proj:detail:todo:kpi:${project.code}` },
+  ]);
+  inline_keyboard.push([
+    { text: '💳 Оплата', callback_data: `proj:detail:todo:billing:${project.code}` },
+    { text: '📊 Alerts', callback_data: `proj:detail:todo:alerts:${project.code}` },
+  ]);
+  inline_keyboard.push([
+    { text: '📤 Отчёт', callback_data: `proj:detail:todo:report:${project.code}` },
+    { text: '📦 Кампании', callback_data: `proj:detail:todo:campaigns:${project.code}` },
+  ]);
+  inline_keyboard.push([{ text: '📋 К списку проектов', callback_data: 'panel:projects:0' }]);
+  inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
 function buildChatSelectionPrompt(chats, options = {}) {
   const lines = ['<b>Шаг 2.</b> Выберите чат и топик для проекта.', ''];
 
@@ -928,7 +1066,7 @@ function renderProjectsPage(items, pagination = {}) {
         ? `<code>${escapeHtml(project.act)}</code>`
         : '—';
       const chatLabel = project.chat_id
-        ? `<code>${project.chat_id}</code> · thread <code>${project.thread_id ?? 0}</code>`
+        ? formatChatReference({ chat_id: project.chat_id, thread_id: project.thread_id ?? 0 })
         : 'нет привязки';
       const schedule = escapeHtml(project.times.join(', '));
 
@@ -948,6 +1086,15 @@ function renderProjectsPage(items, pagination = {}) {
   }
 
   const keyboard = [];
+
+  if (items.length) {
+    items.forEach((project) => {
+      if (!project.code) return;
+      keyboard.push([
+        { text: `⚙️ ${project.code}`, callback_data: `proj:detail:${project.code}` },
+      ]);
+    });
+  }
   if (pagination.nextCursor) {
     keyboard.push([
       { text: '➡️ Далее', callback_data: `panel:projects:next:${encodeURIComponent(pagination.nextCursor)}` },
@@ -1176,6 +1323,72 @@ async function handleCallbackQuery(env, callbackQuery) {
     const response = renderProjectsPage(result.items, pagination);
     return telegramEditMessage(env, message.chat.id, message.message_id, response.text, {
       reply_markup: response.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:detail:todo:')) {
+    const [, , , action = '', rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const hints = {
+      schedule: 'Настройка расписания появится на следующем этапе.',
+      kpi: 'Редактор KPI появится после подключения отчётов.',
+      billing: 'Учёт оплат будет добавлен вместе с биллинг-алертами.',
+      alerts: 'Управление алертами планируется в отдельном релизе.',
+      report: 'Кнопка отправки отчёта заработает, когда реализуем /report.',
+      campaigns: 'Редактор кампаний запланирован вместе с Meta API.',
+    };
+
+    const hint = hints[action] ?? 'Раздел в разработке. Следите за обновлениями.';
+    await telegramAnswerCallback(env, callbackQuery, hint);
+    return { ok: true, placeholder: action };
+  }
+
+  if (data.startsWith('proj:detail:')) {
+    const [, , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramEditMessage(
+        env,
+        message.chat.id,
+        message.message_id,
+        'Код проекта не распознан. Вернитесь в список и выберите проект ещё раз.',
+        {
+          reply_markup: {
+            inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+          },
+        },
+      );
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      await telegramEditMessage(
+        env,
+        message.chat.id,
+        message.message_id,
+        'Проект не найден. Возможно, он был удалён.',
+        {
+          reply_markup: {
+            inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+          },
+        },
+      );
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    const chatRecord = project.chat_id
+      ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
+      : null;
+
+    const details = renderProjectDetails(project, chatRecord);
+    return telegramEditMessage(env, message.chat.id, message.message_id, details.text, {
+      reply_markup: details.reply_markup,
     });
   }
 
