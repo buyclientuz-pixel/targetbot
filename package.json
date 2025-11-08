@@ -1,0 +1,10 @@
+{
+  "name": "targetbot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx wrangler@4.46.0 dev",
+    "deploy": "npx wrangler@4.46.0 deploy"
+  }
+}
