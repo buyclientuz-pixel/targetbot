@@ -20,6 +20,12 @@ const CHAT_PREFIX = 'chat:';
 const STATE_PREFIX = 'state:';
 const DEFAULT_ADMIN_IDS = [7623982602];
 const STATE_TTL_SECONDS = 600;
+const REPORT_ARCHIVE_PREFIX = 'report:';
+const REPORT_ARCHIVE_TTL_SECONDS = 60 * 60 * 24 * 90; // 90 дней
+const AUTO_REPORT_FLAG_PREFIX = 'flag:auto_report:';
+const WEEKLY_REPORT_FLAG_PREFIX = 'flag:weekly_report:';
+const REPORT_FLAG_TTL_SECONDS = 60 * 60 * 24 * 3;
+const WEEKLY_FLAG_TTL_SECONDS = 60 * 60 * 24 * 14;
 const PROJECT_CODE_PATTERN = /^[a-z0-9_-]{3,32}$/i;
 const PERIOD_OPTIONS = [
   { value: 'today', label: 'Сегодня' },
@@ -244,6 +250,18 @@ function getUserAccountsKey(uid) {
 
 function getAccountMetaKey(accountId) {
   return `${ACCOUNT_META_PREFIX}${accountId}`;
+}
+
+function getReportArchiveKey(code, stamp) {
+  return `${REPORT_ARCHIVE_PREFIX}${code}:${stamp}`;
+}
+
+function getAutoReportFlagKey(code, ymd, hm) {
+  return `${AUTO_REPORT_FLAG_PREFIX}${code}:${ymd}:${hm}`;
+}
+
+function getWeeklyReportFlagKey(code, ymd) {
+  return `${WEEKLY_REPORT_FLAG_PREFIX}${code}:${ymd}`;
 }
 
 function buildHelpMessage() {
@@ -498,6 +516,22 @@ async function listProjects(env, cursor, limit = DEFAULT_PAGE_SIZE) {
     cursor: response.cursor ?? null,
     listComplete: response.list_complete ?? true,
   };
+}
+
+async function listAllProjects(env, { pageSize = 100, maxPages = 20 } = {}) {
+  const collected = [];
+  let cursor = undefined;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const { items, cursor: nextCursor, listComplete } = await listProjects(env, cursor, pageSize);
+    collected.push(...items);
+    if (listComplete || !nextCursor) {
+      break;
+    }
+    cursor = nextCursor;
+  }
+
+  return collected;
 }
 
 async function loadUserState(env, uid) {
@@ -760,6 +794,43 @@ async function telegramRequest(env, method, payload) {
   return response.json();
 }
 
+async function telegramSendDocument(env, project, { filename, content, caption }) {
+  if (typeof env.BOT_TOKEN !== 'string' || env.BOT_TOKEN.trim() === '') {
+    throw new Error('BOT_TOKEN не задан. Невозможно отправить документ.');
+  }
+  if (!project?.chat_id) {
+    throw new Error('У проекта не привязан чат для отправки документов.');
+  }
+
+  const form = new FormData();
+  form.append('chat_id', String(project.chat_id));
+  if (Number.isFinite(project.thread_id) && project.thread_id > 0) {
+    form.append('message_thread_id', String(project.thread_id));
+  }
+  if (caption) {
+    form.append('caption', caption);
+    form.append('parse_mode', 'HTML');
+  }
+
+  const blob = new Blob([content ?? ''], { type: 'text/csv; charset=utf-8' });
+  form.append('document', blob, filename ?? 'report.csv');
+
+  const response = await fetchWithTimeout(
+    `https://api.telegram.org/bot${env.BOT_TOKEN}/sendDocument`,
+    {
+      method: 'POST',
+      body: form,
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Telegram sendDocument error (${response.status}): ${body}`);
+  }
+
+  return response.json();
+}
+
 async function telegramSendMessage(env, message, textContent, extra = {}) {
   if (!message?.chat?.id) {
     return { ok: false, error: 'chat_id_missing' };
@@ -918,7 +989,14 @@ async function handleReportCommand(env, message, args) {
   const currency = getCurrencyFromMeta(accountMeta);
 
   try {
-    await sendProjectReport(env, project, { period, range, token, currency });
+    await sendProjectReport(env, project, {
+      period,
+      range,
+      token,
+      currency,
+      archive: true,
+      origin: 'manual',
+    });
     return telegramSendMessage(env, message, `Отчёт по <b>#${escapeHtml(project.code)}</b> отправлен в привязанный чат.`, {
       disable_reply: true,
     });
@@ -2550,6 +2628,43 @@ function getTodayYmd(timezone = 'UTC') {
   }
 }
 
+function getLocalHm(date, timezone = 'UTC') {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    return formatter.format(date ?? new Date());
+  } catch (error) {
+    console.error('getLocalHm error', error);
+    return new Date(date ?? Date.now()).toISOString().slice(11, 16);
+  }
+}
+
+function getLocalWeekdayLabel(date, timezone = 'UTC') {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'short',
+    });
+    return formatter.format(date ?? new Date());
+  } catch (error) {
+    console.error('getLocalWeekdayLabel error', error);
+    return 'Mon';
+  }
+}
+
+function isWeekend(date, timezone = 'UTC') {
+  const label = getLocalWeekdayLabel(date, timezone);
+  return label === 'Sat' || label === 'Sun';
+}
+
+function isMonday(date, timezone = 'UTC') {
+  return getLocalWeekdayLabel(date, timezone) === 'Mon';
+}
+
 function shiftYmd(ymd, deltaDays) {
   if (!isValidYmd(ymd)) {
     return null;
@@ -2953,10 +3068,74 @@ async function telegramSendToProject(env, project, textContent, extra = {}) {
   return { ok: true };
 }
 
-async function sendProjectReport(env, project, { period, range, token, currency }) {
-  const payload = await buildProjectReport(env, project, { period, range, token, currency });
-  await telegramSendToProject(env, project, payload.message, {});
-  return { insightsCount: payload.filteredInsights.length };
+async function sendProjectReport(
+  env,
+  project,
+  {
+    period,
+    range,
+    token,
+    currency,
+    filters,
+    deliverToChat = true,
+    origin = 'manual',
+    archive = false,
+    sendCsv = false,
+    pushSheets = false,
+  },
+) {
+  const payload = await buildProjectReport(env, project, { period, range, token, currency, filters });
+  let delivered = false;
+  let archiveKey = null;
+  let csvInfo = null;
+  let sheetsInfo = null;
+  let csvFilename = null;
+
+  if (deliverToChat !== false) {
+    await telegramSendToProject(env, project, payload.message, {});
+    delivered = true;
+  }
+
+  if (sendCsv) {
+    try {
+      const csvContent = buildReportCsv(project, range, payload, currency);
+      csvFilename = `report_${project.code}_${range?.since ?? 'from'}_${range?.until ?? 'to'}.csv`;
+      await telegramSendDocument(env, project, {
+        filename: csvFilename,
+        content: csvContent,
+        caption: `CSV отчёт #${escapeHtml(project.code)} (${range?.since ?? ''}–${range?.until ?? ''})`,
+      });
+      csvInfo = { rows: payload.reportData.rows.length };
+    } catch (error) {
+      console.error('sendProjectReport csv error', error);
+    }
+  }
+
+  if (archive) {
+    try {
+      archiveKey = await archiveReportRecord(env, project, {
+        payload,
+        period,
+        range,
+        origin,
+        csvFilename,
+      });
+    } catch (error) {
+      console.error('sendProjectReport archive error', error);
+    }
+  }
+
+  if (pushSheets) {
+    sheetsInfo = await pushReportToSheets(env, project, payload, { period, range });
+  }
+
+  return {
+    payload,
+    delivered,
+    archiveKey,
+    csvInfo,
+    sheets: sheetsInfo,
+  };
 }
 
 async function sendProjectDigest(env, project, { period, range, token, currency }) {
@@ -2980,6 +3159,311 @@ async function buildProjectReport(env, project, { period, range, token, currency
     filteredInsights,
     filters: appliedFilters,
   };
+}
+
+function escapeCsvValue(value) {
+  const safe = value === null || typeof value === 'undefined' ? '' : String(value);
+  if (/[";\n]/.test(safe)) {
+    return `"${safe.replace(/"/g, '""')}"`;
+  }
+  return safe;
+}
+
+function buildReportCsv(project, range, payload, currency = 'USD') {
+  const rows = [
+    ['Campaign', 'Metric', 'Spend', 'Results', 'CPA', 'PeriodSince', 'PeriodUntil', 'ProjectCode'],
+  ];
+
+  for (const row of payload.reportData.rows) {
+    rows.push([
+      row.name,
+      row.metric?.label ?? '—',
+      Number(row.spend || 0).toFixed(2),
+      row.results ?? 0,
+      Number.isFinite(row.cpa) ? Number(row.cpa).toFixed(2) : '',
+      range?.since ?? '',
+      range?.until ?? '',
+      project.code ?? '',
+    ]);
+  }
+
+  rows.push([
+    'TOTAL',
+    '',
+    Number(payload.reportData.totalSpend || 0).toFixed(2),
+    payload.reportData.totalResults ?? 0,
+    Number.isFinite(payload.reportData.totalCpa)
+      ? Number(payload.reportData.totalCpa).toFixed(2)
+      : '',
+    range?.since ?? '',
+    range?.until ?? '',
+    project.code ?? '',
+  ]);
+
+  return rows.map((line) => line.map(escapeCsvValue).join(';')).join('\n');
+}
+
+async function archiveReportRecord(env, project, { payload, period, range, origin, csvFilename }) {
+  if (!env.DB || !project?.code) {
+    return null;
+  }
+
+  const record = {
+    code: project.code,
+    created_at: new Date().toISOString(),
+    origin: origin ?? 'manual',
+    period,
+    range,
+    filters: payload.filters ?? {},
+    totals: {
+      spend: payload.reportData?.totalSpend ?? 0,
+      results: payload.reportData?.totalResults ?? 0,
+      cpa: payload.reportData?.totalCpa ?? null,
+    },
+    rows: (payload.reportData?.rows ?? []).map((row) => ({
+      name: row.name,
+      spend: row.spend,
+      results: row.results,
+      cpa: row.cpa,
+      metric: row.metric?.short ?? null,
+    })),
+    message: payload.message ?? '',
+  };
+
+  if (csvFilename) {
+    record.csv_filename = csvFilename;
+  }
+
+  const key = getReportArchiveKey(project.code, Date.now());
+  await env.DB.put(key, JSON.stringify(record), { expirationTtl: REPORT_ARCHIVE_TTL_SECONDS });
+  return key;
+}
+
+async function hasReportFlag(env, key) {
+  if (!env.DB) {
+    return false;
+  }
+  try {
+    const value = await env.DB.get(key);
+    return Boolean(value);
+  } catch (error) {
+    console.error('hasReportFlag error', error);
+    return false;
+  }
+}
+
+async function setReportFlag(env, key, ttlSeconds) {
+  if (!env.DB) {
+    return;
+  }
+  try {
+    await env.DB.put(key, '1', { expirationTtl: ttlSeconds });
+  } catch (error) {
+    console.error('setReportFlag error', error);
+  }
+}
+
+async function pushReportToSheets(env, project, payload, { period, range }) {
+  if (typeof env.GS_WEBHOOK !== 'string' || !env.GS_WEBHOOK.trim()) {
+    return { ok: false, skipped: 'webhook_missing' };
+  }
+
+  try {
+    const body = {
+      project: project.code,
+      period,
+      range,
+      totals: payload.reportData
+        ? {
+            spend: payload.reportData.totalSpend,
+            results: payload.reportData.totalResults,
+            cpa: payload.reportData.totalCpa,
+          }
+        : null,
+      filters: payload.filters ?? {},
+      rows: payload.reportData?.rows ?? [],
+      created_at: new Date().toISOString(),
+    };
+
+    const response = await fetchWithTimeout(env.GS_WEBHOOK, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const textBody = await response.text();
+      throw new Error(`Sheets webhook error (${response.status}): ${textBody}`);
+    }
+
+    return { ok: true };
+  } catch (error) {
+    console.error('pushReportToSheets error', error);
+    return { ok: false, error: error?.message ?? String(error) };
+  }
+}
+
+async function sendWeeklyDigest(env, project, { token, timezone, currency }) {
+  const weekRange = getPeriodRange('last_week', timezone);
+  if (!weekRange) {
+    throw new Error('Не удалось определить диапазон прошлой недели.');
+  }
+
+  const dayPeriod = project.weekly?.mode === 'week_yesterday' ? 'yesterday' : 'today';
+  const dayRange = getPeriodRange(dayPeriod, timezone);
+
+  const weekPayload = await buildProjectReport(env, project, {
+    period: 'last_week',
+    range: weekRange,
+    token,
+    currency,
+  });
+
+  const dayPayload = dayRange
+    ? await buildProjectReport(env, project, {
+        period: dayPeriod,
+        range: dayRange,
+        token,
+        currency,
+      })
+    : null;
+
+  const lines = [
+    `#${escapeHtml(project.code)}`,
+    '<b>Сводник (понедельник)</b>',
+    '',
+    `<b>Прошлая неделя (${weekRange.since}–${weekRange.until})</b>`,
+  ];
+
+  if (weekPayload.reportData.lines.length) {
+    lines.push(...weekPayload.reportData.lines);
+    lines.push('', weekPayload.reportData.totalLine);
+  } else {
+    lines.push('Данных за прошлую неделю нет.');
+  }
+
+  if (dayPayload) {
+    const title = dayPeriod === 'week_yesterday' ? 'Вчера' : 'Сегодня';
+    lines.push('', `<b>${title} (${dayRange.since}–${dayRange.until})</b>`);
+    if (dayPayload.reportData.lines.length) {
+      lines.push(...dayPayload.reportData.lines);
+      lines.push('', dayPayload.reportData.totalLine);
+    } else {
+      lines.push('Данных за выбранный день нет.');
+    }
+  }
+
+  const message = lines.join('\n');
+  await telegramSendToProject(env, project, message, {});
+
+  try {
+    await archiveReportRecord(env, project, {
+      payload: { ...weekPayload, message },
+      period: 'last_week',
+      range: { since: weekRange.since, until: dayRange?.until ?? weekRange.until },
+      origin: 'weekly',
+    });
+  } catch (error) {
+    console.error('sendWeeklyDigest archive error', error);
+  }
+
+  return { ok: true };
+}
+
+async function resolveProjectCurrency(env, project, cache) {
+  const accountId = project?.act ? String(project.act).replace(/^act_/i, '') : '';
+  if (!accountId) {
+    return 'USD';
+  }
+
+  if (cache && cache.has(accountId)) {
+    return cache.get(accountId);
+  }
+
+  const meta = await loadAccountMeta(env, accountId) ?? {};
+  const currency = getCurrencyFromMeta(meta);
+
+  if (cache) {
+    cache.set(accountId, currency);
+  }
+
+  return currency;
+}
+
+function shouldSendAutoReportNow(project, { now, hm, timezone }) {
+  if (!project || !project.active) return false;
+  if (!project.chat_id) return false;
+  if (!project.act) return false;
+  if (project.billing === 'paused') return false;
+  if (!Array.isArray(project.times) || project.times.length === 0) return false;
+  if (!project.times.includes(hm)) return false;
+  if (project.mute_weekends && isWeekend(now, timezone)) return false;
+  return true;
+}
+
+function getWeeklyTriggerTime(project) {
+  if (Array.isArray(project?.times) && project.times.length > 0) {
+    return project.times[0];
+  }
+  return '09:30';
+}
+
+function shouldSendWeeklyDigestNow(project, { now, hm, timezone }) {
+  if (!project?.weekly || project.weekly.enabled === false) {
+    return false;
+  }
+  if (!project.chat_id || !project.act) {
+    return false;
+  }
+  if (!isMonday(now, timezone)) {
+    return false;
+  }
+  const trigger = getWeeklyTriggerTime(project);
+  return hm === trigger;
+}
+
+async function processAutoReport(env, project, { token, timezone, hm }) {
+  const today = getTodayYmd(timezone);
+  const flagKey = getAutoReportFlagKey(project.code, today, hm);
+  if (await hasReportFlag(env, flagKey)) {
+    return { skipped: 'already_sent' };
+  }
+
+  const period = project.period ?? 'yesterday';
+  const range = getPeriodRange(period, timezone);
+  if (!range) {
+    return { skipped: 'range_unavailable' };
+  }
+
+  const currency = await resolveProjectCurrency(env, project, processAutoReport.currencyCache);
+
+  const result = await sendProjectReport(env, project, {
+    period,
+    range,
+    token,
+    currency,
+    origin: 'auto',
+    archive: true,
+    sendCsv: true,
+    pushSheets: Boolean(env.GS_WEBHOOK),
+  });
+
+  await setReportFlag(env, flagKey, REPORT_FLAG_TTL_SECONDS);
+  return { ok: true, rows: result.payload?.filteredInsights?.length ?? 0 };
+}
+processAutoReport.currencyCache = new Map();
+
+async function processWeeklyReport(env, project, { token, timezone }) {
+  const today = getTodayYmd(timezone);
+  const flagKey = getWeeklyReportFlagKey(project.code, today);
+  if (await hasReportFlag(env, flagKey)) {
+    return { skipped: 'already_sent' };
+  }
+
+  const currency = await resolveProjectCurrency(env, project, processAutoReport.currencyCache);
+  await sendWeeklyDigest(env, project, { token, timezone, currency });
+  await setReportFlag(env, flagKey, WEEKLY_FLAG_TTL_SECONDS);
+  return { ok: true };
 }
 
 function renderProjectDetails(project, chatRecord) {
@@ -5950,13 +6434,20 @@ async function handleCallbackQuery(env, callbackQuery) {
       await telegramAnswerCallback(env, callbackQuery, 'Готовим отчёт...');
 
       try {
-        const payload = await buildProjectReport(env, project, { period, range, token, currency, filters });
-        await telegramSendToProject(env, project, payload.message, {});
+        const result = await sendProjectReport(env, project, {
+          period,
+          range,
+          token,
+          currency,
+          filters,
+          archive: true,
+          origin: 'manual',
+        });
         await telegramSendMessage(
           env,
           message,
           `Отчёт по <b>#${escapeHtml(project.code)}</b> отправлен в чат. Фильтры: ${escapeHtml(
-            describeReportFilters(payload.filters),
+            describeReportFilters(result.payload?.filters ?? filters),
           )}.`,
           { disable_reply: true },
         );
@@ -6092,6 +6583,48 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(Promise.resolve());
+    const timezone = env.DEFAULT_TZ || 'UTC';
+    const now = new Date();
+    const hm = getLocalHm(now, timezone);
+
+    let projects = [];
+    try {
+      projects = await listAllProjects(env, { pageSize: 100, maxPages: 25 });
+    } catch (error) {
+      console.error('scheduled listAllProjects error', error);
+      return;
+    }
+
+    if (!projects.length) {
+      return;
+    }
+
+    const { token } = await resolveMetaToken(env);
+    if (!token) {
+      console.warn('scheduled: Meta token отсутствует, автоотчёты пропущены.');
+      return;
+    }
+
+    processAutoReport.currencyCache = new Map();
+
+    for (const project of projects) {
+      if (project?.code) {
+        if (shouldSendAutoReportNow(project, { now, hm, timezone })) {
+          ctx.waitUntil(
+            processAutoReport(env, project, { token, timezone, hm }).catch((error) => {
+              console.error('scheduled auto error', project.code, error);
+            }),
+          );
+        }
+
+        if (shouldSendWeeklyDigestNow(project, { now, hm, timezone })) {
+          ctx.waitUntil(
+            processWeeklyReport(env, project, { token, timezone }).catch((error) => {
+              console.error('scheduled weekly error', project.code, error);
+            }),
+          );
+        }
+      }
+    }
   },
 };
