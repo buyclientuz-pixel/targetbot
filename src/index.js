@@ -236,6 +236,15 @@ function escapeHtml(input = '') {
     .replace(/'/g, '&#39;');
 }
 
+function escapeHtmlAttribute(input = '') {
+  return String(input)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/'/g, '&#39;');
+}
+
 function sanitizeReportPresetName(input) {
   if (typeof input !== 'string') {
     return '';
@@ -3786,7 +3795,10 @@ function renderAccountProjectsList(env, accountId, projects = []) {
   } else {
     projects.forEach((project) => {
       const chatLabel = project.chat_id
-        ? formatChatReference({ chat_id: project.chat_id, thread_id: project.thread_id ?? 0 })
+        ? formatChatReference(
+            { chat_id: project.chat_id, thread_id: project.thread_id ?? 0, title: project.chat_title ?? null },
+            { withLink: true },
+          )
         : 'нет привязки';
       lines.push(`• #${escapeHtml(project.code)} — ${chatLabel}`);
     });
@@ -3796,8 +3808,11 @@ function renderAccountProjectsList(env, accountId, projects = []) {
 
   if (projects.length) {
     projects.slice(0, 8).forEach((project) => {
+      const label = project.chat_title
+        ? `⚙️ ${project.chat_title.slice(0, 50)} · ${project.code}`
+        : `⚙️ ${project.code}`;
       inline_keyboard.push([
-        { text: `⚙️ ${project.code}`, callback_data: `proj:detail:${project.code}` },
+        { text: label.length > 62 ? `${label.slice(0, 61)}…` : label, callback_data: `proj:detail:${project.code}` },
       ]);
     });
   }
@@ -3831,20 +3846,41 @@ function buildTelegramTopicLink(chatId, threadId = 0) {
   return `https://t.me/c/${slug}/${threadSegment}`;
 }
 
-function formatChatLine(chat) {
-  const title = chat.title ? ` — ${escapeHtml(chat.title)}` : '';
-  const thread = chat.thread_id ?? 0;
-  return `• <code>${chat.chat_id}</code> · thread <code>${thread}</code>${title}`;
-}
-
-function formatChatReference(chat) {
+function formatChatDisplay(chat, { hyperlink = false } = {}) {
   if (!chat?.chat_id) {
     return 'не привязан';
   }
 
-  const title = chat.title ? ` — ${escapeHtml(chat.title)}` : '';
-  const thread = chat.thread_id ?? 0;
-  return `<code>${chat.chat_id}</code> · thread <code>${thread}</code>${title}`;
+  const thread = Number(chat.thread_id ?? 0);
+  const title = chat.title ? String(chat.title) : `Чат ${chat.chat_id}`;
+  const labelParts = [title];
+  if (thread > 0) {
+    labelParts.push(`#${thread}`);
+  }
+  const label = labelParts.join(' · ');
+  let decorated = escapeHtml(label);
+
+  if (hyperlink) {
+    const link = buildTelegramTopicLink(chat.chat_id, thread);
+    if (link) {
+      decorated = `<a href="${escapeHtmlAttribute(link)}">${escapeHtml(label)}</a>`;
+    }
+  }
+
+  const idParts = [`<code>${chat.chat_id}</code>`];
+  if (thread > 0) {
+    idParts.push(`thread <code>${thread}</code>`);
+  }
+
+  return `${decorated} · ${idParts.join(' · ')}`;
+}
+
+function formatChatLine(chat) {
+  return `• ${formatChatDisplay(chat, { hyperlink: true })}`;
+}
+
+function formatChatReference(chat, options = {}) {
+  return formatChatDisplay(chat, { hyperlink: Boolean(options?.withLink) });
 }
 
 async function loadChatRecord(env, chatId, threadId = 0) {
@@ -4192,6 +4228,27 @@ function formatCpa(amount, currency = 'USD') {
     return '—';
   }
   return formatCurrency(amount, currency);
+}
+
+function formatMoney(amount, currency = 'USD') {
+  if (!Number.isFinite(amount)) {
+    return '—';
+  }
+  return formatCurrency(amount, currency);
+}
+
+function formatPercentage(value) {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return `${value.toFixed(2)}%`;
+}
+
+function formatFrequency(value) {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return value.toFixed(2);
 }
 
 function normalizeReportFilters(filters = {}) {
@@ -4936,7 +4993,8 @@ function buildReportDetailMessage(project, range, reportData, currency = 'USD', 
 
 function buildDigestMessage(project, range, reportData, currency = 'USD') {
   const creativeStats = buildCreativeStats([], new Map(), currency);
-  return buildDigestChatMessage(project, range, reportData, creativeStats, currency);
+  const messages = buildDigestMessages(project, range, reportData, creativeStats, currency);
+  return messages.chat;
 }
 
 function buildDigestMessages(project, range, reportData, creativeStats, currency = 'USD') {
@@ -4944,6 +5002,255 @@ function buildDigestMessages(project, range, reportData, creativeStats, currency
     chat: buildDigestChatMessage(project, range, reportData, creativeStats, currency),
     detail: buildDigestDetailMessage(project, range, reportData, creativeStats, currency),
   };
+}
+
+function uniqueCreativeRows(rows = []) {
+  const seen = new Set();
+  const result = [];
+  for (const row of rows) {
+    if (!row) continue;
+    const key = row.id || row.name;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(row);
+  }
+  return result;
+}
+
+function buildCreativeStats(adInsights = [], profiles = new Map(), currency = 'USD') {
+  const rows = [];
+  const metricCodes = new Set();
+  let totalSpend = 0;
+  let totalResults = 0;
+
+  for (const item of Array.isArray(adInsights) ? adInsights : []) {
+    if (!item) continue;
+
+    const spend = Number(item.spend) || 0;
+    const campaignId = normalizeCampaignId(item.campaign_id);
+    const profile = profiles instanceof Map ? profiles.get(campaignId) ?? null : null;
+    const metric = profile ? getMetricByShortCode(profile.metric) : pickMetricForObjective(item.objective);
+    const resultsInfo = computeMetricResults(item, metric);
+    const results = Number(resultsInfo.value) || 0;
+    const clicks = Number(item.clicks) || 0;
+    const impressions = Number(item.impressions) || 0;
+    const ctrRaw = Number(item.ctr);
+    const ctr = Number.isFinite(ctrRaw) && ctrRaw >= 0 ? ctrRaw : impressions > 0 && clicks > 0 ? (clicks / impressions) * 100 : null;
+    const frequency = Number(item.frequency) || 0;
+    const cpa = results > 0 ? spend / results : null;
+    const cpc = clicks > 0 ? spend / clicks : null;
+    const cpm = impressions > 0 ? (spend / impressions) * 1000 : null;
+
+    totalSpend += spend;
+    totalResults += results;
+    if (metric?.costLabel) {
+      metricCodes.add(metric.costLabel);
+    }
+
+    const fallbackId =
+      item.ad_id ?? item.id ?? `${campaignId || 'unknown'}:${item.ad_name ?? 'ad'}`;
+    const fallbackName =
+      typeof item.ad_name === 'string' && item.ad_name.trim().length
+        ? item.ad_name
+        : item.ad_id
+        ? `Ad ${item.ad_id}`
+        : item.id
+        ? `Ad ${item.id}`
+        : '—';
+
+    rows.push({
+      id: fallbackId,
+      name: fallbackName,
+      campaignId,
+      campaignName: item.campaign_name ?? null,
+      spend,
+      results,
+      cpa,
+      cpc,
+      cpm,
+      ctr,
+      clicks,
+      impressions,
+      frequency,
+      metric,
+    });
+  }
+
+  rows.sort((a, b) => b.spend - a.spend);
+
+  const topCreatives = rows.filter((row) => row.results > 0).slice(0, 3);
+  const zeroResults = rows.filter((row) => row.results === 0 && row.spend > 0).slice(0, 3);
+  const costly = rows
+    .filter((row) => Number.isFinite(row.cpa) && row.results > 0)
+    .sort((a, b) => (b.cpa ?? 0) - (a.cpa ?? 0))
+    .slice(0, 5);
+  const underperforming = uniqueCreativeRows([...zeroResults, ...costly]).slice(0, 5);
+
+  const totalCpa = totalResults > 0 ? totalSpend / totalResults : null;
+  const metricCode = metricCodes.size === 1 ? Array.from(metricCodes)[0] : 'CPA';
+
+  return {
+    rows,
+    totalSpend,
+    totalResults,
+    totalCpa,
+    metricCode,
+    topCreatives,
+    zeroResults,
+    underperforming,
+    currency,
+  };
+}
+
+function formatCreativeLine(row, currency = 'USD') {
+  const metricLabel = row.metric?.label ?? 'Результаты';
+  const costLabel = getMetricCostLabel(row.metric);
+  return `• <b>${escapeHtml(row.name)}</b> — ${formatCurrency(row.spend, currency)} | ${metricLabel}: ${formatNumber(
+    row.results,
+  )} | ${costLabel}: ${formatCpa(row.cpa, currency)}`;
+}
+
+function describeCreativeAttention(row, currency = 'USD') {
+  if (!row) {
+    return '';
+  }
+
+  if (row.results === 0) {
+    return 'нет результатов при расходе';
+  }
+
+  if (Number.isFinite(row.cpa)) {
+    return `CPA ${formatCpa(row.cpa, currency)}`;
+  }
+
+  if (row.ctr && row.ctr > 0) {
+    return `CTR ${formatPercentage(row.ctr)}`;
+  }
+
+  return 'требует проверки';
+}
+
+function buildDigestChatMessage(project, range, reportData, creativeStats, currency = 'USD') {
+  const lines = [
+    `#${escapeHtml(project.code)}`,
+    `<b>Дайджест</b> (${range.since}–${range.until})`,
+  ];
+
+  if (reportData?.totalLine) {
+    lines.push(reportData.totalLine);
+  }
+
+  if (creativeStats.topCreatives.length) {
+    lines.push('', '<b>Топ креативы</b>');
+    creativeStats.topCreatives.forEach((row) => {
+      lines.push(formatCreativeLine(row, currency));
+    });
+  } else {
+    lines.push('', 'Креативы с положительными результатами не найдены.');
+  }
+
+  const attentionList = creativeStats.underperforming;
+  if (attentionList.length) {
+    lines.push('', '<b>Нуждаются во внимании</b>');
+    attentionList.forEach((row) => {
+      const reason = describeCreativeAttention(row, currency);
+      lines.push(
+        `• <b>${escapeHtml(row.name)}</b> — ${formatCurrency(row.spend, currency)} · ${escapeHtml(reason)}`,
+      );
+    });
+  }
+
+  return lines.filter(Boolean).join('\n');
+}
+
+function buildDigestDetailMessage(project, range, reportData, creativeStats, currency = 'USD') {
+  const lines = [
+    `#${escapeHtml(project.code)}`,
+    `<b>Детальный дайджест</b> (${range.since}–${range.until})`,
+  ];
+
+  if (reportData?.totalLine) {
+    lines.push(reportData.totalLine);
+  }
+
+  const detailed = creativeStats.rows.slice(0, 10);
+  if (!detailed.length) {
+    lines.push('', 'Креативы за выбранный период отсутствуют.');
+  } else {
+    lines.push('', '<b>Креативы</b>');
+    detailed.forEach((row) => {
+      lines.push(formatCreativeLine(row, currency));
+
+      const extras = [
+        `CTR ${formatPercentage(row.ctr)}`,
+        `CPC ${formatMoney(row.cpc, currency)}`,
+        `CPM ${formatMoney(row.cpm, currency)}`,
+        `Freq ${formatFrequency(row.frequency)}`,
+      ];
+      const campaignNote = row.campaignName ? `${escapeHtml(row.campaignName)} · ` : '';
+      lines.push(`  ${campaignNote}${extras.join(' · ')}`);
+    });
+  }
+
+  if (creativeStats.underperforming.length) {
+    lines.push('', '<b>Проблемные креативы</b>');
+    creativeStats.underperforming.forEach((row) => {
+      const reason = describeCreativeAttention(row, currency);
+      lines.push(`• ${escapeHtml(row.name)} — ${escapeHtml(reason)}`);
+    });
+  }
+
+  return lines.filter(Boolean).join('\n');
+}
+
+function buildDigestCsv(project, range, creativeStats, currency = 'USD') {
+  const header = [
+    'Ad',
+    'Campaign',
+    'Metric',
+    'Spend',
+    'Results',
+    creativeStats.metricCode || 'CPA',
+    'CTR %',
+    'Clicks',
+    'CPC',
+    'CPM',
+    'Frequency',
+  ];
+
+  const rows = [header];
+
+  for (const row of creativeStats.rows) {
+    rows.push([
+      row.name,
+      row.campaignName ?? row.campaignId ?? '—',
+      row.metric?.label ?? 'Результаты',
+      Number(row.spend || 0).toFixed(2),
+      row.results ?? 0,
+      Number.isFinite(row.cpa) ? Number(row.cpa).toFixed(2) : '',
+      Number.isFinite(row.ctr) ? row.ctr.toFixed(2) : '',
+      row.clicks ?? 0,
+      Number.isFinite(row.cpc) ? Number(row.cpc).toFixed(2) : '',
+      Number.isFinite(row.cpm) ? Number(row.cpm).toFixed(2) : '',
+      Number.isFinite(row.frequency) ? row.frequency.toFixed(2) : '',
+    ]);
+  }
+
+  rows.push([
+    'TOTAL',
+    '',
+    '',
+    Number(creativeStats.totalSpend || 0).toFixed(2),
+    creativeStats.totalResults ?? 0,
+    Number.isFinite(creativeStats.totalCpa) ? Number(creativeStats.totalCpa).toFixed(2) : '',
+    '',
+    '',
+    '',
+    '',
+    '',
+  ]);
+
+  return rows.map((line) => line.map(escapeCsvValue).join(';')).join('\n');
 }
 
 async function telegramSendToProject(env, project, textContent, extra = {}) {
@@ -6840,11 +7147,14 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
   const accountHealth = options.accountHealth ?? null;
   const timesLabel = project.times.length ? project.times.join(', ') : '—';
   const chatInfo = project.chat_id
-    ? formatChatReference({
-        chat_id: project.chat_id,
-        thread_id: project.thread_id ?? 0,
-        title: chatRecord?.title ?? null,
-      })
+    ? formatChatReference(
+        {
+          chat_id: project.chat_id,
+          thread_id: project.thread_id ?? 0,
+          title: chatRecord?.title ?? null,
+        },
+        { withLink: true },
+      )
     : 'не привязан';
 
   const accountName = accountMeta?.name || project.act || '—';
@@ -9024,10 +9334,12 @@ async function completeProjectCreation(env, uid, message, data = {}, overrides =
 async function renderProjectsPage(env, items, pagination = {}) {
   const textLines = ['<b>Проекты</b>', ''];
 
+  let enriched = [];
+
   if (!items.length) {
     textLines.push('Проектов пока нет. Настройте их через мастер в админ-панели.');
   } else {
-    const enriched = await Promise.all(
+    enriched = await Promise.all(
       items.map(async (rawProject) => {
         const project = normalizeProject(rawProject);
         const chatRecord = project.chat_id
@@ -9044,11 +9356,14 @@ async function renderProjectsPage(env, items, pagination = {}) {
       const codeLabel = project.code ? `#${escapeHtml(project.code)}` : 'без кода';
       const accountName = accountMeta?.name || project.act || '—';
       const chatLabel = project.chat_id
-        ? formatChatReference({
-            chat_id: project.chat_id,
-            thread_id: project.thread_id ?? 0,
-            title: chatRecord?.title ?? null,
-          })
+        ? formatChatReference(
+            {
+              chat_id: project.chat_id,
+              thread_id: project.thread_id ?? 0,
+              title: chatRecord?.title ?? null,
+            },
+            { withLink: true },
+          )
         : 'нет привязки';
       const schedule = escapeHtml(project.times.join(', '));
 
@@ -9073,11 +9388,23 @@ async function renderProjectsPage(env, items, pagination = {}) {
 
   const keyboard = [];
 
-  if (items.length) {
-    items.forEach((project) => {
-      if (!project.code) return;
+  if (enriched.length) {
+    enriched.forEach(({ project, chatRecord, accountMeta }) => {
+      if (!project?.code) return;
+
+      const accountLabel = accountMeta?.name || project.act || project.code;
+      const chatTitle = chatRecord?.title || null;
+      const parts = [accountLabel];
+      if (chatTitle) {
+        parts.push(chatTitle);
+      }
+      const label = `⚙️ ${parts.join(' · ')}`;
+
       keyboard.push([
-        { text: `⚙️ ${project.code}`, callback_data: `proj:detail:${project.code}` },
+        {
+          text: label.length > 62 ? `${label.slice(0, 61)}…` : label,
+          callback_data: `proj:detail:${project.code}`,
+        },
       ]);
     });
   }
