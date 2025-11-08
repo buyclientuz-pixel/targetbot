@@ -8,7 +8,7 @@ if [[ -n "$placeholder_lines" ]]; then
   echo "$placeholder_lines" >&2
   echo >&2
   echo "Fill in the real Namespace IDs from Cloudflare Workers → Settings → Variables and bindings → KV Namespace bindings." >&2
-  echo "You can also run 'wrangler kv namespace list' to copy the IDs for each binding." >&2
+  echo "You can also run './scripts/set-kv-ids.sh' to update wrangler.toml, or 'wrangler kv namespace list' to copy the IDs." >&2
 
   if command -v wrangler >/dev/null 2>&1; then
     if output=$(wrangler kv namespace list 2>&1); then

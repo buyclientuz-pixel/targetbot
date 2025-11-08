@@ -14,11 +14,15 @@ Wrangler and how to mirror the Worker that already lives in your Cloudflare acco
 Если нужно прямо сейчас редактировать и выкатывать `th-reports`, сделайте ровно эти действия:
 
 1. **Скопируйте KV IDs.** В Cloudflare: *Workers & Pages → th-reports → Settings → Variables and bindings → KV Namespace bindings*. Скопируйте `Namespace ID` для `REPORTS_NAMESPACE`, `BILLING_NAMESPACE` и `LOGS_NAMESPACE`.
-2. **Подставьте их в `wrangler.toml`.** Откройте файл и замените три плейсхолдера `REPLACE_WITH_…` на реальные значения в кавычках. Ничего больше менять не нужно.
+2. **Подставьте их в `wrangler.toml`.** Быстрее всего сделать это скриптом:
+   ```bash
+   ./scripts/set-kv-ids.sh
+   ```
+   Он попросит ввести три ID (или возьмёт их из переменных окружения `REPORTS_NAMESPACE_ID`, `BILLING_NAMESPACE_ID`, `LOGS_NAMESPACE_ID`) и перепишет плейсхолдеры. При желании можно открыть файл вручную и заменить строки `REPLACE_WITH_…`.
 3. **Запустите предпросмотр или деплой.**
    - Для проверки локально: `wrangler dev`
    - Чтобы обновить воркер в Cloudflare: `wrangler deploy`
-4. **Проверьте готовность при необходимости.** Запустите `scripts/check-readiness.sh`. Скрипт убедится, что Wrangler установлен, а в `wrangler.toml` не осталось плейсхолдеров с `REPLACE_WITH_…`. Если плейсхолдеры найдены, он автоматически вызовет `wrangler kv namespace list`, чтобы вывести доступные пространства (нужно быть залогиненным через `wrangler login`).
+4. **Проверьте готовность при необходимости.** Запустите `scripts/check-readiness.sh`. Скрипт убедится, что Wrangler установлен, а в `wrangler.toml` не осталось плейсхолдеров с `REPLACE_WITH_…`. Если плейсхолдеры найдены, он подскажет запустить `./scripts/set-kv-ids.sh` и автоматически вызовет `wrangler kv namespace list`, чтобы вывести доступные пространства (нужно быть залогиненным через `wrangler login`).
 5. **Редактируйте код бота.** Логика лежит в `src/index.ts`. Вносите изменения, затем повторяйте шаг 3, чтобы обновить продакшен.
 
 После этих четырёх пунктов репозиторий и рабочий воркер полностью синхронизированы: любое изменение в `src/index.ts` можно сразу выкатывать через `wrangler deploy` или через подключение репозитория в Cloudflare.
@@ -58,7 +62,7 @@ Wrangler provide those bindings when you deploy from Git:
    ```bash
    wrangler kv namespace list
    ```
-3. Откройте `wrangler.toml` в любом редакторе (VS Code, nano и т. д.) и замените плейсхолдеры `REPLACE_WITH_…` на скопированные ID. Вставляйте их **в кавычках**.
+3. Самый быстрый способ заменить плейсхолдеры — выполнить `./scripts/set-kv-ids.sh`. Он спросит три значения и обновит файл автоматически. Если хотите сделать вручную, откройте `wrangler.toml` в любом редакторе (VS Code, nano и т. д.) и замените плейсхолдеры `REPLACE_WITH_…` на скопированные ID. Вставляйте их **в кавычках**.
    Например:
    ```toml
    [[kv_namespaces]]
