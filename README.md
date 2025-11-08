@@ -38,6 +38,15 @@ wrangler deploy
 ```
 This publishes the current repository state to `https://th-reports.obe1kanobe25.workers.dev`.
 
+## 6. Iterate on the bot
+1. Edit `src/index.ts` (and any new modules you add) to implement the behaviour you need.
+2. Preview changes locally with live reload:
+   ```
+   wrangler dev
+   ```
+   Open the printed localhost URL in your browser or call it with `curl` to exercise the Worker before publishing.
+3. Commit your updates and run `wrangler deploy` again to push the new version to Cloudflare.
+
 ## Optional: Cloudflare “Connect to Git”
 If you enabled the Cloudflare Git integration, set the build command to `npm install` (or leave it empty) and the deploy command to `npm run deploy`. The included `package.json` defines:
 ```
