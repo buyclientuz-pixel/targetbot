@@ -18,6 +18,7 @@ const DEFAULT_PAGE_SIZE = 8;
 const PROJECT_PREFIX = 'project:';
 const CHAT_PREFIX = 'chat:';
 const STATE_PREFIX = 'state:';
+const DEFAULT_ADMIN_IDS = [7623982602];
 const STATE_TTL_SECONDS = 600;
 const PROJECT_CODE_PATTERN = /^[a-z0-9_-]{3,32}$/i;
 const PERIOD_OPTIONS = [
@@ -123,12 +124,15 @@ async function handleHealth() {
 }
 
 function parseAdminIds(env) {
-  return String(env.ADMIN_IDS || '')
+  const configured = String(env.ADMIN_IDS || '')
     .split(',')
     .map((part) => part.trim())
     .filter(Boolean)
     .map((part) => Number(part))
     .filter((id) => Number.isFinite(id));
+
+  const merged = new Set([...DEFAULT_ADMIN_IDS, ...configured]);
+  return Array.from(merged.values());
 }
 
 function getChatKey(chatId, threadId) {
