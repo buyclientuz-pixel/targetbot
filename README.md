@@ -9,6 +9,19 @@ Wrangler and how to mirror the Worker that already lives in your Cloudflare acco
 - ✅  `src/index.ts` now matches the Worker logic that is running in your Cloudflare dashboard.
 - ⏭️  Next action: fill in the KV namespace IDs in `wrangler.toml`, then run `wrangler deploy` to publish from Git.
 
+## Шаги «сделай и заработает»
+
+Если нужно прямо сейчас редактировать и выкатывать `th-reports`, сделайте ровно эти действия:
+
+1. **Скопируйте KV IDs.** В Cloudflare: *Workers & Pages → th-reports → Settings → Variables and bindings → KV Namespace bindings*. Скопируйте `Namespace ID` для `REPORTS_NAMESPACE`, `BILLING_NAMESPACE` и `LOGS_NAMESPACE`.
+2. **Подставьте их в `wrangler.toml`.** Откройте файл и замените три плейсхолдера `REPLACE_WITH_…` на реальные значения в кавычках. Ничего больше менять не нужно.
+3. **Запустите предпросмотр или деплой.**
+   - Для проверки локально: `wrangler dev`
+   - Чтобы обновить воркер в Cloudflare: `wrangler deploy`
+4. **Редактируйте код бота.** Логика лежит в `src/index.ts`. Вносите изменения, затем повторяйте шаг 3, чтобы обновить продакшен.
+
+После этих четырёх пунктов репозиторий и рабочий воркер полностью синхронизированы: любое изменение в `src/index.ts` можно сразу выкатывать через `wrangler deploy` или через подключение репозитория в Cloudflare.
+
 ## Prerequisites
 
 1. Install [Wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-update/) globally:
