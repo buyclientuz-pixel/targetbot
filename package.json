@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "npx wrangler@4.46.0 dev",
-    "deploy": "npx wrangler@4.46.0 deploy"
+    "deploy": "npx wrangler@4.46.0 deploy",
+    "check:config": "node scripts/check-config.mjs"
   }
 }

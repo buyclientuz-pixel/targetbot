@@ -150,6 +150,9 @@ const PROJECT_SCHEDULE_PRESETS = {
 
 const CAMPAIGN_EDITOR_PAGE_SIZE = 6;
 
+const KV_WARNINGS = new Set();
+const REQUIRED_ENV_KEYS = ['BOT_TOKEN', 'ADMIN_IDS', 'DEFAULT_TZ', 'FB_APP_ID', 'FB_APP_SECRET'];
+
 function escapeHtml(input = '') {
   return String(input)
     .replace(/&/g, '&amp;')
@@ -157,6 +160,45 @@ function escapeHtml(input = '') {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function resolveKvBinding(env, bindingName, fallbackBinding = 'DB') {
+  if (!env || typeof env !== 'object') {
+    return null;
+  }
+
+  if (bindingName && env[bindingName]) {
+    return env[bindingName];
+  }
+
+  if (bindingName && !KV_WARNINGS.has(bindingName) && fallbackBinding && env[fallbackBinding]) {
+    console.warn(
+      `[kv] Binding ${bindingName} не найден, используется fallback ${fallbackBinding}. Заполните wrangler.toml при первой возможности.`,
+    );
+    KV_WARNINGS.add(bindingName);
+  }
+
+  if (fallbackBinding) {
+    return env[fallbackBinding] ?? null;
+  }
+
+  return null;
+}
+
+function getPrimaryKv(env) {
+  return resolveKvBinding(env, 'DB', 'DB');
+}
+
+function getReportsKv(env) {
+  return resolveKvBinding(env, 'REPORTS_NAMESPACE', 'DB');
+}
+
+function getBillingKv(env) {
+  return resolveKvBinding(env, 'BILLING_NAMESPACE', 'DB');
+}
+
+function getLogsKv(env) {
+  return resolveKvBinding(env, 'LOGS_NAMESPACE', 'DB');
 }
 
 function json(data, init = {}) {
@@ -202,10 +244,9 @@ function ensureString(value, name, errors) {
 
 function validateRequiredEnv(env) {
   const missing = [];
-  ensureString(env.BOT_TOKEN, 'BOT_TOKEN', missing);
-  ensureString(env.ADMIN_IDS, 'ADMIN_IDS', missing);
-  ensureString(env.DEFAULT_TZ, 'DEFAULT_TZ', missing);
-
+  for (const key of REQUIRED_ENV_KEYS) {
+    ensureString(env?.[key], key, missing);
+  }
   return missing;
 }
 
@@ -239,8 +280,34 @@ function renderDebugPage(state) {
 </html>`;
 }
 
-async function handleHealth() {
-  return text('ok');
+async function handleHealth(env) {
+  const missingEnv = validateRequiredEnv(env);
+  const primaryKv = Boolean(getPrimaryKv(env));
+  const dedicatedBindings = ['REPORTS_NAMESPACE', 'BILLING_NAMESPACE', 'LOGS_NAMESPACE'];
+  const kvWarnings = [];
+  const activeDedicated = [];
+  for (const binding of dedicatedBindings) {
+    if (env && env[binding]) {
+      activeDedicated.push(binding);
+    } else {
+      kvWarnings.push(`Binding ${binding} не найден, будет использован fallback DB.`);
+    }
+  }
+
+  const status = missingEnv.length === 0 && primaryKv ? 'ok' : 'degraded';
+  const response = {
+    status,
+    timestamp: new Date().toISOString(),
+    missingEnv,
+    kv: {
+      primaryBound: primaryKv,
+      dedicatedBound: activeDedicated,
+      warnings: kvWarnings,
+    },
+  };
+
+  const httpStatus = status === 'ok' ? 200 : 503;
+  return json(response, { status: httpStatus });
 }
 
 function parseAdminIds(env) {
@@ -520,11 +587,12 @@ async function buildProjectAlertContext(env, project) {
 }
 
 async function loadProject(env, code) {
-  if (!env.DB) return null;
+  const kv = getPrimaryKv(env);
+  if (!kv) return null;
   if (!code) return null;
 
   try {
-    const raw = await env.DB.get(getProjectKey(code));
+    const raw = await kv.get(getProjectKey(code));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     return normalizeProject({ ...parsed, code });
@@ -535,11 +603,12 @@ async function loadProject(env, code) {
 }
 
 async function saveProject(env, project) {
-  if (!env.DB) throw new Error('KV binding DB недоступен.');
+  const kv = getPrimaryKv(env);
+  if (!kv) throw new Error('KV binding DB недоступен.');
   if (!project?.code) throw new Error('Код проекта обязателен.');
 
   const payload = JSON.stringify(normalizeProject(project));
-  await env.DB.put(getProjectKey(project.code), payload);
+  await kv.put(getProjectKey(project.code), payload);
 }
 
 async function mutateProject(env, code, mutator) {
@@ -558,17 +627,18 @@ async function mutateProject(env, code, mutator) {
 }
 
 async function listProjects(env, cursor, limit = DEFAULT_PAGE_SIZE) {
-  if (!env.DB) {
+  const kv = getPrimaryKv(env);
+  if (!kv) {
     return { items: [], cursor: null, listComplete: true };
   }
 
-  const response = await env.DB.list({ prefix: PROJECT_PREFIX, cursor, limit });
+  const response = await kv.list({ prefix: PROJECT_PREFIX, cursor, limit });
   const items = [];
 
   for (const key of response.keys || []) {
     const code = key.name.slice(PROJECT_PREFIX.length);
     try {
-      const raw = await env.DB.get(key.name);
+      const raw = await kv.get(key.name);
       if (!raw) continue;
       const parsed = JSON.parse(raw);
       items.push(normalizeProject({ ...parsed, code }));
@@ -601,9 +671,10 @@ async function listAllProjects(env, { pageSize = 100, maxPages = 20 } = {}) {
 }
 
 async function loadUserState(env, uid) {
-  if (!env.DB || !uid) return null;
+  const kv = getPrimaryKv(env);
+  if (!kv || !uid) return null;
   try {
-    const raw = await env.DB.get(getStateKey(uid));
+    const raw = await kv.get(getStateKey(uid));
     return raw ? JSON.parse(raw) : null;
   } catch (error) {
     console.error('loadUserState error', error);
@@ -612,22 +683,25 @@ async function loadUserState(env, uid) {
 }
 
 async function saveUserState(env, uid, state, options = {}) {
-  if (!env.DB || !uid) return;
+  const kv = getPrimaryKv(env);
+  if (!kv || !uid) return;
   const ttl = Number.isFinite(options.ttlSeconds)
     ? Number(options.ttlSeconds)
     : STATE_TTL_SECONDS;
-  await env.DB.put(getStateKey(uid), JSON.stringify(state ?? {}), { expirationTtl: ttl });
+  await kv.put(getStateKey(uid), JSON.stringify(state ?? {}), { expirationTtl: ttl });
 }
 
 async function clearUserState(env, uid) {
-  if (!env.DB || !uid) return;
-  await env.DB.delete(getStateKey(uid));
+  const kv = getPrimaryKv(env);
+  if (!kv || !uid) return;
+  await kv.delete(getStateKey(uid));
 }
 
 async function loadUserProfile(env, uid) {
-  if (!env.DB || !uid) return null;
+  const kv = getPrimaryKv(env);
+  if (!kv || !uid) return null;
   try {
-    const raw = await env.DB.get(getUserKey(uid));
+    const raw = await kv.get(getUserKey(uid));
     return raw ? JSON.parse(raw) : null;
   } catch (error) {
     console.error('loadUserProfile error', error);
@@ -636,14 +710,16 @@ async function loadUserProfile(env, uid) {
 }
 
 async function saveUserProfile(env, uid, profile) {
-  if (!env.DB || !uid) return;
-  await env.DB.put(getUserKey(uid), JSON.stringify(profile ?? {}));
+  const kv = getPrimaryKv(env);
+  if (!kv || !uid) return;
+  await kv.put(getUserKey(uid), JSON.stringify(profile ?? {}));
 }
 
 async function loadUserAccounts(env, uid) {
-  if (!env.DB || !uid) return [];
+  const kv = getPrimaryKv(env);
+  if (!kv || !uid) return [];
   try {
-    const raw = await env.DB.get(getUserAccountsKey(uid));
+    const raw = await kv.get(getUserAccountsKey(uid));
     return raw ? JSON.parse(raw) : [];
   } catch (error) {
     console.error('loadUserAccounts error', error);
@@ -652,20 +728,23 @@ async function loadUserAccounts(env, uid) {
 }
 
 async function saveUserAccounts(env, uid, accounts = []) {
-  if (!env.DB || !uid) return;
-  await env.DB.put(getUserAccountsKey(uid), JSON.stringify(accounts ?? []));
+  const kv = getPrimaryKv(env);
+  if (!kv || !uid) return;
+  await kv.put(getUserAccountsKey(uid), JSON.stringify(accounts ?? []));
 }
 
 async function saveAccountMeta(env, accountId, meta, options = {}) {
-  if (!env.DB || !accountId) return;
+  const kv = getPrimaryKv(env);
+  if (!kv || !accountId) return;
   const ttl = Number.isFinite(options.ttlSeconds) ? Number(options.ttlSeconds) : ACCOUNT_META_TTL_SECONDS;
-  await env.DB.put(getAccountMetaKey(accountId), JSON.stringify(meta ?? {}), { expirationTtl: ttl });
+  await kv.put(getAccountMetaKey(accountId), JSON.stringify(meta ?? {}), { expirationTtl: ttl });
 }
 
 async function loadAccountMeta(env, accountId) {
-  if (!env.DB || !accountId) return null;
+  const kv = getPrimaryKv(env);
+  if (!kv || !accountId) return null;
   try {
-    const raw = await env.DB.get(getAccountMetaKey(accountId));
+    const raw = await kv.get(getAccountMetaKey(accountId));
     return raw ? JSON.parse(raw) : null;
   } catch (error) {
     console.error('loadAccountMeta error', error);
@@ -674,9 +753,10 @@ async function loadAccountMeta(env, accountId) {
 }
 
 async function loadPortalRecord(env, code) {
-  if (!env.DB || !code) return null;
+  const kv = getPrimaryKv(env);
+  if (!kv || !code) return null;
   try {
-    const raw = await env.DB.get(getPortalKey(code));
+    const raw = await kv.get(getPortalKey(code));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     return typeof parsed === 'object' && parsed ? parsed : null;
@@ -687,14 +767,16 @@ async function loadPortalRecord(env, code) {
 }
 
 async function savePortalRecord(env, code, record = {}) {
-  if (!env.DB || !code) return;
-  await env.DB.put(getPortalKey(code), JSON.stringify(record ?? {}));
+  const kv = getPrimaryKv(env);
+  if (!kv || !code) return;
+  await kv.put(getPortalKey(code), JSON.stringify(record ?? {}));
 }
 
 async function deletePortalRecord(env, code) {
-  if (!env.DB || !code) return;
+  const kv = getPrimaryKv(env);
+  if (!kv || !code) return;
   try {
-    await env.DB.delete(getPortalKey(code));
+    await kv.delete(getPortalKey(code));
   } catch (error) {
     console.error('deletePortalRecord error', error);
   }
@@ -1064,7 +1146,8 @@ async function telegramAnswerCallback(env, callbackQuery, textContent) {
 }
 
 async function saveRegisteredChat(env, message) {
-  if (!env.DB) {
+  const kv = getPrimaryKv(env);
+  if (!kv) {
     throw new Error('KV binding DB недоступен.');
   }
 
@@ -1086,7 +1169,7 @@ async function saveRegisteredChat(env, message) {
     updated_at: Date.now(),
   };
 
-  await env.DB.put(getChatKey(chatId, threadId), JSON.stringify(record));
+  await kv.put(getChatKey(chatId, threadId), JSON.stringify(record));
   return record;
 }
 
@@ -2528,15 +2611,16 @@ function isAdmin(env, userId) {
 }
 
 async function listRegisteredChats(env, cursor, limit = DEFAULT_PAGE_SIZE) {
-  if (!env.DB) {
+  const kv = getPrimaryKv(env);
+  if (!kv) {
     return { items: [], cursor: null, listComplete: true };
   }
 
-  const response = await env.DB.list({ prefix: CHAT_PREFIX, cursor, limit });
+  const response = await kv.list({ prefix: CHAT_PREFIX, cursor, limit });
   const items = [];
   for (const key of response.keys || []) {
     try {
-      const raw = await env.DB.get(key.name);
+      const raw = await kv.get(key.name);
       if (!raw) continue;
       const parsed = JSON.parse(raw);
       items.push({ key: key.name, ...parsed });
@@ -2727,12 +2811,13 @@ function formatChatReference(chat) {
 }
 
 async function loadChatRecord(env, chatId, threadId = 0) {
-  if (!env.DB || !Number.isFinite(Number(chatId))) {
+  const kv = getPrimaryKv(env);
+  if (!kv || !Number.isFinite(Number(chatId))) {
     return null;
   }
 
   try {
-    const raw = await env.DB.get(getChatKey(chatId, threadId));
+    const raw = await kv.get(getChatKey(chatId, threadId));
     if (!raw) return null;
     return JSON.parse(raw);
   } catch (error) {
@@ -3684,7 +3769,8 @@ function getArchiveCsvFilename(project, record, stamp) {
 }
 
 async function archiveReportRecord(env, project, { payload, period, range, origin, csvFilename }) {
-  if (!env.DB || !project?.code) {
+  const reportsKv = getReportsKv(env);
+  if (!reportsKv || !project?.code) {
     return null;
   }
 
@@ -3715,12 +3801,13 @@ async function archiveReportRecord(env, project, { payload, period, range, origi
   }
 
   const key = getReportArchiveKey(project.code, Date.now());
-  await env.DB.put(key, JSON.stringify(record), { expirationTtl: REPORT_ARCHIVE_TTL_SECONDS });
+  await reportsKv.put(key, JSON.stringify(record), { expirationTtl: REPORT_ARCHIVE_TTL_SECONDS });
   return key;
 }
 
 async function listReportArchiveStamps(env, code, { limit = REPORT_ARCHIVE_MAX_KEYS } = {}) {
-  if (!env.DB || !code) {
+  const reportsKv = getReportsKv(env);
+  if (!reportsKv || !code) {
     return [];
   }
 
@@ -3730,7 +3817,7 @@ async function listReportArchiveStamps(env, code, { limit = REPORT_ARCHIVE_MAX_K
 
   while (stamps.length < limit) {
     const pageSize = Math.min(100, limit - stamps.length);
-    const response = await env.DB.list({ prefix, limit: pageSize, cursor });
+    const response = await reportsKv.list({ prefix, limit: pageSize, cursor });
 
     for (const entry of response.keys ?? []) {
       const parts = entry.name.split(':');
@@ -3753,13 +3840,14 @@ async function listReportArchiveStamps(env, code, { limit = REPORT_ARCHIVE_MAX_K
 }
 
 async function loadReportArchiveRecord(env, code, stamp) {
-  if (!env.DB || !code || !Number.isFinite(stamp)) {
+  const reportsKv = getReportsKv(env);
+  if (!reportsKv || !code || !Number.isFinite(stamp)) {
     return null;
   }
 
   try {
     const key = getReportArchiveKey(code, stamp);
-    const raw = await env.DB.get(key);
+    const raw = await reportsKv.get(key);
     if (!raw) {
       return null;
     }
@@ -4083,12 +4171,13 @@ async function clearReportArchiveState(env, uid, code) {
 }
 
 async function loadAutopauseState(env, code) {
-  if (!env.DB) {
+  const kv = getLogsKv(env);
+  if (!kv) {
     return { count: 0, last_ymd: null };
   }
 
   try {
-    const raw = await env.DB.get(getAutopauseStreakKey(code));
+    const raw = await kv.get(getAutopauseStreakKey(code));
     if (!raw) {
       return { count: 0, last_ymd: null };
     }
@@ -4104,12 +4193,13 @@ async function loadAutopauseState(env, code) {
 }
 
 async function saveAutopauseState(env, code, state) {
-  if (!env.DB) {
+  const kv = getLogsKv(env);
+  if (!kv) {
     return;
   }
 
   try {
-    await env.DB.put(
+    await kv.put(
       getAutopauseStreakKey(code),
       JSON.stringify({
         count: Number.isFinite(state?.count) ? Number(state.count) : 0,
@@ -4122,11 +4212,12 @@ async function saveAutopauseState(env, code, state) {
 }
 
 async function hasReportFlag(env, key) {
-  if (!env.DB) {
+  const kv = getLogsKv(env);
+  if (!kv) {
     return false;
   }
   try {
-    const value = await env.DB.get(key);
+    const value = await kv.get(key);
     return Boolean(value);
   } catch (error) {
     console.error('hasReportFlag error', error);
@@ -4135,11 +4226,12 @@ async function hasReportFlag(env, key) {
 }
 
 async function setReportFlag(env, key, ttlSeconds) {
-  if (!env.DB) {
+  const kv = getLogsKv(env);
+  if (!kv) {
     return;
   }
   try {
-    await env.DB.put(key, '1', { expirationTtl: ttlSeconds });
+    await kv.put(key, '1', { expirationTtl: ttlSeconds });
   } catch (error) {
     console.error('setReportFlag error', error);
   }
@@ -4283,52 +4375,67 @@ function shouldRunAnomalyChecksNow(project, hm) {
   return ANOMALY_CHECK_TIMES.includes(hm);
 }
 
-async function runProjectAlerts(env, project, { token, timezone, hm }) {
+async function runProjectAlerts(env, project, { token, timezone, hm, force = false }) {
+  const summary = {
+    ran: false,
+    billing: false,
+    zero: false,
+    anomaly: false,
+    fatigue: false,
+    skipped: null,
+  };
+
   if (!project?.alerts || project.alerts.enabled === false) {
-    return;
+    summary.skipped = 'alerts_disabled';
+    return summary;
   }
 
   if (!project?.act) {
-    return;
+    summary.skipped = 'missing_act';
+    return summary;
   }
 
   const currencyCache = runProjectAlerts.currencyCache || new Map();
   const currency = await resolveProjectCurrency(env, project, currencyCache);
 
-  const tasks = [];
+  const shouldBilling = force || shouldCheckBillingNow(project, hm);
+  const shouldZero = force || shouldCheckZeroSpendNow(project, hm);
+  const shouldAnomaly = force || shouldRunAnomalyChecksNow(project, hm);
 
-  if (shouldCheckBillingNow(project, hm)) {
-    tasks.push(
-      runBillingAlert(env, project, { token, timezone }).catch((error) => {
-        console.error('billing alert error', project.code, error);
-      }),
-    );
+  if (shouldBilling) {
+    summary.ran = true;
+    try {
+      summary.billing = Boolean(await runBillingAlert(env, project, { token, timezone }));
+    } catch (error) {
+      console.error('billing alert error', project.code, error);
+    }
   }
 
-  if (shouldCheckZeroSpendNow(project, hm)) {
-    tasks.push(
-      runZeroSpendAlert(env, project, { token, timezone }).catch((error) => {
-        console.error('zero-spend alert error', project.code, error);
-      }),
-    );
+  if (shouldZero) {
+    summary.ran = true;
+    try {
+      summary.zero = Boolean(await runZeroSpendAlert(env, project, { token, timezone }));
+    } catch (error) {
+      console.error('zero-spend alert error', project.code, error);
+    }
   }
 
-  if (shouldRunAnomalyChecksNow(project, hm)) {
-    tasks.push(
-      runAnomalyAlert(env, project, { token, timezone, hm, currency }).catch((error) => {
-        console.error('anomaly alert error', project.code, error);
-      }),
-    );
-    tasks.push(
-      runCreativeFatigueAlert(env, project, { token, timezone, hm, currency }).catch((error) => {
-        console.error('fatigue alert error', project.code, error);
-      }),
-    );
+  if (shouldAnomaly) {
+    summary.ran = true;
+    try {
+      summary.anomaly = Boolean(await runAnomalyAlert(env, project, { token, timezone, hm, currency }));
+    } catch (error) {
+      console.error('anomaly alert error', project.code, error);
+    }
+    try {
+      summary.fatigue = Boolean(await runCreativeFatigueAlert(env, project, { token, timezone, hm, currency }));
+    } catch (error) {
+      console.error('fatigue alert error', project.code, error);
+    }
   }
 
-  if (tasks.length) {
-    await Promise.all(tasks);
-  }
+  summary.anyTriggered = summary.billing || summary.zero || summary.anomaly || summary.fatigue;
+  return summary;
 }
 
 runProjectAlerts.currencyCache = new Map();
@@ -4365,17 +4472,18 @@ async function runBillingAlert(env, project, { token, timezone }) {
   }
 
   if (!issues.length) {
-    return;
+    return false;
   }
 
   const today = getTodayYmd(timezone);
   const digest = JSON.stringify({ statusCode, disableReason, isPrepay, balance, spendCap, amountSpent });
   const flagKey = getAlertFlagKey(project.code, 'billing', today);
 
-  if (env.DB) {
-    const previous = await env.DB.get(flagKey);
+  const billingKv = getBillingKv(env);
+  if (billingKv) {
+    const previous = await billingKv.get(flagKey);
     if (previous === digest) {
-      return;
+      return false;
     }
   }
 
@@ -4395,35 +4503,38 @@ async function runBillingAlert(env, project, { token, timezone }) {
 
   await telegramNotifyAdmins(env, lines.join('\n'));
 
-  if (env.DB) {
-    await env.DB.put(flagKey, digest, { expirationTtl: ALERT_DEFAULT_TTL_SECONDS });
+  if (billingKv) {
+    await billingKv.put(flagKey, digest, { expirationTtl: ALERT_DEFAULT_TTL_SECONDS });
   }
+
+  return true;
 }
 
 async function runZeroSpendAlert(env, project, { token, timezone }) {
   const range = getPeriodRange('today', timezone);
   if (!range) {
-    return;
+    return false;
   }
 
   const insights = await fetchCampaignInsights(env, project, token, range);
   const totalSpend = sumSpend(insights);
   if (totalSpend > 0.1) {
-    return;
+    return false;
   }
 
   const campaigns = await fetchActiveCampaigns(env, project, token);
   const active = campaigns.filter(isCampaignEffectivelyActive);
   if (!active.length) {
-    return;
+    return false;
   }
 
   const today = getTodayYmd(timezone);
   const flagKey = getAlertFlagKey(project.code, 'zero', today);
-  if (env.DB) {
-    const seen = await env.DB.get(flagKey);
+  const logsKv = getLogsKv(env);
+  if (logsKv) {
+    const seen = await logsKv.get(flagKey);
     if (seen) {
-      return;
+      return false;
     }
   }
 
@@ -4446,9 +4557,11 @@ async function runZeroSpendAlert(env, project, { token, timezone }) {
 
   await telegramNotifyAdmins(env, lines.join('\n'));
 
-  if (env.DB) {
-    await env.DB.put(flagKey, '1', { expirationTtl: ALERT_ZERO_TTL_SECONDS });
+  if (logsKv) {
+    await logsKv.put(flagKey, '1', { expirationTtl: ALERT_ZERO_TTL_SECONDS });
   }
+
+  return true;
 }
 
 async function runAnomalyAlert(env, project, { token, timezone, hm, currency = 'USD' }) {
@@ -4536,7 +4649,7 @@ async function runAnomalyAlert(env, project, { token, timezone, hm, currency = '
   }
 
   if (!alerts.length) {
-    return;
+    return false;
   }
 
   alerts.sort((a, b) => b.spend - a.spend);
@@ -4544,10 +4657,11 @@ async function runAnomalyAlert(env, project, { token, timezone, hm, currency = '
 
   const today = getTodayYmd(timezone);
   const flagKey = getAlertFlagKey(project.code, 'anomaly', `${today}:${hm}`);
-  if (env.DB) {
-    const seen = await env.DB.get(flagKey);
+  const logsKv = getLogsKv(env);
+  if (logsKv) {
+    const seen = await logsKv.get(flagKey);
     if (seen) {
-      return;
+      return false;
     }
   }
 
@@ -4565,20 +4679,22 @@ async function runAnomalyAlert(env, project, { token, timezone, hm, currency = '
 
   await telegramNotifyAdmins(env, lines.join('\n'));
 
-  if (env.DB) {
-    await env.DB.put(flagKey, '1', { expirationTtl: ALERT_ANOMALY_TTL_SECONDS });
+  if (logsKv) {
+    await logsKv.put(flagKey, '1', { expirationTtl: ALERT_ANOMALY_TTL_SECONDS });
   }
+
+  return true;
 }
 
 async function runCreativeFatigueAlert(env, project, { token, timezone, hm, currency = 'USD' }) {
   const range = getPeriodRange('last_7d', timezone);
   if (!range) {
-    return;
+    return false;
   }
 
   const insights = await fetchCampaignInsights(env, project, token, range);
   if (!insights.length) {
-    return;
+    return false;
   }
 
   const freqThreshold = Number.isFinite(project?.anomaly?.freq) ? Number(project.anomaly.freq) : 3.5;
@@ -4624,7 +4740,7 @@ async function runCreativeFatigueAlert(env, project, { token, timezone, hm, curr
   }
 
   if (!fatigued.length) {
-    return;
+    return false;
   }
 
   fatigued.sort((a, b) => b.freq - a.freq || b.spend - a.spend);
@@ -4632,10 +4748,11 @@ async function runCreativeFatigueAlert(env, project, { token, timezone, hm, curr
 
   const today = getTodayYmd(timezone);
   const flagKey = getAlertFlagKey(project.code, 'fatigue', `${today}:${hm}`);
-  if (env.DB) {
-    const seen = await env.DB.get(flagKey);
+  const logsKv = getLogsKv(env);
+  if (logsKv) {
+    const seen = await logsKv.get(flagKey);
     if (seen) {
-      return;
+      return false;
     }
   }
 
@@ -4655,9 +4772,11 @@ async function runCreativeFatigueAlert(env, project, { token, timezone, hm, curr
 
   await telegramNotifyAdmins(env, lines.join('\n'));
 
-  if (env.DB) {
-    await env.DB.put(flagKey, '1', { expirationTtl: ALERT_ANOMALY_TTL_SECONDS });
+  if (logsKv) {
+    await logsKv.put(flagKey, '1', { expirationTtl: ALERT_ANOMALY_TTL_SECONDS });
   }
+
+  return true;
 }
 
 async function pauseProjectCampaigns(env, project, { token } = {}) {
@@ -4691,27 +4810,41 @@ async function pauseProjectCampaigns(env, project, { token } = {}) {
   return { ok, failed };
 }
 
-async function runAutopauseCheck(env, project, { token, timezone, hm }) {
+async function runAutopauseCheck(env, project, { token, timezone, hm, force = false }) {
+  const summary = {
+    ran: false,
+    triggered: false,
+    streak: 0,
+    threshold: null,
+    processedDay: null,
+    skipped: null,
+  };
+
   if (!project?.autopause?.enabled) {
-    return;
+    summary.skipped = 'autopause_disabled';
+    return summary;
   }
 
-  if (hm !== AUTOPAUSE_CHECK_TIME) {
-    return;
+  if (!force && hm !== AUTOPAUSE_CHECK_TIME) {
+    summary.skipped = 'time_window';
+    return summary;
   }
 
   const kpiCpl = Number(project?.kpi?.cpl);
   if (!Number.isFinite(kpiCpl) || kpiCpl <= 0) {
-    return;
+    summary.skipped = 'missing_kpi';
+    return summary;
   }
 
   if (!project?.act) {
-    return;
+    summary.skipped = 'missing_act';
+    return summary;
   }
 
   const range = getPeriodRange('yesterday', timezone);
   if (!range) {
-    return;
+    summary.skipped = 'range_unavailable';
+    return summary;
   }
 
   const currencyCache = runAutopauseCheck.currencyCache || new Map();
@@ -4729,9 +4862,14 @@ async function runAutopauseCheck(env, project, { token, timezone, hm }) {
   const cpa = results > 0 ? spend / results : Number.POSITIVE_INFINITY;
   const processedDay = range.until;
 
+  summary.ran = true;
+  summary.processedDay = processedDay;
+
   const state = await loadAutopauseState(env, project.code);
-  if (state.last_ymd === processedDay) {
-    return;
+  if (state.last_ymd === processedDay && !force) {
+    summary.skipped = 'already_processed';
+    summary.streak = state.count ?? 0;
+    return summary;
   }
 
   let streak = 0;
@@ -4746,18 +4884,23 @@ async function runAutopauseCheck(env, project, { token, timezone, hm }) {
     streak = 0;
   }
 
+  summary.streak = streak;
+
   await saveAutopauseState(env, project.code, { count: streak, last_ymd: processedDay });
 
   const threshold = Number.isFinite(project?.autopause?.days) && project.autopause.days > 0
     ? Number(project.autopause.days)
     : 3;
+  summary.threshold = threshold;
 
   if (streak >= threshold) {
     const alertKey = getAutopauseAlertFlagKey(project.code, processedDay);
-    if (env.DB) {
-      const seen = await env.DB.get(alertKey);
-      if (seen) {
-        return;
+    const logsKv = getLogsKv(env);
+    if (logsKv) {
+      const seen = await logsKv.get(alertKey);
+      if (seen && !force) {
+        summary.skipped = 'alert_sent_recently';
+        return summary;
       }
     }
 
@@ -4790,13 +4933,111 @@ async function runAutopauseCheck(env, project, { token, timezone, hm }) {
 
     await telegramNotifyAdmins(env, lines.join('\n'), extra);
 
-    if (env.DB) {
-      await env.DB.put(alertKey, '1', { expirationTtl: AUTOPAUSE_ALERT_TTL_SECONDS });
+    if (logsKv) {
+      await logsKv.put(alertKey, '1', { expirationTtl: AUTOPAUSE_ALERT_TTL_SECONDS });
     }
+
+    summary.triggered = true;
   }
+
+  return summary;
 }
 
 runAutopauseCheck.currencyCache = new Map();
+
+async function resetProjectReportFlags(env, project, { timezone, includeWeekly = true } = {}) {
+  const kv = getLogsKv(env);
+  if (!kv) {
+    throw new Error('KV для служебных флагов недоступен.');
+  }
+
+  const tz = timezone || env.DEFAULT_TZ || 'UTC';
+  const today = getTodayYmd(tz);
+  const times = Array.isArray(project?.times) ? project.times : [];
+  const keys = times.map((hm) => getAutoReportFlagKey(project.code, today, hm));
+
+  if (includeWeekly !== false) {
+    keys.push(getWeeklyReportFlagKey(project.code, today));
+  }
+
+  let removed = 0;
+  for (const key of keys) {
+    try {
+      await kv.delete(key);
+      removed += 1;
+    } catch (error) {
+      console.error('resetProjectReportFlags delete error', project.code, key, error);
+    }
+  }
+
+  return { removed, keys };
+}
+
+async function runManualAutoReportAction(env, project, { timezone } = {}) {
+  const tz = timezone || env.DEFAULT_TZ || 'UTC';
+  const { token } = await resolveMetaToken(env);
+  if (!token) {
+    throw new Error('Meta токен не найден. Подключите Meta в админ-панели.');
+  }
+
+  const period = project.period ?? 'yesterday';
+  const range = getPeriodRange(period, tz);
+  if (!range) {
+    throw new Error('Не удалось определить период для отчёта. Проверьте настройки проекта.');
+  }
+
+  const currency = await resolveProjectCurrency(env, project, processAutoReport.currencyCache);
+  const result = await sendProjectReport(env, project, {
+    period,
+    range,
+    token,
+    currency,
+    filters: {},
+    deliverToChat: true,
+    origin: 'manual_action',
+    archive: true,
+    sendCsv: false,
+    pushSheets: false,
+  });
+
+  const rows = result.payload?.filteredInsights?.length ?? 0;
+  const spend = result.payload?.reportData?.totalSpend ?? 0;
+  return { rows, spend, range, currency };
+}
+
+async function runManualWeeklyDigestAction(env, project, { timezone } = {}) {
+  const tz = timezone || env.DEFAULT_TZ || 'UTC';
+  const { token } = await resolveMetaToken(env);
+  if (!token) {
+    throw new Error('Meta токен не найден. Подключите Meta в админ-панели.');
+  }
+
+  const currency = await resolveProjectCurrency(env, project, processAutoReport.currencyCache);
+  await sendWeeklyDigest(env, project, { token, timezone: tz, currency });
+  return { ok: true };
+}
+
+async function runManualAlertsAction(env, project, { timezone } = {}) {
+  const tz = timezone || env.DEFAULT_TZ || 'UTC';
+  const { token } = await resolveMetaToken(env);
+  if (!token) {
+    throw new Error('Meta токен не найден. Подключите Meta в админ-панели.');
+  }
+
+  const hm = getLocalHm(new Date(), tz);
+  return runProjectAlerts(env, project, { token, timezone: tz, hm, force: true });
+}
+
+async function runManualAutopauseAction(env, project, { timezone } = {}) {
+  const tz = timezone || env.DEFAULT_TZ || 'UTC';
+  const { token } = await resolveMetaToken(env);
+  if (!token) {
+    throw new Error('Meta токен не найден. Подключите Meta в админ-панели.');
+  }
+
+  const hm = getLocalHm(new Date(), tz);
+  return runAutopauseCheck(env, project, { token, timezone: tz, hm, force: true });
+}
 
 async function resolveProjectCurrency(env, project, cache) {
   const accountId = project?.act ? String(project.act).replace(/^act_/i, '') : '';
@@ -5001,7 +5242,38 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
       callback_data: `proj:campaigns:open:${project.code}`,
     },
   ]);
+  inline_keyboard.push([
+    { text: '⚡ Массовые действия', callback_data: `proj:actions:open:${project.code}` },
+  ]);
   inline_keyboard.push([{ text: '📋 К списку проектов', callback_data: 'panel:projects:0' }]);
+  inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function renderProjectActionsMenu(project, options = {}) {
+  const lines = [`<b>Массовые действия #${escapeHtml(project.code)}</b>`, '', 'Выберите операцию:'];
+
+  if (options.noticeHtml) {
+    lines.push('', options.noticeHtml);
+  }
+
+  const inline_keyboard = [];
+  inline_keyboard.push([
+    { text: '📤 Автоотчёт в чат', callback_data: `proj:actions:auto:${project.code}` },
+    { text: '📅 Сводник', callback_data: `proj:actions:weekly:${project.code}` },
+  ]);
+  inline_keyboard.push([
+    { text: '⚠ Проверить алерты', callback_data: `proj:actions:alerts:${project.code}` },
+    { text: '🤖 Проверить автопаузу', callback_data: `proj:actions:autopause:${project.code}` },
+  ]);
+  inline_keyboard.push([
+    { text: '🧹 Сбросить флаги отчётов', callback_data: `proj:actions:reset:${project.code}` },
+  ]);
+  inline_keyboard.push([{ text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` }]);
   inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
 
   return {
@@ -6843,9 +7115,10 @@ async function handleCallbackQuery(env, callbackQuery) {
     }
 
     let chatRecord = null;
-    if (env.DB) {
+    const kv = getPrimaryKv(env);
+    if (kv) {
       try {
-        const stored = await env.DB.get(getChatKey(chatId, threadId));
+        const stored = await kv.get(getChatKey(chatId, threadId));
         if (stored) {
           chatRecord = JSON.parse(stored);
         }
@@ -8729,6 +9002,171 @@ async function handleCallbackQuery(env, callbackQuery) {
     return { ok: false, error: 'unknown_campaigns_action' };
   }
 
+  if (data.startsWith('proj:actions:')) {
+    const parts = data.split(':');
+    const action = parts[2] ?? '';
+    const rawCode = parts[3] ?? '';
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      await telegramAnswerCallback(env, callbackQuery, 'Проект не найден.');
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    const timezone = env.DEFAULT_TZ || 'UTC';
+
+    const reopenMenu = async (noticeHtml) => {
+      const updated = await loadProject(env, code);
+      const view = renderProjectActionsMenu(updated ?? project, { noticeHtml });
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+        parse_mode: 'HTML',
+      });
+    };
+
+    if (action === 'open') {
+      await telegramAnswerCallback(env, callbackQuery, 'Открываю меню действий...');
+      return reopenMenu(null);
+    }
+
+    if (action === 'auto') {
+      await telegramAnswerCallback(env, callbackQuery, 'Запускаю автоотчёт...');
+      try {
+        const result = await runManualAutoReportAction(env, project, { timezone });
+        const messageText = [
+          `✅ <b>Отчёт отправлен</b> (#${escapeHtml(project.code)})`,
+          `Период: ${escapeHtml(result.range.since)}–${escapeHtml(result.range.until)}`,
+          `Строк: ${formatNumber(result.rows)} · Spend: ${formatCurrency(result.spend, result.currency)}`,
+        ].join('\n');
+        await telegramSendMessage(env, message, messageText, { disable_reply: true, parse_mode: 'HTML' });
+        return reopenMenu(
+          `✅ Автоотчёт отправлен (${escapeHtml(result.range.since)}–${escapeHtml(result.range.until)}).`,
+        );
+      } catch (error) {
+        console.error('proj:actions:auto error', error);
+        const msg = error?.message ?? 'Не удалось отправить отчёт.';
+        await telegramSendMessage(env, message, `⚠️ ${escapeHtml(msg)}`, { disable_reply: true, parse_mode: 'HTML' });
+        return reopenMenu(`⚠️ ${escapeHtml(msg)}`);
+      }
+    }
+
+    if (action === 'weekly') {
+      await telegramAnswerCallback(env, callbackQuery, 'Отправляю сводник...');
+      try {
+        await runManualWeeklyDigestAction(env, project, { timezone });
+        await telegramSendMessage(
+          env,
+          message,
+          `✅ Еженедельный сводник отправлен для #${escapeHtml(project.code)}.`,
+          { disable_reply: true, parse_mode: 'HTML' },
+        );
+        return reopenMenu('✅ Еженедельный сводник отправлен.');
+      } catch (error) {
+        console.error('proj:actions:weekly error', error);
+        const msg = error?.message ?? 'Не удалось отправить сводник.';
+        await telegramSendMessage(env, message, `⚠️ ${escapeHtml(msg)}`, { disable_reply: true, parse_mode: 'HTML' });
+        return reopenMenu(`⚠️ ${escapeHtml(msg)}`);
+      }
+    }
+
+    if (action === 'alerts') {
+      await telegramAnswerCallback(env, callbackQuery, 'Запускаю проверки...');
+      try {
+        const summary = await runManualAlertsAction(env, project, { timezone });
+        if (summary.skipped && !summary.ran) {
+          await telegramSendMessage(
+            env,
+            message,
+            `ℹ️ Проверки не запущены: ${escapeHtml(summary.skipped)}.`,
+            { disable_reply: true, parse_mode: 'HTML' },
+          );
+          return reopenMenu(`ℹ️ Проверки не запущены (${escapeHtml(summary.skipped)}).`);
+        }
+
+        const triggered = [];
+        if (summary.billing) triggered.push('billing');
+        if (summary.zero) triggered.push('zero-spend');
+        if (summary.anomaly) triggered.push('anomaly');
+        if (summary.fatigue) triggered.push('fatigue');
+        const triggeredLabel = triggered.length
+          ? `Отправлены алерты: ${escapeHtml(triggered.join(', '))}.`
+          : 'Уведомлений не потребовалось.';
+        const reportLines = [
+          `✅ Проверки завершены для #${escapeHtml(project.code)}.`,
+          triggeredLabel,
+        ];
+        await telegramSendMessage(env, message, reportLines.join('\n'), { disable_reply: true, parse_mode: 'HTML' });
+        const notice = triggered.length
+          ? `✅ Отправлены алерты (${escapeHtml(triggered.join(', '))}).`
+          : 'ℹ️ Проверки завершены, уведомлений нет.';
+        return reopenMenu(notice);
+      } catch (error) {
+        console.error('proj:actions:alerts error', error);
+        const msg = error?.message ?? 'Не удалось выполнить проверки.';
+        await telegramSendMessage(env, message, `⚠️ ${escapeHtml(msg)}`, { disable_reply: true, parse_mode: 'HTML' });
+        return reopenMenu(`⚠️ ${escapeHtml(msg)}`);
+      }
+    }
+
+    if (action === 'autopause') {
+      await telegramAnswerCallback(env, callbackQuery, 'Пересчитываю автопаузу...');
+      try {
+        const summary = await runManualAutopauseAction(env, project, { timezone });
+        if (summary.skipped && !summary.ran) {
+          await telegramSendMessage(
+            env,
+            message,
+            `ℹ️ Автопауза не запущена: ${escapeHtml(summary.skipped)}.`,
+            { disable_reply: true, parse_mode: 'HTML' },
+          );
+          return reopenMenu(`ℹ️ Автопауза не запущена (${escapeHtml(summary.skipped)}).`);
+        }
+
+        const base = `CPA=${summary.streak >= summary.threshold ? '⚠️ превышение' : 'в пределах нормы'}`;
+        const lines = [
+          `✅ Проверка автопаузы для #${escapeHtml(project.code)} завершена.`,
+          `Streak: ${formatNumber(summary.streak)} / порог ${formatNumber(summary.threshold ?? 0)} (${escapeHtml(base)}).`,
+        ];
+        if (summary.triggered) {
+          lines.push('Отправлено уведомление админам.');
+        }
+        await telegramSendMessage(env, message, lines.join('\n'), { disable_reply: true, parse_mode: 'HTML' });
+        const notice = summary.triggered
+          ? '⚠️ CPA выше KPI — уведомление отправлено.'
+          : `ℹ️ Streak ${formatNumber(summary.streak)} / порог ${formatNumber(summary.threshold ?? 0)}.`;
+        return reopenMenu(notice);
+      } catch (error) {
+        console.error('proj:actions:autopause error', error);
+        const msg = error?.message ?? 'Не удалось выполнить проверку автопаузы.';
+        await telegramSendMessage(env, message, `⚠️ ${escapeHtml(msg)}`, { disable_reply: true, parse_mode: 'HTML' });
+        return reopenMenu(`⚠️ ${escapeHtml(msg)}`);
+      }
+    }
+
+    if (action === 'reset') {
+      await telegramAnswerCallback(env, callbackQuery, 'Сбрасываю флаги...');
+      try {
+        const result = await resetProjectReportFlags(env, project, { timezone });
+        const text = `✅ Служебные флаги очищены (${formatNumber(result.removed)} шт.).`;
+        await telegramSendMessage(env, message, text, { disable_reply: true, parse_mode: 'HTML' });
+        return reopenMenu(text);
+      } catch (error) {
+        console.error('proj:actions:reset error', error);
+        const msg = error?.message ?? 'Не удалось очистить флаги.';
+        await telegramSendMessage(env, message, `⚠️ ${escapeHtml(msg)}`, { disable_reply: true, parse_mode: 'HTML' });
+        return reopenMenu(`⚠️ ${escapeHtml(msg)}`);
+      }
+    }
+
+    await telegramAnswerCallback(env, callbackQuery, 'Действие не распознано.');
+    return { ok: false, error: 'unknown_action_command' };
+  }
+
   if (data.startsWith('proj:portal:')) {
     const parts = data.split(':');
     const action = parts[2] ?? '';
@@ -9253,7 +9691,7 @@ function renderPortalPage({
 }
 
 async function handlePortal(request, env) {
-  if (!env.DB) {
+  if (!getPrimaryKv(env)) {
     return html(renderPortalErrorPage('Хранилище данных временно недоступно.'), { status: 500 });
   }
 
@@ -9375,7 +9813,7 @@ export default {
     const pathname = url.pathname;
 
     if (pathname === '/health') {
-      return handleHealth();
+      return handleHealth(env);
     }
 
     if (pathname === '/') {
