@@ -34,6 +34,16 @@ const AUTOPAUSE_MAX_DAYS = 30;
 const ALERT_BILLING_DEFAULT_TIMES = ['10:00', '14:00', '18:00'];
 const ALERT_BILLING_PRESET_TIMES = ['09:00', '10:00', '12:00', '14:00', '18:00'];
 const ALERT_ZERO_PRESET_TIMES = ['11:00', '12:00', '13:00'];
+const ALERT_DEFAULT_CONFIG = {
+  enabled: true,
+  billing_times: [...ALERT_BILLING_DEFAULT_TIMES],
+  no_spend_by: '12:00',
+};
+const ALERT_MINIMAL_CONFIG = {
+  enabled: true,
+  billing_times: ['10:00'],
+  no_spend_by: '12:00',
+};
 const PROJECT_SCHEDULE_PRESETS = {
   workday_morning: {
     label: 'Будни 09:30',
@@ -762,18 +772,181 @@ async function handleUserStateMessage(env, message, textContent) {
         return { handled: true, step: 'await_times_manual', error: 'invalid_times' };
       }
 
-      const data = state.data ?? {};
-      try {
-        await completeProjectCreation(env, uid, message, data, {
-          times,
-          mute_weekends: Boolean(data.mute_weekends),
-        });
-      } catch (error) {
-        console.error('completeProjectCreation manual error', error);
-        return { handled: true, step: 'await_code', error: 'state_corrupted' };
+      const data = { ...(state.data ?? {}) };
+      data.times = times;
+      data.mute_weekends = Boolean(data.mute_weekends);
+
+      await saveUserState(env, uid, {
+        mode: 'create_project',
+        step: 'choose_billing',
+        data,
+      });
+
+      await telegramSendMessage(env, message, 'Расписание сохранено. Перейдём к настройке биллинга.', {
+        disable_reply: true,
+      });
+
+      const billingView = buildProjectBillingPrompt(data);
+      await telegramSendMessage(env, message, billingView.text, {
+        reply_markup: billingView.reply_markup,
+        disable_reply: true,
+      });
+
+      return { handled: true, step: 'choose_billing' };
+    }
+
+    if (state.step === 'choose_billing') {
+      await telegramSendMessage(
+        env,
+        message,
+        'Используйте кнопки ниже, чтобы выбрать состояние биллинга. Текст не требуется.',
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'choose_billing', info: 'await_billing_buttons' };
+    }
+
+    if (state.step === 'await_billing_manual') {
+      const rawValue = String(textContent ?? '').trim();
+      if (!rawValue) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Введите дату оплаты или «нет», чтобы очистить значение.',
+          { disable_reply: true },
+        );
+        return { handled: true, step: 'await_billing_manual', error: 'billing_empty' };
       }
 
-      return { handled: true, step: 'completed' };
+      const lower = rawValue.toLowerCase();
+      const tz = env.DEFAULT_TZ || 'UTC';
+      const data = { ...(state.data ?? {}) };
+
+      if (['нет', 'none', 'off', 'clear', '-'].includes(lower)) {
+        data.billing_paid_at = null;
+        data.billing_next_at = null;
+      } else {
+        const parsed = parseDateInputToYmd(rawValue, tz);
+        if (!parsed) {
+          await telegramSendMessage(
+            env,
+            message,
+            'Не удалось распознать дату. Введите YYYY-MM-DD или ДД.ММ.ГГГГ.',
+            { disable_reply: true },
+          );
+          return { handled: true, step: 'await_billing_manual', error: 'billing_invalid_date' };
+        }
+
+        data.billing_paid_at = parsed;
+        data.billing_next_at = addMonthsToYmd(parsed) || parsed;
+        data.billing = data.billing || 'paid';
+      }
+
+      await saveUserState(env, uid, {
+        mode: 'create_project',
+        step: 'choose_billing',
+        data,
+      });
+
+      await telegramSendMessage(env, message, 'Данные об оплате обновлены.', { disable_reply: true });
+
+      const billingView = buildProjectBillingPrompt(data);
+      await telegramSendMessage(env, message, billingView.text, {
+        reply_markup: billingView.reply_markup,
+        disable_reply: true,
+      });
+
+      return { handled: true, step: 'choose_billing' };
+    }
+
+    if (state.step === 'choose_kpi') {
+      await telegramSendMessage(
+        env,
+        message,
+        'Для ввода KPI используйте кнопки. Текст не требуется.',
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'choose_kpi', info: 'await_kpi_buttons' };
+    }
+
+    if (state.step === 'await_kpi_field') {
+      const field = state.field;
+      const allowed = ['cpl', 'leads_per_day', 'daily_budget'];
+      if (!field || !allowed.includes(field)) {
+        await clearUserState(env, uid);
+        await telegramSendMessage(
+          env,
+          message,
+          'Настройка KPI отменена. Начните заново из мастера проекта.',
+          { disable_reply: true },
+        );
+        return { handled: true, error: 'kpi_field_invalid' };
+      }
+
+      const rawValue = String(textContent ?? '').trim();
+      const lower = rawValue.toLowerCase();
+      let normalized = null;
+      let cleared = false;
+
+      if (!rawValue || ['нет', 'none', 'off', 'clear', '-'].includes(lower)) {
+        normalized = null;
+        cleared = true;
+      } else {
+        const parsed = Number(rawValue.replace(',', '.'));
+        if (Number.isNaN(parsed)) {
+          await telegramSendMessage(
+            env,
+            message,
+            'Введите число или «нет», чтобы очистить значение.',
+            { disable_reply: true },
+          );
+          return { handled: true, step: 'await_kpi_field', error: 'kpi_invalid_number' };
+        }
+
+        if (field === 'leads_per_day') {
+          normalized = Math.max(0, Math.round(parsed));
+        } else {
+          normalized = Math.max(0, Math.round(parsed * 100) / 100);
+        }
+      }
+
+      const data = { ...(state.data ?? {}) };
+      data.kpi = { ...(data.kpi ?? {}) };
+      data.kpi[field] = normalized;
+
+      await saveUserState(env, uid, {
+        mode: 'create_project',
+        step: 'choose_kpi',
+        data,
+      });
+
+      const labels = {
+        cpl: 'CPL',
+        leads_per_day: 'Лидов в день',
+        daily_budget: 'Бюджет в день',
+      };
+      const resultText = cleared
+        ? `${labels[field]} очищен.`
+        : `${labels[field]} установлен на ${formatKpiValue(normalized)}.`;
+
+      await telegramSendMessage(env, message, resultText, { disable_reply: true });
+
+      const kpiView = buildProjectKpiSetupPrompt(data);
+      await telegramSendMessage(env, message, kpiView.text, {
+        reply_markup: kpiView.reply_markup,
+        disable_reply: true,
+      });
+
+      return { handled: true, step: 'choose_kpi' };
+    }
+
+    if (state.step === 'choose_alerts') {
+      await telegramSendMessage(
+        env,
+        message,
+        'Используйте кнопки мастера, чтобы выбрать настройки алертов.',
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'choose_alerts', info: 'await_alert_buttons' };
     }
 
     return { handled: false, reason: 'unknown_step' };
@@ -2502,19 +2675,31 @@ function buildProjectPeriodPrompt() {
   };
 }
 
-function buildProjectSchedulePrompt() {
+function buildProjectSchedulePrompt(selected = {}) {
   const lines = [
     '<b>Шаг 5.</b> Выберите начальное расписание.',
     '',
     'Все настройки можно отредактировать позднее в карточке проекта.',
   ];
 
-  const inline_keyboard = Object.entries(PROJECT_SCHEDULE_PRESETS).map(([key, preset]) => [
-    {
-      text: preset.label,
-      callback_data: `proj:create:schedule:preset:${key}`,
-    },
-  ]);
+  if (Array.isArray(selected.times) && selected.times.length) {
+    lines.push('', `Текущее расписание: ${escapeHtml(describeSchedule(selected.times, Boolean(selected.mute_weekends)))}`);
+  }
+
+  const inline_keyboard = Object.entries(PROJECT_SCHEDULE_PRESETS).map(([key, preset]) => {
+    const presetSummary = describeSchedule(preset.times, preset.mute_weekends);
+    const currentSummary = Array.isArray(selected.times)
+      ? describeSchedule(selected.times, Boolean(selected.mute_weekends))
+      : null;
+    const isActive = currentSummary === presetSummary;
+
+    return [
+      {
+        text: isActive ? `✅ ${preset.label}` : preset.label,
+        callback_data: `proj:create:schedule:preset:${key}`,
+      },
+    ];
+  });
 
   inline_keyboard.push([
     { text: 'Ввести вручную', callback_data: 'proj:create:schedule:manual' },
@@ -2538,7 +2723,180 @@ function describeSchedule(times = [], muteWeekends = false) {
   return `${slots} (${weekends})`;
 }
 
+function cloneAlertConfig(source = {}) {
+  const base = source || {};
+  const enabled = base.enabled !== false;
+  const billing = sortUniqueTimes(base.billing_times || []);
+  const zero = base.no_spend_by ? normalizeTimeString(base.no_spend_by) : null;
+  return {
+    enabled,
+    billing_times: billing.length ? billing : [...ALERT_BILLING_DEFAULT_TIMES],
+    no_spend_by: zero || null,
+  };
+}
+
+function buildProjectBillingPrompt(data = {}, options = {}) {
+  const billingStatus = data.billing === 'paused' ? 'paused' : 'paid';
+  const lines = [
+    '<b>Шаг 6.</b> Статус оплаты и биллинга.',
+    '',
+    'Укажите, активен ли биллинг сейчас, и отметьте дату последнего платежа (при необходимости).',
+    '',
+    `Состояние: ${billingStatus === 'paused' ? 'пауза по оплате' : 'активен'}`,
+    `Последняя оплата: ${escapeHtml(formatDateLabel(data.billing_paid_at))}`,
+  ];
+
+  if (data.billing_next_at) {
+    lines.push(`Следующая оплата: ${escapeHtml(formatDateLabel(data.billing_next_at))}`);
+  }
+
+  if (options.awaitingManual) {
+    lines.push('', 'Отправьте дату в формате <code>YYYY-MM-DD</code> или <code>ДД.ММ.ГГГГ</code>. Можно ввести «нет» для очистки.');
+  }
+
+  const inline_keyboard = [];
+
+  inline_keyboard.push([
+    {
+      text: billingStatus === 'paid' ? '✅ Биллинг активен' : 'Биллинг активен',
+      callback_data: 'proj:create:billing:status:paid',
+    },
+    {
+      text: billingStatus === 'paused' ? '✅ На паузе' : 'На паузе',
+      callback_data: 'proj:create:billing:status:paused',
+    },
+  ]);
+
+  inline_keyboard.push([
+    { text: '💰 Оплата сегодня', callback_data: 'proj:create:billing:paidtoday' },
+    { text: '📅 Ввести дату', callback_data: 'proj:create:billing:manual' },
+  ]);
+
+  inline_keyboard.push([
+    { text: '🧹 Очистить дату', callback_data: 'proj:create:billing:clear' },
+    { text: 'Пропустить', callback_data: 'proj:create:kpi:start' },
+  ]);
+
+  inline_keyboard.push([
+    { text: '← Назад', callback_data: 'proj:create:schedule:back' },
+    { text: 'Далее', callback_data: 'proj:create:kpi:start' },
+  ]);
+
+  inline_keyboard.push([
+    { text: 'Отмена', callback_data: 'proj:create:cancel' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function buildProjectKpiSetupPrompt(data = {}, options = {}) {
+  const kpi = data.kpi || {};
+  const lines = [
+    '<b>Шаг 7.</b> KPI проекта (опционально).',
+    '',
+    'Можно задать CPL, целевые лиды в день и бюджет. Эти параметры всегда можно изменить позже.',
+    '',
+    `CPL: <code>${escapeHtml(formatKpiValue(kpi.cpl))}</code>`,
+    `Лидов в день: <code>${escapeHtml(formatKpiValue(kpi.leads_per_day))}</code>`,
+    `Бюджет в день: <code>${escapeHtml(formatKpiValue(kpi.daily_budget))}</code>`,
+  ];
+
+  if (options.awaitingField) {
+    const labels = {
+      cpl: 'Введите CPL (число, можно с точкой).',
+      leads_per_day: 'Введите целевое количество лидов в день (целое число).',
+      daily_budget: 'Введите бюджет в день (число, можно с точкой).',
+    };
+    lines.push('', labels[options.awaitingField] || 'Введите значение или «нет», чтобы очистить.');
+  }
+
+  const inline_keyboard = [];
+
+  inline_keyboard.push([
+    { text: `CPL (${formatKpiValue(kpi.cpl)})`, callback_data: 'proj:create:kpi:set:cpl' },
+    { text: `Лиды/д (${formatKpiValue(kpi.leads_per_day)})`, callback_data: 'proj:create:kpi:set:leads_per_day' },
+  ]);
+
+  inline_keyboard.push([
+    { text: `Бюджет/д (${formatKpiValue(kpi.daily_budget)})`, callback_data: 'proj:create:kpi:set:daily_budget' },
+    { text: '🧹 Очистить KPI', callback_data: 'proj:create:kpi:clear' },
+  ]);
+
+  inline_keyboard.push([
+    { text: 'Пропустить', callback_data: 'proj:create:alerts:start' },
+    { text: '← Назад', callback_data: 'proj:create:billing:back' },
+  ]);
+
+  inline_keyboard.push([
+    { text: 'Далее', callback_data: 'proj:create:alerts:start' },
+    { text: 'Отмена', callback_data: 'proj:create:cancel' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function buildProjectAlertsSetupPrompt(data = {}) {
+  const alerts = data.alerts ? cloneAlertConfig(data.alerts) : cloneAlertConfig(ALERT_DEFAULT_CONFIG);
+  const billingTimes = sortUniqueTimes(alerts.billing_times || []);
+  const zeroLabel = alerts.no_spend_by ? alerts.no_spend_by : 'выключен';
+  const enabled = alerts.enabled !== false;
+
+  const lines = [
+    '<b>Шаг 8.</b> Настройка алертов.',
+    '',
+    'Оставьте стандартные уведомления или отключите их. Всё можно изменить через карточку проекта.',
+    '',
+    `Алерты: ${enabled ? 'включены' : 'выключены'}`,
+    `Окна billing: ${billingTimes.length ? billingTimes.join(', ') : '—'}`,
+    `Zero-spend: ${zeroLabel}`,
+  ];
+
+  const inline_keyboard = [];
+
+  inline_keyboard.push([
+    {
+      text: enabled ? '📊 Выключить алерты' : '📊 Включить алерты',
+      callback_data: 'proj:create:alerts:toggle',
+    },
+  ]);
+
+  inline_keyboard.push([
+    { text: '⏱ Стандартные окна', callback_data: 'proj:create:alerts:preset:default' },
+    { text: '🔕 Только 10:00', callback_data: 'proj:create:alerts:preset:minimal' },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: alerts.no_spend_by ? '🚫 Отключить zero-spend' : '✅ Zero-spend 12:00',
+      callback_data: alerts.no_spend_by ? 'proj:create:alerts:zero:off' : 'proj:create:alerts:zero:on',
+    },
+    { text: '♻️ Сбросить', callback_data: 'proj:create:alerts:reset' },
+  ]);
+
+  inline_keyboard.push([
+    { text: '← Назад', callback_data: 'proj:create:kpi:back' },
+    { text: 'Создать проект', callback_data: 'proj:create:finish' },
+  ]);
+
+  inline_keyboard.push([
+    { text: 'Отмена', callback_data: 'proj:create:cancel' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
 async function completeProjectCreation(env, uid, message, data = {}, overrides = {}) {
+  const alertsConfig = overrides.alerts ?? data.alerts ?? null;
+
   const payload = {
     code: data.code,
     act: data.act,
@@ -2547,7 +2905,15 @@ async function completeProjectCreation(env, uid, message, data = {}, overrides =
     period: overrides.period ?? data.period ?? 'yesterday',
     times: overrides.times ?? data.times ?? ['09:30'],
     mute_weekends: overrides.mute_weekends ?? Boolean(data.mute_weekends),
+    billing: overrides.billing ?? data.billing ?? 'paid',
+    billing_paid_at: overrides.billing_paid_at ?? data.billing_paid_at ?? null,
+    billing_next_at: overrides.billing_next_at ?? data.billing_next_at ?? null,
+    kpi: overrides.kpi ?? data.kpi ?? {},
   };
+
+  if (alertsConfig) {
+    payload.alerts = cloneAlertConfig(alertsConfig);
+  }
 
   if (!payload.code || !payload.chat_id || !payload.act) {
     await clearUserState(env, uid);
@@ -2812,13 +3178,36 @@ async function handleCallbackQuery(env, callbackQuery) {
       });
     }
 
+    const payload = { ...(state.data ?? {}) };
     await saveUserState(env, uid, {
       mode: 'create_project',
       step: 'choose_period',
-      data: { ...(state.data ?? {}) },
+      data: payload,
     });
 
     const view = buildProjectPeriodPrompt();
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data === 'proj:create:schedule:back') {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project') {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    await saveUserState(env, uid, {
+      mode: 'create_project',
+      step: 'choose_schedule',
+      data: payload,
+    });
+
+    const view = buildProjectSchedulePrompt(payload);
     return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
       reply_markup: view.reply_markup,
     });
@@ -2841,16 +3230,18 @@ async function handleCallbackQuery(env, callbackQuery) {
       });
     }
 
+    const payload = {
+      ...(state.data ?? {}),
+      period: PERIOD_OPTIONS.some((option) => option.value === value) ? value : 'yesterday',
+    };
+
     await saveUserState(env, uid, {
       mode: 'create_project',
       step: 'choose_schedule',
-      data: {
-        ...(state.data ?? {}),
-        period: PERIOD_OPTIONS.some((option) => option.value === value) ? value : 'yesterday',
-      },
+      data: payload,
     });
 
-    const view = buildProjectSchedulePrompt();
+    const view = buildProjectSchedulePrompt(payload);
     return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
       reply_markup: view.reply_markup,
     });
@@ -2858,7 +3249,11 @@ async function handleCallbackQuery(env, callbackQuery) {
 
   if (data.startsWith('proj:create:schedule:')) {
     const state = await loadUserState(env, uid);
-    if (!state || state.mode !== 'create_project' || !['choose_schedule', 'await_times_manual'].includes(state.step)) {
+    if (
+      !state ||
+      state.mode !== 'create_project' ||
+      !['choose_schedule', 'await_times_manual', 'choose_billing'].includes(state.step)
+    ) {
       const home = renderAdminHome(uid, env);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
@@ -2866,7 +3261,7 @@ async function handleCallbackQuery(env, callbackQuery) {
     }
 
     const [, , , action, arg] = data.split(':');
-    const baseData = state.data ?? {};
+    const baseData = { ...(state.data ?? {}) };
 
     if (action === 'manual') {
       await saveUserState(env, uid, {
@@ -2897,47 +3292,283 @@ async function handleCallbackQuery(env, callbackQuery) {
     if (action === 'preset') {
       const preset = PROJECT_SCHEDULE_PRESETS[arg];
       if (!preset) {
+        const fallback = buildProjectSchedulePrompt(baseData);
         return telegramEditMessage(env, message.chat.id, message.message_id, 'Неизвестный пресет расписания. Выберите другой вариант.', {
-          reply_markup: buildProjectSchedulePrompt().reply_markup,
+          reply_markup: fallback.reply_markup,
         });
       }
 
-      try {
-        const project = await completeProjectCreation(env, uid, message, baseData, {
-          times: preset.times,
-          mute_weekends: preset.mute_weekends,
-        });
+      const updated = {
+        ...baseData,
+        times: sortUniqueTimes(preset.times),
+        mute_weekends: Boolean(preset.mute_weekends),
+      };
 
-        return telegramEditMessage(
-          env,
-          message.chat.id,
-          message.message_id,
-          [
-            '✅ Проект создан.',
-            `Период: <b>${escapeHtml(project.period)}</b>`,
-            `Расписание: ${escapeHtml(describeSchedule(project.times, project.mute_weekends))}`,
-            '',
-            'Подробности — в сообщении выше. Вернитесь в панель для дальнейшей настройки.',
-          ].join('\n'),
-          {
-            reply_markup: {
-              inline_keyboard: [[{ text: '↩️ В панель', callback_data: 'panel:home' }]],
-            },
-          },
-        );
-      } catch (error) {
-        console.error('completeProjectCreation preset error', error);
-        const home = renderAdminHome(uid, env);
-        return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
-          reply_markup: home.reply_markup,
-        });
-      }
+      await saveUserState(env, uid, {
+        mode: 'create_project',
+        step: 'choose_billing',
+        data: updated,
+      });
+
+      const billingView = buildProjectBillingPrompt(updated);
+      return telegramEditMessage(env, message.chat.id, message.message_id, billingView.text, {
+        reply_markup: billingView.reply_markup,
+      });
     }
 
-    const scheduleView = buildProjectSchedulePrompt();
+    const scheduleView = buildProjectSchedulePrompt(baseData);
     return telegramEditMessage(env, message.chat.id, message.message_id, scheduleView.text, {
       reply_markup: scheduleView.reply_markup,
     });
+  }
+
+  if (data.startsWith('proj:create:billing:')) {
+    const state = await loadUserState(env, uid);
+    if (
+      !state ||
+      state.mode !== 'create_project' ||
+      !['choose_billing', 'await_billing_manual', 'choose_kpi'].includes(state.step)
+    ) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const [, , , action, arg] = data.split(':');
+    const payload = { ...(state.data ?? {}) };
+
+    if (action === 'status') {
+      payload.billing = arg === 'paused' ? 'paused' : 'paid';
+      await saveUserState(env, uid, { mode: 'create_project', step: 'choose_billing', data: payload });
+      const view = buildProjectBillingPrompt(payload);
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
+
+    if (action === 'paidtoday') {
+      const tz = env.DEFAULT_TZ || 'UTC';
+      const today = getTodayYmd(tz);
+      payload.billing = 'paid';
+      payload.billing_paid_at = today;
+      payload.billing_next_at = addMonthsToYmd(today) || today;
+      await saveUserState(env, uid, { mode: 'create_project', step: 'choose_billing', data: payload });
+      const view = buildProjectBillingPrompt(payload);
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
+
+    if (action === 'manual') {
+      await saveUserState(env, uid, {
+        mode: 'create_project',
+        step: 'await_billing_manual',
+        data: payload,
+      });
+
+      const view = buildProjectBillingPrompt(payload, { awaitingManual: true });
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
+
+    if (action === 'clear') {
+      payload.billing_paid_at = null;
+      payload.billing_next_at = null;
+      await saveUserState(env, uid, { mode: 'create_project', step: 'choose_billing', data: payload });
+      const view = buildProjectBillingPrompt(payload);
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
+
+    if (action === 'back') {
+      await saveUserState(env, uid, { mode: 'create_project', step: 'choose_schedule', data: payload });
+      const view = buildProjectSchedulePrompt(payload);
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
+
+    const view = buildProjectBillingPrompt(payload);
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data === 'proj:create:kpi:start') {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || !['choose_billing', 'choose_kpi'].includes(state.step)) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    await saveUserState(env, uid, { mode: 'create_project', step: 'choose_kpi', data: payload });
+    const view = buildProjectKpiSetupPrompt(payload);
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:create:kpi:set:')) {
+    const [, , , , field] = data.split(':');
+    const allowed = ['cpl', 'leads_per_day', 'daily_budget'];
+    if (!allowed.includes(field)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Неизвестное поле KPI.');
+      return { ok: false, error: 'invalid_kpi_field' };
+    }
+
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || !['choose_kpi', 'await_kpi_field'].includes(state.step)) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    await saveUserState(env, uid, {
+      mode: 'create_project',
+      step: 'await_kpi_field',
+      field,
+      data: payload,
+    });
+
+    const view = buildProjectKpiSetupPrompt(payload, { awaitingField: field });
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data === 'proj:create:kpi:clear') {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || state.step !== 'choose_kpi') {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    payload.kpi = { cpl: null, leads_per_day: null, daily_budget: null };
+    await saveUserState(env, uid, { mode: 'create_project', step: 'choose_kpi', data: payload });
+
+    const view = buildProjectKpiSetupPrompt(payload);
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data === 'proj:create:kpi:back') {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project') {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    await saveUserState(env, uid, { mode: 'create_project', step: 'choose_billing', data: payload });
+    const view = buildProjectBillingPrompt(payload);
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data === 'proj:create:alerts:start') {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || !['choose_kpi', 'choose_alerts'].includes(state.step)) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    await saveUserState(env, uid, { mode: 'create_project', step: 'choose_alerts', data: payload });
+    const view = buildProjectAlertsSetupPrompt(payload);
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:create:alerts:')) {
+    const [, , , action, arg] = data.split(':');
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || !['choose_alerts'].includes(state.step)) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const payload = { ...(state.data ?? {}) };
+    payload.alerts = payload.alerts ? cloneAlertConfig(payload.alerts) : cloneAlertConfig(ALERT_DEFAULT_CONFIG);
+
+    if (action === 'toggle') {
+      payload.alerts.enabled = payload.alerts.enabled === false;
+    } else if (action === 'preset') {
+      if (arg === 'default') {
+        payload.alerts = cloneAlertConfig(ALERT_DEFAULT_CONFIG);
+      } else if (arg === 'minimal') {
+        payload.alerts = cloneAlertConfig(ALERT_MINIMAL_CONFIG);
+      }
+    } else if (action === 'zero') {
+      if (arg === 'off') {
+        payload.alerts.no_spend_by = null;
+      } else if (arg === 'on') {
+        payload.alerts.no_spend_by = '12:00';
+      }
+    } else if (action === 'reset') {
+      payload.alerts = cloneAlertConfig(ALERT_DEFAULT_CONFIG);
+    }
+
+    await saveUserState(env, uid, { mode: 'create_project', step: 'choose_alerts', data: payload });
+
+    const view = buildProjectAlertsSetupPrompt(payload);
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data === 'proj:create:finish') {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project') {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    try {
+      const project = await completeProjectCreation(env, uid, message, state.data ?? {});
+      return telegramEditMessage(
+        env,
+        message.chat.id,
+        message.message_id,
+        [
+          'Проект создан и сохранён.',
+          `Код: <b>#${escapeHtml(project.code)}</b> → период ${escapeHtml(project.period)}.`,
+          'Сводка отправлена в чат. Вернитесь в панель для дальнейшей настройки.',
+        ].join('\n'),
+        {
+          reply_markup: {
+            inline_keyboard: [[{ text: '↩️ В панель', callback_data: 'panel:home' }]],
+          },
+        },
+      );
+    } catch (error) {
+      console.error('completeProjectCreation wizard finish error', error);
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
   }
 
   if (data === 'panel:home') {
