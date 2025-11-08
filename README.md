@@ -10,11 +10,11 @@
   - `/register`, вызванный внутри нужного топика, сохраняет `chat_id` и `message_thread_id` в KV (`DB`) и подтверждает привязку.
   - Callback-запросы из инлайн-кнопок пока отвечают уведомлением «Функция в разработке».
 - Вызовы Telegram API обёрнуты в `fetchWithTimeout`, чтобы воркер не зависал при сетевых проблемах.
-- В конфигурации Wrangler (`wrangler.toml`) указаны требуемые KV-привязки и крон каждые 5 минут (для будущих задач).
+- В конфигурации Wrangler (`wrangler.toml`) указаны требуемые KV-привязки, крон каждые 5 минут (для будущих задач) и настроена подробная Observability (логирование Cloudflare).
 - Сценарии npm (`npm run dev`, `npm run deploy`) и GitHub Actions workflow продолжают служить для локального запуска и автодеплоя.
 
 ## Что сделать дальше
-1. Заполнить реальные Namespace ID в `wrangler.toml` (`REPORTS_NAMESPACE`, `BILLING_NAMESPACE`, `LOGS_NAMESPACE`, `DB`).
+1. Заполнить реальные Namespace ID в `wrangler.toml` для `REPORTS_NAMESPACE`, `BILLING_NAMESPACE`, `LOGS_NAMESPACE`. Привязка `DB` уже настроена на боевой namespace (`c55f82210ade457c93aff4fe2ba8b007`).
 2. Настроить переменные окружения в Cloudflare: `BOT_TOKEN`, `ADMIN_IDS`, `FB_APP_ID`, `FB_APP_SECRET`, `DEFAULT_TZ`, `WORKER_URL`, `FB_LONG_TOKEN` (опц.), `GS_WEBHOOK` (опц.).
 3. Расширить обработчик Telegram: админ-панель (`/admin`), команды `/report`, `/digest`, обработка callback-кнопок, хранение временных состояний.
 4. Реализовать Meta OAuth в `/fb_cb`: обмен кода на токены, загрузка ад-аккаунтов, сохранение в KV.

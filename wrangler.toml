@@ -4,7 +4,19 @@ compatibility_date = "2025-02-04"
 compatibility_flags = ["nodejs_compat"]
 
 [observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
 enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
 
 [[kv_namespaces]]
 binding = "REPORTS_NAMESPACE"
@@ -23,7 +35,7 @@ preview_id = "<OPTIONAL_PREVIEW_ID>"
 
 [[kv_namespaces]]
 binding = "DB"
-id = "<REPLACE_WITH_DB_NAMESPACE_ID>"
+id = "c55f82210ade457c93aff4fe2ba8b007"
 preview_id = "<OPTIONAL_PREVIEW_ID>"
 
 [triggers]
