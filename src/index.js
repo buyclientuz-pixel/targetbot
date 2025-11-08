@@ -140,6 +140,8 @@ const PROJECT_SCHEDULE_PRESETS = {
   },
 };
 
+const CAMPAIGN_EDITOR_PAGE_SIZE = 6;
+
 function escapeHtml(input = '') {
   return String(input)
     .replace(/&/g, '&amp;')
@@ -3129,6 +3131,60 @@ async function fetchCampaignInsights(env, project, token, range) {
   return items;
 }
 
+async function fetchAccountCampaignList(env, project, token, { limit = 200 } = {}) {
+  const actId = normalizeAccountId(project?.act ?? '');
+  if (!actId) {
+    throw new Error('У проекта не указан рекламный аккаунт.');
+  }
+
+  const params = {
+    fields: 'id,name,objective,status,configured_status,effective_status,updated_time',
+    limit: String(limit),
+  };
+
+  const items = new Map();
+  let nextUrl = null;
+
+  for (let page = 0; page < REPORT_MAX_PAGES; page += 1) {
+    const payload = nextUrl
+      ? await fetchJsonWithTimeout(nextUrl, { method: 'GET' }, META_TIMEOUT_MS)
+      : await graphGet(`${actId}/campaigns`, { token, params });
+
+    if (Array.isArray(payload?.data)) {
+      for (const row of payload.data) {
+        const id = normalizeCampaignId(row?.id ?? '');
+        if (!id) continue;
+        if (!items.has(id)) {
+          items.set(id, {
+            id,
+            name: row?.name ?? `Campaign ${id}`,
+            objective: row?.objective ?? null,
+            status: row?.status ?? null,
+            configured_status: row?.configured_status ?? null,
+            effective_status: row?.effective_status ?? null,
+            updated_time: row?.updated_time ?? null,
+          });
+        }
+      }
+    }
+
+    if (!payload?.paging?.next) {
+      break;
+    }
+
+    nextUrl = payload.paging.next;
+  }
+
+  return Array.from(items.values()).sort((a, b) => {
+    const aName = (a?.name ?? '').toLowerCase();
+    const bName = (b?.name ?? '').toLowerCase();
+    if (aName === bName) {
+      return (a?.id ?? '').localeCompare(b?.id ?? '');
+    }
+    return aName.localeCompare(bName);
+  });
+}
+
 async function fetchActiveCampaigns(env, project, token, { limit = 200 } = {}) {
   const actId = normalizeAccountId(project?.act ?? '');
   if (!actId) {
@@ -4797,7 +4853,13 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
     { text: '🌐 Портал', callback_data: `proj:portal:open:${project.code}` },
   ]);
   inline_keyboard.push([
-    { text: '📦 Кампании', callback_data: `proj:detail:todo:campaigns:${project.code}` },
+    {
+      text:
+        project.campaigns.length > 0
+          ? `📦 Кампании (${project.campaigns.length})`
+          : '📦 Кампании',
+      callback_data: `proj:campaigns:open:${project.code}`,
+    },
   ]);
   inline_keyboard.push([{ text: '📋 К списку проектов', callback_data: 'panel:projects:0' }]);
   inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
@@ -5087,6 +5149,196 @@ async function clearPendingReportState(env, uid, code) {
   if (state?.mode === 'report_options' && (!code || state.code === code)) {
     await clearUserState(env, uid);
   }
+}
+
+function prettifyCampaignLabel(value) {
+  if (!value) return null;
+  const text = String(value).replace(/_/g, ' ').trim();
+  if (!text) return null;
+  const lower = text.toLowerCase();
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+function renderCampaignEditor(project, options = {}) {
+  const items = Array.isArray(options.items) ? options.items : [];
+  const timezone = options.timezone || 'UTC';
+  const updatedAt = options.updatedAt || null;
+  const selectedSet = new Set(
+    Array.isArray(project?.campaigns) ? project.campaigns.map((value) => normalizeCampaignId(value)).filter(Boolean) : [],
+  );
+
+  const totalPages = Math.max(1, Math.ceil(items.length / CAMPAIGN_EDITOR_PAGE_SIZE));
+  const rawPage = Number.isFinite(options.page) ? Number(options.page) : 0;
+  const page = Math.min(Math.max(rawPage, 0), totalPages - 1);
+  const startIndex = page * CAMPAIGN_EDITOR_PAGE_SIZE;
+  const slice = items.slice(startIndex, startIndex + CAMPAIGN_EDITOR_PAGE_SIZE);
+
+  const lines = [
+    `<b>Кампании #${escapeHtml(project.code)}</b>`,
+    project?.act
+      ? `Аккаунт: <code>${escapeHtml(project.act)}</code>`
+      : 'Аккаунт не указан. Задайте рекламный аккаунт, чтобы выбрать кампании.',
+    `Выбрано кампаний: ${selectedSet.size}`,
+  ];
+
+  if (updatedAt) {
+    lines.push(`Обновлено: ${escapeHtml(formatDateTimeLabel(updatedAt, timezone))}`);
+  }
+
+  lines.push('');
+
+  if (!items.length) {
+    lines.push('Список пуст. Нажмите «Обновить список», чтобы получить кампании из Meta Ads.');
+  } else {
+    for (const row of slice) {
+      const selected = selectedSet.has(row.id);
+      const mark = selected ? '✅' : '▫️';
+      const title = row?.name && row.name.trim().length ? row.name.trim() : `ID ${row.id}`;
+      const status =
+        prettifyCampaignLabel(row?.effective_status) ||
+        prettifyCampaignLabel(row?.status) ||
+        '—';
+      const objective = prettifyCampaignLabel(row?.objective);
+      const suffixParts = [status];
+      if (objective) {
+        suffixParts.push(objective);
+      }
+      lines.push(
+        `${mark} ${escapeHtml(title)} · ${escapeHtml(suffixParts.filter(Boolean).join(' · ') || '—')}`,
+      );
+    }
+
+    lines.push('');
+    lines.push(
+      `Показаны ${items.length ? `${startIndex + 1}–${Math.min(startIndex + slice.length, items.length)}` : '0'} из ${
+        items.length
+      } кампаний.`,
+    );
+  }
+
+  lines.push('');
+  lines.push('Отметьте кампании для отчётов и алертов или воспользуйтесь пресетами ниже.');
+
+  const inline_keyboard = [];
+
+  const makeButtonLabel = (row, selected) => {
+    const mark = selected ? '✅' : '▫️';
+    const title = row?.name && row.name.trim().length ? row.name.trim() : `ID ${row.id}`;
+    const maxLength = 28;
+    const shortTitle = title.length > maxLength ? `${title.slice(0, maxLength - 1)}…` : title;
+    return `${mark} ${shortTitle}`;
+  };
+
+  if (slice.length) {
+    for (const row of slice) {
+      inline_keyboard.push([
+        {
+          text: makeButtonLabel(row, selectedSet.has(row.id)),
+          callback_data: `proj:campaigns:toggle:${project.code}:${row.id}`,
+        },
+      ]);
+    }
+  }
+
+  if (totalPages > 1) {
+    inline_keyboard.push([
+      { text: '⬅️', callback_data: `proj:campaigns:page:${project.code}:prev` },
+      { text: `${page + 1}/${totalPages}`, callback_data: 'proj:campaigns:noop' },
+      { text: '➡️', callback_data: `proj:campaigns:page:${project.code}:next` },
+    ]);
+  }
+
+  inline_keyboard.push([
+    { text: '🔄 Обновить список', callback_data: `proj:campaigns:refresh:${project.code}` },
+  ]);
+
+  inline_keyboard.push([
+    { text: '✅ Все активные', callback_data: `proj:campaigns:select:${project.code}:active` },
+    { text: '🎯 Все кампании', callback_data: `proj:campaigns:select:${project.code}:all` },
+  ]);
+
+  inline_keyboard.push([
+    { text: '♻️ Очистить выбор', callback_data: `proj:campaigns:select:${project.code}:clear` },
+  ]);
+
+  inline_keyboard.push([{ text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` }]);
+  inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithCampaignEditor(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  let project = options.projectOverride ?? null;
+  if (!project) {
+    project = await loadProject(env, code);
+  }
+  if (!project) {
+    await telegramEditMessage(
+      env,
+      chatId,
+      messageId,
+      'Проект не найден. Вернитесь в список проектов и выберите его заново.',
+      {
+        reply_markup: {
+          inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+        },
+      },
+    );
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  let items = Array.isArray(options.items) ? options.items : null;
+  let page = Number.isFinite(options.page) ? Number(options.page) : null;
+  let updatedAt = options.updatedAt ?? null;
+
+  if (!items && options.uid) {
+    const state = await loadUserState(env, options.uid);
+    if (state?.mode === 'campaign_editor' && state.code === code && Array.isArray(state.items)) {
+      items = state.items;
+      if (!Number.isFinite(page) && Number.isFinite(state.page)) {
+        page = state.page;
+      }
+      if (!updatedAt && Number.isFinite(state.updated_at)) {
+        updatedAt = state.updated_at;
+      }
+    }
+  }
+
+  const resolvedItems = Array.isArray(items) ? items : [];
+  const resolvedPage = Number.isFinite(page) ? page : 0;
+  const timezone = options.timezone ?? env.DEFAULT_TZ ?? 'UTC';
+
+  const view = renderCampaignEditor(project, {
+    items: resolvedItems,
+    page: resolvedPage,
+    timezone,
+    updatedAt,
+  });
+
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  if (options.uid) {
+    await saveUserState(env, options.uid, {
+      mode: 'campaign_editor',
+      code,
+      items: resolvedItems,
+      page: resolvedPage,
+      updated_at: updatedAt ?? Date.now(),
+    });
+  }
+
+  return { ok: true, project };
 }
 
 function renderScheduleEditor(project, options = {}) {
@@ -7876,6 +8128,258 @@ async function handleCallbackQuery(env, callbackQuery) {
     return { ok: false, error: 'unknown_report_action' };
   }
 
+  if (data.startsWith('proj:campaigns:')) {
+    const parts = data.split(':');
+    const action = parts[2] ?? '';
+    const rawCode = parts[3] ?? '';
+    const code = sanitizeProjectCode(rawCode);
+
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    if (action === 'noop') {
+      await telegramAnswerCallback(env, callbackQuery, ' ');
+      return { ok: true, noop: true };
+    }
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      await telegramAnswerCallback(env, callbackQuery, 'Проект не найден.');
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    const readState = async () => {
+      if (!uid) {
+        return { items: null, page: 0, updatedAt: null };
+      }
+
+      const state = await loadUserState(env, uid);
+      if (state?.mode === 'campaign_editor' && state.code === code && Array.isArray(state.items)) {
+        return {
+          items: state.items,
+          page: Number.isFinite(state.page) ? Number(state.page) : 0,
+          updatedAt: Number.isFinite(state.updated_at) ? Number(state.updated_at) : null,
+        };
+      }
+
+      return { items: null, page: 0, updatedAt: null };
+    };
+
+    const fetchCampaigns = async () => {
+      if (!project.act) {
+        throw new Error('У проекта не указан рекламный аккаунт.');
+      }
+
+      const { token } = await resolveMetaToken(env);
+      if (!token) {
+        throw new Error('Meta токен не найден. Подключите аккаунт через /admin.');
+      }
+
+      const items = await fetchAccountCampaignList(env, project, token);
+      return { items, updatedAt: Date.now() };
+    };
+
+    const handleFetchError = async (error) => {
+      console.error('proj:campaigns error', error);
+      await telegramSendMessage(
+        env,
+        message,
+        `Не удалось получить кампании: ${escapeHtml(error?.message ?? String(error))}`,
+        { disable_reply: true },
+      );
+    };
+
+    if (action === 'open') {
+      try {
+        const { items, updatedAt } = await fetchCampaigns();
+        await telegramAnswerCallback(env, callbackQuery, `Найдено кампаний: ${items.length}`);
+        return editMessageWithCampaignEditor(env, message, code, {
+          uid,
+          items,
+          page: 0,
+          updatedAt,
+          projectOverride: project,
+          timezone: env.DEFAULT_TZ ?? 'UTC',
+        });
+      } catch (error) {
+        await telegramAnswerCallback(env, callbackQuery, 'Не удалось загрузить кампании.');
+        await handleFetchError(error);
+        return { ok: false, error: 'campaigns_open_failed' };
+      }
+    }
+
+    if (action === 'refresh') {
+      const state = await readState();
+      try {
+        const { items, updatedAt } = await fetchCampaigns();
+        await telegramAnswerCallback(env, callbackQuery, 'Список кампаний обновлён.');
+        return editMessageWithCampaignEditor(env, message, code, {
+          uid,
+          items,
+          page: state.page ?? 0,
+          updatedAt,
+          projectOverride: project,
+          timezone: env.DEFAULT_TZ ?? 'UTC',
+        });
+      } catch (error) {
+        await telegramAnswerCallback(env, callbackQuery, 'Не удалось обновить кампании.');
+        await handleFetchError(error);
+        return { ok: false, error: 'campaigns_refresh_failed' };
+      }
+    }
+
+    if (action === 'page') {
+      const direction = parts[4] ?? '';
+      const state = await readState();
+      let { items, page, updatedAt } = state;
+
+      if (!Array.isArray(items)) {
+        try {
+          const fetched = await fetchCampaigns();
+          items = fetched.items;
+          updatedAt = fetched.updatedAt;
+        } catch (error) {
+          await telegramAnswerCallback(env, callbackQuery, 'Не удалось обновить кампании.');
+          await handleFetchError(error);
+          return { ok: false, error: 'campaigns_page_failed' };
+        }
+      }
+
+      page = Number.isFinite(page) ? page : 0;
+      const totalPages = Math.max(1, Math.ceil(items.length / CAMPAIGN_EDITOR_PAGE_SIZE));
+      if (direction === 'next' && page + 1 < totalPages) {
+        page += 1;
+      } else if (direction === 'prev' && page > 0) {
+        page -= 1;
+      }
+
+      await telegramAnswerCallback(env, callbackQuery, 'Страница обновлена.');
+      return editMessageWithCampaignEditor(env, message, code, {
+        uid,
+        items,
+        page,
+        updatedAt,
+        projectOverride: project,
+        timezone: env.DEFAULT_TZ ?? 'UTC',
+      });
+    }
+
+    if (action === 'toggle') {
+      const rawId = parts[4] ?? '';
+      const campaignId = normalizeCampaignId(rawId);
+      if (!campaignId) {
+        await telegramAnswerCallback(env, callbackQuery, 'Кампания не распознана.');
+        return { ok: false, error: 'invalid_campaign_id' };
+      }
+
+      const state = await readState();
+      let { items, updatedAt } = state;
+      const page = Number.isFinite(state.page) ? state.page : 0;
+
+      if (!Array.isArray(items)) {
+        try {
+          const fetched = await fetchCampaigns();
+          items = fetched.items;
+          updatedAt = fetched.updatedAt;
+        } catch (error) {
+          await telegramAnswerCallback(env, callbackQuery, 'Не удалось обновить кампании.');
+          await handleFetchError(error);
+          return { ok: false, error: 'campaigns_toggle_failed' };
+        }
+      }
+
+      let added = false;
+      const updatedProject = await mutateProject(env, code, (proj) => {
+        const set = new Set(
+          Array.isArray(proj.campaigns)
+            ? proj.campaigns.map((value) => normalizeCampaignId(value)).filter(Boolean)
+            : [],
+        );
+        if (set.has(campaignId)) {
+          set.delete(campaignId);
+        } else {
+          set.add(campaignId);
+          added = true;
+        }
+        proj.campaigns = Array.from(set);
+      });
+
+      await telegramAnswerCallback(
+        env,
+        callbackQuery,
+        added ? 'Кампания добавлена.' : 'Кампания исключена.',
+      );
+
+      return editMessageWithCampaignEditor(env, message, code, {
+        uid,
+        items,
+        page,
+        updatedAt,
+        projectOverride: updatedProject ?? project,
+        timezone: env.DEFAULT_TZ ?? 'UTC',
+      });
+    }
+
+    if (action === 'select') {
+      const mode = parts[4] ?? '';
+      const state = await readState();
+      let { items, updatedAt } = state;
+      const page = Number.isFinite(state.page) ? state.page : 0;
+
+      if (!Array.isArray(items)) {
+        try {
+          const fetched = await fetchCampaigns();
+          items = fetched.items;
+          updatedAt = fetched.updatedAt;
+        } catch (error) {
+          await telegramAnswerCallback(env, callbackQuery, 'Не удалось обновить кампании.');
+          await handleFetchError(error);
+          return { ok: false, error: 'campaigns_select_failed' };
+        }
+      }
+
+      let selectedIds = [];
+      if (mode === 'all') {
+        selectedIds = items.map((item) => item.id);
+      } else if (mode === 'active') {
+        selectedIds = items.filter(isCampaignEffectivelyActive).map((item) => item.id);
+      } else if (mode === 'clear') {
+        selectedIds = [];
+      } else {
+        await telegramAnswerCallback(env, callbackQuery, 'Действие не поддерживается.');
+        return { ok: false, error: 'campaigns_select_unknown' };
+      }
+
+      const normalizedSelection = Array.from(
+        new Set(selectedIds.map((value) => normalizeCampaignId(value)).filter(Boolean)),
+      );
+
+      const updatedProject = await mutateProject(env, code, (proj) => {
+        proj.campaigns = normalizedSelection;
+      });
+
+      await telegramAnswerCallback(
+        env,
+        callbackQuery,
+        `Выбрано кампаний: ${normalizedSelection.length}.`,
+      );
+
+      return editMessageWithCampaignEditor(env, message, code, {
+        uid,
+        items,
+        page,
+        updatedAt,
+        projectOverride: updatedProject ?? project,
+        timezone: env.DEFAULT_TZ ?? 'UTC',
+      });
+    }
+
+    await telegramAnswerCallback(env, callbackQuery, 'Действие не поддерживается.');
+    return { ok: false, error: 'unknown_campaigns_action' };
+  }
+
   if (data.startsWith('proj:portal:')) {
     const parts = data.split(':');
     const action = parts[2] ?? '';
@@ -8082,23 +8586,6 @@ async function handleCallbackQuery(env, callbackQuery) {
 
     await telegramAnswerCallback(env, callbackQuery, 'Действие архива не поддерживается.');
     return { ok: false, error: 'unknown_archive_action' };
-  }
-
-  if (data.startsWith('proj:detail:todo:')) {
-    const [, , , action = '', rawCode = ''] = data.split(':');
-    const code = sanitizeProjectCode(rawCode);
-    if (!isValidProjectCode(code)) {
-      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
-      return { ok: false, error: 'invalid_project_code' };
-    }
-
-    const hints = {
-      campaigns: 'Редактор кампаний запланирован вместе с Meta API.',
-    };
-
-    const hint = hints[action] ?? 'Раздел в разработке. Следите за обновлениями.';
-    await telegramAnswerCallback(env, callbackQuery, hint);
-    return { ok: true, placeholder: action };
   }
 
   if (data.startsWith('proj:detail:')) {
