@@ -759,6 +759,94 @@ async function handleUserStateMessage(env, message, textContent) {
     return { handled: true, step: 'schedule_updated' };
   }
 
+  if (state.mode === 'edit_kpi') {
+    if (state.step !== 'await_value' || !state.field) {
+      await clearUserState(env, uid);
+      return { handled: true, reason: 'kpi_state_reset' };
+    }
+
+    const code = sanitizeProjectCode(state.code);
+    const field = state.field;
+    const allowed = ['cpl', 'leads_per_day', 'daily_budget'];
+    if (!isValidProjectCode(code) || !allowed.includes(field)) {
+      await clearUserState(env, uid);
+      await telegramSendMessage(
+        env,
+        message,
+        'Настройка KPI отменена. Откройте карточку проекта и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'kpi_state_invalid' };
+    }
+
+    const rawValue = textContent.trim();
+    const lower = rawValue.toLowerCase();
+    let normalized = null;
+    let cleared = false;
+
+    if (!rawValue || ['нет', 'none', 'off', 'clear', '-'].includes(lower)) {
+      normalized = null;
+      cleared = true;
+    } else {
+      const parsed = Number(rawValue.replace(',', '.'));
+      if (Number.isNaN(parsed)) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Введите число или «нет», чтобы очистить показатель.',
+          { disable_reply: true },
+        );
+        return { handled: true, error: 'kpi_invalid_number' };
+      }
+
+      if (field === 'leads_per_day') {
+        normalized = Math.max(0, Math.round(parsed));
+      } else {
+        normalized = Math.max(0, Math.round(parsed * 100) / 100);
+      }
+    }
+
+    const project = await mutateProject(env, code, (proj) => {
+      proj.kpi = proj.kpi || {};
+      proj.kpi[field] = normalized;
+    });
+
+    await clearUserState(env, uid);
+
+    if (!project) {
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Вернитесь в карточку и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'project_not_found' };
+    }
+
+    const labels = {
+      cpl: 'CPL',
+      leads_per_day: 'Лидов в день',
+      daily_budget: 'Бюджет в день',
+    };
+
+    const resultText = cleared
+      ? `${labels[field]} очищен.`
+      : `${labels[field]} установлен на ${formatKpiValue(normalized)}.`;
+
+    await telegramSendMessage(env, message, resultText, { disable_reply: true });
+
+    if (state.message_chat_id && state.message_id) {
+      await editMessageWithKpi(
+        env,
+        { chat: { id: state.message_chat_id }, message_id: state.message_id },
+        code,
+        { preserveAwait: false },
+      );
+    }
+
+    return { handled: true, step: 'kpi_updated' };
+  }
+
   return { handled: false, reason: 'unknown_mode' };
 }
 
@@ -1062,6 +1150,26 @@ function formatKpiLabel(kpi = {}) {
   return parts.join(' · ');
 }
 
+function formatKpiValue(value) {
+  if (value === null || typeof value === 'undefined') {
+    return '—';
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (Number.isInteger(value)) {
+      return value.toString();
+    }
+    return value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+  }
+
+  const parsed = Number(value);
+  if (!Number.isNaN(parsed)) {
+    return formatKpiValue(parsed);
+  }
+
+  return String(value);
+}
+
 function formatDateLabel(value) {
   if (!value) {
     return '—';
@@ -1150,7 +1258,7 @@ function renderProjectDetails(project, chatRecord) {
   ]);
 
   inline_keyboard.push([
-    { text: '🎯 KPI', callback_data: `proj:detail:todo:kpi:${project.code}` },
+    { text: '🎯 KPI', callback_data: `proj:kpi:open:${project.code}` },
     { text: '📊 Alerts', callback_data: `proj:detail:todo:alerts:${project.code}` },
   ]);
   inline_keyboard.push([
@@ -1252,6 +1360,66 @@ function renderScheduleEditor(project, options = {}) {
   };
 }
 
+function renderKpiEditor(project, options = {}) {
+  const awaitingField = options.awaitingField ?? null;
+  const lines = [
+    `<b>KPI проекта #${escapeHtml(project.code)}</b>`,
+    `CPL: <code>${escapeHtml(formatKpiValue(project.kpi?.cpl))}</code>`,
+    `Лидов в день: <code>${escapeHtml(formatKpiValue(project.kpi?.leads_per_day))}</code>`,
+    `Бюджет в день: <code>${escapeHtml(formatKpiValue(project.kpi?.daily_budget))}</code>`,
+    '',
+    'Используйте кнопки, чтобы обновить значения. Отправьте «нет» или «0», чтобы очистить показатель.',
+  ];
+
+  if (awaitingField) {
+    const prompts = {
+      cpl: 'Введите целевой CPL (число). Например: 7.5',
+      leads_per_day: 'Введите целевое число лидов в день. Например: 12',
+      daily_budget: 'Введите целевой дневной бюджет. Например: 45.5',
+    };
+    lines.push('');
+    lines.push(prompts[awaitingField] ?? 'Введите значение.');
+    lines.push('Можно отправить «нет», чтобы очистить показатель.');
+  }
+
+  const inline_keyboard = [];
+  inline_keyboard.push([
+    {
+      text: `CPL (${formatKpiValue(project.kpi?.cpl)})`,
+      callback_data: `proj:kpi:set:cpl:${project.code}`,
+    },
+    {
+      text: `Л/д (${formatKpiValue(project.kpi?.leads_per_day)})`,
+      callback_data: `proj:kpi:set:leads_per_day:${project.code}`,
+    },
+  ]);
+  inline_keyboard.push([
+    {
+      text: `Бюд/д (${formatKpiValue(project.kpi?.daily_budget)})`,
+      callback_data: `proj:kpi:set:daily_budget:${project.code}`,
+    },
+  ]);
+  inline_keyboard.push([
+    { text: '♻️ Сбросить KPI', callback_data: `proj:kpi:reset:${project.code}` },
+  ]);
+
+  if (awaitingField) {
+    inline_keyboard.push([
+      { text: '❌ Отменить ввод', callback_data: `proj:kpi:cancel:${project.code}` },
+    ]);
+  }
+
+  inline_keyboard.push([
+    { text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` },
+    { text: '← В панель', callback_data: 'panel:home' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
 async function editMessageWithProject(env, message, code) {
   const chatId = message?.chat?.id;
   const messageId = message?.message_id;
@@ -1323,6 +1491,52 @@ async function clearPendingScheduleState(env, uid, code) {
   if (!uid) return;
   const state = await loadUserState(env, uid);
   if (state?.mode === 'edit_schedule' && (!code || state.code === code)) {
+    await clearUserState(env, uid);
+  }
+}
+
+async function editMessageWithKpi(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Вернитесь в список проектов.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  let awaitingField = options.awaitingField ?? null;
+  if (!awaitingField && options.preserveAwait && options.uid) {
+    const state = await loadUserState(env, options.uid);
+    if (
+      state?.mode === 'edit_kpi' &&
+      state.code === code &&
+      state.message_id === messageId &&
+      state.message_chat_id === chatId
+    ) {
+      awaitingField = state.field ?? null;
+    }
+  }
+
+  const view = renderKpiEditor(project, { awaitingField });
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  return { ok: true, project };
+}
+
+async function clearPendingKpiState(env, uid, code) {
+  if (!uid) return;
+  const state = await loadUserState(env, uid);
+  if (state?.mode === 'edit_kpi' && (!code || state.code === code)) {
     await clearUserState(env, uid);
   }
 }
@@ -1858,6 +2072,67 @@ async function handleCallbackQuery(env, callbackQuery) {
     return editMessageWithSchedule(env, message, code, { preserveAwait: true, uid });
   }
 
+  if (data.startsWith('proj:kpi:open:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await clearPendingKpiState(env, uid, code);
+    return editMessageWithKpi(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:kpi:set:')) {
+    const [, , , field = '', rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    const allowed = ['cpl', 'leads_per_day', 'daily_budget'];
+    if (!isValidProjectCode(code) || !allowed.includes(field)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта или поле KPI не распознаны.');
+      return { ok: false, error: 'invalid_kpi_field' };
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'edit_kpi',
+      step: 'await_value',
+      field,
+      code,
+      message_chat_id: message.chat.id,
+      message_id: message.message_id,
+    });
+
+    return editMessageWithKpi(env, message, code, { awaitingField: field });
+  }
+
+  if (data.startsWith('proj:kpi:cancel:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await clearPendingKpiState(env, uid, code);
+    return editMessageWithKpi(env, message, code, { preserveAwait: false });
+  }
+
+  if (data.startsWith('proj:kpi:reset:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await clearPendingKpiState(env, uid, code);
+    await mutateProject(env, code, (project) => {
+      project.kpi = { cpl: null, leads_per_day: null, daily_budget: null };
+    });
+
+    return editMessageWithKpi(env, message, code, { preserveAwait: false });
+  }
+
   if (data.startsWith('proj:detail:todo:')) {
     const [, , , action = '', rawCode = ''] = data.split(':');
     const code = sanitizeProjectCode(rawCode);
@@ -1867,8 +2142,6 @@ async function handleCallbackQuery(env, callbackQuery) {
     }
 
     const hints = {
-      schedule: 'Настройка расписания появится на следующем этапе.',
-      kpi: 'Редактор KPI появится после подключения отчётов.',
       billing: 'Учёт оплат будет добавлен вместе с биллинг-алертами.',
       alerts: 'Управление алертами планируется в отдельном релизе.',
       report: 'Кнопка отправки отчёта заработает, когда реализуем /report.',
