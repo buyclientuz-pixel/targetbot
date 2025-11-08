@@ -22,6 +22,9 @@ const DEFAULT_ADMIN_IDS = [7623982602];
 const STATE_TTL_SECONDS = 600;
 const REPORT_ARCHIVE_PREFIX = 'report:';
 const REPORT_ARCHIVE_TTL_SECONDS = 60 * 60 * 24 * 90; // 90 дней
+const REPORT_ARCHIVE_PAGE_SIZE = 5;
+const REPORT_ARCHIVE_MAX_KEYS = 200;
+const REPORT_PREVIEW_MAX_LENGTH = 3600;
 const AUTO_REPORT_FLAG_PREFIX = 'flag:auto_report:';
 const WEEKLY_REPORT_FLAG_PREFIX = 'flag:weekly_report:';
 const REPORT_FLAG_TTL_SECONDS = 60 * 60 * 24 * 3;
@@ -2669,6 +2672,33 @@ function formatDateLabel(value) {
   return String(value);
 }
 
+function formatDateTimeLabel(value, timezone = 'UTC') {
+  if (!value) {
+    return '—';
+  }
+
+  try {
+    const date = typeof value === 'number' ? new Date(value) : new Date(String(value));
+    if (Number.isNaN(date.getTime())) {
+      return String(value);
+    }
+
+    const formatter = new Intl.DateTimeFormat('ru-RU', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+
+    return formatter.format(date);
+  } catch (error) {
+    console.error('formatDateTimeLabel error', error);
+    return String(value);
+  }
+}
+
 function isValidYmd(ymd) {
   if (typeof ymd !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
     return false;
@@ -3399,6 +3429,361 @@ async function archiveReportRecord(env, project, { payload, period, range, origi
   const key = getReportArchiveKey(project.code, Date.now());
   await env.DB.put(key, JSON.stringify(record), { expirationTtl: REPORT_ARCHIVE_TTL_SECONDS });
   return key;
+}
+
+async function listReportArchiveStamps(env, code, { limit = REPORT_ARCHIVE_MAX_KEYS } = {}) {
+  if (!env.DB || !code) {
+    return [];
+  }
+
+  const prefix = `${REPORT_ARCHIVE_PREFIX}${code}:`;
+  const stamps = [];
+  let cursor = undefined;
+
+  while (stamps.length < limit) {
+    const pageSize = Math.min(100, limit - stamps.length);
+    const response = await env.DB.list({ prefix, limit: pageSize, cursor });
+
+    for (const entry of response.keys ?? []) {
+      const parts = entry.name.split(':');
+      const rawStamp = parts[parts.length - 1];
+      const stamp = Number(rawStamp);
+      if (Number.isFinite(stamp)) {
+        stamps.push(stamp);
+      }
+    }
+
+    if (response.list_complete || !response.cursor) {
+      break;
+    }
+
+    cursor = response.cursor;
+  }
+
+  stamps.sort((a, b) => b - a);
+  return stamps.slice(0, limit);
+}
+
+async function loadReportArchiveRecord(env, code, stamp) {
+  if (!env.DB || !code || !Number.isFinite(stamp)) {
+    return null;
+  }
+
+  try {
+    const key = getReportArchiveKey(code, stamp);
+    const raw = await env.DB.get(key);
+    if (!raw) {
+      return null;
+    }
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error('loadReportArchiveRecord error', code, stamp, error);
+    return null;
+  }
+}
+
+function createArchiveState(project, overrides = {}) {
+  const state = {
+    mode: 'report_archive',
+    code: project.code,
+    page: Number.isFinite(overrides.page) ? Math.max(0, Number(overrides.page)) : 0,
+    keys: Array.isArray(overrides.keys)
+      ? overrides.keys
+          .map((value) => Number(value))
+          .filter((value) => Number.isFinite(value))
+          .slice(0, REPORT_ARCHIVE_MAX_KEYS)
+      : [],
+  };
+
+  if (typeof overrides.message_chat_id !== 'undefined') {
+    state.message_chat_id = overrides.message_chat_id;
+  }
+
+  if (typeof overrides.message_id !== 'undefined') {
+    state.message_id = overrides.message_id;
+  }
+
+  if (typeof overrides.timezone === 'string' && overrides.timezone.trim().length) {
+    state.timezone = overrides.timezone;
+  }
+
+  if (Number.isFinite(overrides.viewStamp)) {
+    state.viewStamp = Number(overrides.viewStamp);
+  }
+
+  if (typeof overrides.step === 'string') {
+    state.step = overrides.step;
+  }
+
+  return state;
+}
+
+async function buildArchivePageData(env, project, { stamps, page, timezone, currency }) {
+  const total = Array.isArray(stamps) ? stamps.length : 0;
+  const pageSize = REPORT_ARCHIVE_PAGE_SIZE;
+  const totalPages = total > 0 ? Math.ceil(total / pageSize) : 1;
+  const safePage = Math.min(Math.max(page ?? 0, 0), Math.max(totalPages - 1, 0));
+  const start = safePage * pageSize;
+  const slice = (stamps ?? []).slice(start, start + pageSize);
+  const entries = [];
+
+  for (const stamp of slice) {
+    const record = await loadReportArchiveRecord(env, project.code, stamp);
+    if (!record) {
+      continue;
+    }
+
+    const createdLabel = formatDateTimeLabel(record.created_at ?? stamp, timezone);
+    const rowsCount = Array.isArray(record.rows) ? record.rows.length : 0;
+    const totals = record.totals ?? {};
+    const period = record.period ?? project.period ?? 'yesterday';
+
+    entries.push({
+      stamp,
+      record,
+      createdLabel,
+      rowsCount,
+      totals,
+      period,
+      rangeLabel: formatRangeLabel(record.range),
+      filters: record.filters ?? {},
+      origin: record.origin ?? 'manual',
+    });
+  }
+
+  return {
+    entries,
+    total,
+    page: safePage,
+    totalPages: Math.max(totalPages, 1),
+    currency,
+  };
+}
+
+function renderReportArchiveList(project, data, options = {}) {
+  const lines = [`<b>Архив #${escapeHtml(project.code)}</b>`];
+
+  if (data.total === 0) {
+    lines.push('Архив пока пуст. История появится после первых автоотчётов или ручных отправок.');
+  } else {
+    lines.push(`Всего записей: ${data.total}`);
+    lines.push(`Страница ${data.page + 1} из ${data.totalPages}`);
+    lines.push('');
+
+    for (const entry of data.entries) {
+      const totals = entry.totals ?? {};
+      const spendLabel = Number.isFinite(totals.spend)
+        ? formatCurrency(totals.spend, data.currency)
+        : formatNumber(totals.spend ?? 0);
+      const resultsLabel = formatNumber(totals.results ?? 0);
+      const cpaLabel = Number.isFinite(totals.cpa)
+        ? formatCpa(totals.cpa, data.currency)
+        : '—';
+
+      lines.push(
+        `• ${escapeHtml(entry.createdLabel)} · ${escapeHtml(getPeriodLabel(entry.period))} (${escapeHtml(entry.rangeLabel)}) · ` +
+          `кампаний: ${entry.rowsCount} · расход: ${escapeHtml(spendLabel)} · результаты: ${escapeHtml(resultsLabel)} · CPA: ${escapeHtml(cpaLabel)}`,
+      );
+      lines.push(`  Источник: ${entry.origin === 'auto' ? 'авто' : entry.origin === 'weekly' ? 'weekly' : 'ручной'}, фильтры: ${escapeHtml(describeReportFilters(entry.filters))}`);
+    }
+  }
+
+  const inline_keyboard = [];
+
+  for (const entry of data.entries) {
+    inline_keyboard.push([
+      {
+        text: `👁 ${entry.createdLabel}`,
+        callback_data: `proj:archive:view:${project.code}:${entry.stamp}`,
+      },
+    ]);
+  }
+
+  if (data.totalPages > 1) {
+    inline_keyboard.push([
+      { text: '◀️', callback_data: `proj:archive:page:${project.code}:prev` },
+      { text: `Стр ${data.page + 1}/${data.totalPages}`, callback_data: 'noop' },
+      { text: '▶️', callback_data: `proj:archive:page:${project.code}:next` },
+    ]);
+  }
+
+  if (data.total === 0) {
+    inline_keyboard.push([
+      { text: '🔄 Обновить', callback_data: `proj:archive:refresh:${project.code}` },
+    ]);
+  }
+
+  inline_keyboard.push([
+    { text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` },
+    { text: '← В панель', callback_data: 'panel:home' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function renderReportArchivePreview(project, record, { stamp, createdLabel, currency }) {
+  const totals = record.totals ?? {};
+  const rowsCount = Array.isArray(record.rows) ? record.rows.length : 0;
+  const spendLabel = Number.isFinite(totals.spend)
+    ? formatCurrency(totals.spend, currency)
+    : formatNumber(totals.spend ?? 0);
+  const resultsLabel = formatNumber(totals.results ?? 0);
+  const cpaLabel = Number.isFinite(totals.cpa) ? formatCpa(totals.cpa, currency) : '—';
+  const message = String(record.message ?? '');
+  const truncated = message.length > REPORT_PREVIEW_MAX_LENGTH;
+  const previewBody = truncated ? message.slice(0, REPORT_PREVIEW_MAX_LENGTH) : message;
+
+  const lines = [
+    `<b>Архивный отчёт #${escapeHtml(project.code)}</b>`,
+    `Создан: ${escapeHtml(createdLabel)} (${stamp})`,
+    `Источник: ${record.origin === 'auto' ? 'авто' : record.origin === 'weekly' ? 'weekly' : 'ручной'}`,
+    `Период: ${escapeHtml(getPeriodLabel(record.period ?? project.period ?? 'yesterday'))} (${escapeHtml(formatRangeLabel(record.range))})`,
+    `Кампаний: ${rowsCount}`,
+    `Расход: ${escapeHtml(spendLabel)} · Результаты: ${escapeHtml(resultsLabel)} · CPA: ${escapeHtml(cpaLabel)}`,
+    `Фильтры: ${escapeHtml(describeReportFilters(record.filters ?? {}))}`,
+    '',
+    'Сообщение для клиента:',
+    `<code>${escapeHtml(previewBody)}</code>`,
+  ];
+
+  if (truncated) {
+    lines.push('… (усечено для предпросмотра)');
+  }
+
+  const inline_keyboard = [
+    [
+      { text: '📤 Отправить в чат', callback_data: `proj:archive:send:${project.code}:${stamp}` },
+      { text: '🗂 К списку', callback_data: `proj:archive:back:${project.code}` },
+    ],
+    [
+      { text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` },
+      { text: '← В панель', callback_data: 'panel:home' },
+    ],
+  ];
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithArchiveList(env, message, code, { uid, refresh = false, page = null } = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Вернитесь в список проектов.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  const timezone = project?.timezone ?? env.DEFAULT_TZ ?? 'UTC';
+  const state = await loadUserState(env, uid);
+  let archiveState;
+
+  if (!refresh && state?.mode === 'report_archive' && state.code === code && Array.isArray(state.keys)) {
+    archiveState = createArchiveState(project, {
+      ...state,
+      message_chat_id: chatId,
+      message_id: messageId,
+      timezone,
+    });
+  } else {
+    const stamps = await listReportArchiveStamps(env, code, { limit: REPORT_ARCHIVE_MAX_KEYS });
+    archiveState = createArchiveState(project, {
+      keys: stamps,
+      page: 0,
+      message_chat_id: chatId,
+      message_id: messageId,
+      timezone,
+      step: 'list',
+    });
+  }
+
+  if (page !== null && Number.isFinite(page)) {
+    archiveState.page = Math.max(0, Number(page));
+  }
+
+  const accountMeta = await loadAccountMeta(env, project.act?.replace(/^act_/i, '') ?? project.act);
+  const currency = getCurrencyFromMeta(accountMeta);
+
+  const pageData = await buildArchivePageData(env, project, {
+    stamps: archiveState.keys,
+    page: archiveState.page ?? 0,
+    timezone,
+    currency,
+  });
+
+  archiveState.page = pageData.page;
+  archiveState.step = 'list';
+  await saveUserState(env, uid, archiveState);
+
+  const view = renderReportArchiveList(project, pageData, { currency, timezone });
+  await telegramEditMessage(env, chatId, messageId, view.text, { reply_markup: view.reply_markup });
+  return { ok: true, project, state: archiveState };
+}
+
+async function editMessageWithArchivePreview(env, message, code, stamp, { uid } = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Вернитесь в список проектов.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  const record = await loadReportArchiveRecord(env, code, stamp);
+  if (!record) {
+    await telegramSendMessage(env, message, 'Запись архива не найдена или истекла TTL.', { disable_reply: true });
+    return editMessageWithArchiveList(env, message, code, { uid, refresh: true });
+  }
+
+  const timezone = project?.timezone ?? env.DEFAULT_TZ ?? 'UTC';
+  const accountMeta = await loadAccountMeta(env, project.act?.replace(/^act_/i, '') ?? project.act);
+  const currency = getCurrencyFromMeta(accountMeta);
+  const createdLabel = formatDateTimeLabel(record.created_at ?? stamp, timezone);
+
+  const view = renderReportArchivePreview(project, record, { stamp, createdLabel, currency });
+  await telegramEditMessage(env, chatId, messageId, view.text, { reply_markup: view.reply_markup });
+
+  const current = await loadUserState(env, uid);
+  const nextState = createArchiveState(project, {
+    ...(current?.mode === 'report_archive' && current.code === code ? current : {}),
+    message_chat_id: chatId,
+    message_id: messageId,
+    timezone,
+    viewStamp: stamp,
+    step: 'preview',
+  });
+  await saveUserState(env, uid, nextState);
+
+  return { ok: true, project, record };
+}
+
+async function clearReportArchiveState(env, uid, code) {
+  if (!uid) return;
+  const state = await loadUserState(env, uid);
+  if (state?.mode === 'report_archive' && (!code || state.code === code)) {
+    await clearUserState(env, uid);
+  }
 }
 
 async function loadAutopauseState(env, code) {
@@ -4247,6 +4632,9 @@ function renderProjectDetails(project, chatRecord) {
     { text: '📤 Отчёт', callback_data: `proj:report:open:${project.code}` },
   ]);
   inline_keyboard.push([
+    { text: '🗂 Архив', callback_data: `proj:archive:open:${project.code}` },
+  ]);
+  inline_keyboard.push([
     { text: '📦 Кампании', callback_data: `proj:detail:todo:campaigns:${project.code}` },
   ]);
   inline_keyboard.push([{ text: '📋 К списку проектов', callback_data: 'panel:projects:0' }]);
@@ -4272,6 +4660,16 @@ function describeReportFilters(filters = {}) {
   );
   parts.push(filters.onlyPositive ? 'только с результатом' : 'включая 0 результатов');
   return parts.join(', ');
+}
+
+function formatRangeLabel(range) {
+  if (!range || (!range.since && !range.until)) {
+    return '—';
+  }
+
+  const since = range.since ?? range.until ?? '—';
+  const until = range.until ?? since;
+  return since === until ? since : `${since}–${until}`;
 }
 
 function createReportState(project, overrides = {}) {
@@ -7163,6 +7561,112 @@ async function handleCallbackQuery(env, callbackQuery) {
     return { ok: false, error: 'unknown_report_action' };
   }
 
+  if (data.startsWith('proj:archive:')) {
+    const parts = data.split(':');
+    const action = parts[2] ?? '';
+    const rawCode = parts[3] ?? '';
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    if (action === 'open') {
+      await telegramAnswerCallback(env, callbackQuery, 'Открываю архив...');
+      return editMessageWithArchiveList(env, message, code, { uid, refresh: true });
+    }
+
+    if (action === 'refresh') {
+      await telegramAnswerCallback(env, callbackQuery, 'Обновляю архив...');
+      return editMessageWithArchiveList(env, message, code, { uid, refresh: true });
+    }
+
+    if (action === 'page') {
+      const direction = parts[4] ?? '';
+      const state = await loadUserState(env, uid);
+      let page = state?.page ?? 0;
+      if (state?.mode !== 'report_archive' || state.code !== code || !Array.isArray(state.keys)) {
+        await telegramAnswerCallback(env, callbackQuery, 'Обновляю список архива.');
+        return editMessageWithArchiveList(env, message, code, { uid, refresh: true });
+      }
+
+      const total = state.keys.length;
+      const totalPages = total > 0 ? Math.ceil(total / REPORT_ARCHIVE_PAGE_SIZE) : 1;
+      if (direction === 'next' && page + 1 < totalPages) {
+        page += 1;
+      } else if (direction === 'prev' && page > 0) {
+        page -= 1;
+      }
+
+      await telegramAnswerCallback(env, callbackQuery, 'Страница обновлена.');
+      return editMessageWithArchiveList(env, message, code, { uid, refresh: false, page });
+    }
+
+    if (action === 'back') {
+      await telegramAnswerCallback(env, callbackQuery, 'Возвращаю список архива.');
+      return editMessageWithArchiveList(env, message, code, { uid, refresh: false });
+    }
+
+    if (action === 'view') {
+      const stamp = Number(parts[4] ?? '');
+      if (!Number.isFinite(stamp)) {
+        await telegramAnswerCallback(env, callbackQuery, 'Запись не распознана.');
+        return { ok: false, error: 'invalid_archive_stamp' };
+      }
+
+      await telegramAnswerCallback(env, callbackQuery, 'Открываю запись...');
+      return editMessageWithArchivePreview(env, message, code, stamp, { uid });
+    }
+
+    if (action === 'send') {
+      const stamp = Number(parts[4] ?? '');
+      if (!Number.isFinite(stamp)) {
+        await telegramAnswerCallback(env, callbackQuery, 'Запись не распознана.');
+        return { ok: false, error: 'invalid_archive_stamp' };
+      }
+
+      const project = await loadProject(env, code);
+      if (!project) {
+        await telegramAnswerCallback(env, callbackQuery, 'Проект не найден.');
+        return { ok: false, error: 'project_not_found' };
+      }
+
+      const record = await loadReportArchiveRecord(env, code, stamp);
+      if (!record || !record.message) {
+        await telegramAnswerCallback(env, callbackQuery, 'Сообщение архива не найдено.');
+        await telegramSendMessage(env, message, 'Не удалось найти текст отчёта в архиве. Возможно, запись истекла.', {
+          disable_reply: true,
+        });
+        return { ok: false, error: 'archive_missing_message' };
+      }
+
+      await telegramAnswerCallback(env, callbackQuery, 'Отправляю архивный отчёт...');
+
+      try {
+        await telegramSendToProject(env, project, record.message, {});
+        await telegramSendMessage(
+          env,
+          message,
+          `Архивный отчёт <b>#${escapeHtml(code)}</b> (${formatRangeLabel(record.range)}) отправлен в чат.`,
+          { disable_reply: true },
+        );
+      } catch (error) {
+        console.error('proj:archive:send error', error);
+        await telegramSendMessage(
+          env,
+          message,
+          `Не удалось отправить архивный отчёт: ${escapeHtml(error?.message ?? 'ошибка')}`,
+          { disable_reply: true },
+        );
+      }
+
+      return editMessageWithArchivePreview(env, message, code, stamp, { uid });
+    }
+
+    await telegramAnswerCallback(env, callbackQuery, 'Действие архива не поддерживается.');
+    return { ok: false, error: 'unknown_archive_action' };
+  }
+
   if (data.startsWith('proj:detail:todo:')) {
     const [, , , action = '', rawCode = ''] = data.split(':');
     const code = sanitizeProjectCode(rawCode);
@@ -7215,6 +7719,7 @@ async function handleCallbackQuery(env, callbackQuery) {
     }
 
     await clearPendingReportState(env, uid, code);
+    await clearReportArchiveState(env, uid, code);
     const chatRecord = project.chat_id
       ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
       : null;
