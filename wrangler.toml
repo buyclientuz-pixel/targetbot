@@ -23,3 +23,6 @@ preview_id = "c55f82210ade457c93aff4fe2ba8b007"
 
 [env.production.vars]
 ENVIRONMENT = "production"
+
+[observability]
+enabled = false
