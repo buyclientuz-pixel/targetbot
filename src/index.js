@@ -15,6 +15,9 @@ const TEXT_HEADERS = {
 
 const TELEGRAM_TIMEOUT_MS = 9000;
 const DEFAULT_PAGE_SIZE = 8;
+const PROJECT_PREFIX = 'project:';
+const CHAT_PREFIX = 'chat:';
+const STATE_PREFIX = 'state:';
 
 function escapeHtml(input = '') {
   return String(input)
@@ -119,7 +122,15 @@ function parseAdminIds(env) {
 }
 
 function getChatKey(chatId, threadId) {
-  return `chat:${chatId}:${threadId ?? 0}`;
+  return `${CHAT_PREFIX}${chatId}:${threadId ?? 0}`;
+}
+
+function getProjectKey(code) {
+  return `${PROJECT_PREFIX}${code}`;
+}
+
+function getStateKey(uid) {
+  return `${STATE_PREFIX}${uid}`;
 }
 
 function buildHelpMessage() {
@@ -130,9 +141,132 @@ function buildHelpMessage() {
     '• /start — показать помощь',
     '• /help — краткая справка',
     '• /register — вызовите внутри нужного топика, чтобы привязать чат',
+    '• /admin — открыть панель администратора (для ID из ADMIN_IDS)',
     '',
     'Остальные возможности будут добавляться по мере разработки.',
   ].join('\n');
+}
+
+function normalizeProject(raw = {}) {
+  const safe = typeof raw === 'object' && raw ? raw : {};
+  const period = typeof safe.period === 'string' && safe.period ? safe.period : 'yesterday';
+  const times = Array.isArray(safe.times) && safe.times.length
+    ? safe.times.map((value) => String(value))
+    : [String(safe.time ?? '09:30')];
+
+  return {
+    code: safe.code ?? '',
+    act: safe.act ?? '',
+    chat_id: safe.chat_id ?? null,
+    thread_id: safe.thread_id ?? 0,
+    period,
+    times,
+    mute_weekends: Boolean(safe.mute_weekends),
+    active: safe.active !== false,
+    billing: typeof safe.billing === 'string' ? safe.billing : 'paid',
+    campaigns: Array.isArray(safe.campaigns) ? safe.campaigns.map((value) => String(value)) : [],
+    kpi: {
+      cpl: safe.kpi?.cpl ?? null,
+      leads_per_day: safe.kpi?.leads_per_day ?? null,
+      daily_budget: safe.kpi?.daily_budget ?? null,
+    },
+    weekly: {
+      enabled: safe.weekly?.enabled !== false,
+      mode: safe.weekly?.mode === 'week_yesterday' ? 'week_yesterday' : 'week_today',
+    },
+    autopause: {
+      enabled: safe.autopause?.enabled === true,
+      days: Number.isFinite(safe.autopause?.days) ? Number(safe.autopause.days) : 3,
+    },
+    alerts: {
+      enabled: safe.alerts?.enabled !== false,
+      billing_times:
+        Array.isArray(safe.alerts?.billing_times) && safe.alerts.billing_times.length
+          ? safe.alerts.billing_times.map((value) => String(value))
+          : ['10:00', '14:00', '18:00'],
+      no_spend_by: safe.alerts?.no_spend_by ?? '12:00',
+    },
+    anomaly: {
+      cpl_jump: typeof safe.anomaly?.cpl_jump === 'number' ? safe.anomaly.cpl_jump : 0.5,
+      ctr_drop: typeof safe.anomaly?.ctr_drop === 'number' ? safe.anomaly.ctr_drop : 0.4,
+      impr_drop: typeof safe.anomaly?.impr_drop === 'number' ? safe.anomaly.impr_drop : 0.5,
+      freq: typeof safe.anomaly?.freq === 'number' ? safe.anomaly.freq : 3.5,
+    },
+    billing_paid_at: safe.billing_paid_at ?? null,
+    billing_next_at: safe.billing_next_at ?? null,
+  };
+}
+
+async function loadProject(env, code) {
+  if (!env.DB) return null;
+  if (!code) return null;
+
+  try {
+    const raw = await env.DB.get(getProjectKey(code));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return normalizeProject({ ...parsed, code });
+  } catch (error) {
+    console.error('loadProject error', error);
+    return null;
+  }
+}
+
+async function saveProject(env, project) {
+  if (!env.DB) throw new Error('KV binding DB недоступен.');
+  if (!project?.code) throw new Error('Код проекта обязателен.');
+
+  const payload = JSON.stringify(normalizeProject(project));
+  await env.DB.put(getProjectKey(project.code), payload);
+}
+
+async function listProjects(env, cursor, limit = DEFAULT_PAGE_SIZE) {
+  if (!env.DB) {
+    return { items: [], cursor: null, listComplete: true };
+  }
+
+  const response = await env.DB.list({ prefix: PROJECT_PREFIX, cursor, limit });
+  const items = [];
+
+  for (const key of response.keys || []) {
+    const code = key.name.slice(PROJECT_PREFIX.length);
+    try {
+      const raw = await env.DB.get(key.name);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      items.push(normalizeProject({ ...parsed, code }));
+    } catch (error) {
+      console.error('listProjects parse error', error, key.name);
+    }
+  }
+
+  return {
+    items,
+    cursor: response.cursor ?? null,
+    listComplete: response.list_complete ?? true,
+  };
+}
+
+async function loadUserState(env, uid) {
+  if (!env.DB || !uid) return null;
+  try {
+    const raw = await env.DB.get(getStateKey(uid));
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    console.error('loadUserState error', error);
+    return null;
+  }
+}
+
+async function saveUserState(env, uid, state, options = {}) {
+  if (!env.DB || !uid) return;
+  const ttl = Number.isFinite(options.ttlSeconds) ? Number(options.ttlSeconds) : 600;
+  await env.DB.put(getStateKey(uid), JSON.stringify(state ?? {}), { expirationTtl: ttl });
+}
+
+async function clearUserState(env, uid) {
+  if (!env.DB || !uid) return;
+  await env.DB.delete(getStateKey(uid));
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = TELEGRAM_TIMEOUT_MS) {
@@ -294,6 +428,10 @@ async function handleTelegramCommand(env, message, command, args) {
       return handleRegisterCommand(env, message, args);
     case '/admin':
       return handleAdminCommand(env, message);
+    case '/report':
+      return telegramSendMessage(env, message, 'Команда /report будет реализована на следующем этапе.');
+    case '/digest':
+      return telegramSendMessage(env, message, 'Команда /digest будет реализована на следующем этапе.');
     default:
       if (command.startsWith('/')) {
         return telegramSendMessage(env, message, 'Команда пока не поддерживается.');
@@ -439,7 +577,7 @@ async function listRegisteredChats(env, cursor, limit = DEFAULT_PAGE_SIZE) {
     return { items: [], cursor: null, listComplete: true };
   }
 
-  const response = await env.DB.list({ prefix: 'chat:', cursor, limit });
+  const response = await env.DB.list({ prefix: CHAT_PREFIX, cursor, limit });
   const items = [];
   for (const key of response.keys || []) {
     try {
@@ -479,6 +617,7 @@ function renderAdminHome(uid, env) {
         ],
         [
           { text: '🗂 Зарегистрированные чаты', callback_data: 'panel:chats:0' },
+          { text: '📋 Проекты', callback_data: 'panel:projects:0' },
         ],
         [
           { text: '🔄 Обновить', callback_data: 'panel:home' },
@@ -516,6 +655,55 @@ function renderChatsPage(items, pagination = {}) {
 
   return {
     text: ['<b>Зарегистрированные чаты</b>', '', ...lines].join('\n'),
+    reply_markup: { inline_keyboard: keyboard },
+  };
+}
+
+function renderProjectsPage(items, pagination = {}) {
+  const textLines = ['<b>Проекты</b>', ''];
+
+  if (!items.length) {
+    textLines.push('Проектов пока нет. Настройте их через мастер в админ-панели.');
+  } else {
+    items.forEach((rawProject, index) => {
+      const project = normalizeProject(rawProject);
+      const codeLabel = project.code ? `#${escapeHtml(project.code)}` : 'без кода';
+      const actLabel = project.act
+        ? `<code>${escapeHtml(project.act)}</code>`
+        : '—';
+      const chatLabel = project.chat_id
+        ? `<code>${project.chat_id}</code> · thread <code>${project.thread_id ?? 0}</code>`
+        : 'нет привязки';
+      const schedule = escapeHtml(project.times.join(', '));
+
+      textLines.push(
+        `• <b>${codeLabel}</b> → act ${actLabel}\n  чат: ${chatLabel}\n  период: ${escapeHtml(project.period)} · ${schedule}`,
+      );
+
+      if (index !== items.length - 1) {
+        textLines.push('');
+      }
+    });
+
+    if (pagination.nextCursor) {
+      textLines.push('');
+      textLines.push('Показаны не все проекты. Нажмите «Далее», чтобы продолжить.');
+    }
+  }
+
+  const keyboard = [];
+  if (pagination.nextCursor) {
+    keyboard.push([
+      { text: '➡️ Далее', callback_data: `panel:projects:next:${encodeURIComponent(pagination.nextCursor)}` },
+    ]);
+  }
+  if (pagination.showReset) {
+    keyboard.push([{ text: '↩️ В начало', callback_data: 'panel:projects:0' }]);
+  }
+  keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: textLines.join('\n'),
     reply_markup: { inline_keyboard: keyboard },
   };
 }
@@ -595,6 +783,27 @@ async function handleCallbackQuery(env, callbackQuery) {
     };
 
     const response = renderChatsPage(result.items, pagination);
+    return telegramEditMessage(env, message.chat.id, message.message_id, response.text, {
+      reply_markup: response.reply_markup,
+    });
+  }
+
+  if (data.startsWith('panel:projects')) {
+    const [, , action = '0', cursorParam] = data.split(':');
+    let cursor;
+
+    if (action === 'next' && typeof cursorParam === 'string') {
+      cursor = decodeURIComponent(cursorParam);
+    }
+
+    const result = await listProjects(env, cursor, DEFAULT_PAGE_SIZE);
+
+    const pagination = {
+      nextCursor: result.cursor ?? null,
+      showReset: Boolean(cursor),
+    };
+
+    const response = renderProjectsPage(result.items, pagination);
     return telegramEditMessage(env, message.chat.id, message.message_id, response.text, {
       reply_markup: response.reply_markup,
     });
