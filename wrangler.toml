@@ -1,0 +1,30 @@
+name = "th-reports"
+main = "src/index.js"
+compatibility_date = "2025-02-04"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+[[kv_namespaces]]
+binding = "REPORTS_NAMESPACE"
+id = "<REPLACE_WITH_REPORTS_NAMESPACE_ID>"
+preview_id = "<OPTIONAL_PREVIEW_ID>"
+
+[[kv_namespaces]]
+binding = "BILLING_NAMESPACE"
+id = "<REPLACE_WITH_BILLING_NAMESPACE_ID>"
+preview_id = "<OPTIONAL_PREVIEW_ID>"
+
+[[kv_namespaces]]
+binding = "LOGS_NAMESPACE"
+id = "<REPLACE_WITH_LOGS_NAMESPACE_ID>"
+preview_id = "<OPTIONAL_PREVIEW_ID>"
+
+[[kv_namespaces]]
+binding = "DB"
+id = "<REPLACE_WITH_DB_NAMESPACE_ID>"
+preview_id = "<OPTIONAL_PREVIEW_ID>"
+
+[triggers]
+crons = ["*/5 * * * *"]
