@@ -11,6 +11,8 @@ This repository contains the full Cloudflare Worker that powers the Telegram aut
 | Secrets | `BOT_TOKEN` (Telegram bot token), `FB_APP_ID`, `FB_APP_SECRET`, `FB_LONG_TOKEN` (optional), `GS_WEBHOOK` (optional). |
 | Environment variables | `ADMIN_IDS` (comma-separated list of Telegram admin IDs), `DEFAULT_TZ` (default `Asia/Tashkent`), `WORKER_URL` (public HTTPS origin for OAuth callbacks). |
 
+> The worker now checks for these secrets at runtime. Telegram webhook requests are rejected if `BOT_TOKEN` is missing, and the Meta OAuth endpoints return HTTP 500 when `FB_APP_ID`/`FB_APP_SECRET` are not configured.
+
 Update `wrangler.toml` with your KV namespace ID before deploying:
 
 ```toml

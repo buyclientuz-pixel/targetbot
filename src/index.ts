@@ -20,6 +20,17 @@ export interface Env {
   GS_WEBHOOK?: string;
 }
 
+const missingConfig = (env: Env, keys: (keyof Env)[]) =>
+  keys.filter((key) => !env[key] || env[key] === '' || env[key] == null);
+
+const requireBotToken = (env: Env) => {
+  const token = env.BOT_TOKEN;
+  if (!token) {
+    throw new Error('BOT_TOKEN secret is not configured');
+  }
+  return token;
+};
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -29,6 +40,11 @@ export default {
     }
 
     if (url.pathname === '/tg' && request.method === 'POST') {
+      const missing = missingConfig(env, ['BOT_TOKEN']);
+      if (missing.length) {
+        console.error(`[config] Telegram webhook skipped, missing secrets: ${missing.join(', ')}`);
+        return new Response('Telegram webhook is not configured', { status: 500 });
+      }
       const update = await request.json();
       await handleTelegram(update, env);
       return new Response('ok');
@@ -54,6 +70,10 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    if (missingConfig(env, ['BOT_TOKEN']).length) {
+      console.error('[config] Scheduled tasks skipped: BOT_TOKEN secret is missing');
+      return;
+    }
     const tz = env.DEFAULT_TZ || 'Asia/Tashkent';
     const now = new Date();
     const projects = (await listProjects(env.DB)).map(normalizeProject);
@@ -780,6 +800,7 @@ const humanBillingReason = (entry: any) => {
 
 const checkBillingAndNotify = async (project: StoredProject, env: Env) => {
   try {
+    const botToken = requireBotToken(env);
     const token = await resolveTokenAnyAdmin(env);
     if (!token) return;
     const fields =
@@ -805,7 +826,7 @@ const checkBillingAndNotify = async (project: StoredProject, env: Env) => {
       const label = await projectLabel(project, env);
       const reason = humanBillingReason(json);
       for (const admin of adminList(env)) {
-        await tSend(env.BOT_TOKEN, {
+        await tSend(botToken, {
           chat_id: admin,
           parse_mode: 'HTML',
           text: `⚠️ <b>Проблема биллинга/доставки</b>\n${label}\nАккаунт: <b>${escapeHTML(actName)}</b>\nПричина: ${escapeHTML(
@@ -837,6 +858,7 @@ const hasActiveCampaigns = async (act: string, token: string) => {
 
 const checkZeroSpendWithActiveCampaigns = async (project: StoredProject, env: Env) => {
   try {
+    const botToken = requireBotToken(env);
     const token = await resolveTokenAnyAdmin(env);
     if (!token) return;
     const spend = await todaySpend(project.act, token, env);
@@ -851,7 +873,7 @@ const checkZeroSpendWithActiveCampaigns = async (project: StoredProject, env: En
       const actName = await accountName(project.act, env);
       const label = await projectLabel(project, env);
       for (const admin of adminList(env)) {
-        await tSend(env.BOT_TOKEN, {
+        await tSend(botToken, {
           chat_id: admin,
           parse_mode: 'HTML',
           text: `⚠️ <b>После контрольного времени расход = 0</b>\n${label}\nАккаунт: <b>${escapeHTML(
@@ -1251,6 +1273,11 @@ const tReplyDoc = (token: string, msg: any, blob: ArrayBuffer, filename: string,
 const fbAuth = async (url: URL, env: Env) => {
   const uid = url.searchParams.get('uid');
   if (!uid) return new Response('No uid', { status: 400 });
+  const missing = missingConfig(env, ['FB_APP_ID', 'FB_APP_SECRET']);
+  if (missing.length) {
+    console.error(`[config] Meta OAuth unavailable, missing: ${missing.join(', ')}`);
+    return new Response('Meta OAuth is not configured', { status: 500 });
+  }
   const force = url.searchParams.get('force');
   const redirect = `${env.WORKER_URL || url.origin}/fb_cb`;
   const scope = 'ads_read,ads_management,business_management';
@@ -1265,6 +1292,11 @@ const fbCallback = async (url: URL, env: Env) => {
   const code = url.searchParams.get('code');
   const uid = url.searchParams.get('state');
   const redirect = `${env.WORKER_URL || url.origin}/fb_cb`;
+  const missing = missingConfig(env, ['FB_APP_ID', 'FB_APP_SECRET']);
+  if (missing.length) {
+    console.error(`[config] Meta OAuth callback aborted, missing: ${missing.join(', ')}`);
+    return new Response('Meta OAuth is not configured', { status: 500 });
+  }
   if (!code || !uid) return htmlResponse('OAuth error');
   const step1 = await fetch(
     `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${env.FB_APP_ID}&redirect_uri=${encodeURIComponent(
@@ -1320,8 +1352,9 @@ const projectLabel = async (project: StoredProject, env: Env) => {
 };
 
 const notifyAdmins = async (env: Env, text: string, kb?: any) => {
+  const token = requireBotToken(env);
   for (const admin of adminList(env)) {
-    await tSend(env.BOT_TOKEN, {
+    await tSend(token, {
       chat_id: admin,
       parse_mode: 'HTML',
       text,
@@ -1389,6 +1422,7 @@ const sendWeeklyCombo = async (projectInput: StoredProject, env: Env) => {
   const tz = env.DEFAULT_TZ || 'Asia/Tashkent';
   const token = await resolveTokenAnyAdmin(env);
   if (!token) return;
+  const botToken = requireBotToken(env);
   const key = `weekly:${project.code}:${ymdLocal(new Date(), tz)}`;
   if (await env.DB.get(key)) return;
   const weekly = await buildReportPretty(project.act, 'last_week', token, project.campaigns || [], project.kpi || null, tz, env);
@@ -1398,7 +1432,7 @@ const sendWeeklyCombo = async (projectInput: StoredProject, env: Env) => {
       : await buildReportPretty(project.act, 'today', token, project.campaigns || [], project.kpi || null, tz, env);
   const label = project.weekly?.mode === 'week_yesterday' ? 'Вчера' : 'Сегодня';
   const text = `#${escapeHTML(project.code)}\n<b>Сводный отчёт (понедельник)</b>\n\n<b>Прошлая неделя</b>\n${weekly}\n\n<b>${label}</b>\n${second}`;
-  await sendToTopic(env.BOT_TOKEN, project.chat_id, project.thread_id || null, text);
+  await sendToTopic(botToken, project.chat_id, project.thread_id || null, text);
   await env.DB.put(key, '1', { expirationTtl: 60 * 60 * 24 });
 };
 
@@ -1411,17 +1445,18 @@ const sendReportForProject = async (
   const project = normalizeProject(projectInput);
   const token = await resolveTokenAnyAdmin(env);
   if (!token) return;
+  const botToken = requireBotToken(env);
   const tz = env.DEFAULT_TZ || 'Asia/Tashkent';
   const period = project.period || 'yesterday';
   const html = await buildReportPretty(project.act, period, token, project.campaigns || [], project.kpi || null, tz, env);
-  await sendToTopic(env.BOT_TOKEN, project.chat_id, project.thread_id || null, `#${escapeHTML(code)}\n${html}`);
+  await sendToTopic(botToken, project.chat_id, project.thread_id || null, `#${escapeHTML(code)}\n${html}`);
 
   let csvBlob: Uint8Array | null = null;
   if (opts.csv) {
     const { csv, range } = await exportReportCSV(project, env, token, period);
     csvBlob = new TextEncoder().encode(csv);
     await tSendDoc(
-      env.BOT_TOKEN,
+      botToken,
       project.chat_id,
       project.thread_id || null,
       csvBlob,
@@ -1493,7 +1528,7 @@ const handlePortal = async (url: URL, env: Env) => {
 
 
 const handleTelegram = async (update: any, env: Env) => {
-  const bot = env.BOT_TOKEN;
+  const bot = requireBotToken(env);
   const message = update.message || update.callback_query?.message;
   if (!message) return;
   const text: string = update.message?.text || '';
@@ -1609,8 +1644,7 @@ thread_id: <code>${tid ?? '—'}</code>
       return;
     }
     const digest = await buildClientDigest(project, env, token);
-    await sendToTopic(env.BOT_TOKEN, project.chat_id, project.thread_id || null, `#${escapeHTML(code)}
-${digest}`);
+    await sendToTopic(bot, project.chat_id, project.thread_id || null, `#${escapeHTML(code)}\n${digest}`);
     await tReply(bot, message, 'Дайджест отправлен');
     return;
   }
