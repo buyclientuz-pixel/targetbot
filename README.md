@@ -57,6 +57,16 @@ wrangler secret put GS_WEBHOOK
 
 If you use Cloudflare "Connect to Git", set the build command to `npm install` (or leave blank) and the deploy command to `npm run deploy` (defined in `package.json`).
 
+## Continuous deployment (GitHub Actions)
+
+This repository ships with `.github/workflows/deploy.yml`, which deploys the Worker on every push to `main`:
+
+1. Set `CLOUDFLARE_API_TOKEN` (with Workers Scripts edit permissions) and `CLOUDFLARE_ACCOUNT_ID` in the repository secrets.
+2. Commit to `main` — the workflow runs `npm ci` and `npm run deploy` through `cloudflare/wrangler-action@v3`.
+3. Monitor the **Deployments** tab in Cloudflare to confirm the publication succeeded.
+
+The cron trigger configured in `wrangler.toml` (`*/5 * * * *`) ensures the scheduled logic runs at five-minute intervals in production regardless of whether deployment happens via GitHub Actions or Wrangler CLI.
+
 ## Telegram commands
 
 Once the webhook is pointing to `/tg`, the bot understands the following chat commands:
@@ -79,6 +89,8 @@ Automatic routines include:
 * KPI streak tracking with optional one-click autopause for selected campaigns.
 
 The Worker stores projects, chats, and archived reports in KV. `src/index.ts` contains all helper functions so further enhancements can be implemented incrementally.
+
+> All outbound calls to the Telegram Bot API and Meta Graph API now go through a 9-second timeout wrapper with structured logging, preventing long-hanging requests from blocking cron executions.
 
 ## Migrating existing data
 

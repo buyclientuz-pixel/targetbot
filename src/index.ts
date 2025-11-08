@@ -152,6 +152,75 @@ const htmlResponse = (body: string) =>
     { headers: { 'content-type': 'text/html; charset=UTF-8' } },
   );
 
+const noop = () => {};
+
+const createTimeoutSignal = (ms = 9000) => {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    try {
+      return { signal: AbortSignal.timeout(ms), cancel: noop };
+    } catch (error) {
+      console.warn('[fetch] AbortSignal.timeout failed, falling back to manual controller', error);
+    }
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return {
+    signal: controller.signal,
+    cancel: () => clearTimeout(timer),
+  };
+};
+
+const describeRequest = (input: RequestInfo) => {
+  if (typeof input === 'string') return input;
+  if (input instanceof Request) return input.url;
+  try {
+    return JSON.stringify(input);
+  } catch (error) {
+    return '[object Request]';
+  }
+};
+
+const fetchWithTimeout = async (
+  input: RequestInfo,
+  init: RequestInit = {},
+  label?: string,
+  ms = 9000,
+): Promise<Response> => {
+  const timeout = init?.signal ? { signal: init.signal, cancel: noop } : createTimeoutSignal(ms);
+  const finalInit: RequestInit = {
+    ...init,
+    signal: timeout.signal,
+  };
+  try {
+    return await fetch(input, finalInit);
+  } catch (error) {
+    console.error(`[fetch] ${label || describeRequest(input)} failed`, error);
+    throw error;
+  } finally {
+    timeout.cancel();
+  }
+};
+
+const fetchJSON = async (
+  input: RequestInfo,
+  init?: RequestInit,
+  label?: string,
+  ms = 9000,
+): Promise<any> => {
+  const response = await fetchWithTimeout(input, init, label, ms);
+  if (!response.ok) {
+    let body = '';
+    try {
+      body = await response.text();
+    } catch (error) {
+      console.warn('[fetch] response text unavailable', error);
+    }
+    const details = body ? ` :: ${body.slice(0, 200)}` : '';
+    throw new Error(`[fetch] ${label || describeRequest(input)} responded with ${response.status}${details}`);
+  }
+  return response.json();
+};
+
 const currencySymbol = (currency?: string | null) => {
   if (!currency) return '';
   if (currency === 'USD') return '$';
@@ -424,7 +493,7 @@ const fetchAdAccountsDirect = async (uid: string, env: Env) => {
   const map = new Map<string, any>();
   let url = `https://graph.facebook.com/v19.0/me/adaccounts?limit=500&access_token=${encodeURIComponent(token)}`;
   for (let i = 0; i < 10; i += 1) {
-    const json = await (await fetch(url)).json();
+    const json = await fetchJSON(url);
     if (json?.error) return { items: [], error: json.error };
     if (Array.isArray(json?.data)) {
       for (const entry of json.data) {
@@ -452,10 +521,9 @@ const enrichAccounts = async (uid: string, env: Env, baseItems?: any[]) => {
       enriched.push({ ...account, ...cached });
       continue;
     }
-    const response = await fetch(
+    const json = await fetchJSON(
       `https://graph.facebook.com/v19.0/act_${account.account_id}?fields=id,name,currency,timezone_name,account_status,business{name}&access_token=${token}`,
     );
-    const json = await response.json();
     const meta = {
       name: json.name || account.name,
       currency: json.currency || null,
@@ -572,7 +640,7 @@ const loadCampaignsList = async (act: string, token: string) => {
   let url = `https://graph.facebook.com/v19.0/${act}/campaigns?fields=id,name,objective,status,effective_status&limit=100&access_token=${token}`;
   const rows: any[] = [];
   for (let i = 0; i < 15; i += 1) {
-    const json = await (await fetch(url)).json();
+    const json = await fetchJSON(url);
     if (Array.isArray(json?.data)) rows.push(...json.data);
     if (!json?.paging?.next) break;
     url = json.paging.next;
@@ -619,8 +687,7 @@ const buildReportPrettyRange = async (
   if (campaignIds.length) {
     params.set('filtering', JSON.stringify([{ field: 'campaign.id', operator: 'IN', value: campaignIds }]));
   }
-  const response = await fetch(`https://graph.facebook.com/v19.0/${adAccountId}/insights?${params.toString()}`);
-  const json = await response.json();
+  const json = await fetchJSON(`https://graph.facebook.com/v19.0/${adAccountId}/insights?${params.toString()}`);
   if (!json?.data) return `<b>Отчёт</b> (${range.since}–${range.until})\nОшибка Meta API: ${escapeHTML(JSON.stringify(json))}`;
 
   let objectiveMap: Record<string, string> = {};
@@ -709,7 +776,7 @@ const loadCampaignRows = async (
   if (campaignIds.length) {
     params.set('filtering', JSON.stringify([{ field: 'campaign.id', operator: 'IN', value: campaignIds }]));
   }
-  const json = await (await fetch(`https://graph.facebook.com/v19.0/${adAccountId}/insights?${params.toString()}`)).json();
+  const json = await fetchJSON(`https://graph.facebook.com/v19.0/${adAccountId}/insights?${params.toString()}`);
   let objectiveMap: any = {};
   try {
     objectiveMap = await getObjectiveMap(adAccountId, token, env);
@@ -749,7 +816,7 @@ const exportReportCSV = async (project: StoredProject, env: Env, token: string, 
     time_range: JSON.stringify({ since: range.since, until: range.until }),
     limit: '500',
   });
-  const json = await (await fetch(`https://graph.facebook.com/v19.0/${project.act}/insights?${params.toString()}`)).json();
+  const json = await fetchJSON(`https://graph.facebook.com/v19.0/${project.act}/insights?${params.toString()}`);
   let objectiveMap: any = {};
   try {
     objectiveMap = await getObjectiveMap(project.act, token, env);
@@ -809,11 +876,11 @@ const exportReportCSV = async (project: StoredProject, env: Env, token: string, 
 
 const pushToSheets = async (env: Env, payload: any) => {
   if (!env.GS_WEBHOOK) return { ok: false, reason: 'no webhook' };
-  await fetch(env.GS_WEBHOOK, {
+  await fetchWithTimeout(env.GS_WEBHOOK, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
-  });
+  }, 'gs-webhook');
   return { ok: true };
 };
 
@@ -830,7 +897,7 @@ const todaySpend = async (act: string, token: string, env: Env) => {
     fields: 'spend',
     limit: '1',
   });
-  const json = await (await fetch(`https://graph.facebook.com/v19.0/${act}/insights?${params.toString()}`)).json();
+  const json = await fetchJSON(`https://graph.facebook.com/v19.0/${act}/insights?${params.toString()}`);
   const spend = Number(json?.data?.[0]?.spend || 0);
   const out = { spend };
   await putTodaySpendCached(env.DB, act.replace(/^act_/, ''), tz, out);
@@ -857,7 +924,7 @@ const checkBillingAndNotify = async (project: StoredProject, env: Env) => {
     const fields =
       'id,name,account_status,disable_reason,is_prepay_account,amount_spent,spend_cap,balance,currency,funding_source_details{display_string}';
     const url = `https://graph.facebook.com/v19.0/${project.act}?fields=${encodeURIComponent(fields)}&access_token=${token}`;
-    const json = await (await fetch(url)).json();
+    const json = await fetchJSON(url);
     if (!json || json.error) return;
     const issue =
       badAccountStatus(json.account_status) ||
@@ -895,7 +962,7 @@ const checkBillingAndNotify = async (project: StoredProject, env: Env) => {
 const hasActiveCampaigns = async (act: string, token: string) => {
   let url = `https://graph.facebook.com/v19.0/${act}/campaigns?fields=id,name,status,effective_status&limit=100&access_token=${token}`;
   for (let i = 0; i < 10; i += 1) {
-    const json = await (await fetch(url)).json();
+    const json = await fetchJSON(url);
     if (Array.isArray(json?.data)) {
       if (json.data.some((campaign: any) => campaign.status === 'ACTIVE' || campaign.effective_status === 'ACTIVE')) {
         return true;
@@ -955,7 +1022,7 @@ const checkKPIAndAutopauseStreak = async (projectInput: StoredProject, env: Env)
       time_range: JSON.stringify({ since: range.since, until: range.until }),
       limit: '1',
     });
-    const json = await (await fetch(`https://graph.facebook.com/v19.0/${project.act}/insights?${params.toString()}`)).json();
+    const json = await fetchJSON(`https://graph.facebook.com/v19.0/${project.act}/insights?${params.toString()}`);
     const spend = Number(json?.data?.[0]?.spend || 0);
     const results = extractAnyResult(json?.data?.[0]?.actions || []);
     const cpa = results > 0 ? spend / results : Infinity;
@@ -987,12 +1054,14 @@ const pauseSelectedCampaigns = async (project: StoredProject, env: Env) => {
   let ok = 0;
   let fail = 0;
   for (const cid of ids) {
-    const response = await fetch(`https://graph.facebook.com/v19.0/${cid}?access_token=${token}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ status: 'PAUSED' }),
-    });
-    const json = await response.json();
+    const json = await fetchJSON(
+      `https://graph.facebook.com/v19.0/${cid}?access_token=${token}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ status: 'PAUSED' }),
+      },
+    );
     if (json && json.success) ok += 1;
     else fail += 1;
   }
@@ -1008,7 +1077,7 @@ const checkDisapprovals = async (project: StoredProject, env: Env) => {
     let bad = 0;
     const samples: string[] = [];
     for (let i = 0; i < 10; i += 1) {
-      const json = await (await fetch(url)).json();
+      const json = await fetchJSON(url);
       const arr = json?.data || [];
       total += arr.length;
       for (const ad of arr) {
@@ -1044,7 +1113,7 @@ const checkAnomalies = async (project: StoredProject, env: Env) => {
     const yesterday = toRange('yesterday', tz);
     const fields = 'campaign_name,spend,impressions,clicks,ctr,actions,frequency';
     const query = (range: any) =>
-      fetch(
+      fetchJSON(
         `https://graph.facebook.com/v19.0/${
           project.act
         }/insights?${new URLSearchParams({
@@ -1054,7 +1123,7 @@ const checkAnomalies = async (project: StoredProject, env: Env) => {
           time_range: JSON.stringify({ since: range.since, until: range.until }),
           limit: '200',
         }).toString()}`,
-      ).then((r) => r.json());
+      );
     const [todayJson, yesterdayJson] = await Promise.all([query(today), query(yesterday)]);
     const map = (json: any) =>
       Object.fromEntries(
@@ -1127,7 +1196,7 @@ const checkCreativeFatigue = async (project: StoredProject, env: Env) => {
     }).toString()}`;
     const tired: string[] = [];
     for (let i = 0; i < 10; i += 1) {
-      const json = await (await fetch(url)).json();
+      const json = await fetchJSON(url);
       for (const entry of json.data || []) {
         const spend = Number(entry.spend || 0);
         const freq = Number(entry.frequency || 0);
@@ -1262,25 +1331,37 @@ const renderPortalHTML = (model: any, url: URL) => {
 
 
 const tSend = (token: string, body: any) =>
-  fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  fetchWithTimeout(
+    `https://api.telegram.org/bot${token}/sendMessage`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    'telegram:sendMessage',
+  );
 
 const tEdit = (token: string, body: any) =>
-  fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  fetchWithTimeout(
+    `https://api.telegram.org/bot${token}/editMessageText`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+    'telegram:editMessageText',
+  );
 
 const tAns = (token: string, id: string, text: string) =>
-  fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ callback_query_id: id, text }),
-  });
+  fetchWithTimeout(
+    `https://api.telegram.org/bot${token}/answerCallbackQuery`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: id, text }),
+    },
+    'telegram:answerCallbackQuery',
+  );
 
 const tSendDoc = async (
   token: string,
@@ -1295,21 +1376,25 @@ const tSendDoc = async (
   if (threadId) form.append('message_thread_id', String(threadId));
   form.append('caption', caption || '');
   form.append('document', new Blob([blob], { type: 'text/csv' }), filename);
-  await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method: 'POST', body: form });
+  await fetchWithTimeout(`https://api.telegram.org/bot${token}/sendDocument`, { method: 'POST', body: form }, 'telegram:sendDocument');
 };
 
 const sendToTopic = (token: string, chatId: number, threadId: number | null, html: string) =>
-  fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      message_thread_id: threadId || undefined,
-      text: html,
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    }),
-  });
+  fetchWithTimeout(
+    `https://api.telegram.org/bot${token}/sendMessage`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_thread_id: threadId || undefined,
+        text: html,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      }),
+    },
+    'telegram:sendMessage',
+  );
 
 const tReply = (token: string, msg: any, text: string, extra: any = {}) => {
   const body: any = { chat_id: msg.chat.id, text, ...extra };
@@ -1349,18 +1434,16 @@ const fbCallback = async (url: URL, env: Env) => {
     return new Response('Meta OAuth is not configured', { status: 500 });
   }
   if (!code || !uid) return htmlResponse('OAuth error');
-  const step1 = await fetch(
+  const json1 = await fetchJSON(
     `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${env.FB_APP_ID}&redirect_uri=${encodeURIComponent(
       redirect,
     )}&client_secret=${env.FB_APP_SECRET}&code=${code}`,
   );
-  const json1 = await step1.json();
-  const step2 = await fetch(
+  const json2 = await fetchJSON(
     `https://graph.facebook.com/v19.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${env.FB_APP_ID}&client_secret=${env.FB_APP_SECRET}&fb_exchange_token=${json1.access_token}`,
   );
-  const json2 = await step2.json();
   const token = json2.access_token || json1.access_token;
-  const me = await (await fetch(`https://graph.facebook.com/v19.0/me?fields=id,name&access_token=${token}`)).json();
+  const me = await fetchJSON(`https://graph.facebook.com/v19.0/me?fields=id,name&access_token=${token}`);
   await saveUser(env.DB, uid, {
     fb_connected: true,
     fb_long_token: token,
@@ -1377,10 +1460,10 @@ const fbDebug = async (url: URL, env: Env) => {
   const token = await resolveToken(uid, env);
   if (!token) return htmlResponse('Нет токена');
   const [me, perms, acts, biz] = await Promise.all([
-    fetch(`https://graph.facebook.com/v19.0/me?fields=id,name&access_token=${token}`).then((r) => r.json()),
-    fetch(`https://graph.facebook.com/v19.0/me/permissions?access_token=${token}`).then((r) => r.json()),
-    fetch(`https://graph.facebook.com/v19.0/me/adaccounts?limit=500&access_token=${token}`).then((r) => r.json()),
-    fetch(`https://graph.facebook.com/v19.0/me/businesses?limit=200&access_token=${token}`).then((r) => r.json()),
+    fetchJSON(`https://graph.facebook.com/v19.0/me?fields=id,name&access_token=${token}`),
+    fetchJSON(`https://graph.facebook.com/v19.0/me/permissions?access_token=${token}`),
+    fetchJSON(`https://graph.facebook.com/v19.0/me/adaccounts?limit=500&access_token=${token}`),
+    fetchJSON(`https://graph.facebook.com/v19.0/me/businesses?limit=200&access_token=${token}`),
   ]);
   return htmlResponse(
     `<h2>Meta Debug</h2>\nПользователь: <b>${escapeHTML(me?.name || '')}</b> (${escapeHTML(me?.id || '')})\nРазрешения: ${escapeHTML(
@@ -1421,7 +1504,7 @@ const buildClientDigest = async (project: StoredProject, env: Env, token: string
   const yesterday = toRange('yesterday', tz);
   const fields = 'campaign_name,spend,impressions,clicks,ctr,actions';
   const query = (range: any) =>
-    fetch(
+    fetchJSON(
       `https://graph.facebook.com/v19.0/${
         project.act
       }/insights?${new URLSearchParams({
@@ -1431,7 +1514,7 @@ const buildClientDigest = async (project: StoredProject, env: Env, token: string
         time_range: JSON.stringify({ since: range.since, until: range.until }),
         limit: '200',
       }).toString()}`,
-    ).then((r) => r.json());
+    );
   const [todayJson, yesterdayJson] = await Promise.all([query(today), query(yesterday)]);
   const flat = (json: any) =>
     (json.data || []).map((entry: any) => ({

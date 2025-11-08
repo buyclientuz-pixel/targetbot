@@ -3,6 +3,9 @@ main = "src/index.ts"
 account_id = "02e61f874be22f0f3a6ee8f97ccccb1d"
 compatibility_date = "2024-01-01"
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 [[kv_namespaces]]
 binding = "DB"
 id = "02e61f874be22f0f3a6ee8f97ccccb1d"
