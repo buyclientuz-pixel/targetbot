@@ -9,7 +9,7 @@ Wrangler and how to mirror the Worker that already lives in your Cloudflare acco
 - ✅  `src/index.ts` now matches the Worker logic that is running in your Cloudflare dashboard.
 - ⏭️  Next action: fill in the KV namespace IDs in `wrangler.toml`, then run `wrangler deploy` to publish from Git.
 
-## Prerequisites
+## Prerequisites 
 
 1. Install [Wrangler](https://developers.cloudflare.com/workers/wrangler/install-and-update/) globally:
    ```bash
