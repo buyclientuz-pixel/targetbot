@@ -31,6 +31,9 @@ const PERIOD_OPTIONS = [
 const QUICK_TIMES = ['09:30', '10:00', '12:00', '19:00'];
 const AUTOPAUSE_PRESET_DAYS = [2, 3, 5, 7, 10];
 const AUTOPAUSE_MAX_DAYS = 30;
+const ALERT_BILLING_DEFAULT_TIMES = ['10:00', '14:00', '18:00'];
+const ALERT_BILLING_PRESET_TIMES = ['09:00', '10:00', '12:00', '14:00', '18:00'];
+const ALERT_ZERO_PRESET_TIMES = ['11:00', '12:00', '13:00'];
 
 function escapeHtml(input = '') {
   return String(input)
@@ -197,11 +200,24 @@ function normalizeProject(raw = {}) {
     },
     alerts: {
       enabled: safe.alerts?.enabled !== false,
-      billing_times:
+      billing_times: sortUniqueTimes(
         Array.isArray(safe.alerts?.billing_times) && safe.alerts.billing_times.length
-          ? safe.alerts.billing_times.map((value) => String(value))
-          : ['10:00', '14:00', '18:00'],
-      no_spend_by: safe.alerts?.no_spend_by ?? '12:00',
+          ? safe.alerts.billing_times
+          : ALERT_BILLING_DEFAULT_TIMES,
+      ),
+      no_spend_by: (() => {
+        if (!safe.alerts || !('no_spend_by' in safe.alerts)) {
+          return '12:00';
+        }
+
+        const raw = safe.alerts.no_spend_by;
+        if (raw === null || raw === '' || raw === false) {
+          return null;
+        }
+
+        const normalized = normalizeTimeString(raw);
+        return normalized ?? null;
+      })(),
     },
     anomaly: {
       cpl_jump: typeof safe.anomaly?.cpl_jump === 'number' ? safe.anomaly.cpl_jump : 0.5,
@@ -854,6 +870,143 @@ async function handleUserStateMessage(env, message, textContent) {
     return { handled: true, step: 'billing_updated' };
   }
 
+  if (state.mode === 'edit_alerts') {
+    if (state.step !== 'await_billing' && state.step !== 'await_zero') {
+      await clearUserState(env, uid);
+      return { handled: true, reason: 'alerts_state_reset' };
+    }
+
+    const code = sanitizeProjectCode(state.code);
+    if (!isValidProjectCode(code)) {
+      await clearUserState(env, uid);
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Откройте карточку и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'alerts_state_invalid' };
+    }
+
+    if (state.step === 'await_billing') {
+      const normalized = normalizeTimeString(textContent);
+      if (!normalized) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Не удалось распознать время. Введите HH:MM, например 08:45.',
+          { disable_reply: true },
+        );
+        return { handled: true, error: 'alerts_invalid_time' };
+      }
+
+      const project = await mutateProject(env, code, (proj) => {
+        proj.alerts = proj.alerts || {};
+        const list = sortUniqueTimes(proj.alerts.billing_times || []);
+        proj.alerts.billing_times = sortUniqueTimes([...list, normalized]);
+        if (!('no_spend_by' in proj.alerts)) {
+          proj.alerts.no_spend_by = '12:00';
+        }
+      });
+
+      await clearUserState(env, uid);
+
+      if (!project) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Проект не найден. Откройте карточку и попробуйте снова.',
+          { disable_reply: true },
+        );
+        return { handled: true, error: 'project_not_found' };
+      }
+
+      await telegramSendMessage(
+        env,
+        message,
+        `Добавлено время ${normalized} для уведомлений billing.`,
+        { disable_reply: true },
+      );
+
+      if (state.message_chat_id && state.message_id) {
+        await editMessageWithAlerts(
+          env,
+          { chat: { id: state.message_chat_id }, message_id: state.message_id },
+          code,
+          { preserveAwait: false },
+        );
+      }
+
+      return { handled: true, step: 'alerts_billing_updated' };
+    }
+
+    if (state.step === 'await_zero') {
+      const rawValue = textContent.trim();
+      if (!rawValue) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Введите время контроля (HH:MM) или «нет», чтобы отключить zero-spend.',
+          { disable_reply: true },
+        );
+        return { handled: true, error: 'alerts_zero_empty' };
+      }
+
+      const lower = rawValue.toLowerCase();
+      const disable = ['нет', 'off', 'disable', 'stop', 'выкл'].includes(lower);
+      let normalized = null;
+
+      if (!disable) {
+        normalized = normalizeTimeString(rawValue);
+        if (!normalized) {
+          await telegramSendMessage(
+            env,
+            message,
+            'Не удалось распознать время. Введите HH:MM или «нет».',
+            { disable_reply: true },
+          );
+          return { handled: true, error: 'alerts_zero_invalid' };
+        }
+      }
+
+      const project = await mutateProject(env, code, (proj) => {
+        proj.alerts = proj.alerts || {};
+        proj.alerts.no_spend_by = disable ? null : normalized;
+        proj.alerts.billing_times = sortUniqueTimes(proj.alerts.billing_times || ALERT_BILLING_DEFAULT_TIMES);
+      });
+
+      await clearUserState(env, uid);
+
+      if (!project) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Проект не найден. Откройте карточку и попробуйте снова.',
+          { disable_reply: true },
+        );
+        return { handled: true, error: 'project_not_found' };
+      }
+
+      const responseText = disable
+        ? 'Zero-spend уведомление отключено.'
+        : `Zero-spend контроль установлен на ${normalized}.`;
+      await telegramSendMessage(env, message, responseText, { disable_reply: true });
+
+      if (state.message_chat_id && state.message_id) {
+        await editMessageWithAlerts(
+          env,
+          { chat: { id: state.message_chat_id }, message_id: state.message_id },
+          code,
+          { preserveAwait: false },
+        );
+      }
+
+      return { handled: true, step: 'alerts_zero_updated' };
+    }
+
+    return { handled: false, reason: 'alerts_state_unknown' };
+  }
+
   if (state.mode === 'edit_autopause') {
     if (state.step !== 'await_days') {
       await clearUserState(env, uid);
@@ -1323,11 +1476,11 @@ function formatAlertsLabel(alerts = {}) {
     return 'выкл';
   }
 
-  const times = Array.isArray(alerts?.billing_times) && alerts.billing_times.length
-    ? alerts.billing_times.join(', ')
-    : '—';
-  const zeroSpend = alerts?.no_spend_by ?? '—';
-  return `вкл · billing: ${times} · zero-spend: ${zeroSpend}`;
+  const billingTimes = sortUniqueTimes(alerts?.billing_times || []);
+  const timesLabel = billingTimes.length ? billingTimes.join(', ') : '—';
+  const normalizedZero = alerts?.no_spend_by ? normalizeTimeString(alerts.no_spend_by) : null;
+  const zeroLabel = normalizedZero || (alerts?.no_spend_by ? String(alerts.no_spend_by) : null) || 'выкл';
+  return `вкл · billing: ${timesLabel} · zero-spend: ${zeroLabel}`;
 }
 
 function formatKpiLabel(kpi = {}) {
@@ -1550,7 +1703,7 @@ function renderProjectDetails(project, chatRecord) {
 
   inline_keyboard.push([
     { text: '🎯 KPI', callback_data: `proj:kpi:open:${project.code}` },
-    { text: '📊 Alerts', callback_data: `proj:detail:todo:alerts:${project.code}` },
+    { text: '📊 Alerts', callback_data: `proj:alerts:open:${project.code}` },
   ]);
   inline_keyboard.push([
     { text: '💵 Оплата', callback_data: `proj:billing:open:${project.code}` },
@@ -1857,6 +2010,172 @@ async function clearPendingAutopauseState(env, uid, code) {
   if (!uid) return;
   const state = await loadUserState(env, uid);
   if (state?.mode === 'edit_autopause' && (!code || state.code === code)) {
+    await clearUserState(env, uid);
+  }
+}
+
+function renderAlertsEditor(project, options = {}) {
+  const alerts = project.alerts ?? {};
+  const enabled = alerts.enabled !== false;
+  const billingTimes = sortUniqueTimes(alerts.billing_times || []);
+  const normalizedZero = alerts.no_spend_by ? normalizeTimeString(alerts.no_spend_by) : null;
+  const zeroLabel = normalizedZero || (alerts.no_spend_by ? String(alerts.no_spend_by) : null);
+  const awaitingBilling = options.awaitingBilling === true;
+  const awaitingZero = options.awaitingZero === true;
+
+  const lines = [
+    `<b>Alerts #${escapeHtml(project.code)}</b>`,
+    `Состояние: ${enabled ? 'включены' : 'выключены'}`,
+    `Billing окна: ${billingTimes.length ? billingTimes.join(', ') : '—'}`,
+    `Zero-spend контроль: ${zeroLabel || 'выключен'}`,
+    '',
+    'Алерты напоминают об оплате и сообщают, если при активных кампаниях расход остаётся нулевым.',
+  ];
+
+  if (awaitingBilling) {
+    lines.push('', 'Отправьте время в формате <code>HH:MM</code>, например <code>09:45</code>.');
+  }
+
+  if (awaitingZero) {
+    lines.push('', 'Введите время контроля (<code>HH:MM</code>) или «нет», чтобы отключить zero-spend-проверку.');
+  }
+
+  const inline_keyboard = [];
+
+  inline_keyboard.push([
+    {
+      text: enabled ? '📊 Выключить алерты' : '📊 Включить алерты',
+      callback_data: `proj:alerts:toggle:${project.code}`,
+    },
+  ]);
+
+  if (billingTimes.length) {
+    for (const chunk of chunkArray(billingTimes, 2)) {
+      inline_keyboard.push(
+        chunk.map((time) => ({
+          text: `🗑 ${time}`,
+          callback_data: `proj:alerts:del:${project.code}:${time.replace(':', '-')}`,
+        })),
+      );
+    }
+  }
+
+  const presetButtons = ALERT_BILLING_PRESET_TIMES.map((time) => {
+    const normalized = normalizeTimeString(time);
+    if (!normalized) {
+      return null;
+    }
+    const active = billingTimes.includes(normalized);
+    return {
+      text: `${active ? '✅' : '➕'} ${normalized}`,
+      callback_data: `proj:alerts:time:${project.code}:${normalized.replace(':', '-')}`,
+    };
+  }).filter(Boolean);
+
+  for (const chunk of chunkArray(presetButtons, 3)) {
+    inline_keyboard.push(chunk);
+  }
+
+  inline_keyboard.push([
+    { text: '✏️ Другое время', callback_data: `proj:alerts:custom:${project.code}` },
+    { text: '♻️ Сбросить слоты', callback_data: `proj:alerts:reset:${project.code}` },
+  ]);
+
+  const zeroPresetButtons = ALERT_ZERO_PRESET_TIMES.map((time) => {
+    const normalized = normalizeTimeString(time);
+    if (!normalized) {
+      return null;
+    }
+    const active = normalizedZero === normalized;
+    return {
+      text: `${active ? '✅' : '▫️'} ${normalized}`,
+      callback_data: `proj:alerts:zero:${project.code}:${normalized.replace(':', '-')}`,
+    };
+  }).filter(Boolean);
+
+  if (zeroPresetButtons.length) {
+    for (const chunk of chunkArray(zeroPresetButtons, 3)) {
+      inline_keyboard.push(chunk);
+    }
+  }
+
+  inline_keyboard.push([
+    {
+      text: normalizedZero === null ? '✅ Zero-spend выкл' : '🚫 Выключить zero-spend',
+      callback_data: `proj:alerts:zero:${project.code}:off`,
+    },
+    {
+      text: normalizedZero === '12:00' ? '✅ Сброс (12:00)' : '♻️ Сброс (12:00)',
+      callback_data: `proj:alerts:zero:${project.code}:reset`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    { text: '✏️ Другое значение', callback_data: `proj:alerts:zero:${project.code}:custom` },
+  ]);
+
+  if (awaitingBilling || awaitingZero) {
+    inline_keyboard.push([
+      { text: '❌ Отменить ввод', callback_data: `proj:alerts:cancel:${project.code}` },
+    ]);
+  }
+
+  inline_keyboard.push([
+    { text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` },
+    { text: '← В панель', callback_data: 'panel:home' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithAlerts(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Вернитесь в список проектов.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  let awaitingBilling = options.awaitingBilling === true;
+  let awaitingZero = options.awaitingZero === true;
+
+  if (!awaitingBilling && !awaitingZero && options.preserveAwait && options.uid) {
+    const state = await loadUserState(env, options.uid);
+    if (
+      state?.mode === 'edit_alerts' &&
+      state.code === code &&
+      state.message_id === messageId &&
+      state.message_chat_id === chatId
+    ) {
+      awaitingBilling = state.step === 'await_billing';
+      awaitingZero = state.step === 'await_zero';
+    }
+  }
+
+  const view = renderAlertsEditor(project, { awaitingBilling, awaitingZero });
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  return { ok: true, project };
+}
+
+async function clearPendingAlertsState(env, uid, code) {
+  if (!uid) return;
+  const state = await loadUserState(env, uid);
+  if (state?.mode === 'edit_alerts' && (!code || state.code === code)) {
     await clearUserState(env, uid);
   }
 }
@@ -2562,6 +2881,185 @@ async function handleCallbackQuery(env, callbackQuery) {
     return editMessageWithAutopause(env, message, code, { preserveAwait: false });
   }
 
+  if (data.startsWith('proj:alerts:open:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await clearPendingAlertsState(env, uid, code);
+    return editMessageWithAlerts(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:alerts:toggle:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.alerts = project.alerts || {};
+      const current = project.alerts.enabled !== false;
+      project.alerts.enabled = !current;
+      project.alerts.billing_times = sortUniqueTimes(project.alerts.billing_times || ALERT_BILLING_DEFAULT_TIMES);
+      if (!('no_spend_by' in project.alerts)) {
+        project.alerts.no_spend_by = '12:00';
+      }
+    });
+
+    await clearPendingAlertsState(env, uid, code);
+    return editMessageWithAlerts(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:alerts:time:')) {
+    const [, , , rawCode = '', timeRaw = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    const normalizedTime = normalizeTimeString(timeRaw.replace('-', ':'));
+    if (!isValidProjectCode(code) || !normalizedTime) {
+      await telegramAnswerCallback(env, callbackQuery, 'Не удалось обновить время.');
+      return { ok: false, error: 'invalid_alert_time' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.alerts = project.alerts || {};
+      const list = sortUniqueTimes(project.alerts.billing_times || []);
+      if (list.includes(normalizedTime)) {
+        project.alerts.billing_times = list.filter((value) => value !== normalizedTime);
+      } else {
+        project.alerts.billing_times = sortUniqueTimes([...list, normalizedTime]);
+      }
+    });
+
+    await clearPendingAlertsState(env, uid, code);
+    return editMessageWithAlerts(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:alerts:del:')) {
+    const [, , , rawCode = '', timeRaw = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    const normalizedTime = normalizeTimeString(timeRaw.replace('-', ':'));
+    if (!isValidProjectCode(code) || !normalizedTime) {
+      await telegramAnswerCallback(env, callbackQuery, 'Не удалось удалить время.');
+      return { ok: false, error: 'invalid_alert_time' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.alerts = project.alerts || {};
+      const list = sortUniqueTimes(project.alerts.billing_times || []);
+      project.alerts.billing_times = list.filter((value) => value !== normalizedTime);
+    });
+
+    await clearPendingAlertsState(env, uid, code);
+    return editMessageWithAlerts(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:alerts:reset:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.alerts = project.alerts || {};
+      project.alerts.billing_times = sortUniqueTimes(ALERT_BILLING_DEFAULT_TIMES);
+      if (!('no_spend_by' in project.alerts)) {
+        project.alerts.no_spend_by = '12:00';
+      }
+    });
+
+    await clearPendingAlertsState(env, uid, code);
+    return editMessageWithAlerts(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:alerts:custom:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'edit_alerts',
+      step: 'await_billing',
+      code,
+      message_chat_id: message.chat.id,
+      message_id: message.message_id,
+    });
+
+    return editMessageWithAlerts(env, message, code, { awaitingBilling: true });
+  }
+
+  if (data.startsWith('proj:alerts:zero:')) {
+    const parts = data.split(':');
+    const rawCode = parts[3] ?? '';
+    const valueRaw = parts[4] ?? '';
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    if (valueRaw === 'custom') {
+      await saveUserState(env, uid, {
+        mode: 'edit_alerts',
+        step: 'await_zero',
+        code,
+        message_chat_id: message.chat.id,
+        message_id: message.message_id,
+      });
+
+      return editMessageWithAlerts(env, message, code, { awaitingZero: true });
+    }
+
+    if (valueRaw === 'off') {
+      await mutateProject(env, code, (project) => {
+        project.alerts = project.alerts || {};
+        project.alerts.no_spend_by = null;
+      });
+
+      await clearPendingAlertsState(env, uid, code);
+      return editMessageWithAlerts(env, message, code, { preserveAwait: true, uid });
+    }
+
+    if (valueRaw === 'reset') {
+      await mutateProject(env, code, (project) => {
+        project.alerts = project.alerts || {};
+        project.alerts.no_spend_by = '12:00';
+      });
+
+      await clearPendingAlertsState(env, uid, code);
+      return editMessageWithAlerts(env, message, code, { preserveAwait: true, uid });
+    }
+
+    const normalizedTime = normalizeTimeString(valueRaw.replace('-', ':'));
+    if (!normalizedTime) {
+      await telegramAnswerCallback(env, callbackQuery, 'Не удалось обновить zero-spend.');
+      return { ok: false, error: 'invalid_zero_time' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.alerts = project.alerts || {};
+      project.alerts.no_spend_by = normalizedTime;
+    });
+
+    await clearPendingAlertsState(env, uid, code);
+    return editMessageWithAlerts(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:alerts:cancel:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    await clearPendingAlertsState(env, uid, code);
+    return editMessageWithAlerts(env, message, code, { preserveAwait: false });
+  }
+
   if (data.startsWith('proj:schedule:open:')) {
     const [, , , rawCode = ''] = data.split(':');
     const code = sanitizeProjectCode(rawCode);
@@ -2839,7 +3337,6 @@ async function handleCallbackQuery(env, callbackQuery) {
     }
 
     const hints = {
-      alerts: 'Управление алертами планируется в отдельном релизе.',
       report: 'Кнопка отправки отчёта заработает, когда реализуем /report.',
       campaigns: 'Редактор кампаний запланирован вместе с Meta API.',
     };
