@@ -29,6 +29,8 @@ const PERIOD_OPTIONS = [
   { value: 'month_to_date', label: 'С начала месяца' },
 ];
 const QUICK_TIMES = ['09:30', '10:00', '12:00', '19:00'];
+const AUTOPAUSE_PRESET_DAYS = [2, 3, 5, 7, 10];
+const AUTOPAUSE_MAX_DAYS = 30;
 
 function escapeHtml(input = '') {
   return String(input)
@@ -759,6 +761,99 @@ async function handleUserStateMessage(env, message, textContent) {
     return { handled: true, step: 'schedule_updated' };
   }
 
+  if (state.mode === 'edit_autopause') {
+    if (state.step !== 'await_days') {
+      await clearUserState(env, uid);
+      return { handled: true, reason: 'autopause_state_reset' };
+    }
+
+    const code = sanitizeProjectCode(state.code);
+    if (!isValidProjectCode(code)) {
+      await clearUserState(env, uid);
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Откройте карточку и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'autopause_state_invalid' };
+    }
+
+    const rawValue = textContent.trim();
+    if (!rawValue) {
+      await telegramSendMessage(
+        env,
+        message,
+        'Введите число дней или «нет», чтобы отключить автопаузу.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'autopause_empty' };
+    }
+
+    const lower = rawValue.toLowerCase();
+    let disable = false;
+    let normalizedDays = null;
+
+    if (['нет', 'off', 'disable', 'stop', 'выкл'].includes(lower)) {
+      disable = true;
+    } else {
+      const parsed = Number(rawValue.replace(',', '.'));
+      if (!Number.isFinite(parsed)) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Нужно число дней (1–30) или «нет». Попробуйте снова.',
+          { disable_reply: true },
+        );
+        return { handled: true, error: 'autopause_invalid_number' };
+      }
+
+      normalizedDays = Math.min(AUTOPAUSE_MAX_DAYS, Math.max(1, Math.round(parsed)));
+    }
+
+    const project = await mutateProject(env, code, (proj) => {
+      proj.autopause = proj.autopause || { enabled: false, days: 3 };
+      if (disable) {
+        proj.autopause.enabled = false;
+      } else {
+        proj.autopause.enabled = true;
+        proj.autopause.days = normalizedDays;
+      }
+      if (!Number.isFinite(proj.autopause.days)) {
+        proj.autopause.days = 3;
+      }
+    });
+
+    await clearUserState(env, uid);
+
+    if (!project) {
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Откройте карточку и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'project_not_found' };
+    }
+
+    const responseText = disable
+      ? 'Автопауза отключена.'
+      : `Порог автопаузы установлен на ${project.autopause?.days ?? normalizedDays} дн.`;
+
+    await telegramSendMessage(env, message, responseText, { disable_reply: true });
+
+    if (state.message_chat_id && state.message_id) {
+      await editMessageWithAutopause(
+        env,
+        { chat: { id: state.message_chat_id }, message_id: state.message_id },
+        code,
+        { preserveAwait: false },
+      );
+    }
+
+    return { handled: true, step: 'autopause_updated' };
+  }
+
   if (state.mode === 'edit_kpi') {
     if (state.step !== 'await_value' || !state.field) {
       await clearUserState(env, uid);
@@ -1255,6 +1350,10 @@ function renderProjectDetails(project, chatRecord) {
       text: project.autopause?.enabled ? '🤖 Автопауза: выкл' : '🤖 Автопауза: вкл',
       callback_data: `proj:detail:autopause_toggle:${project.code}`,
     },
+    {
+      text: `Порог: ${Number.isFinite(project.autopause?.days) ? project.autopause.days : 3} дн.`,
+      callback_data: `proj:autopause:open:${project.code}`,
+    },
   ]);
 
   inline_keyboard.push([
@@ -1358,6 +1457,113 @@ function renderScheduleEditor(project, options = {}) {
     text: lines.join('\n'),
     reply_markup: { inline_keyboard },
   };
+}
+
+function renderAutopauseEditor(project, options = {}) {
+  const autopause = project.autopause ?? {};
+  const enabled = autopause.enabled === true;
+  const days = Number.isFinite(autopause.days) ? Number(autopause.days) : 3;
+  const awaitingDays = options.awaitingDays === true;
+
+  const lines = [
+    `<b>Автопауза #${escapeHtml(project.code)}</b>`,
+    `Состояние: ${enabled ? 'включена' : 'выключена'}`,
+    `Порог дней: ${days}`,
+    '',
+    'Если фактический CPL остаётся выше KPI.cpl заданное число дней подряд, бот предложит поставить кампании на паузу.',
+  ];
+
+  if (awaitingDays) {
+    lines.push(
+      '',
+      'Введите целое число дней (1–30). Можно отправить «нет», чтобы отключить автопаузу.'
+    );
+  }
+
+  const inline_keyboard = [];
+
+  inline_keyboard.push([
+    {
+      text: enabled ? '🤖 Выключить автопаузу' : '🤖 Включить автопаузу',
+      callback_data: `proj:autopause:toggle:${project.code}`,
+    },
+  ]);
+
+  const presetButtons = AUTOPAUSE_PRESET_DAYS.map((value) => ({
+    text: value === days ? `✅ ${value} дн.` : `${value} дн.`,
+    callback_data: `proj:autopause:set:${project.code}:${value}`,
+  }));
+
+  for (const chunk of chunkArray(presetButtons, 3)) {
+    inline_keyboard.push(chunk);
+  }
+
+  inline_keyboard.push([
+    { text: 'Другое значение', callback_data: `proj:autopause:custom:${project.code}` },
+    { text: '♻️ Сбросить (3 дн.)', callback_data: `proj:autopause:reset:${project.code}` },
+  ]);
+
+  if (awaitingDays) {
+    inline_keyboard.push([
+      { text: '❌ Отменить ввод', callback_data: `proj:autopause:cancel:${project.code}` },
+    ]);
+  }
+
+  inline_keyboard.push([
+    { text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` },
+    { text: '← В панель', callback_data: 'panel:home' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithAutopause(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Вернитесь в список проектов.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  let awaitingDays = options.awaitingDays === true;
+  if (!awaitingDays && options.preserveAwait && options.uid) {
+    const state = await loadUserState(env, options.uid);
+    if (
+      state?.mode === 'edit_autopause' &&
+      state.code === code &&
+      state.message_id === messageId &&
+      state.message_chat_id === chatId
+    ) {
+      awaitingDays = true;
+    }
+  }
+
+  const view = renderAutopauseEditor(project, { awaitingDays });
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  return { ok: true, project };
+}
+
+async function clearPendingAutopauseState(env, uid, code) {
+  if (!uid) return;
+  const state = await loadUserState(env, uid);
+  if (state?.mode === 'edit_autopause' && (!code || state.code === code)) {
+    await clearUserState(env, uid);
+  }
 }
 
 function renderKpiEditor(project, options = {}) {
@@ -1954,12 +2160,111 @@ async function handleCallbackQuery(env, callbackQuery) {
       return { ok: false, error: 'invalid_project_code' };
     }
 
+    await clearPendingAutopauseState(env, uid, code);
     await mutateProject(env, code, (project) => {
       project.autopause = project.autopause || {};
       project.autopause.enabled = !project.autopause.enabled;
     });
 
     return editMessageWithProject(env, message, code);
+  }
+
+  if (data.startsWith('proj:autopause:open:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await clearPendingAutopauseState(env, uid, code);
+    return editMessageWithAutopause(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:autopause:toggle:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.autopause = project.autopause || { enabled: false, days: 3 };
+      project.autopause.enabled = !project.autopause.enabled;
+      if (!Number.isFinite(project.autopause.days)) {
+        project.autopause.days = 3;
+      }
+    });
+
+    await clearPendingAutopauseState(env, uid, code);
+    return editMessageWithAutopause(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:autopause:set:')) {
+    const [, , , rawCode = '', daysRaw = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    const days = Number(daysRaw);
+    if (!isValidProjectCode(code) || !Number.isFinite(days)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Не удалось обновить порог.');
+      return { ok: false, error: 'invalid_autopause_payload' };
+    }
+
+    const normalized = Math.min(AUTOPAUSE_MAX_DAYS, Math.max(1, Math.round(days)));
+    await mutateProject(env, code, (project) => {
+      project.autopause = project.autopause || { enabled: false, days: 3 };
+      project.autopause.enabled = true;
+      project.autopause.days = normalized;
+    });
+
+    await clearPendingAutopauseState(env, uid, code);
+    return editMessageWithAutopause(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:autopause:reset:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.autopause = project.autopause || {};
+      project.autopause.days = 3;
+      if (!('enabled' in project.autopause)) {
+        project.autopause.enabled = false;
+      }
+    });
+
+    await clearPendingAutopauseState(env, uid, code);
+    return editMessageWithAutopause(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:autopause:custom:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'edit_autopause',
+      step: 'await_days',
+      code,
+      message_chat_id: message.chat.id,
+      message_id: message.message_id,
+    });
+
+    return editMessageWithAutopause(env, message, code, { awaitingDays: true });
+  }
+
+  if (data.startsWith('proj:autopause:cancel:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    await clearPendingAutopauseState(env, uid, code);
+    return editMessageWithAutopause(env, message, code, { preserveAwait: false });
   }
 
   if (data.startsWith('proj:schedule:open:')) {
