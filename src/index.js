@@ -14,6 +14,16 @@ const TEXT_HEADERS = {
 };
 
 const TELEGRAM_TIMEOUT_MS = 9000;
+const DEFAULT_PAGE_SIZE = 8;
+
+function escapeHtml(input = '') {
+  return String(input)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function json(data, init = {}) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -157,7 +167,7 @@ async function telegramRequest(env, method, payload) {
   return response.json();
 }
 
-async function telegramSendMessage(env, message, textContent) {
+async function telegramSendMessage(env, message, textContent, extra = {}) {
   if (!message?.chat?.id) {
     return { ok: false, error: 'chat_id_missing' };
   }
@@ -165,15 +175,25 @@ async function telegramSendMessage(env, message, textContent) {
   const payload = {
     chat_id: message.chat.id,
     text: textContent,
-    parse_mode: 'HTML',
+    parse_mode: extra.parse_mode ?? 'HTML',
   };
 
-  if (message.message_thread_id) {
+  if (message.message_thread_id && typeof extra.message_thread_id === 'undefined') {
     payload.message_thread_id = message.message_thread_id;
   }
 
-  if (message.message_id) {
+  if (
+    message.message_id &&
+    typeof extra.reply_to_message_id === 'undefined' &&
+    extra.disable_reply !== true
+  ) {
     payload.reply_to_message_id = message.message_id;
+  }
+
+  for (const [key, value] of Object.entries(extra)) {
+    if (['disable_reply', 'parse_mode'].includes(key)) continue;
+    if (typeof value === 'undefined') continue;
+    payload[key] = value;
   }
 
   try {
@@ -272,6 +292,8 @@ async function handleTelegramCommand(env, message, command, args) {
       return telegramSendMessage(env, message, buildHelpMessage());
     case '/register':
       return handleRegisterCommand(env, message, args);
+    case '/admin':
+      return handleAdminCommand(env, message);
     default:
       if (command.startsWith('/')) {
         return telegramSendMessage(env, message, 'Команда пока не поддерживается.');
@@ -308,9 +330,10 @@ async function handleTelegramWebhook(request, env) {
   const summary = { handled: false };
 
   if (payload.callback_query) {
-    await telegramAnswerCallback(env, payload.callback_query, 'Функция в разработке.');
+    const result = await handleCallbackQuery(env, payload.callback_query);
     summary.handled = true;
     summary.kind = 'callback_query';
+    summary.result = result;
     return json({ ok: true, summary });
   }
 
@@ -396,6 +419,192 @@ async function handleFbDebug(request, env) {
   const url = new URL(request.url);
   const state = { url, missing: validateRequiredEnv(env), admins: parseAdminIds(env) };
   return html(renderDebugPage(state));
+}
+
+function ensureWorkerUrl(env) {
+  if (typeof env.WORKER_URL === 'string' && env.WORKER_URL.trim().length > 0) {
+    return env.WORKER_URL.replace(/\/$/, '');
+  }
+  return 'https://example.com';
+}
+
+function isAdmin(env, userId) {
+  if (!userId) return false;
+  const admins = parseAdminIds(env);
+  return admins.includes(Number(userId));
+}
+
+async function listRegisteredChats(env, cursor, limit = DEFAULT_PAGE_SIZE) {
+  if (!env.DB) {
+    return { items: [], cursor: null, listComplete: true };
+  }
+
+  const response = await env.DB.list({ prefix: 'chat:', cursor, limit });
+  const items = [];
+  for (const key of response.keys || []) {
+    try {
+      const raw = await env.DB.get(key.name);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      items.push({ key: key.name, ...parsed });
+    } catch (error) {
+      console.error('listRegisteredChats parse error', error, key.name);
+    }
+  }
+
+  return {
+    items,
+    cursor: response.cursor ?? null,
+    listComplete: response.list_complete ?? true,
+  };
+}
+
+function renderAdminHome(uid, env) {
+  const baseUrl = ensureWorkerUrl(env);
+  const safeUid = encodeURIComponent(String(uid ?? ''));
+  const authUrl = `${baseUrl}/fb_auth?uid=${safeUid}`;
+  const forceUrl = `${authUrl}&force=1`;
+
+  return {
+    text: [
+      '<b>Админ-панель th-reports</b>',
+      '',
+      'Выберите действие:',
+    ].join('\n'),
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '🔌 Подключить Meta', url: authUrl },
+          { text: '♻️ Переподключить', url: forceUrl },
+        ],
+        [
+          { text: '🗂 Зарегистрированные чаты', callback_data: 'panel:chats:0' },
+        ],
+        [
+          { text: '🔄 Обновить', callback_data: 'panel:home' },
+        ],
+      ],
+    },
+  };
+}
+
+function renderChatsPage(items, pagination = {}) {
+  const lines = [];
+  if (!items.length) {
+    lines.push('Пока нет зарегистрированных топиков. Используйте /register в нужной теме.');
+  } else {
+    items.forEach((item, index) => {
+      const title = item.title ? ` — ${escapeHtml(item.title)}` : '';
+      const thread = item.thread_id ?? 0;
+      lines.push(`• <code>${item.chat_id}</code> · thread <code>${thread}</code>${title}`);
+    });
+    if (pagination.nextCursor) {
+      lines.push('', 'Показаны первые записи. Нажмите «Далее», чтобы увидеть ещё.');
+    }
+  }
+
+  const keyboard = [];
+  if (pagination.nextCursor) {
+    keyboard.push([
+      { text: '➡️ Далее', callback_data: `panel:chats:next:${encodeURIComponent(pagination.nextCursor)}` },
+    ]);
+  }
+  if (pagination.showReset) {
+    keyboard.push([{ text: '↩️ В начало', callback_data: 'panel:chats:0' }]);
+  }
+  keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: ['<b>Зарегистрированные чаты</b>', '', ...lines].join('\n'),
+    reply_markup: { inline_keyboard: keyboard },
+  };
+}
+
+async function telegramEditMessage(env, chatId, messageId, textContent, extra = {}) {
+  const payload = {
+    chat_id: chatId,
+    message_id: messageId,
+    text: textContent,
+    parse_mode: extra.parse_mode ?? 'HTML',
+  };
+
+  for (const [key, value] of Object.entries(extra)) {
+    if (key === 'parse_mode') continue;
+    if (typeof value === 'undefined') continue;
+    payload[key] = value;
+  }
+
+  try {
+    await telegramRequest(env, 'editMessageText', payload);
+    return { ok: true };
+  } catch (error) {
+    console.error('telegramEditMessage error', error);
+    return { ok: false, error: String(error) };
+  }
+}
+
+async function handleAdminCommand(env, message) {
+  const uid = message?.from?.id;
+  if (!isAdmin(env, uid)) {
+    return telegramSendMessage(env, message, 'Доступ запрещён. Добавьте ваш ID в ADMIN_IDS.');
+  }
+
+  const response = renderAdminHome(uid, env);
+  return telegramSendMessage(env, message, response.text, {
+    reply_markup: response.reply_markup,
+    disable_reply: true,
+  });
+}
+
+async function handleCallbackQuery(env, callbackQuery) {
+  const data = callbackQuery.data ?? '';
+  const message = callbackQuery.message;
+  const uid = callbackQuery.from?.id;
+
+  if (!isAdmin(env, uid)) {
+    await telegramAnswerCallback(env, callbackQuery, 'Нет доступа');
+    return { ok: false, error: 'forbidden' };
+  }
+
+  await telegramAnswerCallback(env, callbackQuery, '…');
+
+  if (!message?.chat?.id || !message.message_id) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  if (data === 'panel:home') {
+    const response = renderAdminHome(uid, env);
+    return telegramEditMessage(env, message.chat.id, message.message_id, response.text, {
+      reply_markup: response.reply_markup,
+    });
+  }
+
+  if (data.startsWith('panel:chats')) {
+    const [, , action = '0', cursorParam] = data.split(':');
+    let cursor;
+
+    if (action === 'next' && typeof cursorParam === 'string') {
+      cursor = decodeURIComponent(cursorParam);
+    }
+
+    const result = await listRegisteredChats(env, cursor, DEFAULT_PAGE_SIZE);
+
+    const pagination = {
+      nextCursor: result.cursor ?? null,
+      showReset: Boolean(cursor),
+    };
+
+    const response = renderChatsPage(result.items, pagination);
+    return telegramEditMessage(env, message.chat.id, message.message_id, response.text, {
+      reply_markup: response.reply_markup,
+    });
+  }
+
+  return telegramEditMessage(env, message.chat.id, message.message_id, 'Эта кнопка пока не реализована.', {
+    reply_markup: {
+      inline_keyboard: [[{ text: '← Назад', callback_data: 'panel:home' }]],
+    },
+  });
 }
 
 async function handlePortal(request) {
