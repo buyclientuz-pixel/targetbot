@@ -8,6 +8,7 @@ Wrangler and how to mirror the Worker that already lives in your Cloudflare acco
 - ✅  `wrangler.toml` targets the `th-reports` Worker in account `02e61f874be22f0f3a6ee8f97ccccb1d`.
 - ✅  `src/index.ts` now matches the Worker logic that is running in your Cloudflare dashboard.
 - ⏭️  Next action: fill in the KV namespace IDs in `wrangler.toml`, then run `wrangler deploy` to publish from Git.
+- 🧪  Need a fast summary at any time? Run `./scripts/project-status.sh` — it prints the same checklist with pass/fail markers.
 
 ## Шаги «сделай и заработает»
 
