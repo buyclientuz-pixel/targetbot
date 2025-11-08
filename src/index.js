@@ -761,6 +761,99 @@ async function handleUserStateMessage(env, message, textContent) {
     return { handled: true, step: 'schedule_updated' };
   }
 
+  if (state.mode === 'edit_billing') {
+    if (state.step !== 'await_paid' && state.step !== 'await_next') {
+      await clearUserState(env, uid);
+      return { handled: true, reason: 'billing_state_reset' };
+    }
+
+    const code = sanitizeProjectCode(state.code);
+    if (!isValidProjectCode(code)) {
+      await clearUserState(env, uid);
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Откройте карточку и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'billing_state_invalid' };
+    }
+
+    const rawValue = textContent.trim();
+    if (!rawValue) {
+      await telegramSendMessage(
+        env,
+        message,
+        'Введите дату или используйте кнопки редактора.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'billing_empty' };
+    }
+
+    const tz = env.DEFAULT_TZ || 'UTC';
+    const lower = rawValue.toLowerCase();
+    let updatedProject = null;
+    let responseText = '';
+
+    if (state.step === 'await_next' && ['нет', 'none', 'off', 'clear', '-'].includes(lower)) {
+      updatedProject = await mutateProject(env, code, (proj) => {
+        proj.billing_next_at = null;
+      });
+      responseText = 'Следующая дата оплаты очищена.';
+    } else {
+      const parsedYmd = parseDateInputToYmd(rawValue, tz);
+      if (!parsedYmd) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Не удалось распознать дату. Введите YYYY-MM-DD или ДД.ММ.ГГГГ.',
+          { disable_reply: true },
+        );
+        return { handled: true, error: 'billing_invalid_date' };
+      }
+
+      updatedProject = await mutateProject(env, code, (proj) => {
+        if (state.step === 'await_paid') {
+          proj.billing_paid_at = parsedYmd;
+          const nextYmd = addMonthsToYmd(parsedYmd) || proj.billing_next_at || parsedYmd;
+          proj.billing_next_at = nextYmd;
+        } else {
+          proj.billing_next_at = parsedYmd;
+        }
+      });
+
+      responseText =
+        state.step === 'await_paid'
+          ? `Оплата зафиксирована (${parsedYmd}). Следующая дата обновлена автоматически.`
+          : `Следующая дата оплаты установлена на ${parsedYmd}.`;
+    }
+
+    await clearUserState(env, uid);
+
+    if (!updatedProject) {
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Откройте карточку и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'project_not_found' };
+    }
+
+    await telegramSendMessage(env, message, responseText, { disable_reply: true });
+
+    if (state.message_chat_id && state.message_id) {
+      await editMessageWithBilling(
+        env,
+        { chat: { id: state.message_chat_id }, message_id: state.message_id },
+        code,
+        { preserveAwait: false },
+      );
+    }
+
+    return { handled: true, step: 'billing_updated' };
+  }
+
   if (state.mode === 'edit_autopause') {
     if (state.step !== 'await_days') {
       await clearUserState(env, uid);
@@ -1282,6 +1375,105 @@ function formatDateLabel(value) {
   return String(value);
 }
 
+function isValidYmd(ymd) {
+  if (typeof ymd !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+    return false;
+  }
+
+  const date = new Date(`${ymd}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) {
+    return false;
+  }
+
+  return date.toISOString().slice(0, 10) === ymd;
+}
+
+function getTodayYmd(timezone = 'UTC') {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    return formatter.format(new Date());
+  } catch (error) {
+    console.error('getTodayYmd error', error);
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function shiftYmd(ymd, deltaDays) {
+  if (!isValidYmd(ymd)) {
+    return null;
+  }
+
+  const [year, month, day] = ymd.split('-').map((part) => Number(part));
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  date.setUTCDate(date.getUTCDate() + deltaDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function addMonthsToYmd(ymd, months = 1) {
+  if (!isValidYmd(ymd)) {
+    return null;
+  }
+
+  const [year, month, day] = ymd.split('-').map((part) => Number(part));
+  const targetMonthIndex = month - 1 + months;
+  const targetYear = year + Math.floor(targetMonthIndex / 12);
+  const normalizedMonthIndex = ((targetMonthIndex % 12) + 12) % 12;
+
+  const daysInTargetMonth = new Date(Date.UTC(targetYear, normalizedMonthIndex + 1, 0)).getUTCDate();
+  const clampedDay = Math.min(day, daysInTargetMonth);
+  const result = new Date(Date.UTC(targetYear, normalizedMonthIndex, clampedDay));
+
+  if (Number.isNaN(result.getTime())) {
+    return null;
+  }
+
+  return result.toISOString().slice(0, 10);
+}
+
+function parseDateInputToYmd(rawInput, timezone = 'UTC') {
+  if (typeof rawInput !== 'string') {
+    return null;
+  }
+
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (['сегодня', 'today', 'today()'].includes(lower)) {
+    return getTodayYmd(timezone);
+  }
+
+  if (['вчера', 'yesterday'].includes(lower)) {
+    const today = getTodayYmd(timezone);
+    return shiftYmd(today, -1);
+  }
+
+  const isoMatch = trimmed.match(/^(\d{4})[-./](\d{2})[-./](\d{2})$/);
+  if (isoMatch) {
+    const candidate = `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+    return isValidYmd(candidate) ? candidate : null;
+  }
+
+  const ruMatch = trimmed.match(/^(\d{2})[-./](\d{2})[-./](\d{4})$/);
+  if (ruMatch) {
+    const candidate = `${ruMatch[3]}-${ruMatch[2]}-${ruMatch[1]}`;
+    return isValidYmd(candidate) ? candidate : null;
+  }
+
+  return null;
+}
+
 function renderProjectDetails(project, chatRecord) {
   const timesLabel = project.times.length ? project.times.join(', ') : '—';
   const chatInfo = project.chat_id
@@ -1361,7 +1553,10 @@ function renderProjectDetails(project, chatRecord) {
     { text: '📊 Alerts', callback_data: `proj:detail:todo:alerts:${project.code}` },
   ]);
   inline_keyboard.push([
+    { text: '💵 Оплата', callback_data: `proj:billing:open:${project.code}` },
     { text: '📤 Отчёт', callback_data: `proj:detail:todo:report:${project.code}` },
+  ]);
+  inline_keyboard.push([
     { text: '📦 Кампании', callback_data: `proj:detail:todo:campaigns:${project.code}` },
   ]);
   inline_keyboard.push([{ text: '📋 К списку проектов', callback_data: 'panel:projects:0' }]);
@@ -1457,6 +1652,106 @@ function renderScheduleEditor(project, options = {}) {
     text: lines.join('\n'),
     reply_markup: { inline_keyboard },
   };
+}
+
+function renderBillingEditor(project, options = {}) {
+  const awaitingPaid = options.awaitingPaid === true;
+  const awaitingNext = options.awaitingNext === true;
+
+  const lines = [
+    `<b>Оплата #${escapeHtml(project.code)}</b>`,
+    `Последняя оплата: <code>${escapeHtml(formatDateLabel(project.billing_paid_at))}</code>`,
+    `Следующая оплата: <code>${escapeHtml(formatDateLabel(project.billing_next_at))}</code>`,
+    '',
+    'Отметьте оплату сегодня или задайте дату вручную. Следующая дата по умолчанию рассчитывается как +1 месяц.',
+  ];
+
+  if (awaitingPaid) {
+    lines.push('');
+    lines.push('Отправьте дату оплаты в формате <code>YYYY-MM-DD</code>, <code>ДД.ММ.ГГГГ</code> или слово «сегодня».');
+  }
+
+  if (awaitingNext) {
+    lines.push('');
+    lines.push('Введите дату следующего платежа (<code>YYYY-MM-DD</code> или <code>ДД.ММ.ГГГГ</code>). Можно отправить «нет», чтобы очистить.');
+  }
+
+  const inline_keyboard = [];
+
+  inline_keyboard.push([
+    { text: '✅ Оплата сегодня', callback_data: `proj:billing:today:${project.code}` },
+    { text: '✏️ Ввести дату', callback_data: `proj:billing:manual:${project.code}` },
+  ]);
+
+  inline_keyboard.push([
+    { text: '🗓 Изменить следующую', callback_data: `proj:billing:next:${project.code}` },
+    { text: '♻️ Очистить', callback_data: `proj:billing:clear:${project.code}` },
+  ]);
+
+  if (awaitingPaid || awaitingNext) {
+    inline_keyboard.push([
+      { text: '❌ Отменить ввод', callback_data: `proj:billing:cancel:${project.code}` },
+    ]);
+  }
+
+  inline_keyboard.push([
+    { text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` },
+    { text: '← В панель', callback_data: 'panel:home' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithBilling(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Вернитесь в список проектов.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  let awaitingPaid = options.awaitingPaid === true;
+  let awaitingNext = options.awaitingNext === true;
+
+  if (!awaitingPaid && !awaitingNext && options.preserveAwait && options.uid) {
+    const state = await loadUserState(env, options.uid);
+    if (
+      state?.mode === 'edit_billing' &&
+      state.code === code &&
+      state.message_id === messageId &&
+      state.message_chat_id === chatId
+    ) {
+      awaitingPaid = state.step === 'await_paid';
+      awaitingNext = state.step === 'await_next';
+    }
+  }
+
+  const view = renderBillingEditor(project, { awaitingPaid, awaitingNext });
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  return { ok: true, project };
+}
+
+async function clearPendingBillingState(env, uid, code) {
+  if (!uid) return;
+  const state = await loadUserState(env, uid);
+  if (state?.mode === 'edit_billing' && (!code || state.code === code)) {
+    await clearUserState(env, uid);
+  }
 }
 
 function renderAutopauseEditor(project, options = {}) {
@@ -2377,6 +2672,103 @@ async function handleCallbackQuery(env, callbackQuery) {
     return editMessageWithSchedule(env, message, code, { preserveAwait: true, uid });
   }
 
+  if (data.startsWith('proj:billing:open:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await clearPendingBillingState(env, uid, code);
+    return editMessageWithBilling(env, message, code, { preserveAwait: true, uid });
+  }
+
+  if (data.startsWith('proj:billing:today:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const tz = env.DEFAULT_TZ || 'UTC';
+    const paidYmd = getTodayYmd(tz);
+    const nextYmd = addMonthsToYmd(paidYmd) || paidYmd;
+
+    await mutateProject(env, code, (project) => {
+      project.billing_paid_at = paidYmd;
+      project.billing_next_at = nextYmd;
+    });
+
+    await clearPendingBillingState(env, uid, code);
+    await telegramAnswerCallback(env, callbackQuery, 'Оплата зафиксирована.');
+    return editMessageWithBilling(env, message, code, { preserveAwait: false });
+  }
+
+  if (data.startsWith('proj:billing:manual:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'edit_billing',
+      step: 'await_paid',
+      code,
+      message_chat_id: message.chat.id,
+      message_id: message.message_id,
+    });
+
+    return editMessageWithBilling(env, message, code, { awaitingPaid: true });
+  }
+
+  if (data.startsWith('proj:billing:next:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'edit_billing',
+      step: 'await_next',
+      code,
+      message_chat_id: message.chat.id,
+      message_id: message.message_id,
+    });
+
+    return editMessageWithBilling(env, message, code, { awaitingNext: true });
+  }
+
+  if (data.startsWith('proj:billing:clear:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.billing_paid_at = null;
+      project.billing_next_at = null;
+    });
+
+    await clearPendingBillingState(env, uid, code);
+    await telegramAnswerCallback(env, callbackQuery, 'Даты оплаты очищены.');
+    return editMessageWithBilling(env, message, code, { preserveAwait: false });
+  }
+
+  if (data.startsWith('proj:billing:cancel:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    await clearPendingBillingState(env, uid, code);
+    return editMessageWithBilling(env, message, code, { preserveAwait: false });
+  }
+
   if (data.startsWith('proj:kpi:open:')) {
     const [, , , rawCode = ''] = data.split(':');
     const code = sanitizeProjectCode(rawCode);
@@ -2447,7 +2839,6 @@ async function handleCallbackQuery(env, callbackQuery) {
     }
 
     const hints = {
-      billing: 'Учёт оплат будет добавлен вместе с биллинг-алертами.',
       alerts: 'Управление алертами планируется в отдельном релизе.',
       report: 'Кнопка отправки отчёта заработает, когда реализуем /report.',
       campaigns: 'Редактор кампаний запланирован вместе с Meta API.',
