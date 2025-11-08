@@ -1,0 +1,27 @@
+name = "th-reports"
+main = "src/index.ts"
+account_id = "02e61f874be22f0f3a6ee8f97ccccb1d"
+compatibility_date = "2024-01-01"
+
+[env.production]
+workers_dev = true
+
+# Replace the placeholder IDs below with the namespace IDs from
+# Cloudflare → Workers KV → Namespaces or `wrangler kv namespace list`.
+[[kv_namespaces]]
+binding = "REPORTS_NAMESPACE"
+id = "REPLACE_WITH_REPORTS_NAMESPACE_ID"
+# preview_id = "REPLACE_WITH_REPORTS_NAMESPACE_PREVIEW_ID"  # optional for `wrangler dev`
+
+[[kv_namespaces]]
+binding = "BILLING_NAMESPACE"
+id = "REPLACE_WITH_BILLING_NAMESPACE_ID"
+# preview_id = "REPLACE_WITH_BILLING_NAMESPACE_PREVIEW_ID"
+
+[[kv_namespaces]]
+binding = "LOGS_NAMESPACE"
+id = "REPLACE_WITH_LOGS_NAMESPACE_ID"
+# preview_id = "REPLACE_WITH_LOGS_NAMESPACE_PREVIEW_ID"
+
+[env.production.vars]
+ENVIRONMENT = "production"
