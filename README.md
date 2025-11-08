@@ -13,12 +13,12 @@ This repository contains the full Cloudflare Worker that powers the Telegram aut
 
 > The worker now checks for these secrets at runtime. Telegram webhook requests are rejected if `BOT_TOKEN` is missing, and the Meta OAuth endpoints return HTTP 500 when `FB_APP_ID`/`FB_APP_SECRET` are not configured.
 
-Update `wrangler.toml` with your KV namespace ID before deploying:
+`wrangler.toml` already includes the production KV namespace ID, so deployments from this repo talk to the same data store:
 
 ```toml
 [[kv_namespaces]]
 binding = "DB"
-id = "<REPLACE_WITH_DB_NAMESPACE_ID>"
+id = "02e61f874be22f0f3a6ee8f97ccccb1d"
 # preview_id = "<REPLACE_WITH_DB_PREVIEW_NAMESPACE_ID>"
 ```
 
