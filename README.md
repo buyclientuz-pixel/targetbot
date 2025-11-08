@@ -1,65 +1,109 @@
-# th-reports Cloudflare Worker
+# th-reports Worker
 
-Start here if you want to manage the `th-reports` Worker from Git using Wrangler.
+This repository contains the full Cloudflare Worker that powers the Telegram automation bot for `th-reports`. The Worker exposes the `/tg` webhook for Telegram, OAuth endpoints for Meta, a read-only client portal, and the cron logic that sends scheduled reports, billing alerts, and anomaly notifications.
 
-## 1. Install Wrangler
-```
-npm install -g wrangler
-```
-If you prefer not to install globally, prefix commands with `npx` (for example, `npx wrangler deploy`).
+## Requirements
 
-## 2. Log in to Cloudflare
-```
-wrangler login
-```
-Follow the browser prompt so Wrangler can deploy to the account that hosts `th-reports`.
+| Component | Purpose |
+| --- | --- |
+| Cloudflare Worker | The service deployed at `https://th-reports.obe1kanobe25.workers.dev`. |
+| KV namespace (binding **DB**) | Stores projects, chats, archived reports, cached Meta data, and portal signatures. |
+| Secrets | `BOT_TOKEN` (Telegram bot token), `FB_APP_ID`, `FB_APP_SECRET`, `FB_LONG_TOKEN` (optional), `GS_WEBHOOK` (optional). |
+| Environment variables | `ADMIN_IDS` (comma-separated list of Telegram admin IDs), `DEFAULT_TZ` (default `Asia/Tashkent`), `WORKER_URL` (public HTTPS origin for OAuth callbacks). |
 
-## 3. Check the configuration
-`wrangler.toml` already points at the Worker service name and contains your Cloudflare `account_id`:
-```toml
-name = "th-reports"
-main = "src/index.ts"
-account_id = "02e61f874be22f0f3a6ee8f97ccccb1d"
-compatibility_date = "2024-01-01"
-```
-If you use KV namespaces or other bindings, add them here before deploying. Example:
+Update `wrangler.toml` with your KV namespace ID before deploying:
+
 ```toml
 [[kv_namespaces]]
-binding = "REPORTS_NAMESPACE"
-id = "<namespace-id>"
+binding = "DB"
+id = "<REPLACE_WITH_DB_NAMESPACE_ID>"
+# preview_id = "<REPLACE_WITH_DB_PREVIEW_NAMESPACE_ID>"
 ```
 
-## 4. Bring in your Worker code
-Paste the production logic from the Cloudflare dashboard into `src/index.ts` (it currently contains a placeholder handler). Feel free to split code into additional files if needed—just update `main` in `wrangler.toml` if the entry point changes.
+You can configure secrets with Wrangler:
 
-Already have a live Worker you want to migrate?
-
-1. Open **Cloudflare Dashboard → Workers & Pages → th-reports → Quick Edit**.
-2. Copy the full script (or choose **Download** to get it as a file) and replace the contents of `src/index.ts` with it.
-3. If your Worker uses bindings (KV, R2, secrets, etc.), add matching entries to `wrangler.toml` before deploying. For KV namespaces, copy the **Namespace ID** from **Settings → Variables and bindings → KV Namespace bindings** and use the template shown earlier.
-
-## 5. Deploy
+```bash
+wrangler secret put BOT_TOKEN
+wrangler secret put FB_APP_ID
+wrangler secret put FB_APP_SECRET
+# Optional:
+wrangler secret put FB_LONG_TOKEN
+wrangler secret put GS_WEBHOOK
 ```
-wrangler deploy
-```
-This publishes the current repository state to `https://th-reports.obe1kanobe25.workers.dev`.
 
-## 6. Iterate on the bot
-1. Edit `src/index.ts` (and any new modules you add) to implement the behaviour you need.
-2. Preview changes locally with live reload:
+## Local development & deployment
+
+1. Install Wrangler (Node 18+ recommended):
+   ```bash
+   npm install -g wrangler
+   wrangler login
    ```
+2. Verify `wrangler.toml` contains the correct `account_id` and KV namespace binding.
+3. Run a live preview:
+   ```bash
    wrangler dev
    ```
-   Open the printed localhost URL in your browser or call it with `curl` to exercise the Worker before publishing.
-3. Commit your updates and run `wrangler deploy` again to push the new version to Cloudflare.
+   The Worker exposes:
+   * `POST /tg` — Telegram webhook.
+   * `GET /health` — health check returning `ok`.
+   * `GET /fb_auth`, `/fb_cb`, `/fb_debug` — Meta OAuth helpers.
+   * `GET /p/:code` — read-only portal once a KV signature is configured.
+4. Deploy:
+   ```bash
+   wrangler deploy
+   ```
 
-## Optional: Cloudflare “Connect to Git”
-If you enabled the Cloudflare Git integration, set the build command to `npm install` (or leave it empty) and the deploy command to `npm run deploy`. The included `package.json` defines:
-```
-{
-  "scripts": {
-    "deploy": "wrangler deploy"
-  }
-}
-```
-Cloudflare will install dependencies and run the deploy script on each push to the configured branch.
+If you use Cloudflare "Connect to Git", set the build command to `npm install` (or leave blank) and the deploy command to `npm run deploy` (defined in `package.json`).
+
+## Telegram commands
+
+Once the webhook is pointing to `/tg`, the bot understands the following chat commands:
+
+| Command | Description |
+| --- | --- |
+| `/register` | Run inside the target topic to register a chat/thread in KV. |
+| `/whoami` | Shows chat ID, topic ID, and a sample API call. |
+| `/report <code> [period]` | Sends a manual report for the project code (period defaults to project setting). |
+| `/digest <code>` | Sends a short daily digest to the client topic. |
+| `/portal <code>` | Returns or generates a portal link for the client. |
+| `/admin` | Lightweight summary for admins (requires the sender to be listed in `ADMIN_IDS`). |
+
+Automatic routines include:
+
+* Scheduled reports with CSV attachments (configurable per project).
+* Monday weekly combo reports.
+* Billing reminders and zero-spend alerts.
+* Meta health checks (disapprovals, anomalies, creative fatigue).
+* KPI streak tracking with optional one-click autopause for selected campaigns.
+
+The Worker stores projects, chats, and archived reports in KV. `src/index.ts` contains all helper functions so further enhancements can be implemented incrementally.
+
+## Migrating existing data
+
+If the bot is already live in Cloudflare:
+
+1. Export the current Worker script (Dashboard → Workers & Pages → *th-reports* → Quick Edit → Download). The code in this repository already mirrors the production script, so you can commit future changes here instead.
+2. Copy your KV namespace ID into `wrangler.toml` and configure secrets with `wrangler secret put ...`.
+3. (Optional) If you previously stored data in a different namespace, point the binding to that namespace to keep historic data.
+4. Deploy from Git (`wrangler deploy`) or trigger the Git integration to publish.
+
+## Useful KV keys
+
+* `project:<code>` — Project configuration (Meta account, schedule, KPI settings, etc.).
+* `chat:<chat_id>:<thread_id>` — Registered Telegram chat/thread metadata.
+* `report:<code>:<timestamp>` — Archived HTML/CSV reports.
+* `portal:<code>:sig` — Shared secret for the read-only portal.
+* `acct:<act_id>` — Cached Meta account metadata.
+
+Understanding these keys makes it easier to script migrations or bulk updates using `wrangler kv key`/`wrangler kv value` commands.
+
+## Contributing
+
+The worker is a single TypeScript module (`src/index.ts`). Use `// @ts-nocheck` pragmas only when required (the current file uses one to allow the large JS-style codebase). Keep helper functions pure where possible to make it easier to test pieces in isolation.
+
+When adding features:
+
+1. Update the README with any new commands or environment requirements.
+2. Add comments around complex business logic for future contributors.
+3. Run `wrangler dev` to exercise the webhook/portal endpoints before deploying.
+
