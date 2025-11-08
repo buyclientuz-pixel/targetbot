@@ -34,6 +34,12 @@ const AUTOPAUSE_MAX_DAYS = 30;
 const ALERT_BILLING_DEFAULT_TIMES = ['10:00', '14:00', '18:00'];
 const ALERT_BILLING_PRESET_TIMES = ['09:00', '10:00', '12:00', '14:00', '18:00'];
 const ALERT_ZERO_PRESET_TIMES = ['11:00', '12:00', '13:00'];
+const META_TIMEOUT_MS = 9000;
+const META_API_VERSION = 'v19.0';
+const USER_PREFIX = 'tg_user:';
+const USER_ACCOUNTS_PREFIX = 'fb_accts:';
+const ACCOUNT_META_PREFIX = 'acct:';
+const ACCOUNT_META_TTL_SECONDS = 60 * 60 * 24;
 const ALERT_DEFAULT_CONFIG = {
   enabled: true,
   billing_times: [...ALERT_BILLING_DEFAULT_TIMES],
@@ -180,6 +186,18 @@ function getProjectKey(code) {
 
 function getStateKey(uid) {
   return `${STATE_PREFIX}${uid}`;
+}
+
+function getUserKey(uid) {
+  return `${USER_PREFIX}${uid}`;
+}
+
+function getUserAccountsKey(uid) {
+  return `${USER_ACCOUNTS_PREFIX}${uid}`;
+}
+
+function getAccountMetaKey(accountId) {
+  return `${ACCOUNT_META_PREFIX}${accountId}`;
 }
 
 function buildHelpMessage() {
@@ -460,6 +478,55 @@ async function clearUserState(env, uid) {
   await env.DB.delete(getStateKey(uid));
 }
 
+async function loadUserProfile(env, uid) {
+  if (!env.DB || !uid) return null;
+  try {
+    const raw = await env.DB.get(getUserKey(uid));
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    console.error('loadUserProfile error', error);
+    return null;
+  }
+}
+
+async function saveUserProfile(env, uid, profile) {
+  if (!env.DB || !uid) return;
+  await env.DB.put(getUserKey(uid), JSON.stringify(profile ?? {}));
+}
+
+async function loadUserAccounts(env, uid) {
+  if (!env.DB || !uid) return [];
+  try {
+    const raw = await env.DB.get(getUserAccountsKey(uid));
+    return raw ? JSON.parse(raw) : [];
+  } catch (error) {
+    console.error('loadUserAccounts error', error);
+    return [];
+  }
+}
+
+async function saveUserAccounts(env, uid, accounts = []) {
+  if (!env.DB || !uid) return;
+  await env.DB.put(getUserAccountsKey(uid), JSON.stringify(accounts ?? []));
+}
+
+async function saveAccountMeta(env, accountId, meta, options = {}) {
+  if (!env.DB || !accountId) return;
+  const ttl = Number.isFinite(options.ttlSeconds) ? Number(options.ttlSeconds) : ACCOUNT_META_TTL_SECONDS;
+  await env.DB.put(getAccountMetaKey(accountId), JSON.stringify(meta ?? {}), { expirationTtl: ttl });
+}
+
+async function loadAccountMeta(env, accountId) {
+  if (!env.DB || !accountId) return null;
+  try {
+    const raw = await env.DB.get(getAccountMetaKey(accountId));
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    console.error('loadAccountMeta error', error);
+    return null;
+  }
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = TELEGRAM_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -467,6 +534,161 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = TELEGRAM_TIMEOUT_
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = META_TIMEOUT_MS) {
+  const response = await fetchWithTimeout(url, options, timeoutMs);
+  const textBody = await response.text();
+  let payload;
+  try {
+    payload = textBody ? JSON.parse(textBody) : {};
+  } catch (error) {
+    throw new Error(`Не удалось разобрать ответ Meta: ${error?.message ?? error}`);
+  }
+
+  if (!response.ok) {
+    const message = payload?.error?.message || textBody || `HTTP ${response.status}`;
+    const code = payload?.error?.code ? ` (code ${payload.error.code})` : '';
+    throw new Error(`Meta API error${code}: ${message}`);
+  }
+
+  if (payload?.error) {
+    const { message, code } = payload.error;
+    throw new Error(`Meta API error${code ? ` (code ${code})` : ''}: ${message}`);
+  }
+
+  return payload;
+}
+
+async function graphGet(path, { token, params = {} } = {}) {
+  const url = new URL(`https://graph.facebook.com/${META_API_VERSION}/${path}`);
+  if (token) {
+    url.searchParams.set('access_token', token);
+  }
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === 'undefined' || value === null) continue;
+    url.searchParams.set(key, String(value));
+  }
+
+  return fetchJsonWithTimeout(url.toString(), { method: 'GET' }, META_TIMEOUT_MS);
+}
+
+async function exchangeCodeForLongToken(env, code, redirectUri) {
+  const baseParams = new URLSearchParams({
+    client_id: env.FB_APP_ID,
+    client_secret: env.FB_APP_SECRET,
+    redirect_uri: redirectUri,
+    code,
+  });
+
+  const shortUrl = `https://graph.facebook.com/${META_API_VERSION}/oauth/access_token?${baseParams.toString()}`;
+  const short = await fetchJsonWithTimeout(shortUrl, { method: 'GET' }, META_TIMEOUT_MS);
+  if (!short?.access_token) {
+    throw new Error('Meta не вернула access_token.');
+  }
+
+  let token = short.access_token;
+  let expires = Number(short.expires_in ?? 0);
+
+  try {
+    const longParams = new URLSearchParams({
+      grant_type: 'fb_exchange_token',
+      client_id: env.FB_APP_ID,
+      client_secret: env.FB_APP_SECRET,
+      fb_exchange_token: short.access_token,
+    });
+    const longUrl = `https://graph.facebook.com/${META_API_VERSION}/oauth/access_token?${longParams.toString()}`;
+    const long = await fetchJsonWithTimeout(longUrl, { method: 'GET' }, META_TIMEOUT_MS);
+    if (long?.access_token) {
+      token = long.access_token;
+      if (Number.isFinite(Number(long.expires_in))) {
+        expires = Number(long.expires_in);
+      }
+    }
+  } catch (error) {
+    console.warn('Не удалось обменять токен на долгоживущий', error);
+  }
+
+  return {
+    access_token: token,
+    expires_in: expires,
+  };
+}
+
+function normalizeAccountRecord(row = {}) {
+  const rawId = String(row.id ?? row.account_id ?? '').replace(/^act_/, '');
+  if (!rawId) {
+    return null;
+  }
+
+  return {
+    id: `act_${rawId}`,
+    account_id: rawId,
+    name: row.name || `Account ${rawId}`,
+    account_status: row.account_status ?? null,
+    disable_reason: row.disable_reason ?? null,
+    currency: row.currency ?? null,
+    timezone: row.timezone_name ?? null,
+    business: row.business?.name ?? null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function syncUserAdAccounts(env, uid, token) {
+  if (!token) {
+    return { ok: false, error: 'missing_token' };
+  }
+
+  const params = {
+    limit: '200',
+    fields: 'id,name,account_status,disable_reason,currency,timezone_name,business{name}',
+  };
+
+  try {
+    let nextUrl = null;
+    const collected = [];
+
+    for (let page = 0; page < 25; page += 1) {
+      const payload = nextUrl
+        ? await fetchJsonWithTimeout(nextUrl, { method: 'GET' }, META_TIMEOUT_MS)
+        : await graphGet('me/adaccounts', { token, params });
+
+      if (Array.isArray(payload?.data)) {
+        for (const row of payload.data) {
+          const normalized = normalizeAccountRecord(row);
+          if (normalized) {
+            collected.push(normalized);
+          }
+        }
+      }
+
+      if (!payload?.paging?.next) {
+        break;
+      }
+
+      nextUrl = payload.paging.next;
+    }
+
+    const unique = new Map();
+    for (const item of collected) {
+      unique.set(item.account_id, item);
+    }
+
+    const list = Array.from(unique.values()).sort((a, b) => {
+      return (a.name || '').localeCompare(b.name || '', 'ru');
+    });
+
+    await saveUserAccounts(env, uid, list);
+
+    for (const item of list) {
+      await saveAccountMeta(env, item.account_id, item);
+    }
+
+    return { ok: true, count: list.length };
+  } catch (error) {
+    console.error('syncUserAdAccounts error', error);
+    return { ok: false, error: error?.message || 'unknown_error' };
   }
 }
 
@@ -1566,6 +1788,11 @@ async function handleFbAuth(request, env) {
     return json({ error: 'bad_request', message: 'Параметр uid обязателен' }, { status: 400 });
   }
 
+  const numericUid = Number(uid);
+  if (!Number.isFinite(numericUid) || !isAdmin(env, numericUid)) {
+    return json({ error: 'forbidden', message: 'UID не имеет доступа к Meta OAuth.' }, { status: 403 });
+  }
+
   const missing = [];
   ensureString(env.FB_APP_ID, 'FB_APP_ID', missing);
   ensureString(env.FB_APP_SECRET, 'FB_APP_SECRET', missing);
@@ -1583,7 +1810,7 @@ async function handleFbAuth(request, env) {
   const authUrl = new URL('https://www.facebook.com/v19.0/dialog/oauth');
   authUrl.searchParams.set('client_id', env.FB_APP_ID);
   authUrl.searchParams.set('redirect_uri', redirectUri);
-  authUrl.searchParams.set('state', uid);
+  authUrl.searchParams.set('state', String(numericUid));
   authUrl.searchParams.set('scope', scope);
   if (force === '1') {
     authUrl.searchParams.set('auth_type', 'rerequest');
@@ -1609,13 +1836,164 @@ async function handleFbCallback(request, env) {
     return html('<p>Ошибка OAuth: отсутствуют параметры code или state.</p>', { status: 400 });
   }
 
-  return html('<p>Заглушка fb_cb. Реализуйте обмен кода на токен и сохранение в KV.</p>');
+  const uid = Number(state);
+  if (!Number.isFinite(uid) || !isAdmin(env, uid)) {
+    return html('<p>Недостаточно прав для подключения Meta.</p>', { status: 403 });
+  }
+
+  const redirectUri = `${env.WORKER_URL ?? url.origin}/fb_cb`;
+
+  try {
+    const tokenData = await exchangeCodeForLongToken(env, code, redirectUri);
+    const accessToken = tokenData.access_token;
+    const expiresIn = Number(tokenData.expires_in ?? 0);
+    const expiresAt = Number.isFinite(expiresIn) && expiresIn > 0 ? Date.now() + expiresIn * 1000 : null;
+
+    const profile = await graphGet('me', {
+      token: accessToken,
+      params: { fields: 'id,name' },
+    });
+
+    await saveUserProfile(env, uid, {
+      fb_user: profile,
+      fb_long_token: accessToken,
+      fb_token_exp: expiresAt,
+      updated_at: new Date().toISOString(),
+    });
+
+    const syncResult = await syncUserAdAccounts(env, uid, accessToken);
+
+    const lines = [
+      '<h1>Meta подключена</h1>',
+      `<p>Пользователь: <strong>${escapeHtml(profile?.name ?? '—')}</strong></p>`,
+      `<p>Найдено рекламных аккаунтов: <strong>${syncResult?.count ?? 0}</strong></p>`,
+      '<p>Можно закрыть окно и вернуться в Telegram.</p>',
+    ];
+
+    return html(`<!doctype html><html lang="ru"><meta charset="utf-8"><body>${lines.join('')}</body></html>`);
+  } catch (error) {
+    console.error('handleFbCallback error', error);
+    const message = error?.message || 'Неизвестная ошибка при подключении Meta.';
+    return html(`<p>Не удалось подключить Meta: ${escapeHtml(message)}</p>`, { status: 500 });
+  }
 }
 
 async function handleFbDebug(request, env) {
   const url = new URL(request.url);
-  const state = { url, missing: validateRequiredEnv(env), admins: parseAdminIds(env) };
-  return html(renderDebugPage(state));
+  const missing = validateRequiredEnv(env);
+  const uidParam = url.searchParams.get('uid');
+  const uid = uidParam ? Number(uidParam) : null;
+
+  if (uidParam && (!Number.isFinite(uid) || !isAdmin(env, uid))) {
+    return html('<p>Указанный uid не имеет доступа к панели.</p>', { status: 403 });
+  }
+
+  const profile = Number.isFinite(uid) ? await loadUserProfile(env, uid) : null;
+  const accounts = Number.isFinite(uid) ? await loadUserAccounts(env, uid) : [];
+
+  let permissionsInfo = 'Нет данных';
+  let adAccountsLive = null;
+  let businessesLive = null;
+
+  if (profile?.fb_long_token && Number.isFinite(uid)) {
+    try {
+      const perms = await graphGet('me/permissions', {
+        token: profile.fb_long_token,
+        params: { limit: '200' },
+      });
+      if (Array.isArray(perms?.data) && perms.data.length) {
+        permissionsInfo = perms.data
+          .map((item) => `${escapeHtml(item.permission ?? '—')}: ${escapeHtml(item.status ?? 'unknown')}`)
+          .join(', ');
+      } else {
+        permissionsInfo = 'Ответ не содержит данных.';
+      }
+    } catch (error) {
+      permissionsInfo = `Ошибка: ${escapeHtml(error?.message ?? String(error))}`;
+    }
+
+    try {
+      const res = await graphGet('me/adaccounts', {
+        token: profile.fb_long_token,
+        params: { limit: '200' },
+      });
+      adAccountsLive = Array.isArray(res?.data) ? res.data.length : 0;
+    } catch (error) {
+      adAccountsLive = `Ошибка: ${escapeHtml(error?.message ?? String(error))}`;
+    }
+
+    try {
+      const res = await graphGet('me/businesses', {
+        token: profile.fb_long_token,
+        params: { limit: '200' },
+      });
+      businessesLive = Array.isArray(res?.data) ? res.data.length : 0;
+    } catch (error) {
+      businessesLive = `Ошибка: ${escapeHtml(error?.message ?? String(error))}`;
+    }
+  }
+
+  const listItems = [];
+  if (missing.length) {
+    listItems.push(`<li><strong>env:</strong> отсутствуют ${missing.map((item) => `<code>${escapeHtml(item)}</code>`).join(', ')}</li>`);
+  } else {
+    listItems.push('<li><strong>env:</strong> все обязательные переменные заданы</li>');
+  }
+
+  if (Number.isFinite(uid)) {
+    listItems.push(`<li><strong>uid:</strong> ${uid}</li>`);
+  } else {
+    listItems.push('<li>Добавьте параметр <code>?uid=&lt;admin_id&gt;</code>, чтобы увидеть сведения о токене.</li>');
+  }
+
+  if (profile?.fb_user?.name) {
+    listItems.push(`<li><strong>Meta пользователь:</strong> ${escapeHtml(profile.fb_user.name)}</li>`);
+  } else {
+    listItems.push('<li><strong>Meta пользователь:</strong> не подключён</li>');
+  }
+
+  listItems.push(`<li><strong>Аккаунтов в кеше:</strong> ${accounts.length}</li>`);
+
+  if (adAccountsLive !== null) {
+    listItems.push(`<li><strong>/me/adaccounts:</strong> ${escapeHtml(String(adAccountsLive))}</li>`);
+  }
+
+  if (businessesLive !== null) {
+    listItems.push(`<li><strong>/me/businesses:</strong> ${escapeHtml(String(businessesLive))}</li>`);
+  }
+
+  listItems.push(`<li><strong>/me/permissions:</strong> ${permissionsInfo}</li>`);
+
+  const accountsList = accounts
+    .slice(0, 10)
+    .map((item) => `<li>${escapeHtml(item.name)} — <code>act_${escapeHtml(item.account_id)}</code></li>`)
+    .join('');
+
+  const accountsBlock = accounts.length
+    ? `<h2>Сохранённые аккаунты (${accounts.length})</h2><ul>${accountsList}${accounts.length > 10 ? '<li>…</li>' : ''}</ul>`
+    : '<h2>Сохранённые аккаунты</h2><p>Список пуст. Подключите Meta и нажмите «Пересканировать» в админке.</p>';
+
+  return html(`<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <title>th-reports debug</title>
+    <style>
+      body { font: 16px/1.5 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 32px; color: #1f2933; }
+      h1 { font-size: 24px; margin-bottom: 16px; }
+      h2 { margin-top: 24px; font-size: 20px; }
+      ul { padding-left: 20px; }
+      code { background: #f5f6f8; padding: 2px 4px; border-radius: 4px; }
+      footer { margin-top: 32px; color: #6b7280; font-size: 14px; }
+    </style>
+  </head>
+  <body>
+    <h1>th-reports — Meta debug</h1>
+    <ul>${listItems.join('')}</ul>
+    ${accountsBlock}
+    <footer>Страница обновляет данные напрямую из Meta (если токен сохранён).</footer>
+  </body>
+</html>`);
 }
 
 function ensureWorkerUrl(env) {
@@ -1656,18 +2034,37 @@ async function listRegisteredChats(env, cursor, limit = DEFAULT_PAGE_SIZE) {
   };
 }
 
-function renderAdminHome(uid, env) {
+async function buildAdminHome(env, uid) {
   const baseUrl = ensureWorkerUrl(env);
   const safeUid = encodeURIComponent(String(uid ?? ''));
   const authUrl = `${baseUrl}/fb_auth?uid=${safeUid}`;
   const forceUrl = `${authUrl}&force=1`;
 
+  const profile = await loadUserProfile(env, uid);
+  const accounts = await loadUserAccounts(env, uid);
+
+  const lines = ['<b>Админ-панель th-reports</b>', ''];
+
+  if (profile?.fb_user?.name) {
+    lines.push(`Meta подключена: <b>${escapeHtml(profile.fb_user.name)}</b>.`);
+  } else {
+    lines.push('Meta не подключена. Нажмите «Подключить Meta».');
+  }
+
+  if (profile?.fb_token_exp) {
+    const remainingMs = Number(profile.fb_token_exp) - Date.now();
+    if (Number.isFinite(remainingMs) && remainingMs > 0) {
+      const daysLeft = Math.floor(remainingMs / (1000 * 60 * 60 * 24));
+      lines.push(`Токен действует ещё ~${daysLeft} дн.`);
+    }
+  }
+
+  lines.push(`Аккаунтов в кеше: <b>${accounts.length}</b>.`);
+  lines.push('');
+  lines.push('Выберите действие:');
+
   return {
-    text: [
-      '<b>Админ-панель th-reports</b>',
-      '',
-      'Выберите действие:',
-    ].join('\n'),
+    text: lines.join('\n'),
     reply_markup: {
       inline_keyboard: [
         [
@@ -1675,6 +2072,7 @@ function renderAdminHome(uid, env) {
           { text: '♻️ Переподключить', url: forceUrl },
         ],
         [
+          { text: '📈 Аккаунты Meta', callback_data: 'panel:accounts:0' },
           { text: '➕ Новый проект', callback_data: 'proj:create:start' },
         ],
         [
@@ -1718,6 +2116,79 @@ function renderChatsPage(items, pagination = {}) {
   return {
     text: ['<b>Зарегистрированные чаты</b>', '', ...lines].join('\n'),
     reply_markup: { inline_keyboard: keyboard },
+  };
+}
+
+function renderAccountsPage(env, uid, profile, accounts = [], options = {}) {
+  const pageSize = Number.isFinite(options.pageSize) && options.pageSize > 0 ? options.pageSize : DEFAULT_PAGE_SIZE;
+  const total = accounts.length;
+  let offset = Math.max(0, Number(options.offset) || 0);
+  if (total > 0 && offset >= total) {
+    offset = Math.max(0, total - pageSize);
+  }
+  const slice = accounts.slice(offset, offset + pageSize);
+
+  const baseUrl = ensureWorkerUrl(env);
+  const safeUid = encodeURIComponent(String(uid ?? ''));
+  const authUrl = `${baseUrl}/fb_auth?uid=${safeUid}`;
+
+  const lines = [];
+  if (profile?.fb_user?.name) {
+    lines.push(`Подключено как <b>${escapeHtml(profile.fb_user.name)}</b>.`);
+  } else {
+    lines.push('Meta ещё не подключена. Нажмите «Подключить Meta».');
+  }
+
+  if (!total) {
+    lines.push('Аккаунтов пока нет. После подключения Meta нажмите «Пересканировать».');
+  } else {
+    const rangeStart = offset + 1;
+    const rangeEnd = offset + slice.length;
+    lines.push(`Всего в кеше: <b>${total}</b>. Показаны ${rangeStart}–${rangeEnd}.`);
+    lines.push('');
+    for (const account of slice) {
+      const parts = [];
+      if (account.account_status !== null && typeof account.account_status !== 'undefined') {
+        parts.push(`статус ${account.account_status}`);
+      }
+      if (account.currency) {
+        parts.push(account.currency);
+      }
+      if (account.timezone) {
+        parts.push(account.timezone);
+      }
+      const suffix = parts.length ? ` (${parts.join(' · ')})` : '';
+      lines.push(`• <b>${escapeHtml(account.name)}</b> — <code>${escapeHtml(account.id)}</code>${suffix}`);
+    }
+  }
+
+  const inline_keyboard = [];
+
+  if (total > pageSize) {
+    const navRow = [];
+    if (offset > 0) {
+      const prevOffset = Math.max(0, offset - pageSize);
+      navRow.push({ text: '◀️ Назад', callback_data: `panel:accounts:page:${prevOffset}` });
+    }
+    if (offset + pageSize < total) {
+      navRow.push({ text: '▶️ Далее', callback_data: `panel:accounts:page:${offset + pageSize}` });
+    }
+    if (navRow.length) {
+      inline_keyboard.push(navRow);
+    }
+  }
+
+  if (profile?.fb_long_token) {
+    inline_keyboard.push([{ text: '🔁 Пересканировать', callback_data: 'panel:accounts:rescan' }]);
+  } else {
+    inline_keyboard.push([{ text: '🔌 Подключить Meta', url: authUrl }]);
+  }
+
+  inline_keyboard.push([{ text: '↩️ В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
   };
 }
 
@@ -3198,7 +3669,7 @@ async function handleAdminCommand(env, message) {
     return telegramSendMessage(env, message, 'Доступ запрещён. Добавьте ваш ID в ADMIN_IDS.');
   }
 
-  const response = renderAdminHome(uid, env);
+  const response = await buildAdminHome(env, uid);
   return telegramSendMessage(env, message, response.text, {
     reply_markup: response.reply_markup,
     disable_reply: true,
@@ -3236,7 +3707,7 @@ async function handleCallbackQuery(env, callbackQuery) {
 
   if (data === 'proj:create:cancel') {
     await clearUserState(env, uid);
-    const home = renderAdminHome(uid, env);
+    const home = await buildAdminHome(env, uid);
     return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
       reply_markup: home.reply_markup,
     });
@@ -3245,7 +3716,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data === 'proj:create:chatreset' || data.startsWith('proj:create:chatnext')) {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project' || state.step !== 'choose_chat') {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3270,7 +3741,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data.startsWith('proj:create:chat:')) {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project' || !['choose_chat', 'await_act'].includes(state.step)) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3338,7 +3809,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data === 'proj:create:period:back') {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project') {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3360,7 +3831,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data === 'proj:create:schedule:back') {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project') {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3390,7 +3861,7 @@ async function handleCallbackQuery(env, callbackQuery) {
 
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project' || !['choose_period', 'choose_schedule'].includes(state.step)) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3420,7 +3891,7 @@ async function handleCallbackQuery(env, callbackQuery) {
       state.mode !== 'create_project' ||
       !['choose_schedule', 'await_times_manual', 'choose_billing'].includes(state.step)
     ) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3495,7 +3966,7 @@ async function handleCallbackQuery(env, callbackQuery) {
       state.mode !== 'create_project' ||
       !['choose_billing', 'await_billing_manual', 'choose_kpi'].includes(state.step)
     ) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3566,7 +4037,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data === 'proj:create:kpi:start') {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project' || !['choose_billing', 'choose_kpi'].includes(state.step)) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3590,7 +4061,7 @@ async function handleCallbackQuery(env, callbackQuery) {
 
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project' || !['choose_kpi', 'await_kpi_field'].includes(state.step)) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3613,7 +4084,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data === 'proj:create:kpi:clear') {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project' || state.step !== 'choose_kpi') {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3632,7 +4103,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data === 'proj:create:kpi:back') {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project') {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3649,7 +4120,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data === 'proj:create:alerts:start') {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project' || !['choose_kpi', 'choose_alerts'].includes(state.step)) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3667,7 +4138,7 @@ async function handleCallbackQuery(env, callbackQuery) {
     const [, , , action, arg] = data.split(':');
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project' || !['choose_alerts'].includes(state.step)) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3709,7 +4180,7 @@ async function handleCallbackQuery(env, callbackQuery) {
       state.mode !== 'create_project' ||
       !['choose_alerts', 'choose_automation', 'await_autopause_manual'].includes(state.step)
     ) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3731,7 +4202,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data === 'proj:create:automation:back') {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project' || !['choose_alerts', 'choose_automation'].includes(state.step)) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3753,7 +4224,7 @@ async function handleCallbackQuery(env, callbackQuery) {
       state.mode !== 'create_project' ||
       !['choose_automation', 'await_autopause_manual'].includes(state.step)
     ) {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3805,7 +4276,7 @@ async function handleCallbackQuery(env, callbackQuery) {
   if (data === 'proj:create:finish') {
     const state = await loadUserState(env, uid);
     if (!state || state.mode !== 'create_project') {
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3830,7 +4301,7 @@ async function handleCallbackQuery(env, callbackQuery) {
       );
     } catch (error) {
       console.error('completeProjectCreation wizard finish error', error);
-      const home = renderAdminHome(uid, env);
+      const home = await buildAdminHome(env, uid);
       return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
         reply_markup: home.reply_markup,
       });
@@ -3838,9 +4309,46 @@ async function handleCallbackQuery(env, callbackQuery) {
   }
 
   if (data === 'panel:home') {
-    const response = renderAdminHome(uid, env);
+    const response = await buildAdminHome(env, uid);
     return telegramEditMessage(env, message.chat.id, message.message_id, response.text, {
       reply_markup: response.reply_markup,
+    });
+  }
+
+  if (data.startsWith('panel:accounts')) {
+    const parts = data.split(':');
+    const action = parts[2] ?? '0';
+
+    if (action === 'rescan') {
+      const profile = await loadUserProfile(env, uid);
+      if (!profile?.fb_long_token) {
+        await telegramAnswerCallback(env, callbackQuery, 'Сначала подключите Meta.');
+      } else {
+        const result = await syncUserAdAccounts(env, uid, profile.fb_long_token);
+        const note = result.ok
+          ? `Готово. Найдено ${result.count} аккаунтов.`
+          : `Ошибка: ${result.error || 'не удалось обновить список'}.`;
+        await telegramAnswerCallback(env, callbackQuery, note);
+      }
+
+      const profileAfter = await loadUserProfile(env, uid);
+      const accounts = await loadUserAccounts(env, uid);
+      const view = renderAccountsPage(env, uid, profileAfter, accounts, { offset: 0 });
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
+
+    let offset = 0;
+    if (action === 'page' && typeof parts[3] === 'string') {
+      offset = Math.max(0, Number(parts[3]) || 0);
+    }
+
+    const profileCurrent = await loadUserProfile(env, uid);
+    const accountsCurrent = await loadUserAccounts(env, uid);
+    const view = renderAccountsPage(env, uid, profileCurrent, accountsCurrent, { offset });
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
     });
   }
 
