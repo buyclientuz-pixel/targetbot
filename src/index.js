@@ -34,6 +34,26 @@ const AUTOPAUSE_MAX_DAYS = 30;
 const ALERT_BILLING_DEFAULT_TIMES = ['10:00', '14:00', '18:00'];
 const ALERT_BILLING_PRESET_TIMES = ['09:00', '10:00', '12:00', '14:00', '18:00'];
 const ALERT_ZERO_PRESET_TIMES = ['11:00', '12:00', '13:00'];
+const PROJECT_SCHEDULE_PRESETS = {
+  workday_morning: {
+    label: 'Будни 09:30',
+    description: 'Ежедневно по будням в 09:30',
+    times: ['09:30'],
+    mute_weekends: true,
+  },
+  daily_evening: {
+    label: 'Каждый день 19:00',
+    description: 'Отправка ежедневно в 19:00',
+    times: ['19:00'],
+    mute_weekends: false,
+  },
+  twice: {
+    label: '09:30 + 19:00',
+    description: 'Дважды в день без тихих выходных',
+    times: ['09:30', '19:00'],
+    mute_weekends: false,
+  },
+};
 
 function escapeHtml(input = '') {
   return String(input)
@@ -258,6 +278,16 @@ function sortUniqueTimes(times = []) {
     }
   }
   return Array.from(unique).sort();
+}
+
+function parseTimesList(input = '') {
+  const parts = String(input ?? '')
+    .split(/[\s,;]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  const normalized = sortUniqueTimes(parts);
+  return normalized;
 }
 
 function chunkArray(items, chunkSize) {
@@ -681,24 +711,23 @@ async function handleUserStateMessage(env, message, textContent) {
         return { handled: true, step: 'await_code', error: 'state_corrupted' };
       }
 
-      const project = createProjectDraft({
-        code: data.code,
-        act,
-        chat_id: data.chat_id,
-        thread_id: data.thread_id ?? 0,
+      await saveUserState(env, uid, {
+        mode: 'create_project',
+        step: 'choose_period',
+        data: {
+          ...data,
+          act,
+        },
       });
 
-      await saveProject(env, project);
-      await clearUserState(env, uid);
+      const view = buildProjectPeriodPrompt();
+      await telegramSendMessage(env, message, 'Рекламный аккаунт принят.', { disable_reply: true });
+      await telegramSendMessage(env, message, view.text, {
+        reply_markup: view.reply_markup,
+        disable_reply: true,
+      });
 
-      await telegramSendMessage(
-        env,
-        message,
-        ['✅ Проект создан.', formatProjectSummary(project), '', 'Настройте расписание и KPI через админ-панель.'].join('\n'),
-        { disable_reply: true },
-      );
-
-      return { handled: true, step: 'completed' };
+      return { handled: true, step: 'choose_period' };
     }
 
     if (state.step === 'choose_chat') {
@@ -709,6 +738,42 @@ async function handleUserStateMessage(env, message, textContent) {
         { disable_reply: true },
       );
       return { handled: true, step: 'choose_chat', info: 'await_chat_selection' };
+    }
+
+    if (state.step === 'choose_period') {
+      await telegramSendMessage(
+        env,
+        message,
+        'Выберите период с помощью кнопок. По умолчанию используется «Вчера».',
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'choose_period', info: 'await_period_selection' };
+    }
+
+    if (state.step === 'await_times_manual') {
+      const times = parseTimesList(textContent);
+      if (!times.length) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Введите время через запятую или пробел: например, "09:30, 13:00, 19:00".',
+          { disable_reply: true },
+        );
+        return { handled: true, step: 'await_times_manual', error: 'invalid_times' };
+      }
+
+      const data = state.data ?? {};
+      try {
+        await completeProjectCreation(env, uid, message, data, {
+          times,
+          mute_weekends: Boolean(data.mute_weekends),
+        });
+      } catch (error) {
+        console.error('completeProjectCreation manual error', error);
+        return { handled: true, step: 'await_code', error: 'state_corrupted' };
+      }
+
+      return { handled: true, step: 'completed' };
     }
 
     return { handled: false, reason: 'unknown_step' };
@@ -2412,6 +2477,108 @@ function buildChatSelectionPrompt(chats, options = {}) {
   };
 }
 
+function buildProjectPeriodPrompt() {
+  const lines = [
+    '<b>Шаг 4.</b> Выберите период отчётов.',
+    '',
+    'Этот период будет использоваться по умолчанию для автоотчётов и команд /report.',
+    'Изменить его можно позже в карточке проекта.',
+  ];
+
+  const inline_keyboard = PERIOD_OPTIONS.map((option) => [
+    {
+      text: option.value === 'yesterday' ? `⭐️ ${option.label}` : option.label,
+      callback_data: `proj:create:period:${option.value}`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    { text: 'Отмена', callback_data: 'proj:create:cancel' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function buildProjectSchedulePrompt() {
+  const lines = [
+    '<b>Шаг 5.</b> Выберите начальное расписание.',
+    '',
+    'Все настройки можно отредактировать позднее в карточке проекта.',
+  ];
+
+  const inline_keyboard = Object.entries(PROJECT_SCHEDULE_PRESETS).map(([key, preset]) => [
+    {
+      text: preset.label,
+      callback_data: `proj:create:schedule:preset:${key}`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    { text: 'Ввести вручную', callback_data: 'proj:create:schedule:manual' },
+  ]);
+  inline_keyboard.push([
+    { text: '← Выбрать другой период', callback_data: 'proj:create:period:back' },
+  ]);
+  inline_keyboard.push([
+    { text: 'Отмена', callback_data: 'proj:create:cancel' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function describeSchedule(times = [], muteWeekends = false) {
+  const slots = times.length ? times.join(', ') : '—';
+  const weekends = muteWeekends ? 'тихие выходные: вкл' : 'тихие выходные: выкл';
+  return `${slots} (${weekends})`;
+}
+
+async function completeProjectCreation(env, uid, message, data = {}, overrides = {}) {
+  const payload = {
+    code: data.code,
+    act: data.act,
+    chat_id: data.chat_id,
+    thread_id: data.thread_id ?? 0,
+    period: overrides.period ?? data.period ?? 'yesterday',
+    times: overrides.times ?? data.times ?? ['09:30'],
+    mute_weekends: overrides.mute_weekends ?? Boolean(data.mute_weekends),
+  };
+
+  if (!payload.code || !payload.chat_id || !payload.act) {
+    await clearUserState(env, uid);
+    await telegramSendMessage(
+      env,
+      message,
+      'Сессия создания проекта повреждена. Начните заново с кнопки «➕ Новый проект».',
+      { disable_reply: true },
+    );
+    throw new Error('project_creation_state_missing');
+  }
+
+  const project = createProjectDraft(payload);
+  await saveProject(env, project);
+  await clearUserState(env, uid);
+
+  await telegramSendMessage(
+    env,
+    message,
+    [
+      '✅ Проект создан.',
+      formatProjectSummary(project),
+      '',
+      'Расписание, KPI и алерты можно донастроить через карточку проекта.',
+    ].join('\n'),
+    { disable_reply: true },
+  );
+
+  return project;
+}
+
 function renderProjectsPage(items, pagination = {}) {
   const textLines = ['<b>Проекты</b>', ''];
 
@@ -2634,6 +2801,143 @@ async function handleCallbackQuery(env, callbackQuery) {
     );
 
     return { ok: true };
+  }
+
+  if (data === 'proj:create:period:back') {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project') {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'create_project',
+      step: 'choose_period',
+      data: { ...(state.data ?? {}) },
+    });
+
+    const view = buildProjectPeriodPrompt();
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:create:period:')) {
+    const [, , , value] = data.split(':');
+    if (!value || value === 'back') {
+      const view = buildProjectPeriodPrompt();
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
+
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || !['choose_period', 'choose_schedule'].includes(state.step)) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'create_project',
+      step: 'choose_schedule',
+      data: {
+        ...(state.data ?? {}),
+        period: PERIOD_OPTIONS.some((option) => option.value === value) ? value : 'yesterday',
+      },
+    });
+
+    const view = buildProjectSchedulePrompt();
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:create:schedule:')) {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || !['choose_schedule', 'await_times_manual'].includes(state.step)) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const [, , , action, arg] = data.split(':');
+    const baseData = state.data ?? {};
+
+    if (action === 'manual') {
+      await saveUserState(env, uid, {
+        mode: 'create_project',
+        step: 'await_times_manual',
+        data: baseData,
+      });
+
+      return telegramEditMessage(
+        env,
+        message.chat.id,
+        message.message_id,
+        [
+          'Введите время через запятую или пробелы: например, <code>09:30, 13:00, 19:00</code>.',
+          'Тихие выходные можно настроить позже в карточке проекта.',
+        ].join('\n'),
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '← Назад', callback_data: 'proj:create:period:back' }],
+              [{ text: 'Отмена', callback_data: 'proj:create:cancel' }],
+            ],
+          },
+        },
+      );
+    }
+
+    if (action === 'preset') {
+      const preset = PROJECT_SCHEDULE_PRESETS[arg];
+      if (!preset) {
+        return telegramEditMessage(env, message.chat.id, message.message_id, 'Неизвестный пресет расписания. Выберите другой вариант.', {
+          reply_markup: buildProjectSchedulePrompt().reply_markup,
+        });
+      }
+
+      try {
+        const project = await completeProjectCreation(env, uid, message, baseData, {
+          times: preset.times,
+          mute_weekends: preset.mute_weekends,
+        });
+
+        return telegramEditMessage(
+          env,
+          message.chat.id,
+          message.message_id,
+          [
+            '✅ Проект создан.',
+            `Период: <b>${escapeHtml(project.period)}</b>`,
+            `Расписание: ${escapeHtml(describeSchedule(project.times, project.mute_weekends))}`,
+            '',
+            'Подробности — в сообщении выше. Вернитесь в панель для дальнейшей настройки.',
+          ].join('\n'),
+          {
+            reply_markup: {
+              inline_keyboard: [[{ text: '↩️ В панель', callback_data: 'panel:home' }]],
+            },
+          },
+        );
+      } catch (error) {
+        console.error('completeProjectCreation preset error', error);
+        const home = renderAdminHome(uid, env);
+        return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+          reply_markup: home.reply_markup,
+        });
+      }
+    }
+
+    const scheduleView = buildProjectSchedulePrompt();
+    return telegramEditMessage(env, message.chat.id, message.message_id, scheduleView.text, {
+      reply_markup: scheduleView.reply_markup,
+    });
   }
 
   if (data === 'panel:home') {
