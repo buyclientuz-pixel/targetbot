@@ -3,7 +3,7 @@
 This repository contains the source for the `th-reports` Cloudflare Worker. The steps below explain how to deploy updates using
 Wrangler and how to mirror the Worker that already lives in your Cloudflare account.
 
-## Quick status
+## Quick status 
 
 - ✅  `wrangler.toml` targets the `th-reports` Worker in account `02e61f874be22f0f3a6ee8f97ccccb1d`.
 - ✅  `src/index.ts` now matches the Worker logic that is running in your Cloudflare dashboard.
