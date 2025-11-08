@@ -99,6 +99,14 @@ const REPORT_METRIC_MAP = {
   },
   SALES: { label: 'Конверсии', short: 'conv', actions: ['purchase'] },
 };
+const REPORT_METRIC_SHORT_MAP = (() => {
+  const map = { [DEFAULT_REPORT_METRIC.short.toLowerCase()]: DEFAULT_REPORT_METRIC };
+  for (const metric of Object.values(REPORT_METRIC_MAP)) {
+    if (!metric?.short) continue;
+    map[metric.short.toLowerCase()] = metric;
+  }
+  return map;
+})();
 const CURRENCY_SYMBOLS = {
   USD: '$',
   EUR: '€',
@@ -948,18 +956,18 @@ async function telegramRequest(env, method, payload) {
   return response.json();
 }
 
-async function telegramSendDocument(env, project, { filename, content, caption }) {
+async function telegramSendDocumentToChat(env, { chatId, threadId, filename, content, caption }) {
   if (typeof env.BOT_TOKEN !== 'string' || env.BOT_TOKEN.trim() === '') {
     throw new Error('BOT_TOKEN не задан. Невозможно отправить документ.');
   }
-  if (!project?.chat_id) {
-    throw new Error('У проекта не привязан чат для отправки документов.');
+  if (!chatId) {
+    throw new Error('Не указан chat_id для отправки документа.');
   }
 
   const form = new FormData();
-  form.append('chat_id', String(project.chat_id));
-  if (Number.isFinite(project.thread_id) && project.thread_id > 0) {
-    form.append('message_thread_id', String(project.thread_id));
+  form.append('chat_id', String(chatId));
+  if (Number.isFinite(threadId) && threadId > 0) {
+    form.append('message_thread_id', String(threadId));
   }
   if (caption) {
     form.append('caption', caption);
@@ -983,6 +991,20 @@ async function telegramSendDocument(env, project, { filename, content, caption }
   }
 
   return response.json();
+}
+
+async function telegramSendDocument(env, project, { filename, content, caption }) {
+  if (!project?.chat_id) {
+    throw new Error('У проекта не привязан чат для отправки документов.');
+  }
+
+  return telegramSendDocumentToChat(env, {
+    chatId: project.chat_id,
+    threadId: project.thread_id,
+    filename,
+    content,
+    caption,
+  });
 }
 
 async function telegramSendMessage(env, message, textContent, extra = {}) {
@@ -2943,6 +2965,11 @@ function pickMetricForObjective(objective = '') {
   return REPORT_METRIC_MAP[key] ?? DEFAULT_REPORT_METRIC;
 }
 
+function getMetricByShortCode(shortCode = '') {
+  const normalized = String(shortCode || '').toLowerCase();
+  return REPORT_METRIC_SHORT_MAP[normalized] ?? DEFAULT_REPORT_METRIC;
+}
+
 function extractActionCount(actions = [], actionTypes = []) {
   if (!Array.isArray(actions) || !actions.length) {
     return 0;
@@ -3552,6 +3579,57 @@ function buildReportCsv(project, range, payload, currency = 'USD') {
   return rows.map((line) => line.map(escapeCsvValue).join(';')).join('\n');
 }
 
+function buildCsvFromArchiveRecord(record, { projectCode } = {}) {
+  if (!record) {
+    return '';
+  }
+
+  const rows = [
+    ['Campaign', 'Metric', 'Spend', 'Results', 'CPA', 'PeriodSince', 'PeriodUntil', 'ProjectCode'],
+  ];
+
+  for (const row of Array.isArray(record.rows) ? record.rows : []) {
+    const metric = getMetricByShortCode(row?.metric);
+    rows.push([
+      row?.name ?? '—',
+      metric.label,
+      Number(row?.spend ?? 0).toFixed(2),
+      Number(row?.results ?? 0),
+      Number.isFinite(row?.cpa) ? Number(row.cpa).toFixed(2) : '',
+      record.range?.since ?? '',
+      record.range?.until ?? '',
+      projectCode ?? '',
+    ]);
+  }
+
+  const totals = record.totals ?? {};
+  rows.push([
+    'TOTAL',
+    '',
+    Number(totals.spend ?? 0).toFixed(2),
+    Number(totals.results ?? 0),
+    Number.isFinite(totals.cpa) ? Number(totals.cpa).toFixed(2) : '',
+    record.range?.since ?? '',
+    record.range?.until ?? '',
+    projectCode ?? '',
+  ]);
+
+  return rows.map((line) => line.map(escapeCsvValue).join(';')).join('\n');
+}
+
+function getArchiveCsvFilename(project, record, stamp) {
+  if (record?.csv_filename) {
+    return record.csv_filename;
+  }
+
+  const since = record?.range?.since ?? record?.period ?? 'period';
+  const until = record?.range?.until ?? record?.period ?? 'period';
+  const safeSince = String(since || 'start').replace(/[^0-9A-Za-z_-]/g, '');
+  const safeUntil = String(until || 'end').replace(/[^0-9A-Za-z_-]/g, '');
+  const suffix = Number.isFinite(stamp) ? String(stamp) : Date.now().toString();
+  return `report_${project?.code ?? 'project'}_${safeSince}_${safeUntil}_${suffix}.csv`;
+}
+
 async function archiveReportRecord(env, project, { payload, period, range, origin, csvFilename }) {
   if (!env.DB || !project?.code) {
     return null;
@@ -3802,6 +3880,10 @@ function renderReportArchivePreview(project, record, { stamp, createdLabel, curr
     `Расход: ${escapeHtml(spendLabel)} · Результаты: ${escapeHtml(resultsLabel)} · CPA: ${escapeHtml(cpaLabel)}`,
     `Фильтры: ${escapeHtml(describeReportFilters(record.filters ?? {}))}`,
     '',
+    record.csv_filename
+      ? `CSV: ${escapeHtml(record.csv_filename)} (сохранён при исходной отправке)`
+      : 'CSV генерируется на лету при повторной отправке.',
+    '',
     'Сообщение для клиента:',
     `<code>${escapeHtml(previewBody)}</code>`,
   ];
@@ -3813,6 +3895,10 @@ function renderReportArchivePreview(project, record, { stamp, createdLabel, curr
   const inline_keyboard = [
     [
       { text: '📤 Отправить в чат', callback_data: `proj:archive:send:${project.code}:${stamp}` },
+      { text: '📎 CSV в чат', callback_data: `proj:archive:csvchat:${project.code}:${stamp}` },
+    ],
+    [
+      { text: '📥 CSV сюда', callback_data: `proj:archive:csvhere:${project.code}:${stamp}` },
       { text: '🗂 К списку', callback_data: `proj:archive:back:${project.code}` },
     ],
     [
@@ -8579,6 +8665,77 @@ async function handleCallbackQuery(env, callbackQuery) {
           `Не удалось отправить архивный отчёт: ${escapeHtml(error?.message ?? 'ошибка')}`,
           { disable_reply: true },
         );
+      }
+
+      return editMessageWithArchivePreview(env, message, code, stamp, { uid });
+    }
+
+    if (action === 'csvchat' || action === 'csvhere') {
+      const stamp = Number(parts[4] ?? '');
+      if (!Number.isFinite(stamp)) {
+        await telegramAnswerCallback(env, callbackQuery, 'Запись не распознана.');
+        return { ok: false, error: 'invalid_archive_stamp' };
+      }
+
+      const project = await loadProject(env, code);
+      if (!project) {
+        await telegramAnswerCallback(env, callbackQuery, 'Проект не найден.');
+        return { ok: false, error: 'project_not_found' };
+      }
+
+      const record = await loadReportArchiveRecord(env, code, stamp);
+      if (!record) {
+        await telegramAnswerCallback(env, callbackQuery, 'Запись архива не найдена.');
+        await telegramSendMessage(env, message, 'Не удалось получить данные для CSV. Возможно, запись истекла.', {
+          disable_reply: true,
+        });
+        return { ok: false, error: 'archive_missing_record' };
+      }
+
+      const csvContent = buildCsvFromArchiveRecord(record, { projectCode: project.code });
+      if (!csvContent) {
+        await telegramAnswerCallback(env, callbackQuery, 'CSV не сформирован.');
+        await telegramSendMessage(env, message, 'CSV-файл пуст или запись не содержит строк.', { disable_reply: true });
+        return { ok: false, error: 'csv_generation_failed' };
+      }
+
+      const filename = getArchiveCsvFilename(project, record, stamp);
+      const caption = `CSV отчёт <b>#${escapeHtml(code)}</b> (${escapeHtml(formatRangeLabel(record.range))})`;
+
+      if (action === 'csvchat') {
+        await telegramAnswerCallback(env, callbackQuery, 'Отправляю CSV в чат...');
+        try {
+          await telegramSendDocument(env, project, { filename, content: csvContent, caption });
+          await telegramSendMessage(env, message, 'CSV отправлен в рабочий чат.', { disable_reply: true });
+        } catch (error) {
+          console.error('proj:archive:csvchat error', error);
+          await telegramSendMessage(
+            env,
+            message,
+            `Не удалось отправить CSV в чат: ${escapeHtml(error?.message ?? 'ошибка')}`,
+            { disable_reply: true },
+          );
+        }
+      } else {
+        await telegramAnswerCallback(env, callbackQuery, 'Готовлю CSV...');
+        try {
+          await telegramSendDocumentToChat(env, {
+            chatId: message.chat.id,
+            threadId: message.message_thread_id,
+            filename,
+            content: csvContent,
+            caption,
+          });
+          await telegramSendMessage(env, message, 'CSV отправлен в этот диалог.', { disable_reply: true });
+        } catch (error) {
+          console.error('proj:archive:csvhere error', error);
+          await telegramSendMessage(
+            env,
+            message,
+            `Не удалось отправить CSV сюда: ${escapeHtml(error?.message ?? 'ошибка')}`,
+            { disable_reply: true },
+          );
+        }
       }
 
       return editMessageWithArchivePreview(env, message, code, stamp, { uid });
