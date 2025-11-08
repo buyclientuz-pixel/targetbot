@@ -20,6 +20,14 @@ const CHAT_PREFIX = 'chat:';
 const STATE_PREFIX = 'state:';
 const STATE_TTL_SECONDS = 600;
 const PROJECT_CODE_PATTERN = /^[a-z0-9_-]{3,32}$/i;
+const PERIOD_OPTIONS = [
+  { value: 'today', label: 'Сегодня' },
+  { value: 'yesterday', label: 'Вчера' },
+  { value: 'last_7d', label: '7 дней' },
+  { value: 'last_week', label: 'Прошлая неделя' },
+  { value: 'month_to_date', label: 'С начала месяца' },
+];
+const QUICK_TIMES = ['09:30', '10:00', '12:00', '19:00'];
 
 function escapeHtml(input = '') {
   return String(input)
@@ -152,9 +160,10 @@ function buildHelpMessage() {
 function normalizeProject(raw = {}) {
   const safe = typeof raw === 'object' && raw ? raw : {};
   const period = typeof safe.period === 'string' && safe.period ? safe.period : 'yesterday';
-  const times = Array.isArray(safe.times) && safe.times.length
+  const rawTimes = Array.isArray(safe.times) && safe.times.length
     ? safe.times.map((value) => String(value))
     : [String(safe.time ?? '09:30')];
+  const times = sortUniqueTimes(rawTimes);
 
   return {
     code: safe.code ?? '',
@@ -197,6 +206,45 @@ function normalizeProject(raw = {}) {
     billing_paid_at: safe.billing_paid_at ?? null,
     billing_next_at: safe.billing_next_at ?? null,
   };
+}
+
+function normalizeTimeString(input = '') {
+  const value = String(input ?? '').trim();
+  if (!/^\d{1,2}:\d{2}$/.test(value)) {
+    return null;
+  }
+
+  const [hhRaw, mmRaw] = value.split(':');
+  const hh = Number(hhRaw);
+  const mm = Number(mmRaw);
+  if (!Number.isInteger(hh) || !Number.isInteger(mm)) {
+    return null;
+  }
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+    return null;
+  }
+
+  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+function sortUniqueTimes(times = []) {
+  const unique = new Set();
+  for (const entry of times || []) {
+    const normalized = normalizeTimeString(entry);
+    if (normalized) {
+      unique.add(normalized);
+    }
+  }
+  return Array.from(unique).sort();
+}
+
+function chunkArray(items, chunkSize) {
+  const size = Math.max(1, Number(chunkSize) || 1);
+  const result = [];
+  for (let i = 0; i < items.length; i += size) {
+    result.push(items.slice(i, i + size));
+  }
+  return result;
 }
 
 function sanitizeProjectCode(input = '') {
@@ -282,6 +330,21 @@ async function saveProject(env, project) {
 
   const payload = JSON.stringify(normalizeProject(project));
   await env.DB.put(getProjectKey(project.code), payload);
+}
+
+async function mutateProject(env, code, mutator) {
+  if (typeof mutator !== 'function') {
+    throw new Error('mutator должен быть функцией');
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    return null;
+  }
+
+  await mutator(project);
+  await saveProject(env, project);
+  return project;
 }
 
 async function listProjects(env, cursor, limit = DEFAULT_PAGE_SIZE) {
@@ -513,119 +576,186 @@ async function handleUserStateMessage(env, message, textContent) {
   }
 
   const state = await loadUserState(env, uid);
-  if (!state || state.mode !== 'create_project') {
+  if (!state) {
     return { handled: false, reason: 'no_state' };
   }
 
-  if (state.step === 'await_code') {
-    const code = sanitizeProjectCode(textContent);
-    if (!code) {
-      await telegramSendMessage(env, message, 'Код проекта не может быть пустым. Введите, например, th-client.', {
-        disable_reply: true,
-      });
-      return { handled: true, step: 'await_code', error: 'empty_code' };
-    }
-    if (!isValidProjectCode(code)) {
-      await telegramSendMessage(
-        env,
-        message,
-        'Код допускает буквы, цифры, дефис и подчёркивание (3-32 символа). Попробуйте ещё раз.',
-        { disable_reply: true },
-      );
-      return { handled: true, step: 'await_code', error: 'invalid_code' };
-    }
+  if (state.mode === 'create_project') {
+    if (state.step === 'await_code') {
+      const code = sanitizeProjectCode(textContent);
+      if (!code) {
+        await telegramSendMessage(env, message, 'Код проекта не может быть пустым. Введите, например, th-client.', {
+          disable_reply: true,
+        });
+        return { handled: true, step: 'await_code', error: 'empty_code' };
+      }
+      if (!isValidProjectCode(code)) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Код допускает буквы, цифры, дефис и подчёркивание (3-32 символа). Попробуйте ещё раз.',
+          { disable_reply: true },
+        );
+        return { handled: true, step: 'await_code', error: 'invalid_code' };
+      }
 
-    const existing = await loadProject(env, code);
-    if (existing) {
-      await telegramSendMessage(
-        env,
-        message,
-        `Проект <b>#${escapeHtml(code)}</b> уже существует. Введите другой код или отмените создание.`,
-        { disable_reply: true },
-      );
-      return { handled: true, step: 'await_code', error: 'duplicate_code' };
-    }
+      const existing = await loadProject(env, code);
+      if (existing) {
+        await telegramSendMessage(
+          env,
+          message,
+          `Проект <b>#${escapeHtml(code)}</b> уже существует. Введите другой код или отмените создание.`,
+          { disable_reply: true },
+        );
+        return { handled: true, step: 'await_code', error: 'duplicate_code' };
+      }
 
-    await saveUserState(env, uid, {
-      mode: 'create_project',
-      step: 'choose_chat',
-      data: { code },
-    });
-
-    const chatsResult = await listRegisteredChats(env, null, DEFAULT_PAGE_SIZE);
-    const prompt = buildChatSelectionPrompt(chatsResult.items, {
-      nextCursor: chatsResult.cursor ?? null,
-      showReset: false,
-    });
-
-    await telegramSendMessage(env, message, `Код <b>#${escapeHtml(code)}</b> принят.`, { disable_reply: true });
-    await telegramSendMessage(env, message, prompt.text, {
-      reply_markup: prompt.reply_markup,
-      disable_reply: true,
-    });
-
-    return { handled: true, step: 'choose_chat' };
-  }
-
-  if (state.step === 'await_act') {
-    const act = normalizeAccountId(textContent);
-    if (!act) {
-      await telegramSendMessage(
-        env,
-        message,
-        'Введите идентификатор рекламного аккаунта (например, act_1234567890).',
-        { disable_reply: true },
-      );
-      return { handled: true, step: 'await_act', error: 'empty_act' };
-    }
-
-    const data = state.data ?? {};
-    if (!data.code || !data.chat_id) {
       await saveUserState(env, uid, {
         mode: 'create_project',
-        step: 'await_code',
-        data: {},
+        step: 'choose_chat',
+        data: { code },
       });
+
+      const chatsResult = await listRegisteredChats(env, null, DEFAULT_PAGE_SIZE);
+      const prompt = buildChatSelectionPrompt(chatsResult.items, {
+        nextCursor: chatsResult.cursor ?? null,
+        showReset: false,
+      });
+
+      await telegramSendMessage(env, message, `Код <b>#${escapeHtml(code)}</b> принят.`, { disable_reply: true });
+      await telegramSendMessage(env, message, prompt.text, {
+        reply_markup: prompt.reply_markup,
+        disable_reply: true,
+      });
+
+      return { handled: true, step: 'choose_chat' };
+    }
+
+    if (state.step === 'await_act') {
+      const act = normalizeAccountId(textContent);
+      if (!act) {
+        await telegramSendMessage(
+          env,
+          message,
+          'Введите идентификатор рекламного аккаунта (например, act_1234567890).',
+          { disable_reply: true },
+        );
+        return { handled: true, step: 'await_act', error: 'empty_act' };
+      }
+
+      const data = state.data ?? {};
+      if (!data.code || !data.chat_id) {
+        await saveUserState(env, uid, {
+          mode: 'create_project',
+          step: 'await_code',
+          data: {},
+        });
+        await telegramSendMessage(
+          env,
+          message,
+          'Сессия создания проекта повреждена. Начните заново и введите код проекта.',
+          { disable_reply: true },
+        );
+        return { handled: true, step: 'await_code', error: 'state_corrupted' };
+      }
+
+      const project = createProjectDraft({
+        code: data.code,
+        act,
+        chat_id: data.chat_id,
+        thread_id: data.thread_id ?? 0,
+      });
+
+      await saveProject(env, project);
+      await clearUserState(env, uid);
+
       await telegramSendMessage(
         env,
         message,
-        'Сессия создания проекта повреждена. Начните заново и введите код проекта.',
+        ['✅ Проект создан.', formatProjectSummary(project), '', 'Настройте расписание и KPI через админ-панель.'].join('\n'),
         { disable_reply: true },
       );
-      return { handled: true, step: 'await_code', error: 'state_corrupted' };
+
+      return { handled: true, step: 'completed' };
     }
 
-    const project = createProjectDraft({
-      code: data.code,
-      act,
-      chat_id: data.chat_id,
-      thread_id: data.thread_id ?? 0,
+    if (state.step === 'choose_chat') {
+      await telegramSendMessage(
+        env,
+        message,
+        'Выберите чат с помощью кнопок ниже. Если нужного чата нет, выполните /register в теме клиента.',
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'choose_chat', info: 'await_chat_selection' };
+    }
+
+    return { handled: false, reason: 'unknown_step' };
+  }
+
+  if (state.mode === 'edit_schedule') {
+    if (state.step !== 'await_time') {
+      await clearUserState(env, uid);
+      return { handled: true, reason: 'schedule_state_reset' };
+    }
+
+    const normalized = normalizeTimeString(textContent);
+    if (!normalized) {
+      await telegramSendMessage(
+        env,
+        message,
+        'Не удалось распознать время. Введите HH:MM, например 08:45.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'invalid_time' };
+    }
+
+    const code = sanitizeProjectCode(state.code);
+    if (!isValidProjectCode(code)) {
+      await clearUserState(env, uid);
+      await telegramSendMessage(
+        env,
+        message,
+        'Связанного проекта не найдено. Повторите настройку расписания из карточки проекта.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'schedule_state_invalid' };
+    }
+
+    const project = await mutateProject(env, code, (proj) => {
+      proj.times = sortUniqueTimes([...proj.times, normalized]);
     });
 
-    await saveProject(env, project);
     await clearUserState(env, uid);
 
+    if (!project) {
+      await telegramSendMessage(
+        env,
+        message,
+        'Проект не найден. Перейдите в карточку и попробуйте снова.',
+        { disable_reply: true },
+      );
+      return { handled: true, error: 'project_not_found' };
+    }
+
     await telegramSendMessage(
       env,
       message,
-      ['✅ Проект создан.', formatProjectSummary(project), '', 'Настройте расписание и KPI через админ-панель.'].join('\n'),
+      `Добавлено время ${normalized}. Расписание обновлено.`,
       { disable_reply: true },
     );
 
-    return { handled: true, step: 'completed' };
+    if (state.message_chat_id && state.message_id) {
+      await editMessageWithSchedule(
+        env,
+        { chat: { id: state.message_chat_id }, message_id: state.message_id },
+        code,
+      );
+    }
+
+    return { handled: true, step: 'schedule_updated' };
   }
 
-  if (state.step === 'choose_chat') {
-    await telegramSendMessage(
-      env,
-      message,
-      'Выберите чат с помощью кнопок ниже. Если нужного чата нет, выполните /register в теме клиента.',
-      { disable_reply: true },
-    );
-    return { handled: true, step: 'choose_chat', info: 'await_chat_selection' };
-  }
-
-  return { handled: false, reason: 'unknown_step' };
+  return { handled: false, reason: 'unknown_mode' };
 }
 
 function extractMessage(update) {
@@ -976,17 +1106,47 @@ function renderProjectDetails(project, chatRecord) {
   lines.push(`Alerts: ${escapeHtml(formatAlertsLabel(project.alerts))}`);
   lines.push(`Оплата: ${escapeHtml(formatDateLabel(project.billing_paid_at))}`);
   lines.push(`Следующая оплата: ${escapeHtml(formatDateLabel(project.billing_next_at))}`);
-  lines.push('');
-  lines.push('Действия ниже пока выводят подсказку — функциональность будет добавляться поэтапно.');
-
   const inline_keyboard = [];
 
   inline_keyboard.push([
-    { text: '⏱ Расписание', callback_data: `proj:detail:todo:schedule:${project.code}` },
-    { text: '🎯 KPI', callback_data: `proj:detail:todo:kpi:${project.code}` },
+    {
+      text: project.active ? '⏹ Выключить отчёты' : '▶️ Включить отчёты',
+      callback_data: `proj:detail:toggle_active:${project.code}`,
+    },
+    {
+      text: project.billing === 'paused' ? '💳 Возобновить биллинг' : '⏸ Приостановить биллинг',
+      callback_data: `proj:detail:toggle_billing:${project.code}`,
+    },
   ]);
+
   inline_keyboard.push([
-    { text: '💳 Оплата', callback_data: `proj:detail:todo:billing:${project.code}` },
+    { text: '⏱ Расписание', callback_data: `proj:schedule:open:${project.code}` },
+    {
+      text: project.mute_weekends ? '🗓 Включить выходные' : '🧘 Тихие выходные',
+      callback_data: `proj:detail:toggle_mute:${project.code}`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: project.weekly?.enabled !== false ? '🔕 Выключить сводник' : '🔔 Включить сводник',
+      callback_data: `proj:detail:weekly_toggle:${project.code}`,
+    },
+    {
+      text: project.weekly?.mode === 'week_today' ? 'Режим: неделя+сегодня' : 'Режим: неделя+вчера',
+      callback_data: `proj:detail:weekly_mode:${project.code}`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: project.autopause?.enabled ? '🤖 Автопауза: выкл' : '🤖 Автопауза: вкл',
+      callback_data: `proj:detail:autopause_toggle:${project.code}`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    { text: '🎯 KPI', callback_data: `proj:detail:todo:kpi:${project.code}` },
     { text: '📊 Alerts', callback_data: `proj:detail:todo:alerts:${project.code}` },
   ]);
   inline_keyboard.push([
@@ -1000,6 +1160,167 @@ function renderProjectDetails(project, chatRecord) {
     text: lines.join('\n'),
     reply_markup: { inline_keyboard },
   };
+}
+
+function renderScheduleEditor(project, options = {}) {
+  const times = sortUniqueTimes(project.times);
+  const lines = [
+    `<b>Расписание #${escapeHtml(project.code)}</b>`,
+    `Период: <code>${escapeHtml(project.period)}</code>`,
+    '',
+  ];
+
+  if (times.length) {
+    lines.push('Текущие значения:');
+    lines.push(...times.map((time) => `• ${time}`));
+  } else {
+    lines.push('Текущие значения: —');
+  }
+
+  lines.push('');
+  lines.push(`Тихие выходные: ${project.mute_weekends ? 'включены' : 'выключены'}`);
+
+  if (options.awaitingTime) {
+    lines.push('');
+    lines.push('Отправьте сообщением время в формате HH:MM. Например: <code>21:15</code>.');
+  }
+
+  const inline_keyboard = [];
+
+  if (times.length) {
+    for (const chunk of chunkArray(times, 2)) {
+      inline_keyboard.push(chunk.map((time) => ({
+        text: `🗑 ${time}`,
+        callback_data: `proj:schedule:del:${project.code}:${time.replace(':', '-')}`,
+      })));
+    }
+  }
+
+  const quickButtons = QUICK_TIMES.map((time) => ({
+    text: times.includes(time) ? `• ${time}` : `➕ ${time}`,
+    callback_data: `proj:schedule:add:${project.code}:${time.replace(':', '-')}`,
+  }));
+  for (const chunk of chunkArray(quickButtons, 2)) {
+    inline_keyboard.push(chunk);
+  }
+
+  if (options.awaitingTime) {
+    inline_keyboard.push([
+      { text: '❌ Отменить ввод', callback_data: `proj:schedule:cancel:${project.code}` },
+    ]);
+  } else {
+    inline_keyboard.push([
+      { text: '➕ Другое время', callback_data: `proj:schedule:addcustom:${project.code}` },
+    ]);
+  }
+
+  const periodRow = [];
+  for (const option of PERIOD_OPTIONS) {
+    const isActive = project.period === option.value;
+    periodRow.push({
+      text: `${isActive ? '✅' : '▫️'} ${option.label}`,
+      callback_data: `proj:schedule:period:${project.code}:${option.value}`,
+    });
+    if (periodRow.length === 2) {
+      inline_keyboard.push([...periodRow]);
+      periodRow.length = 0;
+    }
+  }
+  if (periodRow.length) {
+    inline_keyboard.push([...periodRow]);
+  }
+
+  inline_keyboard.push([
+    {
+      text: project.mute_weekends ? '🗓 Включить выходные' : '🧘 Тихие выходные',
+      callback_data: `proj:schedule:togglemute:${project.code}`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    { text: '↩️ К карточке', callback_data: `proj:detail:${project.code}` },
+    { text: '← В панель', callback_data: 'panel:home' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+async function editMessageWithProject(env, message, code) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Возможно, он был удалён.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  const chatRecord = project.chat_id
+    ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
+    : null;
+
+  const details = renderProjectDetails(project, chatRecord);
+  await telegramEditMessage(env, chatId, messageId, details.text, {
+    reply_markup: details.reply_markup,
+  });
+
+  return { ok: true, project, chatRecord };
+}
+
+async function editMessageWithSchedule(env, message, code, options = {}) {
+  const chatId = message?.chat?.id;
+  const messageId = message?.message_id;
+  if (!chatId || !messageId) {
+    return { ok: false, error: 'no_message_context' };
+  }
+
+  const project = await loadProject(env, code);
+  if (!project) {
+    await telegramEditMessage(env, chatId, messageId, 'Проект не найден. Вернитесь в список проектов.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: '📋 К списку', callback_data: 'panel:projects:0' }]],
+      },
+    });
+    return { ok: false, error: 'project_not_found' };
+  }
+
+  let awaitingTime = options.awaitingTime === true;
+  if (!awaitingTime && options.preserveAwait && options.uid) {
+    const state = await loadUserState(env, options.uid);
+    if (
+      state?.mode === 'edit_schedule' &&
+      state.code === code &&
+      state.message_id === messageId &&
+      state.message_chat_id === chatId
+    ) {
+      awaitingTime = true;
+    }
+  }
+
+  const view = renderScheduleEditor(project, { awaitingTime });
+  await telegramEditMessage(env, chatId, messageId, view.text, {
+    reply_markup: view.reply_markup,
+  });
+
+  return { ok: true, project };
+}
+
+async function clearPendingScheduleState(env, uid, code) {
+  if (!uid) return;
+  const state = await loadUserState(env, uid);
+  if (state?.mode === 'edit_schedule' && (!code || state.code === code)) {
+    await clearUserState(env, uid);
+  }
 }
 
 function buildChatSelectionPrompt(chats, options = {}) {
@@ -1324,6 +1645,213 @@ async function handleCallbackQuery(env, callbackQuery) {
     return telegramEditMessage(env, message.chat.id, message.message_id, response.text, {
       reply_markup: response.reply_markup,
     });
+  }
+
+  if (data.startsWith('proj:detail:toggle_active:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const updated = await mutateProject(env, code, (project) => {
+      project.active = !project.active;
+    });
+
+    if (!updated) {
+      return editMessageWithProject(env, message, code);
+    }
+
+    return editMessageWithProject(env, message, code);
+  }
+
+  if (data.startsWith('proj:detail:toggle_billing:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.billing = project.billing === 'paused' ? 'paid' : 'paused';
+    });
+
+    return editMessageWithProject(env, message, code);
+  }
+
+  if (data.startsWith('proj:detail:toggle_mute:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.mute_weekends = !project.mute_weekends;
+    });
+
+    return editMessageWithProject(env, message, code);
+  }
+
+  if (data.startsWith('proj:detail:weekly_toggle:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.weekly = project.weekly || {};
+      project.weekly.enabled = project.weekly.enabled === false;
+    });
+
+    return editMessageWithProject(env, message, code);
+  }
+
+  if (data.startsWith('proj:detail:weekly_mode:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.weekly = project.weekly || {};
+      project.weekly.mode = project.weekly.mode === 'week_today' ? 'week_yesterday' : 'week_today';
+    });
+
+    return editMessageWithProject(env, message, code);
+  }
+
+  if (data.startsWith('proj:detail:autopause_toggle:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.autopause = project.autopause || {};
+      project.autopause.enabled = !project.autopause.enabled;
+    });
+
+    return editMessageWithProject(env, message, code);
+  }
+
+  if (data.startsWith('proj:schedule:open:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramEditMessage(env, message.chat.id, message.message_id, 'Код проекта не распознан.', {
+        reply_markup: { inline_keyboard: [[{ text: '← В панель', callback_data: 'panel:home' }]] },
+      });
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    return editMessageWithSchedule(env, message, code);
+  }
+
+  if (data.startsWith('proj:schedule:addcustom:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'edit_schedule',
+      step: 'await_time',
+      code,
+      message_chat_id: message.chat.id,
+      message_id: message.message_id,
+    });
+
+    return editMessageWithSchedule(env, message, code, { awaitingTime: true });
+  }
+
+  if (data.startsWith('proj:schedule:cancel:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    await clearUserState(env, uid);
+    return editMessageWithSchedule(env, message, code);
+  }
+
+  if (data.startsWith('proj:schedule:add:')) {
+    const [, , , rawCode = '', timeRaw = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    const normalizedTime = normalizeTimeString(timeRaw.replace('-', ':'));
+    if (!isValidProjectCode(code) || !normalizedTime) {
+      await telegramAnswerCallback(env, callbackQuery, 'Не удалось добавить время.');
+      return { ok: false, error: 'invalid_payload' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.times = sortUniqueTimes([...project.times, normalizedTime]);
+    });
+
+    await clearPendingScheduleState(env, uid, code);
+    return editMessageWithSchedule(env, message, code);
+  }
+
+  if (data.startsWith('proj:schedule:del:')) {
+    const [, , , rawCode = '', timeRaw = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    const normalizedTime = normalizeTimeString(timeRaw.replace('-', ':'));
+    if (!isValidProjectCode(code) || !normalizedTime) {
+      await telegramAnswerCallback(env, callbackQuery, 'Не удалось удалить время.');
+      return { ok: false, error: 'invalid_payload' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.times = sortUniqueTimes(project.times.filter((value) => value !== normalizedTime));
+    });
+
+    await clearPendingScheduleState(env, uid, code);
+    return editMessageWithSchedule(env, message, code);
+  }
+
+  if (data.startsWith('proj:schedule:period:')) {
+    const [, , , rawCode = '', periodValue = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const allowed = new Set(PERIOD_OPTIONS.map((option) => option.value));
+    if (!allowed.has(periodValue)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Период не поддерживается.');
+      return { ok: false, error: 'invalid_period' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.period = periodValue;
+    });
+
+    await clearPendingScheduleState(env, uid, code);
+    return editMessageWithSchedule(env, message, code);
+  }
+
+  if (data.startsWith('proj:schedule:togglemute:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await mutateProject(env, code, (project) => {
+      project.mute_weekends = !project.mute_weekends;
+    });
+
+    return editMessageWithSchedule(env, message, code, { preserveAwait: true, uid });
   }
 
   if (data.startsWith('proj:detail:todo:')) {
