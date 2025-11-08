@@ -32,6 +32,12 @@ id = "<namespace-id>"
 ## 4. Bring in your Worker code
 Paste the production logic from the Cloudflare dashboard into `src/index.ts` (it currently contains a placeholder handler). Feel free to split code into additional files if needed—just update `main` in `wrangler.toml` if the entry point changes.
 
+Already have a live Worker you want to migrate?
+
+1. Open **Cloudflare Dashboard → Workers & Pages → th-reports → Quick Edit**.
+2. Copy the full script (or choose **Download** to get it as a file) and replace the contents of `src/index.ts` with it.
+3. If your Worker uses bindings (KV, R2, secrets, etc.), add matching entries to `wrangler.toml` before deploying. For KV namespaces, copy the **Namespace ID** from **Settings → Variables and bindings → KV Namespace bindings** and use the template shown earlier.
+
 ## 5. Deploy
 ```
 wrangler deploy
