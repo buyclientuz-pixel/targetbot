@@ -14,7 +14,7 @@
   - Инлайн-кнопки панели обрабатываются без зависаний: список чатов берётся из KV, другие действия пока выводят заглушку.
 - Вызовы Telegram API обёрнуты в `fetchWithTimeout`, чтобы воркер не зависал при сетевых проблемах.
 - В конфигурации Wrangler (`wrangler.toml`) указаны требуемые KV-привязки, крон каждые 5 минут (для будущих задач) и настроена подробная Observability (логирование Cloudflare).
-- Сценарии npm (`npm run dev`, `npm run deploy`) и GitHub Actions workflow продолжают служить для локального запуска и автодеплоя.
+- Сценарии npm (`npm run dev`, `npm run deploy`) теперь вызывают `npx wrangler@4.46.0`, поэтому дополнительных зависимостей устанавливать не требуется. GitHub Actions workflow по-прежнему выполняет автодеплой.
 
 ## Что сделать дальше
 1. Заполнить реальные Namespace ID в `wrangler.toml` для `REPORTS_NAMESPACE`, `BILLING_NAMESPACE`, `LOGS_NAMESPACE`. Привязка `DB` уже настроена на боевой namespace (`c55f82210ade457c93aff4fe2ba8b007`).
@@ -27,9 +27,10 @@
 
 ## Быстрый старт
 ```bash
-npm install
-npm run dev # локальный предпросмотр (нужны ENV и KV preview ID)
-# после настройки секретов:
+# локальный предпросмотр (нужны ENV и preview KV ID)
+npm run dev
+
+# после настройки секретов деплой вызывается той же командой
 npm run deploy
 ```
 
