@@ -7,19 +7,19 @@ compatibility_date = "2024-01-01"
 workers_dev = true
 
 [[kv_namespaces]]
-binding   = "REPORTS_NAMESPACE"
-id        = "c55f82210ade457c93aff4fe2ba8b007"
-preview_id= "c55f82210ade457c93aff4fe2ba8b007"
+binding    = "REPORTS_NAMESPACE"
+id         = "c55f82210ade457c93aff4fe2ba8b007"
+preview_id = "c55f82210ade457c93aff4fe2ba8b007"
 
 [[kv_namespaces]]
-binding   = "BILLING_NAMESPACE"
-id        = "c55f82210ade457c93aff4fe2ba8b007"
-preview_id= "c55f82210ade457c93aff4fe2ba8b007"
+binding    = "BILLING_NAMESPACE"
+id         = "c55f82210ade457c93aff4fe2ba8b007"
+preview_id = "c55f82210ade457c93aff4fe2ba8b007"
 
 [[kv_namespaces]]
-binding   = "LOGS_NAMESPACE"
-id        = "c55f82210ade457c93aff4fe2ba8b007"
-preview_id= "c55f82210ade457c93aff4fe2ba8b007"
+binding    = "LOGS_NAMESPACE"
+id         = "c55f82210ade457c93aff4fe2ba8b007"
+preview_id = "c55f82210ade457c93aff4fe2ba8b007"
 
 [env.production.vars]
 ENVIRONMENT = "production"
