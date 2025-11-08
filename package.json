@@ -1,0 +1,13 @@
+{
+  "name": "th-reports-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy --env production",
+    "deploy:dry-run": "wrangler deploy --env production --dry-run --outdir dist"
+  },
+  "devDependencies": {
+    "wrangler": "^3.28.0"
+  }
+}
