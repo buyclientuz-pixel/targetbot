@@ -2916,37 +2916,394 @@ async function buildAdminHome(env, uid) {
 
 function renderChatsPage(items, pagination = {}) {
   const lines = [];
+  const inline_keyboard = [];
+
   if (!items.length) {
     lines.push('Пока нет зарегистрированных топиков. Используйте /register в нужной теме.');
   } else {
-    items.forEach((item, index) => {
+    items.forEach((item) => {
       const title = item.title ? ` — ${escapeHtml(item.title)}` : '';
       const thread = item.thread_id ?? 0;
       lines.push(`• <code>${item.chat_id}</code> · thread <code>${thread}</code>${title}`);
+
+      const link = buildTelegramTopicLink(item.chat_id, thread);
+      if (link) {
+        const labelParts = [];
+        if (item.title) {
+          const short = item.title.length > 32 ? `${item.title.slice(0, 31)}…` : item.title;
+          labelParts.push(short);
+        } else {
+          labelParts.push(String(item.chat_id));
+        }
+        if (thread > 0) {
+          labelParts.push(`#${thread}`);
+        }
+        inline_keyboard.push([
+          {
+            text: labelParts.join(' · '),
+            url: link,
+          },
+        ]);
+      }
     });
+
     if (pagination.nextCursor) {
       lines.push('', 'Показаны первые записи. Нажмите «Далее», чтобы увидеть ещё.');
     }
   }
 
-  const keyboard = [];
   if (pagination.nextCursor) {
-    keyboard.push([
+    inline_keyboard.push([
       { text: '➡️ Далее', callback_data: `panel:chats:next:${encodeURIComponent(pagination.nextCursor)}` },
     ]);
   }
   if (pagination.showReset) {
-    keyboard.push([{ text: '↩️ В начало', callback_data: 'panel:chats:0' }]);
+    inline_keyboard.push([{ text: '↩️ В начало', callback_data: 'panel:chats:0' }]);
   }
-  keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+  inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
 
   return {
     text: ['<b>Зарегистрированные чаты</b>', '', ...lines].join('\n'),
-    reply_markup: { inline_keyboard: keyboard },
+    reply_markup: { inline_keyboard },
   };
 }
 
-function renderAccountsPage(env, uid, profile, accounts = [], options = {}) {
+async function indexProjectsByAccount(env, { limit = 500 } = {}) {
+  const map = new Map();
+  let cursor = undefined;
+
+  while (map.size < limit) {
+    const pageSize = Math.min(DEFAULT_PAGE_SIZE, limit);
+    const { items, cursor: nextCursor, listComplete } = await listProjects(env, cursor, pageSize);
+
+    for (const raw of items) {
+      const project = normalizeProject(raw);
+      const actId = normalizeAccountId(project.act || '');
+      if (!actId) continue;
+      const bucket = map.get(actId) ?? [];
+      bucket.push(project);
+      map.set(actId, bucket);
+    }
+
+    if (listComplete || !nextCursor) {
+      break;
+    }
+
+    cursor = nextCursor;
+  }
+
+  return map;
+}
+
+function extractGenericResults(actions = []) {
+  const value = extractActionCount(actions, DEFAULT_REPORT_METRIC.actions);
+  if (value > 0) {
+    return value;
+  }
+
+  if (!Array.isArray(actions)) {
+    return 0;
+  }
+
+  return actions.reduce((acc, entry) => {
+    const numeric = Number(entry?.value);
+    return Number.isFinite(numeric) ? acc + numeric : acc;
+  }, 0);
+}
+
+async function fetchAccountInsightsRange(env, accountId, token, range) {
+  if (!token || !accountId) {
+    return null;
+  }
+
+  const actId = normalizeAccountId(accountId);
+  if (!actId) return null;
+
+  const params = {
+    level: 'account',
+    fields: 'spend,actions,impressions,clicks,ctr',
+    limit: '1',
+  };
+
+  if (range?.preset) {
+    params.date_preset = range.preset;
+  } else if (range?.since && range?.until) {
+    params.time_range = JSON.stringify({ since: range.since, until: range.until });
+  } else {
+    return null;
+  }
+
+  try {
+    const payload = await graphGet(actId, { token, params });
+    const row = Array.isArray(payload?.data) && payload.data.length ? payload.data[0] : null;
+    if (!row) return null;
+    const spend = Number(row.spend ?? 0);
+    const results = extractGenericResults(row.actions ?? []);
+    const impressions = Number(row.impressions ?? 0);
+    const clicks = Number(row.clicks ?? 0);
+    const ctr = Number(row.ctr ?? 0);
+    return {
+      spend,
+      results,
+      impressions,
+      clicks,
+      ctr,
+      cpa: results > 0 ? spend / results : null,
+    };
+  } catch (error) {
+    console.error('fetchAccountInsightsRange error', actId, range, error);
+    return null;
+  }
+}
+
+async function fetchAccountBestCampaignCpa(env, accountId, token, range) {
+  if (!token || !accountId) {
+    return null;
+  }
+
+  const actId = normalizeAccountId(accountId);
+  if (!actId) return null;
+
+  const params = {
+    level: 'campaign',
+    fields: 'campaign_name,spend,actions',
+    limit: '200',
+  };
+
+  if (range?.since && range?.until) {
+    params.time_range = JSON.stringify({ since: range.since, until: range.until });
+  }
+
+  try {
+    const payload = await graphGet(actId, { token, params });
+    let best = null;
+    for (const row of payload?.data ?? []) {
+      const spend = Number(row.spend ?? 0);
+      const results = extractGenericResults(row.actions ?? []);
+      if (!results || results <= 0) continue;
+      const cpa = spend / results;
+      if (!Number.isFinite(cpa) || cpa <= 0) continue;
+      if (!best || cpa < best.cpa) {
+        best = {
+          name: row.campaign_name || `ID ${row.campaign_id ?? ''}`,
+          cpa,
+          spend,
+          results,
+        };
+      }
+    }
+    return best;
+  } catch (error) {
+    console.error('fetchAccountBestCampaignCpa error', actId, error);
+    return null;
+  }
+}
+
+function describeAccountStatus(account = {}) {
+  const statusCode = Number(account.account_status);
+  const disableReason = Number(account.disable_reason);
+
+  if (!Number.isFinite(statusCode)) {
+    return { label: 'Неизвестно', tone: 'neutral' };
+  }
+
+  if ([2, 3, 7, 8, 9, 1002].includes(statusCode)) {
+    if ([18, 25, 26].includes(disableReason)) {
+      return { label: 'Сбой оплаты', tone: 'error' };
+    }
+    return { label: 'Выключен', tone: 'error' };
+  }
+
+  if ([101, 102].includes(statusCode)) {
+    return { label: 'Ошибка доступа', tone: 'warning' };
+  }
+
+  return { label: 'Активен', tone: 'ok' };
+}
+
+function evaluateAccountPerformance(snapshot = {}) {
+  const avgCpa = snapshot.last7?.cpa ?? snapshot.today?.cpa ?? null;
+  const bestCpa = snapshot.bestCampaign?.cpa ?? null;
+
+  if (!Number.isFinite(avgCpa) || avgCpa <= 0) {
+    return { label: 'Нет данных', emoji: '⚪️' };
+  }
+
+  const base = Number.isFinite(bestCpa) && bestCpa > 0 ? bestCpa : avgCpa;
+  const ratio = avgCpa / base;
+
+  if (ratio <= 1.3) {
+    return { label: 'Отлично', emoji: '🟢' };
+  }
+  if (ratio <= 1.8) {
+    return { label: 'Средне', emoji: '🟡' };
+  }
+  return { label: 'Плохо', emoji: '🔴' };
+}
+
+async function buildAccountSnapshot(env, account, { token, timezone }) {
+  if (!token || !account?.id) {
+    return {};
+  }
+
+  const todayRange = getPeriodRange('today', timezone);
+  const last7Range = getPeriodRange('last_7d', timezone);
+  const monthRange = getPeriodRange('month_to_date', timezone);
+
+  const [today, last7, month, lifetime, bestCampaign] = await Promise.all([
+    fetchAccountInsightsRange(env, account.id, token, todayRange),
+    fetchAccountInsightsRange(env, account.id, token, last7Range),
+    fetchAccountInsightsRange(env, account.id, token, monthRange),
+    fetchAccountInsightsRange(env, account.id, token, { preset: 'lifetime' }),
+    fetchAccountBestCampaignCpa(env, account.id, token, last7Range),
+  ]);
+
+  return {
+    today,
+    last7,
+    month,
+    lifetime,
+    bestCampaign,
+  };
+}
+
+async function fetchCampaignMeta(env, campaignId, token) {
+  try {
+    return await graphGet(campaignId, {
+      token,
+      params: { fields: 'id,name,status,effective_status,objective' },
+    });
+  } catch (error) {
+    console.error('fetchCampaignMeta error', campaignId, error);
+    return null;
+  }
+}
+
+async function fetchCampaignPerformance(env, project, campaignId, token, timezone) {
+  const ranges = {
+    today: getPeriodRange('today', timezone),
+    last7: getPeriodRange('last_7d', timezone),
+    month: getPeriodRange('month_to_date', timezone),
+  };
+
+  const promises = Object.entries(ranges).map(async ([key, range]) => {
+    try {
+      const params = {
+        time_range: JSON.stringify({ since: range.since, until: range.until }),
+        fields: 'spend,actions,impressions,clicks,ctr',
+        limit: '1',
+      };
+      const payload = await graphGet(`${campaignId}/insights`, { token, params });
+      const row = Array.isArray(payload?.data) && payload.data.length ? payload.data[0] : null;
+      if (!row) return [key, null];
+      const spend = Number(row.spend ?? 0);
+      const results = extractGenericResults(row.actions ?? []);
+      return [
+        key,
+        {
+          spend,
+          results,
+          impressions: Number(row.impressions ?? 0),
+          clicks: Number(row.clicks ?? 0),
+          ctr: Number(row.ctr ?? 0),
+          cpa: results > 0 ? spend / results : null,
+        },
+      ];
+    } catch (error) {
+      console.error('fetchCampaignPerformance range error', campaignId, key, error);
+      return [key, null];
+    }
+  });
+
+  promises.push(
+    (async () => {
+      try {
+        const params = {
+          date_preset: 'lifetime',
+          fields: 'spend,actions,impressions,clicks,ctr',
+          limit: '1',
+        };
+        const payload = await graphGet(`${campaignId}/insights`, { token, params });
+        const row = Array.isArray(payload?.data) && payload.data.length ? payload.data[0] : null;
+        if (!row) return ['lifetime', null];
+        const spend = Number(row.spend ?? 0);
+        const results = extractGenericResults(row.actions ?? []);
+        return [
+          'lifetime',
+          {
+            spend,
+            results,
+            impressions: Number(row.impressions ?? 0),
+            clicks: Number(row.clicks ?? 0),
+            ctr: Number(row.ctr ?? 0),
+            cpa: results > 0 ? spend / results : null,
+          },
+        ];
+      } catch (error) {
+        console.error('fetchCampaignPerformance lifetime error', campaignId, error);
+        return ['lifetime', null];
+      }
+    })(),
+  );
+
+  const entries = await Promise.all(promises);
+  return Object.fromEntries(entries);
+}
+
+async function fetchAdsetsForCampaignDetails(env, campaignId, token) {
+  try {
+    const params = {
+      fields: 'id,name,status,effective_status,daily_budget,lifetime_budget,start_time,end_time',
+      limit: '200',
+    };
+    const payload = await graphGet(`${campaignId}/adsets`, { token, params });
+    return payload?.data ?? [];
+  } catch (error) {
+    console.error('fetchAdsetsForCampaignDetails error', campaignId, error);
+    return [];
+  }
+}
+
+async function fetchAdsForCampaign(env, campaignId, token, range) {
+  try {
+    const params = {
+      fields: 'id,name,status,effective_status',
+      limit: '50',
+    };
+    const ads = await graphGet(`${campaignId}/ads`, { token, params });
+
+    const insightsParams = {
+      level: 'ad',
+      time_range: JSON.stringify({ since: range.since, until: range.until }),
+      fields: 'ad_id,spend,actions,impressions,clicks,ctr',
+      limit: '200',
+    };
+    const insightsPayload = await graphGet(`${campaignId}/insights`, { token, params: insightsParams });
+    const insightMap = new Map();
+    for (const row of insightsPayload?.data ?? []) {
+      const spend = Number(row.spend ?? 0);
+      const results = extractGenericResults(row.actions ?? []);
+      insightMap.set(row.ad_id, {
+        spend,
+        results,
+        impressions: Number(row.impressions ?? 0),
+        clicks: Number(row.clicks ?? 0),
+        ctr: Number(row.ctr ?? 0),
+        cpa: results > 0 ? spend / results : null,
+      });
+    }
+
+    return (ads?.data ?? []).map((ad) => ({
+      ...ad,
+      performance: insightMap.get(ad.id) ?? null,
+    }));
+  } catch (error) {
+    console.error('fetchAdsForCampaign error', campaignId, error);
+    return [];
+  }
+}
+
+async function renderAccountsPage(env, uid, profile, accounts = [], options = {}) {
   const pageSize = Number.isFinite(options.pageSize) && options.pageSize > 0 ? options.pageSize : DEFAULT_PAGE_SIZE;
   const total = accounts.length;
   let offset = Math.max(0, Number(options.offset) || 0);
@@ -2966,6 +3323,27 @@ function renderAccountsPage(env, uid, profile, accounts = [], options = {}) {
     lines.push('Meta ещё не подключена. Нажмите «Подключить Meta».');
   }
 
+  let token = null;
+  if (profile?.fb_long_token) {
+    token = profile.fb_long_token;
+  } else {
+    const resolved = await resolveMetaToken(env);
+    token = resolved.token;
+  }
+
+  const timezone = env.DEFAULT_TZ || 'UTC';
+  const projectIndex = await indexProjectsByAccount(env);
+  const accountSnapshots = new Map();
+
+  if (token) {
+    await Promise.all(
+      slice.map(async (account) => {
+        const snapshot = await buildAccountSnapshot(env, account, { token, timezone });
+        accountSnapshots.set(account.id, snapshot);
+      }),
+    );
+  }
+
   if (!total) {
     lines.push('Аккаунтов пока нет. После подключения Meta нажмите «Пересканировать».');
   } else {
@@ -2974,22 +3352,78 @@ function renderAccountsPage(env, uid, profile, accounts = [], options = {}) {
     lines.push(`Всего в кеше: <b>${total}</b>. Показаны ${rangeStart}–${rangeEnd}.`);
     lines.push('');
     for (const account of slice) {
-      const parts = [];
-      if (account.account_status !== null && typeof account.account_status !== 'undefined') {
-        parts.push(`статус ${account.account_status}`);
-      }
-      if (account.currency) {
-        parts.push(account.currency);
-      }
-      if (account.timezone) {
-        parts.push(account.timezone);
-      }
-      const suffix = parts.length ? ` (${parts.join(' · ')})` : '';
-      lines.push(`• <b>${escapeHtml(account.name)}</b> — <code>${escapeHtml(account.id)}</code>${suffix}`);
+      const snapshot = accountSnapshots.get(account.id) ?? {};
+      const status = describeAccountStatus(account);
+      const score = evaluateAccountPerformance(snapshot);
+
+      const todaySpend = formatCurrency(snapshot.today?.spend ?? 0, account.currency || 'USD');
+      const bestCpaLabel = snapshot.bestCampaign?.cpa
+        ? formatCpa(snapshot.bestCampaign.cpa, account.currency || 'USD')
+        : '—';
+      const avgCpaLabel = snapshot.last7?.cpa
+        ? formatCpa(snapshot.last7.cpa, account.currency || 'USD')
+        : '—';
+
+      const summary = [
+        `${escapeHtml(account.name)} — ${todaySpend}`,
+        `Лучш. CPA: ${bestCpaLabel}`,
+        `CPA ср.: ${avgCpaLabel}`,
+        status.label,
+        `${score.emoji} ${score.label}`,
+      ].join(' · ');
+
+      lines.push(`• <b>${summary}</b>`);
     }
   }
 
   const inline_keyboard = [];
+
+  for (const account of slice) {
+    const projects = projectIndex.get(normalizeAccountId(account.id)) || [];
+    const snapshot = accountSnapshots.get(account.id) ?? {};
+    const status = describeAccountStatus(account);
+    const score = evaluateAccountPerformance(snapshot);
+
+    const todaySpend = formatCurrency(snapshot.today?.spend ?? 0, account.currency || 'USD');
+    const bestCpaLabel = snapshot.bestCampaign?.cpa
+      ? formatCpa(snapshot.bestCampaign.cpa, account.currency || 'USD')
+      : '—';
+    const avgCpaLabel = snapshot.last7?.cpa
+      ? formatCpa(snapshot.last7.cpa, account.currency || 'USD')
+      : '—';
+
+    const labelParts = [
+      account.name,
+      todaySpend,
+      `Лучший ${bestCpaLabel}`,
+      `Средний ${avgCpaLabel}`,
+      status.label,
+      `${score.emoji} ${score.label}`,
+    ];
+
+    if (projects.length === 1) {
+      inline_keyboard.push([
+        {
+          text: labelParts.join(' · ').slice(0, 62),
+          callback_data: `proj:detail:${projects[0].code}`,
+        },
+      ]);
+    } else if (projects.length > 1) {
+      inline_keyboard.push([
+        {
+          text: labelParts.join(' · ').slice(0, 62),
+          callback_data: `panel:accounts:projects:${encodeURIComponent(account.id)}`,
+        },
+      ]);
+    } else {
+      inline_keyboard.push([
+        {
+          text: labelParts.join(' · ').slice(0, 62),
+          callback_data: 'panel:accounts:noop',
+        },
+      ]);
+    }
+  }
 
   if (total > pageSize) {
     const navRow = [];
@@ -3017,6 +3451,70 @@ function renderAccountsPage(env, uid, profile, accounts = [], options = {}) {
     text: lines.join('\n'),
     reply_markup: { inline_keyboard },
   };
+}
+
+async function collectProjectsForAccount(env, accountId) {
+  const normalized = normalizeAccountId(accountId || '');
+  if (!normalized) {
+    return [];
+  }
+
+  const index = await indexProjectsByAccount(env, { limit: 1000 });
+  return index.get(normalized) ?? [];
+}
+
+function renderAccountProjectsList(env, accountId, projects = []) {
+  const normalized = normalizeAccountId(accountId || '');
+  const lines = [`<b>Проекты по аккаунту ${escapeHtml(normalized || '—')}</b>`, ''];
+
+  if (!projects.length) {
+    lines.push('Проекты с этим аккаунтом не найдены.');
+  } else {
+    projects.forEach((project) => {
+      const chatLabel = project.chat_id
+        ? formatChatReference({ chat_id: project.chat_id, thread_id: project.thread_id ?? 0 })
+        : 'нет привязки';
+      lines.push(`• #${escapeHtml(project.code)} — ${chatLabel}`);
+    });
+  }
+
+  const inline_keyboard = [];
+
+  if (projects.length) {
+    projects.slice(0, 8).forEach((project) => {
+      inline_keyboard.push([
+        { text: `⚙️ ${project.code}`, callback_data: `proj:detail:${project.code}` },
+      ]);
+    });
+  }
+
+  inline_keyboard.push([{ text: '↩️ К аккаунтам', callback_data: 'panel:accounts:0' }]);
+  inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function buildTelegramTopicLink(chatId, threadId = 0) {
+  const numericId = Number(chatId);
+  if (!Number.isFinite(numericId) || numericId === 0) {
+    return null;
+  }
+
+  const base = Math.abs(numericId).toString();
+  let slug = base;
+  if (slug.startsWith('100')) {
+    slug = slug.slice(3);
+  }
+  if (!slug) {
+    return null;
+  }
+
+  const threadNumeric = Number(threadId);
+  const threadSegment = Number.isFinite(threadNumeric) && threadNumeric > 0 ? threadNumeric : 1;
+  return `https://t.me/c/${slug}/${threadSegment}`;
 }
 
 function formatChatLine(chat) {
@@ -5035,6 +5533,136 @@ async function pauseProjectCampaigns(env, project, { token } = {}) {
   return { ok, failed };
 }
 
+async function resumeProjectCampaigns(env, project, { token } = {}) {
+  if (!token) {
+    throw new Error('Meta токен недоступен.');
+  }
+
+  const campaigns = Array.isArray(project?.campaigns) ? project.campaigns : [];
+  const ids = Array.from(new Set(campaigns.map((value) => normalizeCampaignId(value)).filter(Boolean)));
+
+  if (!ids.length) {
+    return { ok: [], failed: [], reason: 'no_campaigns' };
+  }
+
+  const ok = [];
+  const failed = [];
+
+  for (const campaignId of ids) {
+    try {
+      const response = await graphPost(campaignId, { token, body: { status: 'ACTIVE' } });
+      if (response?.success === false) {
+        throw new Error('Meta не подтвердила включение кампании');
+      }
+      ok.push(campaignId);
+    } catch (error) {
+      console.error('resumeProjectCampaigns error', project.code, campaignId, error);
+      failed.push({ id: campaignId, error: error?.message ?? String(error) });
+    }
+  }
+
+  return { ok, failed };
+}
+
+function formatPauseSummary(project, result) {
+  if (!result || (result.ok.length === 0 && result.failed.length === 0)) {
+    return 'Нет кампаний, которые можно поставить на паузу. Проверьте настройки проекта.';
+  }
+
+  const lines = [
+    '⏸ <b>Автопауза кампаний</b>',
+    `Проект #${escapeHtml(project.code)} — кампаний на паузе: ${result.ok.length}.`,
+  ];
+
+  if (result.failed.length) {
+    lines.push('Ошибки:');
+    for (const item of result.failed.slice(0, 5)) {
+      lines.push(`• ${escapeHtml(item.id)} — ${escapeHtml(item.error)}`);
+    }
+    if (result.failed.length > 5) {
+      lines.push('…');
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function formatResumeSummary(project, result) {
+  if (!result || (result.ok.length === 0 && result.failed.length === 0)) {
+    return 'Нет кампаний, которые можно включить. Убедитесь, что они выбраны в проекте.';
+  }
+
+  const lines = [
+    '▶️ <b>Возобновление кампаний</b>',
+    `Проект #${escapeHtml(project.code)} — кампаний включено: ${result.ok.length}.`,
+  ];
+
+  if (result.failed.length) {
+    lines.push('Ошибки:');
+    for (const item of result.failed.slice(0, 5)) {
+      lines.push(`• ${escapeHtml(item.id)} — ${escapeHtml(item.error)}`);
+    }
+    if (result.failed.length > 5) {
+      lines.push('…');
+    }
+  }
+
+  return lines.join('\n');
+}
+
+async function adjustAdsetBudgets(env, adsets, { token, percent }) {
+  const results = { ok: [], failed: [] };
+  for (const adset of adsets) {
+    const currentBudget = Number(adset.daily_budget);
+    if (!Number.isFinite(currentBudget) || currentBudget <= 0) {
+      continue;
+    }
+    const multiplier = 1 + Number(percent || 0) / 100;
+    const updatedBudget = Math.max(100, Math.round(currentBudget * multiplier));
+    try {
+      await graphPost(adset.id, { token, body: { daily_budget: String(updatedBudget) } });
+      results.ok.push({ id: adset.id, before: currentBudget, after: updatedBudget });
+    } catch (error) {
+      console.error('adjustAdsetBudgets error', adset.id, error);
+      results.failed.push({ id: adset.id, error: error?.message ?? String(error) });
+    }
+  }
+  return results;
+}
+
+async function extendAdsetSchedules(env, adsets, { token, days }) {
+  const results = { ok: [], failed: [] };
+  const increment = Math.max(1, Number(days) || 1);
+
+  for (const adset of adsets) {
+    if (!adset.end_time) continue;
+    const current = new Date(adset.end_time);
+    if (Number.isNaN(current.getTime())) continue;
+    const updated = new Date(current.getTime() + increment * 24 * 60 * 60 * 1000);
+    try {
+      await graphPost(adset.id, { token, body: { end_time: updated.toISOString() } });
+      results.ok.push({ id: adset.id, before: adset.end_time, after: updated.toISOString() });
+    } catch (error) {
+      console.error('extendAdsetSchedules error', adset.id, error);
+      results.failed.push({ id: adset.id, error: error?.message ?? String(error) });
+    }
+  }
+
+  return results;
+}
+
+async function toggleEntityStatus(token, id, status) {
+  try {
+    const response = await graphPost(id, { token, body: { status } });
+    if (response?.success === false) {
+      throw new Error('Meta вернула ошибку');
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error?.message ?? String(error) };
+  }
+}
+
 async function runAutopauseCheck(env, project, { token, timezone, hm, force = false }) {
   const summary = {
     ran: false,
@@ -5360,8 +5988,33 @@ async function processWeeklyReport(env, project, { token, timezone }) {
   return { ok: true };
 }
 
+function describeDisableReason(reasonCode) {
+  const code = Number(reasonCode);
+  switch (code) {
+    case 1:
+      return 'Отклонения Facebook';
+    case 2:
+      return 'Платёж не прошёл';
+    case 3:
+      return 'Фрод или жалобы';
+    case 18:
+      return 'Проблема оплаты';
+    case 21:
+      return 'Ограничения политики';
+    case 26:
+      return 'Платёж не подтверждён';
+    default:
+      if (Number.isFinite(code)) {
+        return `Код ${code}`;
+      }
+      return null;
+  }
+}
+
 function renderProjectDetails(project, chatRecord, portalRecord = null, options = {}) {
   const timezone = options.timezone || 'UTC';
+  const accountMeta = options.accountMeta ?? null;
+  const accountHealth = options.accountHealth ?? null;
   const timesLabel = project.times.length ? project.times.join(', ') : '—';
   const chatInfo = project.chat_id
     ? formatChatReference({
@@ -5371,14 +6024,29 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
       })
     : 'не привязан';
 
+  const accountName = accountMeta?.name || project.act || '—';
+
   const lines = [
     `<b>Проект #${escapeHtml(project.code)}</b>`,
-    `Аккаунт: <code>${escapeHtml(project.act || '—')}</code>`,
+    `Аккаунт: <code>${escapeHtml(project.act || '—')}</code> · ${escapeHtml(accountName)}`,
     `Чат: ${chatInfo}`,
   ];
 
   if (chatRecord?.thread_name) {
     lines.push(`Тема: ${escapeHtml(chatRecord.thread_name)}`);
+  }
+
+  if (accountHealth) {
+    const status = describeAccountStatus(accountHealth);
+    const reason = describeDisableReason(accountHealth.disable_reason);
+    const fragments = [status.label];
+    if (reason) fragments.push(reason);
+    if (accountHealth.funding_source_details?.display_string) {
+      fragments.push(accountHealth.funding_source_details.display_string);
+    }
+    lines.push(`Статус аккаунта: ${escapeHtml(fragments.join(' · '))}`);
+  } else {
+    lines.push('Статус аккаунта: данных нет (проверьте Meta токен)');
   }
 
   lines.push(`Период: ${escapeHtml(project.period)} · расписание: ${escapeHtml(timesLabel)}`);
@@ -5394,6 +6062,11 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
   lines.push(`Оплата: ${escapeHtml(formatDateLabel(project.billing_paid_at))}`);
   lines.push(`Следующая оплата: ${escapeHtml(formatDateLabel(project.billing_next_at))}`);
   const inline_keyboard = [];
+
+  const chatLink = project.chat_id ? buildTelegramTopicLink(project.chat_id, project.thread_id ?? 0) : null;
+  if (chatLink) {
+    inline_keyboard.push([{ text: '💬 Перейти в чат проекта', url: chatLink }]);
+  }
 
   inline_keyboard.push([
     {
@@ -5440,7 +6113,11 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
     inline_keyboard.push([
       {
         text: '⏸ Поставить кампании на паузу',
-        callback_data: `proj:autopause:apply:${project.code}`,
+        callback_data: `proj:autopause:prompt:${project.code}:pause`,
+      },
+      {
+        text: '▶️ Возобновить кампании',
+        callback_data: `proj:autopause:prompt:${project.code}:resume`,
       },
     ]);
   }
@@ -5472,6 +6149,36 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
   ]);
   inline_keyboard.push([{ text: '📋 К списку проектов', callback_data: 'panel:projects:0' }]);
   inline_keyboard.push([{ text: '← В панель', callback_data: 'panel:home' }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function renderAutopausePrompt(project, mode = 'pause') {
+  const isResume = mode === 'resume';
+  const emoji = isResume ? '▶️' : '⏸';
+  const actionLabel = isResume ? 'возобновить' : 'поставить на паузу';
+  const header = `${emoji} ${isResume ? 'Возобновить кампании' : 'Поставить кампании на паузу'}`;
+  const lines = [
+    `<b>${header}</b>`,
+    `Проект #${escapeHtml(project.code)} · кампаний выбранo: ${project.campaigns.length}.`,
+    '',
+    isResume
+      ? 'Кампании будут переведены в статус ACTIVE. Убедитесь, что бюджеты и расписание актуальны.'
+      : 'Все выбранные кампании будут переведены в статус PAUSED. Продолжить?',
+  ];
+
+  const inline_keyboard = [
+    [
+      {
+        text: isResume ? '✅ Да, возобновить' : '✅ Да, поставить на паузу',
+        callback_data: `proj:autopause:execute:${project.code}:${isResume ? 'resume' : 'pause'}`,
+      },
+      { text: '↩️ Отмена', callback_data: `proj:detail:${project.code}` },
+    ],
+  ];
 
   return {
     text: lines.join('\n'),
@@ -6065,6 +6772,10 @@ function renderCampaignEditor(project, options = {}) {
           text: makeButtonLabel(row, selectedSet.has(row.id)),
           callback_data: `proj:campaigns:toggle:${project.code}:${row.id}`,
         },
+        {
+          text: '⚙️',
+          callback_data: `proj:campaigns:manage:${project.code}:${row.id}`,
+        },
       ]);
     }
   }
@@ -6168,6 +6879,157 @@ async function editMessageWithCampaignEditor(env, message, code, options = {}) {
   }
 
   return { ok: true, project };
+}
+editMessageWithCampaignEditor.currencyCache = new Map();
+
+function renderCampaignManager(project, campaignMeta, performance, adsets, options = {}) {
+  const currency = options.currency || 'USD';
+  const timezone = options.timezone || 'UTC';
+  const lines = [
+    `<b>Кампания ${escapeHtml(campaignMeta?.name || project.code)}</b>`,
+    `ID: <code>${escapeHtml(campaignMeta?.id || '—')}</code> · Статус: ${escapeHtml(
+      prettifyCampaignLabel(campaignMeta?.effective_status) || prettifyCampaignLabel(campaignMeta?.status) || '—',
+    )}`,
+    '',
+    'Показатели:',
+  ];
+
+  const perfOrder = [
+    ['today', 'Сегодня'],
+    ['last7', '7 дней'],
+    ['month', 'С начала месяца'],
+    ['lifetime', 'За всё время'],
+  ];
+
+  for (const [key, label] of perfOrder) {
+    const snapshot = performance?.[key];
+    if (!snapshot) continue;
+    const spendLabel = formatCurrency(snapshot.spend ?? 0, currency);
+    const resultsLabel = formatNumber(snapshot.results ?? 0);
+    const cpaLabel = Number.isFinite(snapshot.cpa) ? formatCpa(snapshot.cpa, currency) : '—';
+    lines.push(`• ${label}: ${spendLabel} · Результаты ${resultsLabel} · CPA ${cpaLabel}`);
+  }
+
+  if (!adsets.length) {
+    lines.push('', 'Адсеты не найдены.');
+  } else {
+    lines.push('', 'Адсеты:');
+    for (const adset of adsets.slice(0, 6)) {
+      const status = prettifyCampaignLabel(adset.effective_status) || prettifyCampaignLabel(adset.status) || '—';
+      const budget = adset.daily_budget
+        ? `${formatCurrency(Number(adset.daily_budget) / 100, currency)}/д`
+        : adset.lifetime_budget
+        ? `${formatCurrency(Number(adset.lifetime_budget) / 100, currency)} общий`
+        : '—';
+      const endTime = adset.end_time ? formatDateTimeLabel(adset.end_time, timezone) : '—';
+      lines.push(
+        `• ${escapeHtml(adset.name || adset.id)} · ${status} · бюджет ${budget} · окончание ${endTime}`,
+      );
+    }
+    if (adsets.length > 6) {
+      lines.push(`… и ещё ${adsets.length - 6} адсетов`);
+    }
+  }
+
+  const inline_keyboard = [];
+
+  inline_keyboard.push([
+    {
+      text: '⏸ Пауза кампании',
+      callback_data: `proj:campaigns:action:${project.code}:${campaignMeta?.id}:pause`,
+    },
+    {
+      text: '▶️ Включить кампанию',
+      callback_data: `proj:campaigns:action:${project.code}:${campaignMeta?.id}:resume`,
+    },
+  ]);
+
+  inline_keyboard.push([
+    {
+      text: '💰 +10% бюджета',
+      callback_data: `proj:campaigns:action:${project.code}:${campaignMeta?.id}:budget:+10`,
+    },
+    {
+      text: '📆 +7 дней',
+      callback_data: `proj:campaigns:action:${project.code}:${campaignMeta?.id}:extend:7`,
+    },
+  ]);
+
+  if (adsets.length) {
+    for (const adset of adsets.slice(0, 6)) {
+      inline_keyboard.push([
+        {
+          text: `${prettifyCampaignLabel(adset.effective_status) || '▫️'} ${
+            adset.name?.length > 24 ? `${adset.name.slice(0, 23)}…` : adset.name || adset.id
+          }`,
+          callback_data: `proj:adsets:toggle:${project.code}:${campaignMeta?.id}:${adset.id}`,
+        },
+      ]);
+    }
+  }
+
+  inline_keyboard.push([
+    {
+      text: '📣 Объявления',
+      callback_data: `proj:campaigns:ads:${project.code}:${campaignMeta?.id}`,
+    },
+  ]);
+
+  inline_keyboard.push([{ text: '↩️ К кампаниям', callback_data: `proj:campaigns:open:${project.code}` }]);
+  inline_keyboard.push([{ text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
+}
+
+function renderCampaignAdsView(project, campaignMeta, ads = [], options = {}) {
+  const currency = options.currency || 'USD';
+  const lines = [
+    `<b>Объявления кампании ${escapeHtml(campaignMeta?.name || project.code)}</b>`,
+    '',
+  ];
+
+  if (!ads.length) {
+    lines.push('Объявления не найдены.');
+  } else {
+    for (const ad of ads.slice(0, 10)) {
+      const perf = ad.performance ?? {};
+      const spend = formatCurrency(perf.spend ?? 0, currency);
+      const results = formatNumber(perf.results ?? 0);
+      const cpa = Number.isFinite(perf.cpa) ? formatCpa(perf.cpa, currency) : '—';
+      lines.push(
+        `• ${escapeHtml(ad.name || ad.id)} · ${escapeHtml(
+          prettifyCampaignLabel(ad.effective_status) || prettifyCampaignLabel(ad.status) || '—',
+        )}\n  ${spend} · Результаты ${results} · CPA ${cpa}`,
+      );
+    }
+    if (ads.length > 10) {
+      lines.push(`… и ещё ${ads.length - 10} объявлений`);
+    }
+  }
+
+  const inline_keyboard = [];
+
+  for (const ad of ads.slice(0, 10)) {
+    inline_keyboard.push([
+      {
+        text: `${prettifyCampaignLabel(ad.effective_status) || '▫️'} ${
+          ad.name?.length > 20 ? `${ad.name.slice(0, 19)}…` : ad.name || ad.id
+        }`,
+        callback_data: `proj:ads:toggle:${project.code}:${campaignMeta?.id}:${ad.id}`,
+      },
+    ]);
+  }
+
+  inline_keyboard.push([{ text: '↩️ К кампании', callback_data: `proj:campaigns:manage:${project.code}:${campaignMeta?.id}` }]);
+  inline_keyboard.push([{ text: '↩️ К проекту', callback_data: `proj:detail:${project.code}` }]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
+  };
 }
 
 function renderScheduleEditor(project, options = {}) {
@@ -6550,7 +7412,7 @@ function renderAlertsEditor(project, options = {}) {
 
   inline_keyboard.push([
     {
-      text: normalizedZero === null ? '✅ Zero-spend выкл' : '🚫 Выключить zero-spend',
+      text: normalizedZero === null ? '🟢 Включить zero-spend' : '🛑 Выключить zero-spend',
       callback_data: `proj:alerts:zero:${project.code}:off`,
     },
     {
@@ -6710,8 +7572,24 @@ async function editMessageWithProject(env, message, code) {
     ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
     : null;
   const portalRecord = await loadPortalRecord(env, project.code);
+  const accountMeta = project.act
+    ? await loadAccountMeta(env, project.act.replace(/^act_/i, '') ?? project.act)
+    : null;
   const timezone = env.DEFAULT_TZ || 'UTC';
-  const details = renderProjectDetails(project, chatRecord, portalRecord, { timezone });
+  let accountHealth = null;
+  try {
+    const { token } = await resolveMetaToken(env);
+    if (token) {
+      accountHealth = await fetchAccountHealthSummary(env, project, token);
+    }
+  } catch (error) {
+    console.error('account health fetch error', project.code, error);
+  }
+  const details = renderProjectDetails(project, chatRecord, portalRecord, {
+    timezone,
+    accountMeta,
+    accountHealth,
+  });
   await telegramEditMessage(env, chatId, messageId, details.text, {
     reply_markup: details.reply_markup,
   });
@@ -7261,28 +8139,46 @@ async function completeProjectCreation(env, uid, message, data = {}, overrides =
   return project;
 }
 
-function renderProjectsPage(items, pagination = {}) {
+async function renderProjectsPage(env, items, pagination = {}) {
   const textLines = ['<b>Проекты</b>', ''];
 
   if (!items.length) {
     textLines.push('Проектов пока нет. Настройте их через мастер в админ-панели.');
   } else {
-    items.forEach((rawProject, index) => {
-      const project = normalizeProject(rawProject);
+    const enriched = await Promise.all(
+      items.map(async (rawProject) => {
+        const project = normalizeProject(rawProject);
+        const chatRecord = project.chat_id
+          ? await loadChatRecord(env, project.chat_id, project.thread_id ?? 0)
+          : null;
+        const accountMeta = project.act
+          ? await loadAccountMeta(env, project.act.replace(/^act_/i, '') ?? project.act)
+          : null;
+        return { project, chatRecord, accountMeta };
+      }),
+    );
+
+    enriched.forEach(({ project, chatRecord, accountMeta }, index) => {
       const codeLabel = project.code ? `#${escapeHtml(project.code)}` : 'без кода';
-      const actLabel = project.act
-        ? `<code>${escapeHtml(project.act)}</code>`
-        : '—';
+      const accountName = accountMeta?.name || project.act || '—';
       const chatLabel = project.chat_id
-        ? formatChatReference({ chat_id: project.chat_id, thread_id: project.thread_id ?? 0 })
+        ? formatChatReference({
+            chat_id: project.chat_id,
+            thread_id: project.thread_id ?? 0,
+            title: chatRecord?.title ?? null,
+          })
         : 'нет привязки';
       const schedule = escapeHtml(project.times.join(', '));
 
       textLines.push(
-        `• <b>${codeLabel}</b> → act ${actLabel}\n  чат: ${chatLabel}\n  период: ${escapeHtml(project.period)} · ${schedule}`,
+        [
+          `• <b>${codeLabel}</b> → ${escapeHtml(accountName)}`,
+          `  чат: ${chatLabel}`,
+          `  период: ${escapeHtml(project.period)} · ${schedule}`,
+        ].join('\n'),
       );
 
-      if (index !== items.length - 1) {
+      if (index !== enriched.length - 1) {
         textLines.push('');
       }
     });
@@ -8013,10 +8909,24 @@ async function handleCallbackQuery(env, callbackQuery) {
 
       const profileAfter = await loadUserProfile(env, uid);
       const accounts = await loadUserAccounts(env, uid);
-      const view = renderAccountsPage(env, uid, profileAfter, accounts, { offset: 0 });
+      const view = await renderAccountsPage(env, uid, profileAfter, accounts, { offset: 0 });
       return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
         reply_markup: view.reply_markup,
       });
+    }
+
+    if (action === 'projects' && typeof parts[3] === 'string') {
+      const accountId = decodeURIComponent(parts[3]);
+      const projects = await collectProjectsForAccount(env, accountId);
+      const view = renderAccountProjectsList(env, accountId, projects);
+      return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
+
+    if (action === 'noop') {
+      await telegramAnswerCallback(env, callbackQuery, 'Нет действий для этого аккаунта.');
+      return { ok: true };
     }
 
     let offset = 0;
@@ -8026,7 +8936,7 @@ async function handleCallbackQuery(env, callbackQuery) {
 
     const profileCurrent = await loadUserProfile(env, uid);
     const accountsCurrent = await loadUserAccounts(env, uid);
-    const view = renderAccountsPage(env, uid, profileCurrent, accountsCurrent, { offset });
+    const view = await renderAccountsPage(env, uid, profileCurrent, accountsCurrent, { offset });
     return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
       reply_markup: view.reply_markup,
     });
@@ -8068,7 +8978,7 @@ async function handleCallbackQuery(env, callbackQuery) {
       showReset: Boolean(cursor),
     };
 
-    const response = renderProjectsPage(result.items, pagination);
+    const response = await renderProjectsPage(env, result.items, pagination);
     return telegramEditMessage(env, message.chat.id, message.message_id, response.text, {
       reply_markup: response.reply_markup,
     });
@@ -8172,15 +9082,38 @@ async function handleCallbackQuery(env, callbackQuery) {
     return editMessageWithProject(env, message, code);
   }
 
-  if (data.startsWith('proj:autopause:apply:')) {
-    const [, , , rawCode = ''] = data.split(':');
+  if (data.startsWith('proj:autopause:prompt:')) {
+    const [, , , rawCode = '', mode = 'pause'] = data.split(':');
     const code = sanitizeProjectCode(rawCode);
     if (!isValidProjectCode(code)) {
       await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
       return { ok: false, error: 'invalid_project_code' };
     }
 
-    await telegramAnswerCallback(env, callbackQuery, '⏳ Пытаюсь поставить кампании на паузу…');
+    const project = await loadProject(env, code);
+    if (!project) {
+      await telegramAnswerCallback(env, callbackQuery, 'Проект не найден.');
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    if (!Array.isArray(project.campaigns) || project.campaigns.length === 0) {
+      await telegramAnswerCallback(env, callbackQuery, 'Нет выбранных кампаний. Откройте раздел «Кампании».');
+      return { ok: false, error: 'no_campaigns' };
+    }
+
+    const prompt = renderAutopausePrompt(project, mode === 'resume' ? 'resume' : 'pause');
+    return telegramEditMessage(env, message.chat.id, message.message_id, prompt.text, {
+      reply_markup: prompt.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:autopause:execute:')) {
+    const [, , , rawCode = '', mode = 'pause'] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
 
     const project = await loadProject(env, code);
     if (!project) {
@@ -8193,7 +9126,7 @@ async function handleCallbackQuery(env, callbackQuery) {
 
     if (!Array.isArray(project.campaigns) || project.campaigns.length === 0) {
       const targetMessage = callbackQuery.message ?? { chat: { id: callbackQuery.from?.id } };
-      await telegramSendMessage(env, targetMessage, 'В проекте не выбраны кампании для автопаузы.', {
+      await telegramSendMessage(env, targetMessage, 'В проекте не выбраны кампании.', {
         disable_reply: true,
       });
       return { ok: false, error: 'no_campaigns' };
@@ -8208,36 +9141,263 @@ async function handleCallbackQuery(env, callbackQuery) {
       return { ok: false, error: 'token_missing' };
     }
 
+    await telegramAnswerCallback(env, callbackQuery, '⏳ Выполняю действие…');
+
     let summary = '';
     try {
-      const result = await pauseProjectCampaigns(env, project, { token });
-      if (result.reason === 'no_campaigns' || (result.ok.length === 0 && result.failed.length === 0)) {
-        summary = 'Нет кампаний, которые можно поставить на паузу. Проверьте настройки проекта.';
+      if (mode === 'resume') {
+        const result = await resumeProjectCampaigns(env, project, { token });
+        summary = formatResumeSummary(project, result);
       } else {
-        const lines = [
-          '⏸ <b>Автопауза кампаний</b>',
-          `Проект #${escapeHtml(project.code)} — кампаний на паузе: ${result.ok.length}.`,
-        ];
-        if (result.failed.length) {
-          lines.push('Ошибки:');
-          for (const item of result.failed.slice(0, 5)) {
-            lines.push(`• ${escapeHtml(item.id)} — ${escapeHtml(item.error)}`);
-          }
-          if (result.failed.length > 5) {
-            lines.push('…');
-          }
-        }
-        summary = lines.join('\n');
+        const result = await pauseProjectCampaigns(env, project, { token });
+        summary = formatPauseSummary(project, result);
       }
     } catch (error) {
-      console.error('autopause apply error', project.code, error);
-      summary = `Не удалось поставить кампании на паузу: ${escapeHtml(error?.message ?? String(error))}`;
+      console.error('autopause execute error', project.code, error);
+      summary = `Не удалось выполнить действие: ${escapeHtml(error?.message ?? String(error))}`;
     }
 
     const targetMessage = callbackQuery.message ?? { chat: { id: callbackQuery.from?.id } };
     await telegramSendMessage(env, targetMessage, summary, {
       disable_reply: true,
     });
+
+    return editMessageWithProject(env, message, code);
+  }
+
+  if (data.startsWith('proj:campaigns:manage:')) {
+    const [, , , rawCode = '', campaignId = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      await telegramAnswerCallback(env, callbackQuery, 'Проект не найден.');
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    const { token } = await resolveMetaToken(env);
+    if (!token) {
+      await telegramAnswerCallback(env, callbackQuery, 'Meta-токен не найден.');
+      return { ok: false, error: 'token_missing' };
+    }
+
+    const timezone = env.DEFAULT_TZ || 'UTC';
+    const [campaignMeta, performance, adsets] = await Promise.all([
+      fetchCampaignMeta(env, campaignId, token),
+      fetchCampaignPerformance(env, project, campaignId, token, timezone),
+      fetchAdsetsForCampaignDetails(env, campaignId, token),
+    ]);
+    const currency = await resolveProjectCurrency(env, project, editMessageWithCampaignEditor.currencyCache);
+    const view = renderCampaignManager(project, campaignMeta ?? { id: campaignId }, performance, adsets, {
+      currency,
+      timezone,
+    });
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:campaigns:action:')) {
+    const [, , , rawCode = '', campaignId = '', action = '', arg = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      await telegramAnswerCallback(env, callbackQuery, 'Проект не найден.');
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    const { token } = await resolveMetaToken(env);
+    if (!token) {
+      await telegramAnswerCallback(env, callbackQuery, 'Meta-токен не найден.');
+      return { ok: false, error: 'token_missing' };
+    }
+
+    await telegramAnswerCallback(env, callbackQuery, '⏳ Выполняю действие…');
+
+    let messageText = '';
+    const timezone = env.DEFAULT_TZ || 'UTC';
+
+    try {
+      if (action === 'pause' || action === 'resume') {
+        const desired = action === 'pause' ? 'PAUSED' : 'ACTIVE';
+        const result = await toggleEntityStatus(token, campaignId, desired);
+        if (result.ok) {
+          messageText = `Кампания ${action === 'pause' ? 'приостановлена' : 'включена'}.`;
+        } else {
+          messageText = `Не удалось обновить кампанию: ${escapeHtml(result.error || 'ошибка API')}`;
+        }
+      } else if (action === 'budget') {
+        const percent = Number(arg);
+        const adsets = await fetchAdsetsForCampaignDetails(env, campaignId, token);
+        const result = await adjustAdsetBudgets(env, adsets, { token, percent });
+        messageText = `💰 Обновлено адсетов: ${result.ok.length}. Ошибки: ${result.failed.length}.`;
+      } else if (action === 'extend') {
+        const days = Number(arg);
+        const adsets = await fetchAdsetsForCampaignDetails(env, campaignId, token);
+        const result = await extendAdsetSchedules(env, adsets, { token, days });
+        messageText = `📆 Продлено адсетов: ${result.ok.length}. Ошибки: ${result.failed.length}.`;
+      }
+    } catch (error) {
+      console.error('proj:campaigns:action error', campaignId, error);
+      messageText = `Ошибка выполнения: ${escapeHtml(error?.message ?? String(error))}`;
+    }
+
+    if (messageText) {
+      const targetMessage = callbackQuery.message ?? { chat: { id: callbackQuery.from?.id } };
+      await telegramSendMessage(env, targetMessage, messageText, { disable_reply: true });
+    }
+
+    const [campaignMeta, performance, adsets] = await Promise.all([
+      fetchCampaignMeta(env, campaignId, token),
+      fetchCampaignPerformance(env, project, campaignId, token, timezone),
+      fetchAdsetsForCampaignDetails(env, campaignId, token),
+    ]);
+    const currency = await resolveProjectCurrency(env, project, editMessageWithCampaignEditor.currencyCache);
+    const view = renderCampaignManager(project, campaignMeta ?? { id: campaignId }, performance, adsets, {
+      currency,
+      timezone,
+    });
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:campaigns:ads:')) {
+    const [, , , rawCode = '', campaignId = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      await telegramAnswerCallback(env, callbackQuery, 'Проект не найден.');
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    const { token } = await resolveMetaToken(env);
+    if (!token) {
+      await telegramAnswerCallback(env, callbackQuery, 'Meta-токен не найден.');
+      return { ok: false, error: 'token_missing' };
+    }
+
+    const timezone = env.DEFAULT_TZ || 'UTC';
+    const range = getPeriodRange('last_7d', timezone);
+    const [campaignMeta, ads] = await Promise.all([
+      fetchCampaignMeta(env, campaignId, token),
+      fetchAdsForCampaign(env, campaignId, token, range),
+    ]);
+    const currency = await resolveProjectCurrency(env, project, editMessageWithCampaignEditor.currencyCache);
+    const view = renderCampaignAdsView(project, campaignMeta ?? { id: campaignId }, ads, { currency });
+    return telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+      reply_markup: view.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:adsets:toggle:')) {
+    const [, , , rawCode = '', campaignId = '', adsetId = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const { token } = await resolveMetaToken(env);
+    if (!token) {
+      await telegramAnswerCallback(env, callbackQuery, 'Meta-токен не найден.');
+      return { ok: false, error: 'token_missing' };
+    }
+
+    try {
+      const meta = await graphGet(adsetId, { token, params: { fields: 'status,effective_status' } });
+      const current = meta?.effective_status || meta?.status || 'PAUSED';
+      const desired = String(current).toUpperCase().includes('ACTIVE') ? 'PAUSED' : 'ACTIVE';
+      const result = await toggleEntityStatus(token, adsetId, desired);
+      await telegramAnswerCallback(
+        env,
+        callbackQuery,
+        result.ok ? `Адсет ${desired === 'PAUSED' ? 'поставлен на паузу' : 'включён'}.` : result.error || 'Не удалось обновить адсет',
+      );
+    } catch (error) {
+      console.error('proj:adsets:toggle error', adsetId, error);
+      await telegramAnswerCallback(env, callbackQuery, 'Не удалось обновить адсет.');
+    }
+
+    // перерисуем управление кампанией
+    const project = await loadProject(env, code);
+    if (project) {
+      const timezone = env.DEFAULT_TZ || 'UTC';
+      const [campaignMeta, performance, adsets] = await Promise.all([
+        fetchCampaignMeta(env, campaignId, token),
+        fetchCampaignPerformance(env, project, campaignId, token, timezone),
+        fetchAdsetsForCampaignDetails(env, campaignId, token),
+      ]);
+      const currency = await resolveProjectCurrency(env, project, editMessageWithCampaignEditor.currencyCache);
+      const view = renderCampaignManager(project, campaignMeta ?? { id: campaignId }, performance, adsets, {
+        currency,
+        timezone,
+      });
+      await telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
+
+    return { ok: true };
+  }
+
+  if (data.startsWith('proj:ads:toggle:')) {
+    const [, , , rawCode = '', campaignId = '', adId = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    const { token } = await resolveMetaToken(env);
+    if (!token) {
+      await telegramAnswerCallback(env, callbackQuery, 'Meta-токен не найден.');
+      return { ok: false, error: 'token_missing' };
+    }
+
+    try {
+      const meta = await graphGet(adId, { token, params: { fields: 'status,effective_status' } });
+      const current = meta?.effective_status || meta?.status || 'PAUSED';
+      const desired = String(current).toUpperCase().includes('ACTIVE') ? 'PAUSED' : 'ACTIVE';
+      const result = await toggleEntityStatus(token, adId, desired);
+      await telegramAnswerCallback(
+        env,
+        callbackQuery,
+        result.ok ? `Объявление ${desired === 'PAUSED' ? 'поставлено на паузу' : 'включено'}.` : result.error || 'Не удалось обновить объявление',
+      );
+    } catch (error) {
+      console.error('proj:ads:toggle error', adId, error);
+      await telegramAnswerCallback(env, callbackQuery, 'Не удалось обновить объявление.');
+    }
+
+    const project = await loadProject(env, code);
+    if (project) {
+      const timezone = env.DEFAULT_TZ || 'UTC';
+      const range = getPeriodRange('last_7d', timezone);
+      const [campaignMeta, ads] = await Promise.all([
+        fetchCampaignMeta(env, campaignId, token),
+        fetchAdsForCampaign(env, campaignId, token, range),
+      ]);
+      const currency = await resolveProjectCurrency(env, project, editMessageWithCampaignEditor.currencyCache);
+      const view = renderCampaignAdsView(project, campaignMeta ?? { id: campaignId }, ads, { currency });
+      await telegramEditMessage(env, message.chat.id, message.message_id, view.text, {
+        reply_markup: view.reply_markup,
+      });
+    }
 
     return { ok: true };
   }
