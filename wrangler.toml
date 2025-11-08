@@ -8,6 +8,7 @@ workers_dev = true
 
 # Replace the placeholder IDs below with the namespace IDs from
 # Cloudflare → Workers KV → Namespaces or `wrangler kv namespace list`.
+# Example: id = "0a1b2c3d4e5f67890123456789abcdef"
 [[kv_namespaces]]
 binding = "REPORTS_NAMESPACE"
 id = "REPLACE_WITH_REPORTS_NAMESPACE_ID"

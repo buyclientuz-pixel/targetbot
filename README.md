@@ -39,15 +39,17 @@ Wrangler provide those bindings when you deploy from Git:
 1. In the Cloudflare dashboard, open **Workers & Pages → th-reports → Settings → Variables and bindings → KV Namespace bindings**.
    *The binding names must match exactly (e.g., `REPORTS_NAMESPACE`).*
 2. Click each binding to reveal its namespace ID, or go to **Workers KV → Namespaces** and copy the `Namespace ID` from the table.
-   You can also list them from the terminal:
+   *Это буквенно-цифровая строка длиной ~32 символа — без пробелов и фигурных скобок.*
+   Вы можете скопировать ID и через CLI:
    ```bash
    wrangler kv namespace list
    ```
-3. Open `wrangler.toml` and replace the placeholders:
+3. Откройте `wrangler.toml` в любом редакторе (VS Code, nano и т. д.) и замените плейсхолдеры `REPLACE_WITH_…` на скопированные ID. Вставляйте их **в кавычках**.
+   Например:
    ```toml
    [[kv_namespaces]]
    binding = "REPORTS_NAMESPACE"
-   id = "<paste the REPORTS namespace ID here>"
+   id = "0a1b2c3d4e5f67890123456789abcdef"
 
    [[kv_namespaces]]
    binding = "BILLING_NAMESPACE"
@@ -55,9 +57,14 @@ Wrangler provide those bindings when you deploy from Git:
 
    [[kv_namespaces]]
    binding = "LOGS_NAMESPACE"
-   id = "<paste the LOGS namespace ID here>"
+   id = "fedcba98765432100123456789abcdef"
    ```
-   If you want to use `wrangler dev`, you can also copy the **Preview ID** into the commented `preview_id` lines.
+   Если хотите автоматизировать замену из терминала, можно сделать так:
+   ```bash
+   # пример замены для REPORTS_NAMESPACE
+   sed -i 's/REPLACE_WITH_REPORTS_NAMESPACE_ID/0a1b2c3d4e5f67890123456789abcdef/' wrangler.toml
+   ```
+   При необходимости повторите для остальных привязок. Для `wrangler dev` вы также можете скопировать **Preview ID** в закомментированные строки `preview_id`.
 4. Save the file. Wrangler will now inject the bindings so `env.REPORTS_NAMESPACE`, `env.BILLING_NAMESPACE`, and
    `env.LOGS_NAMESPACE` are available during local development and deployment.
 
