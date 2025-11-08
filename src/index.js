@@ -18,6 +18,8 @@ const DEFAULT_PAGE_SIZE = 8;
 const PROJECT_PREFIX = 'project:';
 const CHAT_PREFIX = 'chat:';
 const STATE_PREFIX = 'state:';
+const STATE_TTL_SECONDS = 600;
+const PROJECT_CODE_PATTERN = /^[a-z0-9_-]{3,32}$/i;
 
 function escapeHtml(input = '') {
   return String(input)
@@ -197,6 +199,68 @@ function normalizeProject(raw = {}) {
   };
 }
 
+function sanitizeProjectCode(input = '') {
+  return String(input ?? '').trim();
+}
+
+function isValidProjectCode(value) {
+  return PROJECT_CODE_PATTERN.test(value);
+}
+
+function normalizeAccountId(input = '') {
+  const raw = String(input ?? '').trim();
+  if (!raw) return '';
+  if (/^act_\d+$/i.test(raw)) {
+    return `act_${raw.replace(/^act_/i, '')}`;
+  }
+  if (/^\d+$/.test(raw)) {
+    return `act_${raw}`;
+  }
+  return raw;
+}
+
+function createProjectDraft(data = {}) {
+  return normalizeProject({
+    code: data.code ?? '',
+    act: data.act ?? '',
+    chat_id: data.chat_id ?? null,
+    thread_id: data.thread_id ?? 0,
+    period: data.period ?? 'yesterday',
+    times: Array.isArray(data.times) && data.times.length ? data.times : ['09:30'],
+    mute_weekends: Boolean(data.mute_weekends ?? false),
+    active: data.active !== false,
+    billing: typeof data.billing === 'string' ? data.billing : 'paid',
+    campaigns: Array.isArray(data.campaigns) ? data.campaigns : [],
+    kpi: data.kpi ?? {},
+    weekly: data.weekly ?? { enabled: true, mode: 'week_today' },
+    autopause: data.autopause ?? { enabled: false, days: 3 },
+    alerts: data.alerts ?? {
+      enabled: true,
+      billing_times: ['10:00', '14:00', '18:00'],
+      no_spend_by: '12:00',
+    },
+    anomaly: data.anomaly ?? {
+      cpl_jump: 0.5,
+      ctr_drop: 0.4,
+      impr_drop: 0.5,
+      freq: 3.5,
+    },
+    billing_paid_at: data.billing_paid_at ?? null,
+    billing_next_at: data.billing_next_at ?? null,
+  });
+}
+
+function formatProjectSummary(project) {
+  const parts = [];
+  parts.push(`<b>#${escapeHtml(project.code)}</b> → act <code>${escapeHtml(project.act || '—')}</code>`);
+  if (project.chat_id) {
+    parts.push(`Чат: <code>${project.chat_id}</code> · thread <code>${project.thread_id ?? 0}</code>`);
+  }
+  parts.push(`Период: ${escapeHtml(project.period)} · время: ${escapeHtml(project.times.join(', '))}`);
+  parts.push(`Статус: ${project.active ? 'активен' : 'выкл.'} · биллинг: ${escapeHtml(project.billing)}`);
+  return parts.join('\n');
+}
+
 async function loadProject(env, code) {
   if (!env.DB) return null;
   if (!code) return null;
@@ -260,7 +324,9 @@ async function loadUserState(env, uid) {
 
 async function saveUserState(env, uid, state, options = {}) {
   if (!env.DB || !uid) return;
-  const ttl = Number.isFinite(options.ttlSeconds) ? Number(options.ttlSeconds) : 600;
+  const ttl = Number.isFinite(options.ttlSeconds)
+    ? Number(options.ttlSeconds)
+    : STATE_TTL_SECONDS;
   await env.DB.put(getStateKey(uid), JSON.stringify(state ?? {}), { expirationTtl: ttl });
 }
 
@@ -440,6 +506,128 @@ async function handleTelegramCommand(env, message, command, args) {
   }
 }
 
+async function handleUserStateMessage(env, message, textContent) {
+  const uid = message?.from?.id;
+  if (!uid) {
+    return { handled: false, reason: 'no_uid' };
+  }
+
+  const state = await loadUserState(env, uid);
+  if (!state || state.mode !== 'create_project') {
+    return { handled: false, reason: 'no_state' };
+  }
+
+  if (state.step === 'await_code') {
+    const code = sanitizeProjectCode(textContent);
+    if (!code) {
+      await telegramSendMessage(env, message, 'Код проекта не может быть пустым. Введите, например, th-client.', {
+        disable_reply: true,
+      });
+      return { handled: true, step: 'await_code', error: 'empty_code' };
+    }
+    if (!isValidProjectCode(code)) {
+      await telegramSendMessage(
+        env,
+        message,
+        'Код допускает буквы, цифры, дефис и подчёркивание (3-32 символа). Попробуйте ещё раз.',
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'await_code', error: 'invalid_code' };
+    }
+
+    const existing = await loadProject(env, code);
+    if (existing) {
+      await telegramSendMessage(
+        env,
+        message,
+        `Проект <b>#${escapeHtml(code)}</b> уже существует. Введите другой код или отмените создание.`,
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'await_code', error: 'duplicate_code' };
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'create_project',
+      step: 'choose_chat',
+      data: { code },
+    });
+
+    const chatsResult = await listRegisteredChats(env, null, DEFAULT_PAGE_SIZE);
+    const prompt = buildChatSelectionPrompt(chatsResult.items, {
+      nextCursor: chatsResult.cursor ?? null,
+      showReset: false,
+    });
+
+    await telegramSendMessage(env, message, `Код <b>#${escapeHtml(code)}</b> принят.`, { disable_reply: true });
+    await telegramSendMessage(env, message, prompt.text, {
+      reply_markup: prompt.reply_markup,
+      disable_reply: true,
+    });
+
+    return { handled: true, step: 'choose_chat' };
+  }
+
+  if (state.step === 'await_act') {
+    const act = normalizeAccountId(textContent);
+    if (!act) {
+      await telegramSendMessage(
+        env,
+        message,
+        'Введите идентификатор рекламного аккаунта (например, act_1234567890).',
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'await_act', error: 'empty_act' };
+    }
+
+    const data = state.data ?? {};
+    if (!data.code || !data.chat_id) {
+      await saveUserState(env, uid, {
+        mode: 'create_project',
+        step: 'await_code',
+        data: {},
+      });
+      await telegramSendMessage(
+        env,
+        message,
+        'Сессия создания проекта повреждена. Начните заново и введите код проекта.',
+        { disable_reply: true },
+      );
+      return { handled: true, step: 'await_code', error: 'state_corrupted' };
+    }
+
+    const project = createProjectDraft({
+      code: data.code,
+      act,
+      chat_id: data.chat_id,
+      thread_id: data.thread_id ?? 0,
+    });
+
+    await saveProject(env, project);
+    await clearUserState(env, uid);
+
+    await telegramSendMessage(
+      env,
+      message,
+      ['✅ Проект создан.', formatProjectSummary(project), '', 'Настройте расписание и KPI через админ-панель.'].join('\n'),
+      { disable_reply: true },
+    );
+
+    return { handled: true, step: 'completed' };
+  }
+
+  if (state.step === 'choose_chat') {
+    await telegramSendMessage(
+      env,
+      message,
+      'Выберите чат с помощью кнопок ниже. Если нужного чата нет, выполните /register в теме клиента.',
+      { disable_reply: true },
+    );
+    return { handled: true, step: 'choose_chat', info: 'await_chat_selection' };
+  }
+
+  return { handled: false, reason: 'unknown_step' };
+}
+
 function extractMessage(update) {
   if (update.message) return update.message;
   if (update.edited_message) return update.edited_message;
@@ -489,11 +677,19 @@ async function handleTelegramWebhook(request, env) {
   const command = rawCommand.split('@')[0].toLowerCase();
   const args = parts.slice(1);
 
-  const result = await handleTelegramCommand(env, message, command, args);
-  summary.handled = true;
-  summary.kind = 'command';
-  summary.command = command;
-  summary.result = result;
+  if (rawCommand.startsWith('/')) {
+    const result = await handleTelegramCommand(env, message, command, args);
+    summary.handled = true;
+    summary.kind = 'command';
+    summary.command = command;
+    summary.result = result;
+    return json({ ok: true, summary });
+  }
+
+  const stateResult = await handleUserStateMessage(env, message, textContent);
+  summary.kind = 'state';
+  summary.result = stateResult;
+  summary.handled = Boolean(stateResult.handled);
 
   return json({ ok: true, summary });
 }
@@ -616,6 +812,9 @@ function renderAdminHome(uid, env) {
           { text: '♻️ Переподключить', url: forceUrl },
         ],
         [
+          { text: '➕ Новый проект', callback_data: 'proj:create:start' },
+        ],
+        [
           { text: '🗂 Зарегистрированные чаты', callback_data: 'panel:chats:0' },
           { text: '📋 Проекты', callback_data: 'panel:projects:0' },
         ],
@@ -656,6 +855,63 @@ function renderChatsPage(items, pagination = {}) {
   return {
     text: ['<b>Зарегистрированные чаты</b>', '', ...lines].join('\n'),
     reply_markup: { inline_keyboard: keyboard },
+  };
+}
+
+function formatChatLine(chat) {
+  const title = chat.title ? ` — ${escapeHtml(chat.title)}` : '';
+  const thread = chat.thread_id ?? 0;
+  return `• <code>${chat.chat_id}</code> · thread <code>${thread}</code>${title}`;
+}
+
+function buildChatSelectionPrompt(chats, options = {}) {
+  const lines = ['<b>Шаг 2.</b> Выберите чат и топик для проекта.', ''];
+
+  if (!chats.length) {
+    lines.push('Нет зарегистрированных топиков. Выполните /register в нужной теме клиента.');
+  } else {
+    chats.forEach((chat) => {
+      lines.push(formatChatLine(chat));
+    });
+    lines.push('', 'Нажмите кнопку с нужным chat_id, чтобы продолжить.');
+  }
+
+  const inline_keyboard = [];
+
+  chats.forEach((chat) => {
+    inline_keyboard.push([
+      {
+        text: `${chat.title ? chat.title.slice(0, 28) : chat.chat_id} · #${chat.thread_id ?? 0}`,
+        callback_data: `proj:create:chat:${chat.chat_id}:${chat.thread_id ?? 0}`,
+      },
+    ]);
+  });
+
+  if (options.nextCursor) {
+    inline_keyboard.push([
+      {
+        text: '➡️ Далее',
+        callback_data: `proj:create:chatnext:${encodeURIComponent(options.nextCursor)}`,
+      },
+    ]);
+  }
+
+  if (options.showReset) {
+    inline_keyboard.push([
+      {
+        text: '↩️ В начало',
+        callback_data: 'proj:create:chatreset',
+      },
+    ]);
+  }
+
+  inline_keyboard.push([
+    { text: 'Отмена', callback_data: 'proj:create:cancel' },
+  ]);
+
+  return {
+    text: lines.join('\n'),
+    reply_markup: { inline_keyboard },
   };
 }
 
@@ -758,6 +1014,120 @@ async function handleCallbackQuery(env, callbackQuery) {
 
   if (!message?.chat?.id || !message.message_id) {
     return { ok: false, error: 'no_message_context' };
+  }
+
+  if (data === 'proj:create:start') {
+    await saveUserState(env, uid, { mode: 'create_project', step: 'await_code', data: {} });
+    return telegramEditMessage(
+      env,
+      message.chat.id,
+      message.message_id,
+      ['<b>Шаг 1.</b> Введите код проекта.', '', 'Отправьте текстом, например <code>th-client</code>.'].join('\n'),
+      {
+        reply_markup: { inline_keyboard: [[{ text: 'Отмена', callback_data: 'proj:create:cancel' }]] },
+      },
+    );
+  }
+
+  if (data === 'proj:create:cancel') {
+    await clearUserState(env, uid);
+    const home = renderAdminHome(uid, env);
+    return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+      reply_markup: home.reply_markup,
+    });
+  }
+
+  if (data === 'proj:create:chatreset' || data.startsWith('proj:create:chatnext')) {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || state.step !== 'choose_chat') {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    let cursor = null;
+    if (data.startsWith('proj:create:chatnext:')) {
+      cursor = decodeURIComponent(data.slice('proj:create:chatnext:'.length));
+    }
+
+    const chatsResult = await listRegisteredChats(env, cursor, DEFAULT_PAGE_SIZE);
+    const prompt = buildChatSelectionPrompt(chatsResult.items, {
+      nextCursor: chatsResult.cursor ?? null,
+      showReset: Boolean(cursor),
+    });
+
+    return telegramEditMessage(env, message.chat.id, message.message_id, prompt.text, {
+      reply_markup: prompt.reply_markup,
+    });
+  }
+
+  if (data.startsWith('proj:create:chat:')) {
+    const state = await loadUserState(env, uid);
+    if (!state || state.mode !== 'create_project' || !['choose_chat', 'await_act'].includes(state.step)) {
+      const home = renderAdminHome(uid, env);
+      return telegramEditMessage(env, message.chat.id, message.message_id, home.text, {
+        reply_markup: home.reply_markup,
+      });
+    }
+
+    const [, , , chatIdRaw, threadIdRaw = '0'] = data.split(':');
+    const chatId = Number(chatIdRaw);
+    const threadId = Number(threadIdRaw);
+
+    if (!Number.isFinite(chatId)) {
+      await telegramEditMessage(env, message.chat.id, message.message_id, 'Не удалось определить chat_id. Попробуйте снова.', {
+        reply_markup: { inline_keyboard: [[{ text: '↩️ В панель', callback_data: 'panel:home' }]] },
+      });
+      return { ok: false, error: 'invalid_chat_id' };
+    }
+
+    let chatRecord = null;
+    if (env.DB) {
+      try {
+        const stored = await env.DB.get(getChatKey(chatId, threadId));
+        if (stored) {
+          chatRecord = JSON.parse(stored);
+        }
+      } catch (error) {
+        console.error('parse chat record error', error);
+      }
+    }
+
+    await saveUserState(env, uid, {
+      mode: 'create_project',
+      step: 'await_act',
+      data: {
+        ...(state.data ?? {}),
+        chat_id: chatId,
+        thread_id: threadId,
+        chat_title: chatRecord?.title ?? null,
+        chat_thread_name: chatRecord?.thread_name ?? null,
+      },
+    });
+
+    const selectedLine = formatChatLine({
+      chat_id: chatId,
+      thread_id: threadId,
+      title: chatRecord?.title ?? null,
+    });
+
+    await telegramEditMessage(
+      env,
+      message.chat.id,
+      message.message_id,
+      [
+        'Чат выбран.',
+        selectedLine,
+        '',
+        'Шаг 3. Введите рекламный аккаунт (например, act_1234567890).',
+      ].join('\n'),
+      {
+        reply_markup: { inline_keyboard: [[{ text: 'Отмена', callback_data: 'proj:create:cancel' }]] },
+      },
+    );
+
+    return { ok: true };
   }
 
   if (data === 'panel:home') {
