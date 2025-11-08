@@ -36,6 +36,52 @@ const ALERT_BILLING_PRESET_TIMES = ['09:00', '10:00', '12:00', '14:00', '18:00']
 const ALERT_ZERO_PRESET_TIMES = ['11:00', '12:00', '13:00'];
 const META_TIMEOUT_MS = 9000;
 const META_API_VERSION = 'v19.0';
+const REPORT_MAX_PAGES = 25;
+const REPORT_INSIGHTS_FIELDS = [
+  'campaign_id',
+  'campaign_name',
+  'objective',
+  'spend',
+  'impressions',
+  'clicks',
+  'ctr',
+  'actions',
+];
+const DEFAULT_REPORT_METRIC = {
+  label: 'Результаты',
+  short: 'result',
+  actions: [
+    'lead',
+    'messaging_conversation_started',
+    'onsite_conversion.messaging_first_reply',
+    'messaging_first_reply',
+  ],
+};
+const REPORT_METRIC_MAP = {
+  LEAD_GENERATION: { label: 'Лиды', short: 'leads', actions: ['lead'] },
+  LEADS: { label: 'Лиды', short: 'leads', actions: ['lead'] },
+  MESSAGES: {
+    label: 'Диалоги',
+    short: 'dialogs',
+    actions: [
+      'messaging_conversation_started',
+      'onsite_conversion.messaging_first_reply',
+      'messaging_first_reply',
+    ],
+  },
+  CONVERSIONS: {
+    label: 'Конверсии',
+    short: 'conv',
+    actions: ['purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_conversion.post_save'],
+  },
+  SALES: { label: 'Конверсии', short: 'conv', actions: ['purchase'] },
+};
+const CURRENCY_SYMBOLS = {
+  USD: '$',
+  EUR: '€',
+  RUB: '₽',
+  UZS: 'сум ',
+};
 const USER_PREFIX = 'tg_user:';
 const USER_ACCOUNTS_PREFIX = 'fb_accts:';
 const ACCOUNT_META_PREFIX = 'acct:';
@@ -832,6 +878,106 @@ async function handleRegisterCommand(env, message) {
   }
 }
 
+async function handleReportCommand(env, message, args) {
+  if (!isAdmin(env, message?.from?.id)) {
+    return telegramSendMessage(env, message, 'Нет доступа. Добавьте ваш ID в ADMIN_IDS.');
+  }
+
+  const code = sanitizeProjectCode(args[0] ?? '');
+  if (!code) {
+    return telegramSendMessage(env, message, 'Укажите код проекта: /report <код> [period]');
+  }
+
+  const periodRaw = args[1] ?? null;
+  const project = await loadProject(env, code);
+  if (!project) {
+    return telegramSendMessage(env, message, `Проект <b>#${escapeHtml(code)}</b> не найден.`, {
+      disable_reply: true,
+    });
+  }
+
+  const period = periodRaw ?? project.period ?? 'yesterday';
+  const periodValid = PERIOD_OPTIONS.some((option) => option.value === period);
+  if (!periodValid) {
+    const variants = PERIOD_OPTIONS.map((option) => option.value).join(', ');
+    return telegramSendMessage(env, message, `Неизвестный период. Используйте один из вариантов: ${variants}`);
+  }
+
+  const timezone = env.DEFAULT_TZ || 'UTC';
+  const range = getPeriodRange(period, timezone);
+  if (!range) {
+    return telegramSendMessage(env, message, 'Не удалось вычислить даты для выбранного периода.');
+  }
+
+  const { token } = await resolveMetaToken(env);
+  if (!token) {
+    return telegramSendMessage(env, message, 'Meta не подключена. Откройте /admin и подключите профиль.');
+  }
+
+  const accountMeta = await loadAccountMeta(env, project.act?.replace(/^act_/i, '') ?? project.act);
+  const currency = getCurrencyFromMeta(accountMeta);
+
+  try {
+    await sendProjectReport(env, project, { period, range, token, currency });
+    return telegramSendMessage(env, message, `Отчёт по <b>#${escapeHtml(project.code)}</b> отправлен в привязанный чат.`, {
+      disable_reply: true,
+    });
+  } catch (error) {
+    console.error('handleReportCommand error', error);
+    return telegramSendMessage(env, message, `Не удалось подготовить отчёт: ${escapeHtml(error?.message ?? 'ошибка')}`);
+  }
+}
+
+async function handleDigestCommand(env, message, args) {
+  if (!isAdmin(env, message?.from?.id)) {
+    return telegramSendMessage(env, message, 'Нет доступа. Добавьте ваш ID в ADMIN_IDS.');
+  }
+
+  const code = sanitizeProjectCode(args[0] ?? '');
+  if (!code) {
+    return telegramSendMessage(env, message, 'Укажите код проекта: /digest <код> [period]');
+  }
+
+  const periodRaw = args[1] ?? null;
+  const project = await loadProject(env, code);
+  if (!project) {
+    return telegramSendMessage(env, message, `Проект <b>#${escapeHtml(code)}</b> не найден.`, {
+      disable_reply: true,
+    });
+  }
+
+  const period = periodRaw ?? project.period ?? 'yesterday';
+  const periodValid = PERIOD_OPTIONS.some((option) => option.value === period);
+  if (!periodValid) {
+    const variants = PERIOD_OPTIONS.map((option) => option.value).join(', ');
+    return telegramSendMessage(env, message, `Неизвестный период. Используйте один из вариантов: ${variants}`);
+  }
+
+  const timezone = env.DEFAULT_TZ || 'UTC';
+  const range = getPeriodRange(period, timezone);
+  if (!range) {
+    return telegramSendMessage(env, message, 'Не удалось вычислить даты для выбранного периода.');
+  }
+
+  const { token } = await resolveMetaToken(env);
+  if (!token) {
+    return telegramSendMessage(env, message, 'Meta не подключена. Откройте /admin и подключите профиль.');
+  }
+
+  const accountMeta = await loadAccountMeta(env, project.act?.replace(/^act_/i, '') ?? project.act);
+  const currency = getCurrencyFromMeta(accountMeta);
+
+  try {
+    await sendProjectDigest(env, project, { period, range, token, currency });
+    return telegramSendMessage(env, message, `Дайджест по <b>#${escapeHtml(project.code)}</b> отправлен в привязанный чат.`, {
+      disable_reply: true,
+    });
+  } catch (error) {
+    console.error('handleDigestCommand error', error);
+    return telegramSendMessage(env, message, `Не удалось подготовить дайджест: ${escapeHtml(error?.message ?? 'ошибка')}`);
+  }
+}
+
 async function handleTelegramCommand(env, message, command, args) {
   switch (command) {
     case '/start':
@@ -842,9 +988,9 @@ async function handleTelegramCommand(env, message, command, args) {
     case '/admin':
       return handleAdminCommand(env, message);
     case '/report':
-      return telegramSendMessage(env, message, 'Команда /report будет реализована на следующем этапе.');
+      return handleReportCommand(env, message, args);
     case '/digest':
-      return telegramSendMessage(env, message, 'Команда /digest будет реализована на следующем этапе.');
+      return handleDigestCommand(env, message, args);
     default:
       if (command.startsWith('/')) {
         return telegramSendMessage(env, message, 'Команда пока не поддерживается.');
@@ -2398,6 +2544,302 @@ function parseDateInputToYmd(rawInput, timezone = 'UTC') {
   return null;
 }
 
+function pickMetricForObjective(objective = '') {
+  const key = String(objective || '').toUpperCase();
+  return REPORT_METRIC_MAP[key] ?? DEFAULT_REPORT_METRIC;
+}
+
+function extractActionCount(actions = [], actionTypes = []) {
+  if (!Array.isArray(actions) || !actions.length) {
+    return 0;
+  }
+
+  const lookup = new Map();
+  for (const entry of actions) {
+    if (!entry || typeof entry !== 'object') continue;
+    const type = entry.action_type;
+    const value = Number(entry.value);
+    if (!type || !Number.isFinite(value)) continue;
+    lookup.set(type, value);
+  }
+
+  for (const type of actionTypes) {
+    if (lookup.has(type)) {
+      return Number(lookup.get(type)) || 0;
+    }
+  }
+
+  return 0;
+}
+
+function formatNumber(value) {
+  const formatter = new Intl.NumberFormat('ru-RU');
+  return formatter.format(Number.isFinite(value) ? value : 0);
+}
+
+function formatCurrency(amount, currency = 'USD') {
+  const safe = Number(amount) || 0;
+  const symbol = CURRENCY_SYMBOLS[currency] ?? `${currency} `;
+  return `${symbol}${safe.toFixed(2)}`;
+}
+
+function formatCpa(amount, currency = 'USD') {
+  if (!Number.isFinite(amount)) {
+    return '—';
+  }
+  return formatCurrency(amount, currency);
+}
+
+function getCurrencyFromMeta(meta) {
+  const currency = meta?.currency;
+  return typeof currency === 'string' && currency.trim().length ? currency : 'USD';
+}
+
+function getWeekdayIndex(ymd, timezone = 'UTC') {
+  if (!isValidYmd(ymd)) {
+    return 0;
+  }
+
+  try {
+    const date = new Date(`${ymd}T00:00:00Z`);
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      weekday: 'short',
+      timeZone: timezone,
+    });
+    const label = formatter.format(date);
+    const map = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+    return map[label] ?? 0;
+  } catch (error) {
+    console.error('getWeekdayIndex error', error);
+    return 0;
+  }
+}
+
+function getPeriodRange(period, timezone = 'UTC') {
+  const today = getTodayYmd(timezone);
+  if (!today) {
+    return null;
+  }
+
+  switch (period) {
+    case 'today':
+      return { since: today, until: today, label: 'сегодня' };
+    case 'yesterday': {
+      const yest = shiftYmd(today, -1);
+      return yest ? { since: yest, until: yest, label: 'вчера' } : null;
+    }
+    case 'last_7d': {
+      const since = shiftYmd(today, -6);
+      return since ? { since, until: today, label: 'последние 7 дней' } : null;
+    }
+    case 'last_week': {
+      const thisMonday = shiftYmd(today, -getWeekdayIndex(today, timezone));
+      if (!thisMonday) return null;
+      const lastMonday = shiftYmd(thisMonday, -7);
+      const lastSunday = shiftYmd(lastMonday, 6);
+      if (!lastMonday || !lastSunday) return null;
+      return { since: lastMonday, until: lastSunday, label: 'прошлая неделя' };
+    }
+    case 'month_to_date': {
+      const [year, month] = today.split('-');
+      const monthStart = `${year}-${month}-01`;
+      return { since: monthStart, until: today, label: 'с начала месяца' };
+    }
+    default:
+      return null;
+  }
+}
+
+async function resolveMetaToken(env) {
+  const admins = parseAdminIds(env);
+  for (const adminId of admins) {
+    try {
+      const profile = await loadUserProfile(env, adminId);
+      if (profile?.fb_long_token) {
+        return { token: profile.fb_long_token, owner: adminId };
+      }
+    } catch (error) {
+      console.error('resolveMetaToken profile error', error);
+    }
+  }
+
+  if (typeof env.FB_LONG_TOKEN === 'string' && env.FB_LONG_TOKEN.trim()) {
+    return { token: env.FB_LONG_TOKEN.trim(), owner: null };
+  }
+
+  return { token: null, owner: null };
+}
+
+async function fetchCampaignInsights(env, project, token, range) {
+  const actId = normalizeAccountId(project?.act ?? '');
+  if (!actId) {
+    throw new Error('У проекта не указан рекламный аккаунт.');
+  }
+
+  const params = {
+    level: 'campaign',
+    time_range: JSON.stringify({ since: range.since, until: range.until }),
+    fields: REPORT_INSIGHTS_FIELDS.join(','),
+    limit: '200',
+  };
+
+  if (Array.isArray(project?.campaigns) && project.campaigns.length) {
+    params.filtering = JSON.stringify([
+      { field: 'campaign.id', operator: 'IN', value: project.campaigns },
+    ]);
+  }
+
+  const items = [];
+  let nextUrl = null;
+
+  for (let page = 0; page < REPORT_MAX_PAGES; page += 1) {
+    const payload = nextUrl
+      ? await fetchJsonWithTimeout(nextUrl, { method: 'GET' }, META_TIMEOUT_MS)
+      : await graphGet(`${actId}/insights`, { token, params });
+
+    if (Array.isArray(payload?.data)) {
+      items.push(...payload.data);
+    }
+
+    if (!payload?.paging?.next) {
+      break;
+    }
+
+    nextUrl = payload.paging.next;
+  }
+
+  return items;
+}
+
+function buildReportRows(insights = [], currency = 'USD') {
+  const rows = [];
+  const metricShortNames = new Set();
+  let totalSpend = 0;
+  let totalResults = 0;
+
+  for (const item of insights) {
+    const spend = Number(item?.spend) || 0;
+    const metric = pickMetricForObjective(item?.objective);
+    const results = extractActionCount(item?.actions ?? [], metric.actions);
+    const cpa = results > 0 ? spend / results : NaN;
+    metricShortNames.add(metric.short);
+
+    rows.push({
+      id: item?.campaign_id ?? '—',
+      name: item?.campaign_name ?? '—',
+      objective: item?.objective ?? '',
+      spend,
+      results,
+      cpa: Number.isFinite(cpa) ? cpa : null,
+      metric,
+    });
+
+    totalSpend += spend;
+    totalResults += results;
+  }
+
+  const totalCpa = totalResults > 0 ? totalSpend / totalResults : null;
+
+  const sorted = rows.sort((a, b) => b.spend - a.spend);
+
+  const lines = sorted.map((row) => {
+    const spendLabel = formatCurrency(row.spend, currency);
+    const resultsLabel = formatNumber(row.results);
+    const cpaLabel = formatCpa(row.cpa, currency);
+    const metricCode = row.metric.short === 'leads' ? 'CPL' : 'CPA';
+    return `• <b>${escapeHtml(row.name)}</b> — ${spendLabel} | ${row.metric.label}: ${resultsLabel} | ${metricCode}: ${cpaLabel}`;
+  });
+
+  const totalMetricCode = metricShortNames.size === 1 && metricShortNames.has('leads') ? 'CPL' : 'CPA';
+  const totalLine = `<b>ИТОГО:</b> ${formatCurrency(totalSpend, currency)} | ${formatNumber(totalResults)} | ${totalMetricCode} ср: ${formatCpa(totalCpa, currency)}`;
+
+  return { rows: sorted, lines, totalSpend, totalResults, totalCpa, totalLine };
+}
+
+function buildReportMessage(project, range, reportData, currency = 'USD') {
+  const header = `#${escapeHtml(project.code)}\n<b>Отчёт</b> (${range.since}–${range.until})`;
+  const body = reportData.lines.length ? reportData.lines.join('\n') : 'Данных за период не найдено.';
+  const footer = reportData.lines.length ? `\n\n${reportData.totalLine}` : '';
+  return `${header}\n${body}${footer}`;
+}
+
+function buildDigestMessage(project, range, reportData, currency = 'USD') {
+  const totalSpend = reportData.totalSpend;
+  const totalResults = reportData.totalResults;
+  const totalCpa = reportData.totalCpa;
+
+  const topSpend = reportData.rows[0];
+  const bestCpa = reportData.rows
+    .filter((row) => Number.isFinite(row.cpa) && row.results > 0)
+    .sort((a, b) => a.cpa - b.cpa)[0];
+
+  const lines = [
+    `#${escapeHtml(project.code)}`,
+    `<b>Дайджест</b> (${range.label})`,
+    `Потрачено: ${formatCurrency(totalSpend, currency)} | Результаты: ${formatNumber(totalResults)} | CPA: ${formatCpa(totalCpa, currency)}`,
+    '',
+    '<b>Инсайты:</b>',
+  ];
+
+  if (topSpend) {
+    lines.push(`1) Топ по расходу: ${escapeHtml(topSpend.name)} — ${formatCurrency(topSpend.spend, currency)}`);
+  } else {
+    lines.push('1) Топ по расходу: —');
+  }
+
+  if (bestCpa) {
+    lines.push(`2) Лучший CPA: ${escapeHtml(bestCpa.name)} — ${formatCpa(bestCpa.cpa, currency)}`);
+  } else {
+    lines.push('2) Лучший CPA: данных нет');
+  }
+
+  lines.push('3) Динамика CPA: сравнение будет добавлено вместе с автоархивом отчётов.');
+
+  return lines.join('\n');
+}
+
+async function telegramSendToProject(env, project, textContent, extra = {}) {
+  const chatId = project?.chat_id;
+  if (!chatId) {
+    throw new Error('У проекта не привязан чат. Используйте /register и обновите проект.');
+  }
+
+  const payload = {
+    chat_id: chatId,
+    text: textContent,
+    parse_mode: extra.parse_mode ?? 'HTML',
+  };
+
+  if (Number.isFinite(project?.thread_id) && project.thread_id > 0) {
+    payload.message_thread_id = project.thread_id;
+  }
+
+  for (const [key, value] of Object.entries(extra)) {
+    if (['parse_mode'].includes(key)) continue;
+    if (typeof value === 'undefined') continue;
+    payload[key] = value;
+  }
+
+  await telegramRequest(env, 'sendMessage', payload);
+  return { ok: true };
+}
+
+async function sendProjectReport(env, project, { period, range, token, currency }) {
+  const insights = await fetchCampaignInsights(env, project, token, range);
+  const reportData = buildReportRows(insights, currency);
+  const message = buildReportMessage(project, range, reportData, currency);
+  await telegramSendToProject(env, project, message, {});
+  return { insightsCount: insights.length };
+}
+
+async function sendProjectDigest(env, project, { period, range, token, currency }) {
+  const insights = await fetchCampaignInsights(env, project, token, range);
+  const reportData = buildReportRows(insights, currency);
+  const message = buildDigestMessage(project, range, reportData, currency);
+  await telegramSendToProject(env, project, message, {});
+  return { insightsCount: insights.length };
+}
+
 function renderProjectDetails(project, chatRecord) {
   const timesLabel = project.times.length ? project.times.join(', ') : '—';
   const chatInfo = project.chat_id
@@ -2478,7 +2920,7 @@ function renderProjectDetails(project, chatRecord) {
   ]);
   inline_keyboard.push([
     { text: '💵 Оплата', callback_data: `proj:billing:open:${project.code}` },
-    { text: '📤 Отчёт', callback_data: `proj:detail:todo:report:${project.code}` },
+    { text: '📤 Отчёт', callback_data: `proj:report:send:${project.code}` },
   ]);
   inline_keyboard.push([
     { text: '📦 Кампании', callback_data: `proj:detail:todo:campaigns:${project.code}` },
@@ -5037,6 +5479,58 @@ async function handleCallbackQuery(env, callbackQuery) {
     return editMessageWithKpi(env, message, code, { preserveAwait: false });
   }
 
+  if (data.startsWith('proj:report:send:')) {
+    const [, , , rawCode = ''] = data.split(':');
+    const code = sanitizeProjectCode(rawCode);
+    if (!isValidProjectCode(code)) {
+      await telegramAnswerCallback(env, callbackQuery, 'Код проекта не распознан.');
+      return { ok: false, error: 'invalid_project_code' };
+    }
+
+    await telegramAnswerCallback(env, callbackQuery, 'Готовим отчёт...');
+
+    const project = await loadProject(env, code);
+    if (!project) {
+      await telegramSendMessage(env, message, `Проект <b>#${escapeHtml(code)}</b> не найден. Обновите список проектов.`, {
+        disable_reply: true,
+      });
+      return { ok: false, error: 'project_not_found' };
+    }
+
+    const period = project.period ?? 'yesterday';
+    const timezone = env.DEFAULT_TZ || 'UTC';
+    const range = getPeriodRange(period, timezone);
+    if (!range) {
+      await telegramSendMessage(env, message, 'Не удалось вычислить период для отчёта.', { disable_reply: true });
+      return { ok: false, error: 'range_failed' };
+    }
+
+    const { token } = await resolveMetaToken(env);
+    if (!token) {
+      await telegramSendMessage(env, message, 'Meta не подключена. Перейдите в /admin и подключите профиль.', {
+        disable_reply: true,
+      });
+      return { ok: false, error: 'meta_missing' };
+    }
+
+    const accountMeta = await loadAccountMeta(env, project.act?.replace(/^act_/i, '') ?? project.act);
+    const currency = getCurrencyFromMeta(accountMeta);
+
+    try {
+      await sendProjectReport(env, project, { period, range, token, currency });
+      await telegramSendMessage(env, message, `Отчёт по <b>#${escapeHtml(project.code)}</b> отправлен в привязанный чат.`, {
+        disable_reply: true,
+      });
+    } catch (error) {
+      console.error('proj:report:send error', error);
+      await telegramSendMessage(env, message, `Не удалось подготовить отчёт: ${escapeHtml(error?.message ?? 'ошибка')}`, {
+        disable_reply: true,
+      });
+    }
+
+    return editMessageWithProject(env, message, project.code);
+  }
+
   if (data.startsWith('proj:detail:todo:')) {
     const [, , , action = '', rawCode = ''] = data.split(':');
     const code = sanitizeProjectCode(rawCode);
@@ -5046,7 +5540,6 @@ async function handleCallbackQuery(env, callbackQuery) {
     }
 
     const hints = {
-      report: 'Кнопка отправки отчёта заработает, когда реализуем /report.',
       campaigns: 'Редактор кампаний запланирован вместе с Meta API.',
     };
 
