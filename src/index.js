@@ -35,6 +35,8 @@ const REPORT_FLAG_TTL_SECONDS = 60 * 60 * 24 * 3;
 const WEEKLY_FLAG_TTL_SECONDS = 60 * 60 * 24 * 14;
 const PORTAL_PREFIX = 'portal:';
 const PORTAL_SIG_BYTES = 24;
+const PROFILE_PREFIX = 'profiles:';
+const PROFILE_TTL_SECONDS = 60 * 60 * 24 * 30;
 const PROJECT_CODE_PATTERN = /^[a-z0-9_-]{3,32}$/i;
 const PERIOD_OPTIONS = [
   { value: 'today', label: 'Сегодня' },
@@ -69,9 +71,26 @@ const REPORT_INSIGHTS_FIELDS = [
   'objective',
   'spend',
   'impressions',
+  'reach',
+  'inline_link_clicks',
+  'landing_page_views',
   'clicks',
   'ctr',
   'frequency',
+  'actions',
+];
+
+const AD_INSIGHTS_FIELDS = [
+  'ad_id',
+  'ad_name',
+  'campaign_id',
+  'spend',
+  'impressions',
+  'reach',
+  'clicks',
+  'ctr',
+  'frequency',
+  'inline_link_clicks',
   'actions',
 ];
 const DEFAULT_REPORT_METRIC = {
@@ -85,11 +104,12 @@ const DEFAULT_REPORT_METRIC = {
   ],
 };
 const REPORT_METRIC_MAP = {
-  LEAD_GENERATION: { label: 'Лиды', short: 'leads', actions: ['lead'] },
-  LEADS: { label: 'Лиды', short: 'leads', actions: ['lead'] },
+  LEAD_GENERATION: { label: 'Лиды', short: 'leads', costLabel: 'CPL', actions: ['lead'] },
+  LEADS: { label: 'Лиды', short: 'leads', costLabel: 'CPL', actions: ['lead'] },
   MESSAGES: {
     label: 'Диалоги',
     short: 'dialogs',
+    costLabel: 'CPD',
     actions: [
       'messaging_conversation_started',
       'onsite_conversion.messaging_first_reply',
@@ -99,9 +119,59 @@ const REPORT_METRIC_MAP = {
   CONVERSIONS: {
     label: 'Конверсии',
     short: 'conv',
-    actions: ['purchase', 'offsite_conversion.fb_pixel_purchase', 'onsite_conversion.post_save'],
+    costLabel: 'CPA',
+    actions: [
+      'purchase',
+      'offsite_conversion.fb_pixel_purchase',
+      'onsite_conversion.post_save',
+      'omni_purchase',
+      'complete_registration',
+      'initiate_checkout',
+    ],
   },
-  SALES: { label: 'Конверсии', short: 'conv', actions: ['purchase'] },
+  SALES: { label: 'Конверсии', short: 'conv', costLabel: 'CPA', actions: ['purchase'] },
+  TRAFFIC: {
+    label: 'Трафик',
+    short: 'traffic',
+    costLabel: 'CPC',
+    actions: ['inline_link_click', 'link_click', 'landing_page_view', 'view_content'],
+  },
+  ENGAGEMENT: {
+    label: 'Вовлечения',
+    short: 'engagement',
+    costLabel: 'CPE',
+    actions: ['post_engagement', 'video_view', 'thruplay', 'page_engagement'],
+  },
+  POST_ENGAGEMENT: {
+    label: 'Вовлечения',
+    short: 'engagement',
+    costLabel: 'CPE',
+    actions: ['post_engagement', 'video_view', 'thruplay', 'page_engagement'],
+  },
+  VIDEO_VIEWS: {
+    label: 'Просмотры',
+    short: 'engagement',
+    costLabel: 'CPV',
+    actions: ['video_view', 'thruplay'],
+  },
+  TRAFFIC_ENGAGEMENT: {
+    label: 'Вовлечения',
+    short: 'engagement',
+    costLabel: 'CPE',
+    actions: ['post_engagement', 'video_view', 'thruplay'],
+  },
+  AWARENESS: {
+    label: 'Охват',
+    short: 'reach',
+    costLabel: 'CPR',
+    actions: ['reach', 'impressions'],
+  },
+  REACH: {
+    label: 'Охват',
+    short: 'reach',
+    costLabel: 'CPR',
+    actions: ['reach', 'impressions'],
+  },
 };
 const REPORT_METRIC_SHORT_MAP = (() => {
   const map = { [DEFAULT_REPORT_METRIC.short.toLowerCase()]: DEFAULT_REPORT_METRIC };
@@ -380,6 +450,10 @@ function getReportPresetKey(uid) {
 
 function getDigestPresetKey(uid) {
   return `${DIGEST_PRESET_PREFIX}${uid}`;
+}
+
+function getProfileKey(campaignId) {
+  return `${PROFILE_PREFIX}${campaignId}`;
 }
 
 function getAutoReportFlagKey(code, ymd, hm) {
@@ -1420,6 +1494,42 @@ async function telegramSendDocument(env, project, { filename, content, caption }
   });
 }
 
+async function telegramSendDirect(env, chatId, textContent, extra = {}) {
+  if (!chatId) {
+    return { ok: false, error: 'chat_id_missing' };
+  }
+
+  const payload = {
+    chat_id: chatId,
+    text: textContent,
+    parse_mode: extra.parse_mode ?? 'HTML',
+  };
+
+  if (typeof extra.disable_notification !== 'undefined') {
+    payload.disable_notification = extra.disable_notification;
+  }
+
+  if (typeof extra.reply_markup !== 'undefined') {
+    payload.reply_markup = extra.reply_markup;
+  }
+
+  if (typeof extra.disable_web_page_preview !== 'undefined') {
+    payload.disable_web_page_preview = extra.disable_web_page_preview;
+  }
+
+  return telegramRequest(env, 'sendMessage', payload);
+}
+
+async function telegramSendDocumentToUser(env, chatId, { filename, content, caption }) {
+  return telegramSendDocumentToChat(env, {
+    chatId,
+    threadId: undefined,
+    filename,
+    content,
+    caption,
+  });
+}
+
 async function telegramSendMessage(env, message, textContent, extra = {}) {
   if (!message?.chat?.id) {
     return { ok: false, error: 'chat_id_missing' };
@@ -1586,6 +1696,8 @@ async function handleReportCommand(env, message, args) {
       currency,
       archive: true,
       origin: 'manual',
+      dmRecipients: [message.from.id].filter(Boolean),
+      dmOptions: { disable_notification: false },
     });
     return telegramSendMessage(env, message, `Отчёт по <b>#${escapeHtml(project.code)}</b> отправлен в привязанный чат.`, {
       disable_reply: true,
@@ -1636,7 +1748,14 @@ async function handleDigestCommand(env, message, args) {
   const currency = getCurrencyFromMeta(accountMeta);
 
   try {
-    await sendProjectDigest(env, project, { period, range, token, currency });
+    await sendProjectDigest(env, project, {
+      period,
+      range,
+      token,
+      currency,
+      dmRecipients: [message.from.id].filter(Boolean),
+      dmOptions: { disable_notification: false },
+    });
     return telegramSendMessage(env, message, `Дайджест по <b>#${escapeHtml(project.code)}</b> отправлен в привязанный чат.`, {
       disable_reply: true,
     });
@@ -4081,6 +4200,26 @@ function normalizeReportFilters(filters = {}) {
   return { minSpend, onlyPositive };
 }
 
+function formatReportFilters(filters = {}, currency = 'USD') {
+  if (!filters || typeof filters !== 'object') {
+    return '';
+  }
+
+  const parts = [];
+  if (Number.isFinite(filters.minSpend) && filters.minSpend > 0) {
+    parts.push(`расход ≥ ${formatCurrency(filters.minSpend, currency)}`);
+  }
+  if (filters.onlyPositive) {
+    parts.push('только кампании с результатами');
+  }
+
+  if (!parts.length) {
+    return 'без фильтров';
+  }
+
+  return parts.join(', ');
+}
+
 function getCurrencyFromMeta(meta) {
   const currency = meta?.currency;
   return typeof currency === 'string' && currency.trim().length ? currency : 'USD';
@@ -4200,6 +4339,280 @@ async function fetchCampaignInsights(env, project, token, range) {
   }
 
   return items;
+}
+
+async function fetchCampaignMetadataMap(env, token, campaignIds = []) {
+  const ids = Array.from(new Set((campaignIds ?? []).map((value) => normalizeCampaignId(value)).filter(Boolean)));
+  const result = new Map();
+
+  if (!ids.length || !token) {
+    return result;
+  }
+
+  const chunks = chunkArray(ids, 25);
+
+  for (const chunk of chunks) {
+    try {
+      const url = new URL(`https://graph.facebook.com/${META_API_VERSION}/`);
+      url.searchParams.set('access_token', token);
+      url.searchParams.set('ids', chunk.join(','));
+      url.searchParams.set(
+        'fields',
+        [
+          'id',
+          'objective',
+          'optimization_goal',
+          'promoted_object{custom_event_type,pixel_event,application_id,product_set_id}',
+        ].join(','),
+      );
+
+      const payload = await fetchJsonWithTimeout(url.toString(), { method: 'GET' }, META_TIMEOUT_MS);
+      for (const [rawId, data] of Object.entries(payload ?? {})) {
+        const campaignId = normalizeCampaignId(rawId);
+        if (!campaignId) continue;
+        result.set(campaignId, {
+          id: campaignId,
+          objective: data?.objective ?? null,
+          optimization_goal: data?.optimization_goal ?? null,
+          promoted_object: data?.promoted_object ?? null,
+        });
+      }
+    } catch (error) {
+      console.error('fetchCampaignMetadataMap error', chunk, error);
+    }
+  }
+
+  return result;
+}
+
+async function fetchAdInsights(env, project, token, range) {
+  const actId = normalizeAccountId(project?.act ?? '');
+  if (!actId) {
+    return [];
+  }
+
+  const params = {
+    level: 'ad',
+    time_range: JSON.stringify({ since: range.since, until: range.until }),
+    fields: AD_INSIGHTS_FIELDS.join(','),
+    limit: '200',
+  };
+
+  if (Array.isArray(project?.campaigns) && project.campaigns.length) {
+    params.filtering = JSON.stringify([
+      { field: 'campaign.id', operator: 'IN', value: project.campaigns },
+    ]);
+  }
+
+  const items = [];
+  let nextUrl = null;
+
+  for (let page = 0; page < REPORT_MAX_PAGES; page += 1) {
+    const payload = nextUrl
+      ? await fetchJsonWithTimeout(nextUrl, { method: 'GET' }, META_TIMEOUT_MS)
+      : await graphGet(`${actId}/insights`, { token, params });
+
+    if (Array.isArray(payload?.data)) {
+      items.push(...payload.data);
+    }
+
+    if (!payload?.paging?.next) {
+      break;
+    }
+
+    nextUrl = payload.paging.next;
+  }
+
+  return items;
+}
+
+function normalizeObjectiveKey(value) {
+  return String(value || '').toUpperCase();
+}
+
+function detectMetricKeyFromActions(actions = []) {
+  const groups = {
+    leads: ['lead', 'onsite_conversion.lead', 'onsite_conversion.lead_grouped'],
+    dialogs: ['messaging_conversation_started', 'onsite_conversion.messaging_first_reply', 'messaging_first_reply'],
+    conv: [
+      'purchase',
+      'offsite_conversion.fb_pixel_purchase',
+      'omni_purchase',
+      'onsite_conversion.post_save',
+      'complete_registration',
+      'initiate_checkout',
+      'subscribe',
+    ],
+    traffic: ['inline_link_click', 'link_click', 'landing_page_view', 'view_content'],
+    engagement: ['post_engagement', 'video_view', 'thruplay', 'page_engagement'],
+  };
+
+  const totals = new Map();
+  for (const [group, types] of Object.entries(groups)) {
+    totals.set(group, extractActionCount(actions, types));
+  }
+
+  let selected = null;
+  let bestValue = 0;
+  for (const [group, value] of totals.entries()) {
+    if (value > bestValue) {
+      bestValue = value;
+      selected = group;
+    }
+  }
+
+  if (!selected || bestValue <= 0) {
+    return null;
+  }
+
+  const mapping = {
+    leads: 'leads',
+    dialogs: 'dialogs',
+    conv: 'conv',
+    traffic: 'traffic',
+    engagement: 'engagement',
+  };
+
+  return mapping[selected] ?? null;
+}
+
+function resolveMetricKey({ objective, optimizationGoal, promotedEvent, actions, fallback }) {
+  const objectiveKey = normalizeObjectiveKey(objective);
+  const goalKey = normalizeObjectiveKey(optimizationGoal);
+  const promotedKey = normalizeObjectiveKey(promotedEvent);
+
+  const objectiveMap = {
+    LEAD_GENERATION: 'leads',
+    LEADS: 'leads',
+    MESSAGES: 'dialogs',
+    CONVERSIONS: 'conv',
+    SALES: 'conv',
+    TRAFFIC: 'traffic',
+    ENGAGEMENT: 'engagement',
+    POST_ENGAGEMENT: 'engagement',
+    VIDEO_VIEWS: 'engagement',
+    AWARENESS: 'reach',
+    REACH: 'reach',
+    BRAND_AWARENESS: 'reach',
+  };
+
+  if (objectiveMap[objectiveKey]) {
+    return objectiveMap[objectiveKey];
+  }
+
+  const goalMap = {
+    OFFSITE_CONVERSIONS: 'conv',
+    LEAD_GENERATION: 'leads',
+    MESSAGES: 'dialogs',
+    QUALITY_LEAD: 'leads',
+    IMPRESSIONS: 'reach',
+    REACH: 'reach',
+    LINK_CLICKS: 'traffic',
+    LANDING_PAGE_VIEWS: 'traffic',
+    PAGE_ENGAGEMENT: 'engagement',
+    VIDEO_VIEWS: 'engagement',
+  };
+
+  if (goalMap[goalKey]) {
+    return goalMap[goalKey];
+  }
+
+  if (promotedKey && /PURCHASE|CHECKOUT|ORDER|PRODUCT/.test(promotedKey)) {
+    return 'conv';
+  }
+
+  const detected = detectMetricKeyFromActions(actions);
+  if (detected) {
+    return detected;
+  }
+
+  return fallback ?? DEFAULT_REPORT_METRIC.short;
+}
+
+function hasProfileChanged(previous, next) {
+  if (!previous) return true;
+  if (!next) return false;
+  return (
+    previous.metric !== next.metric ||
+    normalizeObjectiveKey(previous.objective) !== normalizeObjectiveKey(next.objective) ||
+    normalizeObjectiveKey(previous.optimization_goal) !== normalizeObjectiveKey(next.optimization_goal) ||
+    normalizeObjectiveKey(previous.promoted_event) !== normalizeObjectiveKey(next.promoted_event)
+  );
+}
+
+async function resolveCampaignProfiles(env, project, insights, token) {
+  const kv = getReportsKv(env);
+  if (!kv) {
+    return new Map();
+  }
+
+  const campaignIds = Array.from(
+    new Set((insights ?? []).map((item) => normalizeCampaignId(item?.campaign_id)).filter(Boolean)),
+  );
+
+  const existing = new Map();
+  for (const campaignId of campaignIds) {
+    try {
+      const raw = await kv.get(getProfileKey(campaignId));
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        existing.set(campaignId, parsed);
+      }
+    } catch (error) {
+      console.error('resolveCampaignProfiles load error', campaignId, error);
+    }
+  }
+
+  const metadataMap = await fetchCampaignMetadataMap(env, token, campaignIds);
+  const result = new Map();
+
+  for (const insight of insights ?? []) {
+    const campaignId = normalizeCampaignId(insight?.campaign_id);
+    if (!campaignId) continue;
+
+    const metadata = metadataMap.get(campaignId) ?? {};
+    const stored = existing.get(campaignId) ?? null;
+    const metricKey = resolveMetricKey({
+      objective: metadata.objective ?? insight?.objective,
+      optimizationGoal: metadata.optimization_goal,
+      promotedEvent: metadata.promoted_object?.custom_event_type ?? metadata.promoted_object?.pixel_event,
+      actions: insight?.actions ?? [],
+      fallback: stored?.metric,
+    });
+
+    const metricConfig = getMetricByShortCode(metricKey);
+    const profile = {
+      id: campaignId,
+      metric: metricConfig.short,
+      metric_label: metricConfig.label,
+      cost_label: metricConfig.costLabel ?? null,
+      objective: metadata.objective ?? insight?.objective ?? null,
+      optimization_goal: metadata.optimization_goal ?? null,
+      promoted_event:
+        metadata.promoted_object?.custom_event_type ??
+        metadata.promoted_object?.pixel_event ??
+        metadata.promoted_object?.application_id ??
+        metadata.promoted_object?.product_set_id ??
+        null,
+      updated_at: new Date().toISOString(),
+      source: hasProfileChanged(stored, profile) ? 'auto' : stored?.source ?? 'auto',
+    };
+
+    result.set(campaignId, profile);
+
+    if (hasProfileChanged(stored, profile)) {
+      try {
+        await kv.put(getProfileKey(campaignId), JSON.stringify(profile), {
+          expirationTtl: PROFILE_TTL_SECONDS,
+        });
+      } catch (error) {
+        console.error('resolveCampaignProfiles save error', campaignId, error);
+      }
+    }
+  }
+
+  return result;
 }
 
 async function fetchAccountCampaignList(env, project, token, { limit = 200 } = {}) {
@@ -4341,27 +4754,89 @@ function applyReportFilters(insights = [], filters = {}) {
   return result;
 }
 
-function buildReportRows(insights = [], currency = 'USD') {
+function getMetricCostLabel(metric) {
+  if (!metric) {
+    return 'CPA';
+  }
+
+  if (metric.costLabel) {
+    return metric.costLabel;
+  }
+
+  switch (metric.short) {
+    case 'leads':
+      return 'CPL';
+    case 'dialogs':
+      return 'CPD';
+    default:
+      return 'CPA';
+  }
+}
+
+function computeMetricResults(item, metricConfig) {
+  if (!metricConfig) {
+    return { value: 0, source: 'none' };
+  }
+
+  const actions = Array.isArray(item?.actions) ? item.actions : [];
+  switch (metricConfig.short) {
+    case 'traffic': {
+      const fromActions = extractActionCount(actions, metricConfig.actions ?? []);
+      const inlineClicks = Number(item?.inline_link_clicks) || 0;
+      const landingViews = Number(item?.landing_page_views) || 0;
+      const clicks = Number(item?.clicks) || 0;
+      const value = Math.max(fromActions, inlineClicks, landingViews, clicks);
+      return { value, source: 'traffic' };
+    }
+    case 'engagement': {
+      const fromActions = extractActionCount(actions, metricConfig.actions ?? []);
+      const clicks = Number(item?.clicks) || 0;
+      const value = Math.max(fromActions, clicks);
+      return { value, source: 'engagement' };
+    }
+    case 'reach': {
+      const reach = Number(item?.reach) || 0;
+      const impressions = Number(item?.impressions) || 0;
+      const fromActions = extractActionCount(actions, metricConfig.actions ?? []);
+      const value = reach || impressions || fromActions;
+      return { value, source: reach ? 'reach' : impressions ? 'impressions' : 'actions' };
+    }
+    default: {
+      const value = extractActionCount(actions, metricConfig.actions ?? []);
+      return { value, source: 'actions' };
+    }
+  }
+}
+
+function buildReportRows(insights = [], currency = 'USD', profiles = new Map()) {
   const rows = [];
   const metricShortNames = new Set();
+  const metricCostCodes = new Set();
   let totalSpend = 0;
   let totalResults = 0;
 
   for (const item of insights) {
     const spend = Number(item?.spend) || 0;
-    const metric = pickMetricForObjective(item?.objective);
-    const results = extractActionCount(item?.actions ?? [], metric.actions);
+    const campaignId = normalizeCampaignId(item?.campaign_id);
+    const profile = (profiles instanceof Map && profiles.get(campaignId)) || null;
+    const metric = profile ? getMetricByShortCode(profile.metric) : pickMetricForObjective(item?.objective);
+    const resultInfo = computeMetricResults(item, metric);
+    const results = Number(resultInfo.value) || 0;
     const cpa = results > 0 ? spend / results : NaN;
     metricShortNames.add(metric.short);
+    metricCostCodes.add(getMetricCostLabel(metric));
 
     rows.push({
-      id: item?.campaign_id ?? '—',
+      id: campaignId || item?.campaign_id || '—',
       name: item?.campaign_name ?? '—',
       objective: item?.objective ?? '',
       spend,
       results,
       cpa: Number.isFinite(cpa) ? cpa : null,
       metric,
+      costLabel: getMetricCostLabel(metric),
+      profile,
+      resultSource: resultInfo.source,
     });
 
     totalSpend += spend;
@@ -4376,11 +4851,16 @@ function buildReportRows(insights = [], currency = 'USD') {
     const spendLabel = formatCurrency(row.spend, currency);
     const resultsLabel = formatNumber(row.results);
     const cpaLabel = formatCpa(row.cpa, currency);
-    const metricCode = row.metric.short === 'leads' ? 'CPL' : 'CPA';
+    const metricCode = getMetricCostLabel(row.metric);
     return `• <b>${escapeHtml(row.name)}</b> — ${spendLabel} | ${row.metric.label}: ${resultsLabel} | ${metricCode}: ${cpaLabel}`;
   });
 
-  const totalMetricCode = metricShortNames.size === 1 && metricShortNames.has('leads') ? 'CPL' : 'CPA';
+  let totalMetricCode = 'CPA';
+  if (metricCostCodes.size === 1) {
+    totalMetricCode = Array.from(metricCostCodes)[0];
+  } else if (metricShortNames.size === 1 && metricShortNames.has('leads')) {
+    totalMetricCode = 'CPL';
+  }
   const totalLine = `<b>ИТОГО:</b> ${formatCurrency(totalSpend, currency)} | ${formatNumber(totalResults)} | ${totalMetricCode} ср: ${formatCpa(totalCpa, currency)}`;
 
   return { rows: sorted, lines, totalSpend, totalResults, totalCpa, totalLine };
@@ -4394,46 +4874,76 @@ function sumSpend(insights = []) {
   return total;
 }
 
-function buildReportMessage(project, range, reportData, currency = 'USD') {
-  const header = `#${escapeHtml(project.code)}\n<b>Отчёт</b> (${range.since}–${range.until})`;
-  const body = reportData.lines.length ? reportData.lines.join('\n') : 'Данных за период не найдено.';
-  const footer = reportData.lines.length ? `\n\n${reportData.totalLine}` : '';
-  return `${header}\n${body}${footer}`;
+function buildReportCardMessage(project, range, reportData, currency = 'USD') {
+  const lines = [
+    `#${escapeHtml(project.code)}`,
+    `<b>Отчёт</b> (${range.since}–${range.until})`,
+  ];
+
+  if (!reportData.rows.length) {
+    lines.push('Данных за период не найдено.');
+    return lines.join('\n');
+  }
+
+  const topRows = reportData.rows.slice(0, 3);
+  for (const row of topRows) {
+    const spendLabel = formatCurrency(row.spend, currency);
+    const resultsLabel = formatNumber(row.results);
+    const costLabel = formatCpa(row.cpa, currency);
+    const code = getMetricCostLabel(row.metric);
+    lines.push(`• <b>${escapeHtml(row.name)}</b> — ${spendLabel} | ${row.metric.label}: ${resultsLabel} | ${code}: ${costLabel}`);
+  }
+
+  if (reportData.rows.length > topRows.length) {
+    lines.push(`… и ещё ${reportData.rows.length - topRows.length} кампаний в списке`);
+  }
+
+  lines.push('', reportData.totalLine);
+  return lines.filter(Boolean).join('\n');
+}
+
+function buildReportDetailMessage(project, range, reportData, currency = 'USD', filters = {}) {
+  const lines = [
+    `#${escapeHtml(project.code)}`,
+    `<b>Подробный отчёт</b> (${range.since}–${range.until})`,
+  ];
+
+  const filterLabel = formatReportFilters(filters, currency);
+  if (filterLabel) {
+    lines.push(`Фильтры: ${escapeHtml(filterLabel)}`);
+  }
+
+  if (!reportData.rows.length) {
+    lines.push('', 'Кампании не найдены для выбранных условий.');
+    return lines.join('\n');
+  }
+
+  lines.push('', '<b>Кампании:</b>');
+  for (const row of reportData.rows) {
+    const spendLabel = formatCurrency(row.spend, currency);
+    const resultsLabel = formatNumber(row.results);
+    const costLabel = formatCpa(row.cpa, currency);
+    const code = getMetricCostLabel(row.metric);
+    const metricLabel = row.metric?.label ?? 'Результаты';
+    lines.push(
+      `• <b>${escapeHtml(row.name)}</b> — ${spendLabel} | ${metricLabel}: ${resultsLabel} | ${code}: ${costLabel}`,
+    );
+  }
+
+  lines.push('', reportData.totalLine);
+  return lines.join('\n');
 }
 
 function buildDigestMessage(project, range, reportData, currency = 'USD') {
-  const totalSpend = reportData.totalSpend;
-  const totalResults = reportData.totalResults;
-  const totalCpa = reportData.totalCpa;
+  const creativeStats = buildCreativeStats([], new Map(), currency);
+  return buildDigestChatMessage(project, range, reportData, creativeStats, currency);
+}
 
-  const topSpend = reportData.rows[0];
-  const bestCpa = reportData.rows
-    .filter((row) => Number.isFinite(row.cpa) && row.results > 0)
-    .sort((a, b) => a.cpa - b.cpa)[0];
-
-  const lines = [
-    `#${escapeHtml(project.code)}`,
-    `<b>Дайджест</b> (${range.label})`,
-    `Потрачено: ${formatCurrency(totalSpend, currency)} | Результаты: ${formatNumber(totalResults)} | CPA: ${formatCpa(totalCpa, currency)}`,
-    '',
-    '<b>Инсайты:</b>',
-  ];
-
-  if (topSpend) {
-    lines.push(`1) Топ по расходу: ${escapeHtml(topSpend.name)} — ${formatCurrency(topSpend.spend, currency)}`);
-  } else {
-    lines.push('1) Топ по расходу: —');
-  }
-
-  if (bestCpa) {
-    lines.push(`2) Лучший CPA: ${escapeHtml(bestCpa.name)} — ${formatCpa(bestCpa.cpa, currency)}`);
-  } else {
-    lines.push('2) Лучший CPA: данных нет');
-  }
-
-  lines.push('3) Динамика CPA: сравнение будет добавлено вместе с автоархивом отчётов.');
-
-  return lines.join('\n');
+function buildDigestMessages(project, range, reportData, creativeStats, currency = 'USD') {
+  return {
+    chat: buildDigestChatMessage(project, range, reportData, creativeStats, currency),
+    detail: buildDigestDetailMessage(project, range, reportData, creativeStats, currency),
+  };
 }
 
 async function telegramSendToProject(env, project, textContent, extra = {}) {
@@ -4476,6 +4986,8 @@ async function sendProjectReport(
     archive = false,
     sendCsv = false,
     pushSheets = false,
+    dmRecipients = [],
+    dmOptions = {},
   },
 ) {
   const payload = await buildProjectReport(env, project, { period, range, token, currency, filters });
@@ -4484,15 +4996,17 @@ async function sendProjectReport(
   let csvInfo = null;
   let sheetsInfo = null;
   let csvFilename = null;
+  let csvContent = null;
+  const dmResults = [];
 
   if (deliverToChat !== false) {
-    await telegramSendToProject(env, project, payload.message, {});
+    await telegramSendToProject(env, project, payload.chatMessage ?? payload.message, {});
     delivered = true;
   }
 
   if (sendCsv) {
     try {
-      const csvContent = buildReportCsv(project, range, payload, currency);
+      csvContent = buildReportCsv(project, range, payload, currency);
       csvFilename = `report_${project.code}_${range?.since ?? 'from'}_${range?.until ?? 'to'}.csv`;
       await telegramSendDocument(env, project, {
         filename: csvFilename,
@@ -4523,33 +5037,122 @@ async function sendProjectReport(
     sheetsInfo = await pushReportToSheets(env, project, payload, { period, range });
   }
 
+  if (Array.isArray(dmRecipients) && dmRecipients.length) {
+    const text = payload.detailMessage ?? payload.chatMessage ?? payload.message;
+    if (!csvContent && payload.reportData?.rows?.length) {
+      try {
+        csvContent = buildReportCsv(project, range, payload, currency);
+        csvFilename = csvFilename ?? `report_${project.code}_${range?.since ?? 'from'}_${range?.until ?? 'to'}.csv`;
+      } catch (error) {
+        console.error('sendProjectReport dm csv build error', error);
+        csvContent = null;
+      }
+    }
+
+    for (const recipient of dmRecipients) {
+      try {
+        await telegramSendDirect(env, recipient, text, {
+          disable_notification: dmOptions.disable_notification ?? true,
+          disable_web_page_preview: dmOptions.disable_web_page_preview ?? true,
+        });
+
+        if (csvContent) {
+          await telegramSendDocumentToUser(env, recipient, {
+            filename: csvFilename ?? `report_${project.code}.csv`,
+            content: csvContent,
+            caption: `CSV отчёт #${escapeHtml(project.code)} (${range?.since ?? ''}–${range?.until ?? ''})`,
+          });
+        }
+
+        dmResults.push({ chatId: recipient, ok: true });
+      } catch (error) {
+        console.error('sendProjectReport dm error', recipient, error);
+        dmResults.push({ chatId: recipient, ok: false, error: error?.message ?? String(error) });
+      }
+    }
+  }
+
   return {
     payload,
     delivered,
     archiveKey,
     csvInfo,
     sheets: sheetsInfo,
+    dm: dmResults,
   };
 }
 
 async function buildProjectDigest(env, project, { period, range, token, currency }) {
   const insights = await fetchCampaignInsights(env, project, token, range);
-  const reportData = buildReportRows(insights, currency);
-  const message = buildDigestMessage(project, range, reportData, currency);
+  const profiles = await resolveCampaignProfiles(env, project, insights, token);
+  const reportData = buildReportRows(insights, currency, profiles);
+  const adInsights = await fetchAdInsights(env, project, token, range);
+  const creativeStats = buildCreativeStats(adInsights, profiles, currency);
+  const messages = buildDigestMessages(project, range, reportData, creativeStats, currency);
+  const csv = buildDigestCsv(project, range, creativeStats, currency);
+
   return {
     period,
     range,
     currency,
     insights,
     reportData,
-    message,
+    adInsights,
+    creativeStats,
+    chatMessage: messages.chat,
+    detailMessage: messages.detail,
+    csv,
   };
 }
 
-async function sendProjectDigest(env, project, { period, range, token, currency }) {
+async function sendProjectDigest(
+  env,
+  project,
+  { period, range, token, currency, deliverToChat = true, dmRecipients = [], dmOptions = {}, sendCsvToChat = false },
+) {
   const payload = await buildProjectDigest(env, project, { period, range, token, currency });
-  await telegramSendToProject(env, project, payload.message, {});
-  return { insightsCount: payload.insights.length, payload };
+  const dmResults = [];
+
+  if (deliverToChat !== false) {
+    await telegramSendToProject(env, project, payload.chatMessage, {});
+    if (sendCsvToChat && payload.csv) {
+      try {
+        const filename = `digest_${project.code}_${range?.since ?? 'from'}_${range?.until ?? 'to'}.csv`;
+        await telegramSendDocument(env, project, {
+          filename,
+          content: payload.csv,
+          caption: `CSV дайджест #${escapeHtml(project.code)} (${range?.since ?? ''}–${range?.until ?? ''})`,
+        });
+      } catch (error) {
+        console.error('sendProjectDigest chat csv error', error);
+      }
+    }
+  }
+
+  if (Array.isArray(dmRecipients) && dmRecipients.length) {
+    for (const recipient of dmRecipients) {
+      try {
+        await telegramSendDirect(env, recipient, payload.detailMessage ?? payload.chatMessage, {
+          disable_notification: dmOptions.disable_notification ?? true,
+          disable_web_page_preview: dmOptions.disable_web_page_preview ?? true,
+        });
+        if (payload.csv) {
+          const filename = `digest_${project.code}_${range?.since ?? 'from'}_${range?.until ?? 'to'}_detail.csv`;
+          await telegramSendDocumentToUser(env, recipient, {
+            filename,
+            content: payload.csv,
+            caption: `CSV дайджест #${escapeHtml(project.code)} (${range?.since ?? ''}–${range?.until ?? ''})`,
+          });
+        }
+        dmResults.push({ chatId: recipient, ok: true });
+      } catch (error) {
+        console.error('sendProjectDigest dm error', recipient, error);
+        dmResults.push({ chatId: recipient, ok: false, error: error?.message ?? String(error) });
+      }
+    }
+  }
+
+  return { insightsCount: payload.insights.length, payload, dm: dmResults };
 }
 
 async function telegramNotifyAdmins(env, textContent, extra = {}) {
@@ -4580,16 +5183,21 @@ async function telegramNotifyAdmins(env, textContent, extra = {}) {
 
 async function buildProjectReport(env, project, { period, range, token, currency, filters }) {
   const insights = await fetchCampaignInsights(env, project, token, range);
+  const profiles = await resolveCampaignProfiles(env, project, insights, token);
   const appliedFilters = normalizeReportFilters(filters ?? {});
   const filteredInsights = applyReportFilters(insights, appliedFilters);
-  const reportData = buildReportRows(filteredInsights, currency);
-  const message = buildReportMessage(project, range, reportData, currency);
+  const reportData = buildReportRows(filteredInsights, currency, profiles);
+  const chatMessage = buildReportCardMessage(project, range, reportData, currency);
+  const detailMessage = buildReportDetailMessage(project, range, reportData, currency, appliedFilters);
   return {
-    message,
+    message: chatMessage,
+    chatMessage,
+    detailMessage,
     reportData,
     insights,
     filteredInsights,
     filters: appliedFilters,
+    profiles,
   };
 }
 
@@ -4711,7 +5319,7 @@ async function archiveReportRecord(env, project, { payload, period, range, origi
       cpa: row.cpa,
       metric: row.metric?.short ?? null,
     })),
-    message: payload.message ?? '',
+    message: payload.chatMessage ?? payload.message ?? '',
   };
 
   if (csvFilename) {
@@ -10408,7 +11016,7 @@ async function handleCallbackQuery(env, callbackQuery) {
           `Фильтры: ${escapeHtml(describeReportFilters(payload.filters))}`,
           `Кампаний: ${payload.filteredInsights.length}/${payload.insights.length}`,
           '',
-          payload.message,
+          payload.detailMessage ?? payload.chatMessage,
         ];
 
         await telegramSendMessage(env, message, summaryLines.join('\n'), {
@@ -10588,7 +11196,7 @@ async function handleCallbackQuery(env, callbackQuery) {
           `<b>Предпросмотр дайджеста #${escapeHtml(project.code)}</b>`,
           `Период: ${escapeHtml(getPeriodLabel(period))}${range ? ` (${range.since}–${range.until})` : ''}`,
           '',
-          payload.message,
+          payload.detailMessage ?? payload.chatMessage,
         ];
 
         await telegramSendMessage(env, message, summaryLines.join('\n'), {
