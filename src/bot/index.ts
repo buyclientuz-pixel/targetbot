@@ -1,5 +1,5 @@
 import { Bot, session } from "grammy";
-import { conversations } from "@grammyjs/conversations";
+import { conversations, createConversation } from "@grammyjs/conversations";
 import { limit } from "@grammyjs/ratelimiter";
 import { loadEnv } from "../utils/env";
 import { BotContext, SessionData } from "./types";
@@ -7,6 +7,8 @@ import { registerCommonHandlers } from "./handlers/common";
 import { adminRouter } from "./admin/router";
 import { isAdminComposer } from "./admin/guards";
 import { broadcastScene } from "./admin/scenes/broadcastScene";
+import { addProjectScene } from "./admin/scenes/addProjectScene";
+import { linkChatScene } from "./admin/scenes/linkChatScene";
 
 const env = loadEnv();
 
@@ -40,6 +42,9 @@ bot.use(
 );
 
 bot.use(conversations());
+
+bot.use(createConversation(addProjectScene, "addProject"));
+bot.use(createConversation(linkChatScene, "linkChat"));
 
 bot.use(isAdminComposer());
 

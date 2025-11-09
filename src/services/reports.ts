@@ -1,55 +1,17 @@
 import dayjs from "dayjs";
 import timezone from "dayjs/plugin/timezone";
 import utc from "dayjs/plugin/utc";
-import { kvGet, kvList, kvPut } from "./kv";
 import { getProjectObjective, getProjectInsights } from "./meta";
-import { BillingSnapshot, DigestPreset, Project, ReportSchedule } from "../types/domain";
+import {
+  BillingSnapshot,
+  DigestPreset,
+  Project,
+  ReportSchedule,
+} from "../types/domain";
 import { formatCurrency, formatPercent } from "../utils/format";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
-
-const PROJECT_PREFIX = "project:";
-const SCHEDULE_PREFIX = "report:schedule:";
-
-export async function getProject(projectId: string): Promise<Project | null> {
-  const raw = await kvGet(`${PROJECT_PREFIX}${projectId}`);
-  if (!raw) {
-    return null;
-  }
-  return JSON.parse(raw) as Project;
-}
-
-export async function listProjects(): Promise<Project[]> {
-  const projects: Project[] = [];
-  let cursor: string | undefined;
-  do {
-    const { keys, cursor: next } = await kvList(PROJECT_PREFIX, cursor);
-    cursor = next;
-    for (const key of keys) {
-      const raw = await kvGet(key);
-      if (!raw) continue;
-      projects.push(JSON.parse(raw) as Project);
-    }
-  } while (cursor);
-  return projects;
-}
-
-export async function saveProject(project: Project): Promise<void> {
-  await kvPut(`${PROJECT_PREFIX}${project.id}`, JSON.stringify(project));
-}
-
-export async function saveSchedule(schedule: ReportSchedule): Promise<void> {
-  await kvPut(`${SCHEDULE_PREFIX}${schedule.projectId}`, JSON.stringify(schedule));
-}
-
-export async function getSchedule(projectId: string): Promise<ReportSchedule | null> {
-  const raw = await kvGet(`${SCHEDULE_PREFIX}${projectId}`);
-  if (!raw) {
-    return null;
-  }
-  return JSON.parse(raw) as ReportSchedule;
-}
 
 export interface DigestResult {
   title: string;
