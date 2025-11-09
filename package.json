@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "npx wrangler@4.46.0 dev",
-    "deploy": "npx wrangler@4.46.0 deploy",
+    "predeploy": "node scripts/clean-npm-proxy.mjs",
+    "deploy": "CI=1 npx -y wrangler@4.46.0 deploy",
     "clean:npm-proxy": "node scripts/clean-npm-proxy.mjs",
     "precheck:config": "node scripts/clean-npm-proxy.mjs",
     "check:config": "node scripts/check-config.mjs"
