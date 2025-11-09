@@ -20,6 +20,9 @@ const TELEGRAM_LOG_LIMIT = 50;
 const CHAT_KEY_PREFIX = 'chat:';
 const PROJECT_KEY_PREFIX = 'project:';
 const META_STATUS_KEY = 'meta:status';
+const META_TOKEN_KEY = 'meta:token';
+const META_DEFAULT_GRAPH_VERSION = 'v18.0';
+const META_OVERVIEW_MAX_AGE_MS = 2 * 60 * 1000;
 
 function resolveDefaultWebhookUrl(config, { origin = '' } = {}) {
   if (config?.telegramWebhookUrl) {
@@ -82,6 +85,145 @@ function formatCpaRange(minValue, maxValue) {
   return `${minText} / ${maxText}`;
 }
 
+function parseMetaCurrency(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const raw = typeof value === 'string' ? value.trim() : value;
+  const amount = Number(raw);
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+
+  if (typeof raw === 'string' && raw.includes('.')) {
+    return amount;
+  }
+
+  return amount / 100;
+}
+
+function describeAccountStatus(code) {
+  switch (Number(code)) {
+    case 1:
+      return 'Активен';
+    case 2:
+      return 'Отключен';
+    case 3:
+      return 'Проблемы с платежом';
+    case 7:
+      return 'Требуется оплата';
+    case 8:
+      return 'Закрывается';
+    case 9:
+      return 'Закрыт';
+    case 101:
+      return 'Проверка риска';
+    case 102:
+      return 'Риск: требуется оплата';
+    case 201:
+      return 'Подозрение на мошенничество';
+    case 202:
+      return 'Мошенничество: отключен';
+    default:
+      return code ? `Статус ${code}` : 'Неизвестно';
+  }
+}
+
+function describeDisableReason(code) {
+  switch (Number(code)) {
+    case 0:
+      return '';
+    case 1:
+      return 'Нарушения рекламы';
+    case 2:
+      return 'Нарушение Integrity';
+    case 3:
+      return 'IP Review';
+    case 4:
+      return 'Нарушения политики бизнеса';
+    case 5:
+      return 'Платёжная активность';
+    case 7:
+      return 'Непогашенный баланс';
+    case 8:
+      return 'Подозрительная активность';
+    case 9:
+      return 'Оспариваемые списания';
+    case 10:
+      return 'Нарушение платежей';
+    case 16:
+      return 'Ограничения страны/валюты';
+    case 17:
+      return 'Требуется подтверждение оплаты';
+    default:
+      return code ? `Отключено (код ${code})` : '';
+  }
+}
+
+function derivePaymentStatus(accountStatus, disableReason, spendCapAction) {
+  const code = Number(accountStatus);
+  if (code === 3 || code === 7) {
+    return 'Проблемы с оплатой';
+  }
+  if (code === 8 || code === 9) {
+    return 'Отключено';
+  }
+  if (disableReason) {
+    return 'Ограничения';
+  }
+  if (spendCapAction && String(spendCapAction).toUpperCase() === 'STOP_DELIVERY') {
+    return 'Лимит расхода достигнут';
+  }
+  return 'Активен';
+}
+
+function extractLast4Digits(value) {
+  if (!value) return '';
+  const text = String(value);
+  const match = text.match(/(\d{4})(?!.*\d)/);
+  return match ? match[1] : '';
+}
+
+function collectCpaSamples(insights) {
+  const samples = [];
+  if (!Array.isArray(insights)) {
+    return samples;
+  }
+
+  for (const entry of insights) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+    const cpa = Number(entry.cpa);
+    if (Number.isFinite(cpa)) {
+      samples.push(cpa);
+    }
+    if (Array.isArray(entry.cost_per_action_type)) {
+      for (const action of entry.cost_per_action_type) {
+        const value = Number(action?.value ?? action?.cost ?? action?.amount);
+        if (Number.isFinite(value)) {
+          samples.push(value);
+        }
+      }
+    }
+  }
+
+  return samples;
+}
+
+function cloneMetaStatus(status) {
+  if (!status || typeof status !== 'object') {
+    return null;
+  }
+  try {
+    return JSON.parse(JSON.stringify(status));
+  } catch (error) {
+    console.warn('Failed to clone meta status', error);
+    return { ...status };
+  }
+}
+
 function pickMetaStatus(envStatus) {
   if (!envStatus || typeof envStatus !== 'object') {
     return null;
@@ -103,6 +245,18 @@ function buildMetaAdminSection(metaStatus, { timezone } = {}) {
   const connected = Boolean(facebook.connected);
   const connectionEmoji = connected ? '🟢' : '🔴';
   section.push(`Статус: ${connectionEmoji} ${connected ? 'Подключено' : 'Не подключено'}`);
+
+  if (!connected && !facebook.error && (!Array.isArray(facebook.adAccounts) || facebook.adAccounts.length === 0)) {
+    section.push('Данные Meta ещё не загружены.');
+  }
+
+  if (facebook.stale) {
+    section.push('⚠️ Данные требуют обновления — показаны сохранённые значения.');
+  }
+
+  if (facebook.error) {
+    section.push(`Ошибка Meta: ${escapeHtml(String(facebook.error))}`);
+  }
 
   if (facebook.accountName) {
     section.push(`Аккаунт: <b>${escapeHtml(facebook.accountName)}</b>`);
@@ -463,6 +617,412 @@ class KvStorage {
     return pickMetaStatus(data);
   }
 }
+
+class MetaClient {
+  constructor({ accessToken, version = META_DEFAULT_GRAPH_VERSION, timeoutMs = 10000, fetcher = fetch } = {}) {
+    this.accessToken = typeof accessToken === 'string' ? accessToken.trim() : '';
+    this.version = version || META_DEFAULT_GRAPH_VERSION;
+    this.timeoutMs = timeoutMs;
+    this.fetcher = fetcher;
+  }
+
+  get isUsable() {
+    return this.accessToken.length > 0;
+  }
+
+  buildUrl(path, searchParams = null) {
+    const base = `https://graph.facebook.com/${this.version.replace(/^\/+|\/+$/g, '')}/`;
+    let url;
+    if (typeof path === 'string' && /^https?:/i.test(path)) {
+      url = new URL(path);
+    } else {
+      const normalized = typeof path === 'string' ? path.replace(/^\/+/, '') : '';
+      url = new URL(normalized, base);
+    }
+
+    if (searchParams && typeof searchParams === 'object') {
+      for (const [key, value] of Object.entries(searchParams)) {
+        if (value === undefined || value === null) continue;
+        url.searchParams.set(key, String(value));
+      }
+    }
+
+    url.searchParams.set('access_token', this.accessToken);
+    return url;
+  }
+
+  async request(path, { searchParams, method = 'GET', body } = {}) {
+    if (!this.isUsable) {
+      throw new Error('Meta access token отсутствует');
+    }
+
+    const url = this.buildUrl(path, searchParams);
+    const init = { method, headers: {} };
+    if (body) {
+      init.body = typeof body === 'string' ? body : JSON.stringify(body);
+      init.headers['content-type'] = 'application/json';
+    }
+
+    const controller = createAbort(this.timeoutMs);
+    init.signal = controller.signal;
+
+    try {
+      const response = await this.fetcher(url.toString(), init);
+      const text = await response.text();
+      const data = text ? safeJsonParse(text) ?? text : null;
+
+      if (!response.ok) {
+        const description = data?.error?.message || data?.message || text || `HTTP ${response.status}`;
+        const error = new Error(description);
+        error.code = data?.error?.code;
+        throw error;
+      }
+
+      if (data && typeof data === 'object' && data.error) {
+        const error = new Error(data.error?.message || 'Meta API error');
+        error.code = data.error?.code;
+        throw error;
+      }
+
+      return data;
+    } finally {
+      controller.dispose();
+    }
+  }
+}
+
+class MetaService {
+  constructor({ config, storage, env, fetcher = fetch } = {}) {
+    this.config = config;
+    this.storage = storage;
+    this.env = env;
+    this.fetcher = fetcher;
+  }
+
+  async resolveAccessToken() {
+    if (this.config?.metaLongToken) {
+      return this.config.metaLongToken;
+    }
+
+    if (typeof this.env?.FB_LONG_TOKEN === 'string' && this.env.FB_LONG_TOKEN.trim()) {
+      return this.env.FB_LONG_TOKEN.trim();
+    }
+
+    if (typeof this.env?.META_LONG_TOKEN === 'string' && this.env.META_LONG_TOKEN.trim()) {
+      return this.env.META_LONG_TOKEN.trim();
+    }
+
+    const namespace = resolveKv(this.env, 'DB');
+    if (namespace && typeof namespace.get === 'function') {
+      try {
+        const raw = await namespace.get(META_TOKEN_KEY);
+        if (typeof raw === 'string' && raw.trim()) {
+          const parsed = safeJsonParse(raw);
+          if (parsed && typeof parsed === 'object') {
+            const token = parsed.token || parsed.access_token || parsed.value;
+            if (typeof token === 'string' && token.trim()) {
+              return token.trim();
+            }
+          }
+          return raw.trim();
+        }
+      } catch (error) {
+        console.warn('Failed to read meta token from KV', error);
+      }
+    }
+
+    return '';
+  }
+
+  createEmptyStatus({ updatedAt = new Date().toISOString(), error = null } = {}) {
+    return {
+      message: '',
+      facebook: {
+        connected: false,
+        accountName: '',
+        accountId: '',
+        adAccounts: [],
+        updatedAt,
+        stale: Boolean(error),
+        error,
+      },
+    };
+  }
+
+  markStatusStale(status, { updatedAt = new Date().toISOString(), error = null } = {}) {
+    const clone = cloneMetaStatus(status) || this.createEmptyStatus({ updatedAt, error });
+    const facebook = clone.facebook && typeof clone.facebook === 'object' ? clone.facebook : {};
+    clone.facebook = {
+      connected: error ? false : Boolean(facebook.connected),
+      accountName: facebook.accountName || '',
+      accountId: facebook.accountId || '',
+      adAccounts: Array.isArray(facebook.adAccounts) ? facebook.adAccounts : [],
+      updatedAt,
+      stale: true,
+      error: error || facebook.error || null,
+    };
+    return clone;
+  }
+
+  isFresh(status) {
+    if (!status || typeof status !== 'object') return false;
+    const updatedAt = status.facebook?.updatedAt || status.facebook?.updated_at;
+    if (!updatedAt) return false;
+    const updated = Date.parse(updatedAt);
+    if (!Number.isFinite(updated)) return false;
+    return Date.now() - updated <= META_OVERVIEW_MAX_AGE_MS;
+  }
+
+  async ensureOverview({ backgroundRefresh = false, executionContext } = {}) {
+    const cached = await this.storage.readMetaStatus();
+    if (this.isFresh(cached)) {
+      return { status: cached, source: 'cache', refreshed: false, stale: false, error: cached?.facebook?.error ?? null };
+    }
+
+    if (backgroundRefresh && executionContext && cached) {
+      executionContext.waitUntil(
+        this.refreshOverview().catch((error) => {
+          console.error('Meta background refresh failed', error);
+        }),
+      );
+      const staleStatus = this.markStatusStale(cached, {
+        updatedAt: new Date().toISOString(),
+        error: cached?.facebook?.error ?? null,
+      });
+      return { status: staleStatus, source: 'stale-cache', refreshed: false, stale: true, error: staleStatus.facebook?.error ?? null };
+    }
+
+    return this.refreshOverview();
+  }
+
+  async refreshOverview() {
+    const now = new Date().toISOString();
+    const token = await this.resolveAccessToken();
+    if (!token) {
+      const status = this.createEmptyStatus({ updatedAt: now, error: 'Meta токен не задан' });
+      await this.storage.putJson('DB', META_STATUS_KEY, status);
+      return { status, source: 'error', refreshed: false, stale: false, error: status.facebook.error };
+    }
+
+    const client = new MetaClient({
+      accessToken: token,
+      version: this.config?.metaGraphVersion || META_DEFAULT_GRAPH_VERSION,
+      fetcher: this.fetcher,
+    });
+
+    try {
+      const status = await this.collectOverview({ client, now });
+      await this.storage.putJson('DB', META_STATUS_KEY, status);
+      return { status, source: 'live', refreshed: true, stale: false, error: null };
+    } catch (error) {
+      console.error('Meta overview refresh failed', error);
+      const previous = await this.storage.readMetaStatus();
+      const fallback = this.markStatusStale(previous, {
+        updatedAt: now,
+        error: error?.message || 'Meta API error',
+      });
+      await this.storage.putJson('DB', META_STATUS_KEY, fallback);
+      return { status: fallback, source: 'error', refreshed: false, stale: true, error: fallback.facebook.error };
+    }
+  }
+
+  async collectOverview({ client, now }) {
+    let profile = null;
+    try {
+      profile = await client.request('/me', {
+        searchParams: { fields: 'id,name' },
+      });
+    } catch (error) {
+      console.warn('Meta profile request failed', error);
+    }
+
+    const adAccountsRaw = await this.fetchAllAdAccounts(client);
+    const transformed = adAccountsRaw
+      .map((account) => this.transformAdAccount(account))
+      .filter((account) => account !== null);
+
+    const enriched = await this.enrichAdAccounts(client, transformed);
+
+    return {
+      message: '',
+      facebook: {
+        connected: Boolean(profile?.id) || transformed.length > 0,
+        accountName: profile?.name || '',
+        accountId: profile?.id || '',
+        adAccounts: enriched,
+        updatedAt: now,
+        stale: false,
+        error: null,
+      },
+    };
+  }
+
+  async fetchAllAdAccounts(client) {
+    const fields = [
+      'id',
+      'account_id',
+      'name',
+      'account_status',
+      'disable_reason',
+      'disable_reason_details',
+      'balance',
+      'amount_spent',
+      'currency',
+      'spend_cap',
+      'spend_cap_action',
+      'default_payment_method{last4,display_string}',
+      'funding_source_details{display_string}',
+      'business_name',
+      'owner_business{name}',
+      'adspaymentcycle{threshold_amount,payment_method_last4}',
+    ].join(',');
+
+    return this.collectPaginated(client, '/me/adaccounts', { limit: '50', fields });
+  }
+
+  async collectPaginated(client, path, initialParams = {}, overallLimit = 150) {
+    let url = path;
+    let params = { ...initialParams };
+    const collected = [];
+
+    while (url && collected.length < overallLimit) {
+      const response = await client.request(url, { searchParams: params });
+      const data = Array.isArray(response?.data) ? response.data : [];
+      collected.push(...data);
+
+      if (response?.paging?.next) {
+        url = response.paging.next;
+        params = null;
+      } else {
+        break;
+      }
+    }
+
+    return collected;
+  }
+
+  async enrichAdAccounts(client, accounts) {
+    if (!Array.isArray(accounts) || accounts.length === 0) {
+      return [];
+    }
+
+    const results = accounts.slice();
+    let index = 0;
+    const concurrency = Math.min(3, accounts.length);
+
+    const worker = async () => {
+      while (index < accounts.length) {
+        const current = index++;
+        const account = results[current];
+        results[current] = await this.fetchCampaignSnapshot(client, account);
+      }
+    };
+
+    await Promise.all(Array.from({ length: concurrency }, worker));
+    return results;
+  }
+
+  async fetchCampaignSnapshot(client, account) {
+    const accountId = account?.id || (account?.accountId ? `act_${account.accountId}` : null);
+    if (!accountId) {
+      return account;
+    }
+
+    try {
+      const response = await client.request(`/${accountId}/campaigns`, {
+        searchParams: {
+          limit: '50',
+          effective_status: '["ACTIVE","PAUSED","SCHEDULED","IN_PROCESS"]',
+          fields: 'id,name,effective_status,insights.date_preset(last_7d){cpa,cost_per_action_type}',
+        },
+      });
+
+      const campaigns = Array.isArray(response?.data) ? response.data : [];
+      const activeCount = campaigns.filter((item) => String(item?.effective_status || '').toUpperCase() === 'ACTIVE').length;
+      const cpaSamples = [];
+      for (const campaign of campaigns) {
+        if (Array.isArray(campaign?.insights?.data)) {
+          cpaSamples.push(...collectCpaSamples(campaign.insights.data));
+        }
+      }
+
+      const cpaMin = cpaSamples.length ? Math.min(...cpaSamples) : null;
+      const cpaMax = cpaSamples.length ? Math.max(...cpaSamples) : null;
+
+      account.runningCampaigns = activeCount;
+      account.cpaMinUsd = Number.isFinite(cpaMin) ? cpaMin : null;
+      account.cpaMaxUsd = Number.isFinite(cpaMax) ? cpaMax : null;
+    } catch (error) {
+      console.warn('Failed to load campaign stats', accountId, error);
+    }
+
+    return account;
+  }
+
+  transformAdAccount(raw) {
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
+
+    const statusCode = raw.account_status ?? raw.status;
+    const disableReason = raw.disable_reason ?? raw.disableReason;
+    const spendCapAction = raw.spend_cap_action ?? raw.spendCapAction;
+    const paymentStatusLabel = derivePaymentStatus(statusCode, disableReason, spendCapAction);
+
+    const paymentIssues = [];
+    const disableLabel = describeDisableReason(disableReason);
+    if (disableLabel) {
+      paymentIssues.push(disableLabel);
+    }
+
+    const normalizedStatus = Number(statusCode);
+    if (normalizedStatus === 3) {
+      paymentIssues.push('Оплата не прошла');
+    }
+    if (normalizedStatus === 7) {
+      paymentIssues.push('Требуется закрыть задолженность');
+    }
+    if (spendCapAction && String(spendCapAction).toUpperCase() === 'STOP_DELIVERY') {
+      paymentIssues.push('Достигнут лимит расходов');
+    }
+
+    const defaultPayment = raw.default_payment_method || raw.defaultPaymentMethod || {};
+    const fundingDetails = raw.funding_source_details || raw.fundingSourceDetails || {};
+    const paymentCycle = raw.adspaymentcycle || raw.adsPaymentCycle || {};
+    const last4 =
+      defaultPayment.last4 ||
+      extractLast4Digits(defaultPayment.display_string) ||
+      paymentCycle.payment_method_last4 ||
+      extractLast4Digits(fundingDetails.display_string);
+
+    const balance = parseMetaCurrency(raw.balance);
+    const debtUsd = Number.isFinite(balance) && balance > 0 ? balance : null;
+
+    const id = raw.id || (raw.account_id ? `act_${raw.account_id}` : null);
+    const accountId = raw.account_id || (typeof raw.id === 'string' ? raw.id.replace(/^act_/, '') : '');
+
+    return {
+      id,
+      accountId,
+      name: raw.name || accountId || id || 'Рекламный аккаунт',
+      status: statusCode,
+      statusLabel: describeAccountStatus(statusCode),
+      paymentStatusLabel,
+      paymentIssues,
+      paymentIssue: paymentIssues[0] || '',
+      defaultPaymentMethodLast4: last4 || '',
+      debtUsd,
+      runningCampaigns: null,
+      cpaMinUsd: null,
+      cpaMaxUsd: null,
+      currency: raw.currency || raw.default_currency || 'USD',
+      requiresAttention:
+        paymentIssues.length > 0 ||
+        Boolean(debtUsd && debtUsd > 0) ||
+        (normalizedStatus && normalizedStatus !== 1 && normalizedStatus !== 0),
+    };
+  }
+}
 class TelegramClient {
   constructor(token, { timeoutMs = TELEGRAM_TIMEOUT_MS } = {}) {
     this.token = typeof token === 'string' ? token.trim() : '';
@@ -632,12 +1192,13 @@ class BotCommandContext {
   }
 }
 class TelegramBot {
-  constructor({ config, storage, telegram, env, executionContext }) {
+  constructor({ config, storage, telegram, env, executionContext, metaService }) {
     this.config = config;
     this.storage = storage;
     this.telegram = telegram;
     this.env = env;
     this.executionContext = executionContext;
+    this.metaService = metaService;
     this.commands = new Map();
 
     this.registerDefaultCommands();
@@ -1038,14 +1599,25 @@ class TelegramBot {
     );
   }
 
-  async buildAdminPanelPayload() {
-    const [metaStatus, chatKeys, projectKeys, recentLogs, webhookStatus] = await Promise.all([
-      this.storage.readMetaStatus(),
+  async buildAdminPanelPayload({ forceMetaRefresh = false } = {}) {
+    const metaPromise = this.metaService
+      ? forceMetaRefresh
+        ? this.metaService.refreshOverview()
+        : this.metaService.ensureOverview({
+            backgroundRefresh: true,
+            executionContext: this.executionContext,
+          })
+      : this.storage.readMetaStatus();
+
+    const [metaResult, chatKeys, projectKeys, recentLogs, webhookStatus] = await Promise.all([
+      metaPromise,
       this.storage.listKeys('DB', CHAT_KEY_PREFIX, 100),
       this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 100),
       this.storage.readTelegramLog(5),
       this.ensureWebhookActive({ autoRegister: true }),
     ]);
+
+    const metaStatus = this.metaService ? metaResult?.status ?? null : metaResult;
 
     const summary = ['<b>Админ-панель</b>'];
 
@@ -1315,7 +1887,7 @@ class TelegramBot {
           return { handled: false, reason: 'message_missing' };
         }
 
-        const panel = await this.buildAdminPanelPayload();
+        const panel = await this.buildAdminPanelPayload({ forceMetaRefresh: true });
         await this.telegram.editMessageText({
           chat_id: message.chat.id,
           message_id: message.message_id,
@@ -1408,6 +1980,8 @@ class AppConfig {
     this.workerUrl = typeof env.WORKER_URL === 'string' ? env.WORKER_URL.trim() : '';
     this.metaAppId = typeof env.FB_APP_ID === 'string' ? env.FB_APP_ID.trim() : '';
     this.metaAppSecret = typeof env.FB_APP_SECRET === 'string' ? env.FB_APP_SECRET.trim() : '';
+    this.metaLongToken = AppConfig.resolveMetaLongToken(env);
+    this.metaGraphVersion = AppConfig.resolveMetaGraphVersion(env);
     this.telegramWebhookUrl = AppConfig.resolveWebhookUrl(env);
   }
 
@@ -1440,6 +2014,28 @@ class AppConfig {
     }
     return '';
   }
+
+  static resolveMetaLongToken(env = {}) {
+    const candidateKeys = ['FB_LONG_TOKEN', 'META_LONG_TOKEN', 'META_ACCESS_TOKEN'];
+    for (const key of candidateKeys) {
+      const value = typeof env[key] === 'string' ? env[key].trim() : '';
+      if (value) {
+        return value;
+      }
+    }
+    return '';
+  }
+
+  static resolveMetaGraphVersion(env = {}) {
+    const candidateKeys = ['FB_GRAPH_VERSION', 'META_GRAPH_VERSION'];
+    for (const key of candidateKeys) {
+      const value = typeof env[key] === 'string' ? env[key].trim() : '';
+      if (value) {
+        return value;
+      }
+    }
+    return META_DEFAULT_GRAPH_VERSION;
+  }
 }
 
 function delay(ms) {
@@ -1453,6 +2049,7 @@ class WorkerApp {
     this.executionContext = executionContext;
     this.storage = new KvStorage(env);
     this.config = new AppConfig(env);
+    this.metaService = new MetaService({ config: this.config, storage: this.storage, env: this.env });
     this._telegramClient = null;
     this._bot = null;
   }
@@ -1476,6 +2073,7 @@ class WorkerApp {
         telegram,
         env: this.env,
         executionContext: this.executionContext,
+        metaService: this.metaService,
       });
     }
     return this._bot;
