@@ -3030,6 +3030,19 @@ async function handleTelegramWebhook(request, env) {
     return methodNotAllowed(['POST']);
   }
 
+  const buildTelegramResponse = (summary) => {
+    const result = summary?.result;
+    if (result && typeof result === 'object' && result.ok === false) {
+      const errorMessage =
+        typeof result.error === 'string' && result.error.trim().length > 0
+          ? result.error
+          : 'telegram_request_failed';
+      return json({ ok: false, error: errorMessage, summary }, { status: 500 });
+    }
+
+    return json({ ok: true, summary });
+  };
+
   let payload;
   try {
     payload = await request.json();
@@ -3045,16 +3058,16 @@ async function handleTelegramWebhook(request, env) {
     summary.handled = true;
     summary.kind = 'callback_query';
     summary.result = result;
-    return json({ ok: true, summary });
+    return buildTelegramResponse(summary);
   }
 
   if (!message) {
-    return json({ ok: true, summary: { handled: false, reason: 'no_message' } });
+    return buildTelegramResponse({ handled: false, reason: 'no_message' });
   }
 
   const textContent = extractText(message).trim();
   if (!textContent) {
-    return json({ ok: true, summary: { handled: false, reason: 'empty_text' } });
+    return buildTelegramResponse({ handled: false, reason: 'empty_text' });
   }
 
   const parts = textContent.split(/\s+/);
@@ -3068,7 +3081,7 @@ async function handleTelegramWebhook(request, env) {
     summary.kind = 'command';
     summary.command = command;
     summary.result = result;
-    return json({ ok: true, summary });
+    return buildTelegramResponse(summary);
   }
 
   const stateResult = await handleUserStateMessage(env, message, textContent);
@@ -3076,7 +3089,7 @@ async function handleTelegramWebhook(request, env) {
   summary.result = stateResult;
   summary.handled = Boolean(stateResult.handled);
 
-  return json({ ok: true, summary });
+  return buildTelegramResponse(summary);
 }
 
 async function handleFbAuth(request, env) {
