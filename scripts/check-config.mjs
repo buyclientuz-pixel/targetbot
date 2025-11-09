@@ -4,7 +4,8 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
-const REQUIRED_ENV_KEYS = ['BOT_TOKEN', 'ADMIN_IDS', 'DEFAULT_TZ', 'FB_APP_ID', 'FB_APP_SECRET'];
+const REQUIRED_ENV_KEYS = ['ADMIN_IDS', 'DEFAULT_TZ', 'FB_APP_ID', 'FB_APP_SECRET'];
+const BOT_TOKEN_ENV_KEYS = ['BOT_TOKEN', 'TG_API_TOKEN', 'TELEGRAM_BOT_TOKEN'];
 const OPTIONAL_ENV_KEYS = ['FB_LONG_TOKEN', 'WORKER_URL', 'GS_WEBHOOK'];
 
 function hasValue(value) {
@@ -138,6 +139,7 @@ async function listWranglerSecrets() {
 
 const envSnapshot = await loadEnvSnapshot();
 let missingEnv = REQUIRED_ENV_KEYS.filter((key) => !hasValue(envSnapshot[key]));
+const localBotTokens = BOT_TOKEN_ENV_KEYS.filter((key) => hasValue(envSnapshot[key]));
 
 const wranglerSecrets = await listWranglerSecrets();
 let remoteCovered = [];
@@ -145,6 +147,17 @@ let remoteCovered = [];
 if (missingEnv.length > 0 && wranglerSecrets.ok && wranglerSecrets.names.length > 0) {
   remoteCovered = missingEnv.filter((key) => wranglerSecrets.names.includes(key));
   missingEnv = missingEnv.filter((key) => !wranglerSecrets.names.includes(key));
+}
+
+const remoteBotTokens = wranglerSecrets.ok ? BOT_TOKEN_ENV_KEYS.filter((key) => wranglerSecrets.names.includes(key)) : [];
+const hasBotToken = localBotTokens.length > 0 || remoteBotTokens.length > 0;
+
+if (remoteBotTokens.length > 0) {
+  remoteCovered = [...new Set([...remoteCovered, ...remoteBotTokens])];
+}
+
+if (!hasBotToken) {
+  missingEnv = [...missingEnv, 'BOT_TOKEN (или TG_API_TOKEN, TELEGRAM_BOT_TOKEN)'];
 }
 
 if (missingEnv.length > 0) {

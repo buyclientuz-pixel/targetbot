@@ -264,7 +264,8 @@ const PROJECT_SCHEDULE_PRESETS = {
 const CAMPAIGN_EDITOR_PAGE_SIZE = 6;
 
 const KV_WARNINGS = new Set();
-const REQUIRED_ENV_KEYS = ['BOT_TOKEN', 'ADMIN_IDS', 'DEFAULT_TZ', 'FB_APP_ID', 'FB_APP_SECRET'];
+const REQUIRED_ENV_KEYS = ['ADMIN_IDS', 'DEFAULT_TZ', 'FB_APP_ID', 'FB_APP_SECRET'];
+const BOT_TOKEN_ENV_KEYS = ['BOT_TOKEN', 'TG_API_TOKEN', 'TELEGRAM_BOT_TOKEN'];
 
 function escapeHtml(input = '') {
   return String(input)
@@ -384,11 +385,35 @@ function ensureString(value, name, errors) {
   }
 }
 
+function resolveBotToken(env) {
+  if (!env || typeof env !== 'object') {
+    return { value: null, source: null };
+  }
+
+  for (const key of BOT_TOKEN_ENV_KEYS) {
+    const raw = env[key];
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (trimmed) {
+        return { value: trimmed, source: key };
+      }
+    }
+  }
+
+  return { value: null, source: null };
+}
+
 function validateRequiredEnv(env) {
   const missing = [];
   for (const key of REQUIRED_ENV_KEYS) {
     ensureString(env?.[key], key, missing);
   }
+
+  const token = resolveBotToken(env);
+  if (!token.value) {
+    missing.push('env.BOT_TOKEN (или TG_API_TOKEN, TELEGRAM_BOT_TOKEN)');
+  }
+
   return missing;
 }
 
@@ -1517,16 +1542,13 @@ async function fetchAccountHealthSummary(env, project, token) {
 }
 
 function getBotToken(env) {
-  if (typeof env.BOT_TOKEN !== 'string') {
-    throw new Error('BOT_TOKEN не задан. Невозможно обратиться к Telegram API.');
+  const token = resolveBotToken(env);
+  if (token.value) {
+    return token.value;
   }
 
-  const trimmed = env.BOT_TOKEN.trim();
-  if (!trimmed) {
-    throw new Error('BOT_TOKEN пуст. Невозможно обратиться к Telegram API.');
-  }
-
-  return trimmed;
+  const aliases = BOT_TOKEN_ENV_KEYS.join(', ');
+  throw new Error(`Не найден токен Telegram. Заполните одну из переменных: ${aliases}.`);
 }
 
 async function telegramRequest(env, method, payload) {
