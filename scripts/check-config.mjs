@@ -91,6 +91,7 @@ function isPlaceholder(value) {
 
 const args = process.argv.slice(2);
 const strictKv = args.includes('--require-dedicated-kv');
+const pingTelegram = args.includes('--ping-telegram');
 
 async function listWranglerSecrets() {
   if (process.env.CHECK_CONFIG_SKIP_WRANGLER === '1') {
@@ -191,6 +192,55 @@ if (localBotTokens.length > 0) {
 
 if (remoteBotTokens.length > 0) {
   logStatus('ok', `В Cloudflare Secrets обнаружены токены: ${remoteBotTokens.join(', ')}`);
+}
+
+if (pingTelegram) {
+  if (localBotTokens.length === 0) {
+    logStatus('warn', 'Пинг Telegram пропущен: токен не найден в локальных переменных.');
+  } else if (typeof fetch !== 'function') {
+    logStatus('warn', 'Пинг Telegram пропущен: глобальный fetch недоступен в текущей версии Node.');
+  } else {
+    const tokenKey = localBotTokens[0];
+    const rawToken = envSnapshot[tokenKey];
+    if (!hasValue(rawToken)) {
+      logStatus('warn', `Пинг Telegram пропущен: переменная ${tokenKey} пуста.`);
+    } else {
+      const tokenValue = rawToken.trim();
+      const startedAt = Date.now();
+      try {
+        const response = await fetch(`https://api.telegram.org/bot${tokenValue}/getMe`);
+        const textBody = await response.text();
+        let payload = {};
+        let parseFailed = false;
+        if (textBody) {
+          try {
+            payload = JSON.parse(textBody);
+          } catch (error) {
+            parseFailed = true;
+            logStatus('error', `Ответ Telegram не разобран: ${error.message}`);
+          }
+        }
+
+        if (parseFailed) {
+          logStatus('error', 'Telegram вернул непредвиденный ответ.');
+        } else if (!response.ok || payload?.ok === false) {
+          const description =
+            payload?.description || payload?.error?.message || textBody || `HTTP ${response.status}`;
+          logStatus('error', `Telegram вернул ошибку: ${description}`);
+        } else {
+          const bot = payload?.result ?? {};
+          const latency = Date.now() - startedAt;
+          const username = bot.username ? `@${bot.username}` : 'без username';
+          logStatus(
+            'ok',
+            `Telegram бот доступен (${username}, id ${bot.id ?? 'неизвестно'}), отклик ${latency}мс.`,
+          );
+        }
+      } catch (error) {
+        logStatus('error', `Не удалось связаться с Telegram: ${error.message}`);
+      }
+    }
+  }
 }
 
 if (wranglerSecrets.attempted && !wranglerSecrets.ok && !wranglerSecrets.skipped) {

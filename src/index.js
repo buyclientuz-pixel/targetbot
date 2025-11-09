@@ -473,7 +473,7 @@ function renderDebugPage(state) {
 </html>`;
 }
 
-async function handleHealth(env) {
+async function handleHealth(env, { pingTelegram = false } = {}) {
   const missingEnv = validateRequiredEnv(env);
   const primaryKv = Boolean(getPrimaryKv(env));
   const botToken = resolveBotToken(env);
@@ -489,7 +489,7 @@ async function handleHealth(env) {
     }
   }
 
-  const status = missingEnv.length === 0 && primaryKv ? 'ok' : 'degraded';
+  let status = missingEnv.length === 0 && primaryKv ? 'ok' : 'degraded';
   const response = {
     status,
     timestamp: new Date().toISOString(),
@@ -507,6 +507,36 @@ async function handleHealth(env) {
     },
   };
 
+  if (pingTelegram) {
+    response.telegram = { ping: { ok: false, reason: 'bot_token_missing' } };
+
+    if (botToken.value) {
+      const startedAt = Date.now();
+      try {
+        const me = await telegramGetMe(env, botToken.value);
+        response.telegram.ping = {
+          ok: true,
+          username: me?.username ?? null,
+          first_name: me?.first_name ?? null,
+          id: me?.id ?? null,
+          latency_ms: Date.now() - startedAt,
+        };
+      } catch (error) {
+        response.telegram.ping = {
+          ok: false,
+          reason: 'telegram_unreachable',
+          error: error?.message ?? String(error ?? 'unknown error'),
+        };
+        console.error('handleHealth telegram ping failed', error);
+      }
+    }
+
+    if (!response.telegram.ping.ok) {
+      status = 'degraded';
+    }
+  }
+
+  response.status = status;
   const httpStatus = status === 'ok' ? 200 : 503;
   return json(response, { status: httpStatus });
 }
@@ -1633,6 +1663,21 @@ async function telegramRequest(env, method, payload) {
   );
 
   return parseTelegramResponse(response, method);
+}
+
+async function telegramGetMe(env, tokenOverride) {
+  const botToken = typeof tokenOverride === 'string' && tokenOverride.trim()
+    ? tokenOverride.trim()
+    : getBotToken(env);
+
+  const response = await fetchWithTimeout(
+    `https://api.telegram.org/bot${botToken}/getMe`,
+    {},
+    TELEGRAM_TIMEOUT_MS,
+  );
+
+  const payload = await parseTelegramResponse(response, 'getMe');
+  return payload?.result ?? null;
 }
 
 async function telegramSendDocumentToChat(env, { chatId, threadId, filename, content, caption }) {
@@ -3068,53 +3113,69 @@ async function handleTelegramWebhook(request, env) {
     return json({ ok: true, summary });
   };
 
-  let payload;
   try {
-    payload = await request.json();
+    let payload;
+    try {
+      payload = await request.json();
+    } catch (error) {
+      return json(
+        { error: 'bad_request', message: 'Ожидался JSON от Telegram', details: String(error) },
+        { status: 400 },
+      );
+    }
+
+    const message = extractMessage(payload);
+    const summary = { handled: false };
+
+    if (payload.callback_query) {
+      const result = await handleCallbackQuery(env, payload.callback_query);
+      summary.handled = true;
+      summary.kind = 'callback_query';
+      summary.result = result;
+      return buildTelegramResponse(summary);
+    }
+
+    if (!message) {
+      return buildTelegramResponse({ handled: false, reason: 'no_message' });
+    }
+
+    const textContent = extractText(message).trim();
+    if (!textContent) {
+      return buildTelegramResponse({ handled: false, reason: 'empty_text' });
+    }
+
+    const parts = textContent.split(/\s+/);
+    const rawCommand = parts[0];
+    const command = rawCommand.split('@')[0].toLowerCase();
+    const args = parts.slice(1);
+
+    if (rawCommand.startsWith('/')) {
+      const result = await handleTelegramCommand(env, message, command, args);
+      summary.handled = true;
+      summary.kind = 'command';
+      summary.command = command;
+      summary.result = result;
+      return buildTelegramResponse(summary);
+    }
+
+    const stateResult = await handleUserStateMessage(env, message, textContent);
+    summary.kind = 'state';
+    summary.result = stateResult;
+    summary.handled = Boolean(stateResult.handled);
+
+    return buildTelegramResponse(summary);
   } catch (error) {
-    return json({ error: 'bad_request', message: 'Ожидался JSON от Telegram', details: String(error) }, { status: 400 });
+    console.error('handleTelegramWebhook fatal error', error);
+    return json(
+      {
+        ok: false,
+        error: 'internal_error',
+        message: 'Telegram webhook handler failed',
+        details: String(error?.message ?? error ?? 'unknown error'),
+      },
+      { status: 500 },
+    );
   }
-
-  const message = extractMessage(payload);
-  const summary = { handled: false };
-
-  if (payload.callback_query) {
-    const result = await handleCallbackQuery(env, payload.callback_query);
-    summary.handled = true;
-    summary.kind = 'callback_query';
-    summary.result = result;
-    return buildTelegramResponse(summary);
-  }
-
-  if (!message) {
-    return buildTelegramResponse({ handled: false, reason: 'no_message' });
-  }
-
-  const textContent = extractText(message).trim();
-  if (!textContent) {
-    return buildTelegramResponse({ handled: false, reason: 'empty_text' });
-  }
-
-  const parts = textContent.split(/\s+/);
-  const rawCommand = parts[0];
-  const command = rawCommand.split('@')[0].toLowerCase();
-  const args = parts.slice(1);
-
-  if (rawCommand.startsWith('/')) {
-    const result = await handleTelegramCommand(env, message, command, args);
-    summary.handled = true;
-    summary.kind = 'command';
-    summary.command = command;
-    summary.result = result;
-    return buildTelegramResponse(summary);
-  }
-
-  const stateResult = await handleUserStateMessage(env, message, textContent);
-  summary.kind = 'state';
-  summary.result = stateResult;
-  summary.handled = Boolean(stateResult.handled);
-
-  return buildTelegramResponse(summary);
 }
 
 async function handleFbAuth(request, env) {
@@ -13079,7 +13140,9 @@ export default {
     const pathname = url.pathname;
 
     if (pathname === '/health') {
-      return handleHealth(env);
+      const ping = url.searchParams.get('ping');
+      const pingTelegram = ping === 'telegram' || ping === 'all';
+      return handleHealth(env, { pingTelegram });
     }
 
     if (pathname === '/') {
