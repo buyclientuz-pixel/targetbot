@@ -2065,14 +2065,14 @@ async function telegramSendMessage(env, message, textContent, extra = {}) {
     return { ok: false, error: 'chat_id_missing' };
   }
 
-  const payload = {
+  const basePayload = {
     chat_id: message.chat.id,
     text: textContent,
     parse_mode: extra.parse_mode ?? 'HTML',
   };
 
   if (message.message_thread_id && typeof extra.message_thread_id === 'undefined') {
-    payload.message_thread_id = message.message_thread_id;
+    basePayload.message_thread_id = message.message_thread_id;
   }
 
   if (
@@ -2080,22 +2080,64 @@ async function telegramSendMessage(env, message, textContent, extra = {}) {
     typeof extra.reply_to_message_id === 'undefined' &&
     extra.disable_reply !== true
   ) {
-    payload.reply_to_message_id = message.message_id;
+    basePayload.reply_to_message_id = message.message_id;
   }
 
   for (const [key, value] of Object.entries(extra)) {
     if (['disable_reply', 'parse_mode'].includes(key)) continue;
     if (typeof value === 'undefined') continue;
-    payload[key] = value;
+    basePayload[key] = value;
   }
 
-  try {
-    await telegramRequest(env, 'sendMessage', payload);
-    return { ok: true };
-  } catch (error) {
-    console.error('telegramSendMessage error', error);
-    return { ok: false, error: String(error) };
+  const trySend = async (payload, label) => {
+    try {
+      await telegramRequest(env, 'sendMessage', payload);
+      return { ok: true };
+    } catch (error) {
+      const messageText = String(error?.message ?? error ?? 'unknown error');
+      console.error(`telegramSendMessage ${label} error`, messageText);
+      return { ok: false, error: messageText };
+    }
+  };
+
+  let payload = { ...basePayload };
+  let result = await trySend(payload, 'primary');
+
+  if (!result.ok) {
+    const errorText = result.error?.toLowerCase() ?? '';
+
+    if (
+      payload.reply_to_message_id &&
+      (errorText.includes('reply message not found') ||
+        errorText.includes('message to reply') ||
+        errorText.includes('replied message not found') ||
+        errorText.includes('message_id invalid'))
+    ) {
+      const fallback = { ...payload };
+      delete fallback.reply_to_message_id;
+      result = await trySend(fallback, 'retry_no_reply');
+      if (result.ok) {
+        return result;
+      }
+      payload = fallback;
+    }
+
+    if (
+      !result.ok &&
+      payload.message_thread_id &&
+      (errorText.includes('message thread not found') || errorText.includes('forum topic is not found'))
+    ) {
+      const fallback = { ...payload };
+      delete fallback.message_thread_id;
+      delete fallback.reply_to_message_id;
+      result = await trySend(fallback, 'retry_no_thread');
+      if (result.ok) {
+        return result;
+      }
+    }
   }
+
+  return result;
 }
 
 async function telegramAnswerCallback(env, callbackQuery, textContent) {
@@ -3478,7 +3520,7 @@ async function handleTelegramWebhook(request, env, ctx) {
         typeof result.error === 'string' && result.error.trim().length > 0
           ? result.error
           : 'telegram_request_failed';
-      return json({ ok: false, error: errorMessage, summary }, { status: 500 });
+      return json({ ok: false, error: errorMessage, summary });
     }
 
     return json({ ok: true, summary });
