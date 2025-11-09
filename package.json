@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "test": "node ./test/run-tests.mjs"
+  },
   "devDependencies": {
     "miniflare": "^4.20251105.0",
     "wrangler": "^4.46.0"
