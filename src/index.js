@@ -3981,7 +3981,19 @@ class MetaClient {
     this.accessToken = typeof accessToken === 'string' ? accessToken.trim() : '';
     this.version = version || META_DEFAULT_GRAPH_VERSION;
     this.timeoutMs = timeoutMs;
-    this.fetcher = fetcher;
+    const globalFetcher = typeof fetch === 'function' ? fetch.bind(globalThis) : null;
+    if (typeof fetcher === 'function') {
+      if (globalFetcher && (fetcher === fetch || fetcher === globalThis.fetch)) {
+        this.fetcher = globalFetcher;
+      } else {
+        this.fetcher = fetcher;
+      }
+    } else if (fetcher && typeof fetcher.fetch === 'function') {
+      this.fetcher = fetcher.fetch.bind(fetcher);
+    } else {
+      this.fetcher = globalFetcher;
+    }
+    this.fallbackFetch = globalFetcher;
   }
 
   get isUsable() {
@@ -4024,8 +4036,14 @@ class MetaClient {
     const controller = createAbort(this.timeoutMs);
     init.signal = controller.signal;
 
+    const fetcher = this.fetcher || this.fallbackFetch;
+    if (typeof fetcher !== 'function') {
+      throw new Error('Fetch API недоступен');
+    }
+
+    let response;
     try {
-      const response = await this.fetcher(url.toString(), init);
+      response = await fetcher(url.toString(), init);
       const text = await response.text();
       const data = text ? safeJsonParse(text) ?? text : null;
 
@@ -4043,6 +4061,32 @@ class MetaClient {
       }
 
       return data;
+    } catch (error) {
+      const message = error?.message || '';
+      const illegalInvocation = /Illegal invocation/i.test(message);
+      if (illegalInvocation && this.fallbackFetch && fetcher !== this.fallbackFetch) {
+        const retry = await this.fallbackFetch(url.toString(), init);
+        const retryText = await retry.text();
+        const retryData = retryText ? safeJsonParse(retryText) ?? retryText : null;
+
+        if (!retry.ok) {
+          const description =
+            retryData?.error?.message || retryData?.message || retryText || `HTTP ${retry.status}`;
+          const retryError = new Error(description);
+          retryError.code = retryData?.error?.code;
+          throw retryError;
+        }
+
+        if (retryData && typeof retryData === 'object' && retryData.error) {
+          const retryError = new Error(retryData.error?.message || 'Meta API error');
+          retryError.code = retryData.error?.code;
+          throw retryError;
+        }
+
+        return retryData;
+      }
+
+      throw error;
     } finally {
       controller.dispose();
     }
