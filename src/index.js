@@ -339,6 +339,39 @@ function normalizePresetKey(value) {
     .replace(/[^a-z0-9._-]+/g, '-');
 }
 
+function buildChatKey(chatId, threadId) {
+  const id = String(chatId ?? '').trim();
+  if (!id) {
+    return '';
+  }
+
+  const thread = threadId === undefined || threadId === null ? '' : String(threadId).trim();
+  return `${id}:${thread}`;
+}
+
+function truncateLabel(value, maxLength = 32) {
+  const text = typeof value === 'string' ? value.trim() : String(value ?? '').trim();
+  if (!text) {
+    return '';
+  }
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
+function chunkArray(list, size) {
+  const items = Array.isArray(list) ? list : [];
+  const limit = Number.isFinite(Number(size)) && Number(size) > 0 ? Number(size) : items.length || 1;
+  const result = [];
+  for (let index = 0; index < items.length; index += limit) {
+    result.push(items.slice(index, index + limit));
+  }
+  return result;
+}
+
 function parseProjectChatPresets(raw) {
   if (!raw) {
     return [];
@@ -5221,6 +5254,7 @@ class TelegramBot {
     }
 
     const registry = await this.loadProjectRegistry({ limit: 200 });
+    const chatRegistry = await this.loadChatRegistry({ limit: 200 });
     const now = new Date().toISOString();
     const session = {
       kind: 'project_connect',
@@ -5247,41 +5281,19 @@ class TelegramBot {
       chatPresets: this.config.listChatPresets(),
       existingProjects: registry.entries,
       existingIndex: registry.index,
-      accounts: Array.isArray(accounts)
-        ? accounts
-            .map((account) => {
-              const id = String(account?.accountId ?? account?.id ?? '').replace(/^act_/, '');
-              if (!id) {
-                return null;
-              }
-
-              const currency = account?.currency || '';
-              const spendToday = Number(account?.spendTodayUsd ?? account?.spend_today_usd);
-              const runningCampaigns = Number(account?.runningCampaigns ?? account?.activeCampaigns);
-              const cpaMin = Number(account?.cpaMinUsd ?? account?.cpa_min_usd ?? account?.cpaMin);
-              const cpaMax = Number(account?.cpaMaxUsd ?? account?.cpa_max_usd ?? account?.cpaMax);
-
-              return {
-                id,
-                name: account?.name || '',
-                currency: currency ? String(currency).toUpperCase() : '',
-                statusLabel: account?.statusLabel || account?.status_label || '',
-                paymentStatusLabel: account?.paymentStatusLabel || account?.payment_status_label || '',
-                billingDueLabel: account?.billingDueLabel || account?.billing_due_label || '',
-                billingDueInDays: Number.isFinite(Number(account?.billingDueInDays))
-                  ? Number(account.billingDueInDays)
-                  : null,
-                spendTodayUsd: Number.isFinite(spendToday) ? spendToday : null,
-                runningCampaigns: Number.isFinite(runningCampaigns) ? runningCampaigns : null,
-                cpaMinUsd: Number.isFinite(cpaMin) ? cpaMin : null,
-                cpaMaxUsd: Number.isFinite(cpaMax) ? cpaMax : null,
-                campaignSummaries: Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [],
-              };
-            })
-            .filter(Boolean)
-        : [],
+      chatRegistry: chatRegistry.entries,
+      accounts: [],
+      availableAccounts: [],
+      chatEntries: [],
+      availableChats: [],
+      accountPage: 0,
+      chatPage: 0,
+      accountPageSize: 6,
+      chatPageSize: 6,
     };
 
+    await this.populateProjectConnectSession(session, { accounts, registry, chatRegistry });
+    this.refreshProjectConnectSuggestions(session);
     await this.saveAdminSession(session);
     this.queueLog({
       kind: 'admin_session',
@@ -5289,6 +5301,351 @@ class TelegramBot {
       session_kind: 'project_connect',
       user_id: userId,
     });
+    return session;
+  }
+
+  getProjectConnectAccountChoices(session, { includeSelected = true } = {}) {
+    if (!session) {
+      return [];
+    }
+
+    const accounts = Array.isArray(session.accounts) ? session.accounts : [];
+    const selectedAccountKey = includeSelected ? normalizeAccountKey(session?.draft?.adAccountId) : '';
+
+    return accounts
+      .map((account) => {
+        const key = normalizeAccountKey(account?.id ?? account?.accountId);
+        if (!key) {
+          return null;
+        }
+
+        const available = !account.connectedProject || key === selectedAccountKey;
+        if (!available && !includeSelected) {
+          return null;
+        }
+
+        return {
+          key,
+          account,
+          available,
+          selected: Boolean(selectedAccountKey && key === selectedAccountKey),
+        };
+      })
+      .filter(Boolean);
+  }
+
+  getProjectConnectChatChoices(session, { includeSelected = true } = {}) {
+    if (!session) {
+      return [];
+    }
+
+    const chats = Array.isArray(session.chatEntries) ? session.chatEntries : [];
+    const selectedChatKey = includeSelected ? buildChatKey(session?.draft?.chatId, session?.draft?.threadId) : '';
+
+    return chats
+      .map((entry) => {
+        if (!entry || !entry.key) {
+          return null;
+        }
+
+        const available = Boolean(entry.available);
+        if (!available && !(includeSelected && selectedChatKey && entry.key === selectedChatKey)) {
+          return null;
+        }
+
+        return {
+          key: entry.key,
+          chat: entry,
+          available: available || (selectedChatKey && entry.key === selectedChatKey),
+          selected: Boolean(selectedChatKey && entry.key === selectedChatKey),
+        };
+      })
+      .filter(Boolean);
+  }
+
+  applyProjectConnectChatEntry(session, entry) {
+    if (!session || !session.draft || !entry) {
+      return { ok: false, error: 'chat_required' };
+    }
+
+    const chatId = entry.chatId || '';
+    if (!chatId) {
+      return { ok: false, error: 'chat_required' };
+    }
+
+    session.draft.chatId = String(chatId);
+    session.draft.threadId = entry.threadId ? String(entry.threadId) : '';
+
+    if (entry.label) {
+      session.draft.chatTitle = entry.label;
+    } else if (entry.chatTitle) {
+      session.draft.chatTitle = entry.chatTitle;
+    }
+
+    session.selectedChatKey = entry.key;
+    return { ok: true };
+  }
+
+  applyProjectConnectAccount(session, value, { userId } = {}) {
+    if (!session || !session.draft) {
+      return { ok: false, error: 'session_missing' };
+    }
+
+    const parsedAccount = normalizeAdAccountInput(value);
+    if (!parsedAccount.ok) {
+      return { ok: false, error: parsedAccount.error };
+    }
+
+    if (userId && !this.config.canManageAccount(userId, parsedAccount.accountId)) {
+      return { ok: false, error: 'account_forbidden' };
+    }
+
+    const draft = session.draft;
+    draft.adAccountId = parsedAccount.accountId;
+
+    const account = this.findProjectConnectAccount(session, parsedAccount.accountId);
+    if (account) {
+      session.selectedAccountId = account.id;
+      if (!draft.name && account.name) {
+        draft.name = account.name;
+      }
+      if (!draft.currency && account.currency) {
+        draft.currency = account.currency.toUpperCase();
+      }
+      if (!draft.code) {
+        draft.code = normalizeProjectIdForCallback(account.name || account.id || 'project');
+      }
+      if (!draft.timezone) {
+        draft.timezone = this.config.defaultTimezone || 'UTC';
+      }
+    } else {
+      session.selectedAccountId = parsedAccount.numericId;
+    }
+
+    const existingEntry = this.findExistingProjectByAccount(session, parsedAccount.accountId);
+    if (existingEntry && (!session.allowUpdate || session.projectKey !== existingEntry.key)) {
+      const pendingCode =
+        existingEntry.record?.code ||
+        existingEntry.record?.id ||
+        existingEntry.record?.name ||
+        existingEntry.key.replace(PROJECT_KEY_PREFIX, '');
+      session.pendingExisting = {
+        key: existingEntry.key,
+        code: pendingCode || '',
+        name: existingEntry.record?.name || '',
+      };
+      session.pendingExistingKey = normalizeProjectIdForCallback(pendingCode || existingEntry.key);
+      session.allowUpdate = false;
+    } else if (!existingEntry) {
+      session.pendingExisting = null;
+      session.pendingExistingKey = null;
+      session.allowUpdate = false;
+      session.projectKey = null;
+      session.existingRaw = null;
+      session.mode = 'create';
+    }
+
+    this.refreshProjectConnectSuggestions(session);
+    return { ok: true, account, parsed: parsedAccount };
+  }
+
+  async populateProjectConnectSession(
+    session,
+    { accounts, registry, chatRegistry, forceRefreshMeta = false } = {},
+  ) {
+    if (!session || typeof session !== 'object') {
+      return session;
+    }
+
+    let projectRegistry = registry;
+    if (!projectRegistry) {
+      projectRegistry = await this.loadProjectRegistry({ limit: 200 });
+    }
+
+    session.existingProjects = projectRegistry.entries;
+    session.existingIndex = projectRegistry.index;
+
+    let chatIndex = chatRegistry;
+    if (!chatIndex) {
+      chatIndex = await this.loadChatRegistry({ limit: 200 });
+    }
+
+    session.chatRegistry = chatIndex.entries;
+
+    let sourceAccounts = Array.isArray(accounts) ? accounts : null;
+    let metaStatus = null;
+
+    if (!sourceAccounts) {
+      if (this.metaService) {
+        try {
+          const metaResult = forceRefreshMeta
+            ? await this.metaService.refreshOverview()
+            : await this.metaService.ensureOverview({ backgroundRefresh: false });
+          metaStatus = metaResult?.status ?? null;
+        } catch (error) {
+          console.warn('Failed to resolve Meta overview for project connect session', error);
+        }
+      }
+
+      if (!metaStatus) {
+        try {
+          metaStatus = await this.storage.readMetaStatus();
+        } catch (error) {
+          console.warn('Failed to read cached Meta status for project connect session', error);
+        }
+      }
+
+      if (metaStatus?.facebook?.adAccounts) {
+        sourceAccounts = metaStatus.facebook.adAccounts;
+      }
+    }
+
+    const mappedAccounts = Array.isArray(sourceAccounts)
+      ? sourceAccounts
+          .map((account) => {
+            const id = String(account?.accountId ?? account?.id ?? '').replace(/^act_/, '');
+            if (!id) {
+              return null;
+            }
+
+            const currency = account?.currency || '';
+            const spendToday = Number(account?.spendTodayUsd ?? account?.spend_today_usd);
+            const runningCampaigns = Number(account?.runningCampaigns ?? account?.activeCampaigns);
+            const cpaMin = Number(account?.cpaMinUsd ?? account?.cpa_min_usd ?? account?.cpaMin);
+            const cpaMax = Number(account?.cpaMaxUsd ?? account?.cpa_max_usd ?? account?.cpaMax);
+
+            return {
+              id,
+              name: account?.name || '',
+              currency: currency ? String(currency).toUpperCase() : '',
+              statusLabel: account?.statusLabel || account?.status_label || '',
+              paymentStatusLabel: account?.paymentStatusLabel || account?.payment_status_label || '',
+              billingDueLabel: account?.billingDueLabel || account?.billing_due_label || '',
+              billingDueInDays: Number.isFinite(Number(account?.billingDueInDays))
+                ? Number(account.billingDueInDays)
+                : null,
+              spendTodayUsd: Number.isFinite(spendToday) ? spendToday : null,
+              runningCampaigns: Number.isFinite(runningCampaigns) ? runningCampaigns : null,
+              cpaMinUsd: Number.isFinite(cpaMin) ? cpaMin : null,
+              cpaMaxUsd: Number.isFinite(cpaMax) ? cpaMax : null,
+              campaignSummaries: Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [],
+            };
+          })
+          .filter(Boolean)
+      : [];
+
+    const dedupedAccounts = [];
+    const seenAccounts = new Set();
+    for (const account of mappedAccounts) {
+      const key = normalizeAccountKey(account.id);
+      if (!key || seenAccounts.has(key)) {
+        continue;
+      }
+      seenAccounts.add(key);
+      dedupedAccounts.push(account);
+    }
+
+    const byAccount = projectRegistry.index?.byAccount || {};
+    const accountsWithFlags = dedupedAccounts.map((account) => {
+      const key = normalizeAccountKey(account.id);
+      const existingIndex = key && byAccount[key] !== undefined ? byAccount[key] : null;
+      const existingEntry =
+        existingIndex !== null && Number.isInteger(existingIndex)
+          ? projectRegistry.entries[existingIndex]
+          : null;
+      const projectRecord = existingEntry?.record || null;
+
+      return {
+        ...account,
+        connectedProject: projectRecord
+          ? {
+              key: existingEntry.key,
+              code: projectRecord.code || projectRecord.id || '',
+              name: projectRecord.name || '',
+            }
+          : null,
+      };
+    });
+
+    session.accounts = accountsWithFlags;
+
+    const selectedAccountKey = normalizeAccountKey(session?.draft?.adAccountId);
+    session.availableAccounts = accountsWithFlags.filter((account) => {
+      const key = normalizeAccountKey(account.id);
+      if (!key) {
+        return false;
+      }
+      if (account.connectedProject && key !== selectedAccountKey) {
+        return false;
+      }
+      return true;
+    });
+
+    const usedChatMap = new Map();
+    for (const entry of projectRegistry.entries) {
+      const record = entry?.record || {};
+      const recordChatId = record.chatId || record.chat?.id || '';
+      const recordThreadId =
+        record.threadId || record.chat?.threadId || record.chat?.thread_id || '';
+      const chatKey = buildChatKey(recordChatId, recordThreadId);
+      if (!chatKey) {
+        continue;
+      }
+      usedChatMap.set(chatKey, {
+        key: entry.key,
+        code: record.code || record.id || '',
+        name: record.name || '',
+      });
+    }
+
+    const chatEntries = [];
+    const seenChats = new Set();
+    for (const entry of chatIndex.entries) {
+      const chatKey = buildChatKey(entry.chatId, entry.threadId);
+      if (!chatKey || seenChats.has(chatKey)) {
+        continue;
+      }
+
+      seenChats.add(chatKey);
+      const usedBy = usedChatMap.get(chatKey) || null;
+      chatEntries.push({
+        key: chatKey,
+        chatId: entry.chatId,
+        threadId: entry.threadId || '',
+        label: entry.label || entry.threadTitle || entry.chatTitle || '',
+        chatTitle: entry.chatTitle || '',
+        threadTitle: entry.threadTitle || '',
+        available: !usedBy,
+        usedBy,
+      });
+    }
+
+    session.chatEntries = chatEntries;
+
+    const selectedChatKey = buildChatKey(session?.draft?.chatId, session?.draft?.threadId);
+    session.availableChats = chatEntries.filter((entry) => {
+      if (entry.available) {
+        return true;
+      }
+      return selectedChatKey && entry.key === selectedChatKey;
+    });
+
+    if (!Number.isFinite(Number(session.accountPageSize)) || Number(session.accountPageSize) <= 0) {
+      session.accountPageSize = 6;
+    }
+
+    if (!Number.isFinite(Number(session.chatPageSize)) || Number(session.chatPageSize) <= 0) {
+      session.chatPageSize = 6;
+    }
+
+    if (!Number.isFinite(Number(session.accountPage))) {
+      session.accountPage = 0;
+    }
+
+    if (!Number.isFinite(Number(session.chatPage))) {
+      session.chatPage = 0;
+    }
+
     return session;
   }
 
@@ -5334,6 +5691,51 @@ class TelegramBot {
     }
 
     return { entries, index };
+  }
+
+  async loadChatRegistry({ limit = 200 } = {}) {
+    const entries = [];
+    let keys = [];
+
+    try {
+      keys = await this.storage.listKeys('DB', CHAT_KEY_PREFIX, limit);
+    } catch (error) {
+      console.warn('Failed to list chat keys for registry', error);
+      return { entries, keys: [] };
+    }
+
+    for (const key of keys) {
+      const suffix = key.slice(CHAT_KEY_PREFIX.length);
+      const [rawChatId = '', rawThreadId = ''] = suffix.split(':');
+      let data = null;
+
+      try {
+        data = await this.storage.getJson('DB', key);
+      } catch (error) {
+        console.warn('Failed to load chat registry entry', key, error);
+      }
+
+      const chatId = String(rawChatId || data?.chat_id || data?.chatId || data?.chat?.id || '').trim();
+      const threadId = String(
+        rawThreadId || data?.thread_id || data?.threadId || data?.topic_id || data?.topicId || '',
+      ).trim();
+      const chatTitle = String(data?.title || data?.chat_title || data?.chatTitle || '').trim();
+      const threadTitle = String(
+        data?.thread_title || data?.topic_title || data?.threadTitle || data?.topicTitle || '',
+      ).trim();
+      const label = threadTitle || chatTitle;
+
+      entries.push({
+        key,
+        chatId,
+        threadId,
+        chatTitle,
+        threadTitle,
+        label,
+      });
+    }
+
+    return { entries, keys };
   }
 
   findProjectConnectAccount(session, accountId) {
@@ -5877,59 +6279,13 @@ class TelegramBot {
         case 'ad_account':
         case 'adaccount':
         case 'ad': {
-          const parsedAccount = normalizeAdAccountInput(value);
-          if (!parsedAccount.ok) {
-            await this.sendReply(message, this.describeProjectConnectError(parsedAccount.error));
+          const result = this.applyProjectConnectAccount(session, value, { userId });
+          if (!result.ok) {
+            await this.sendReply(message, this.describeProjectConnectError(result.error));
             return { handled: true };
           }
 
-          if (!this.config.canManageAccount(userId, parsedAccount.accountId)) {
-            await this.sendReply(message, this.describeProjectConnectError('account_forbidden'));
-            return { handled: true };
-          }
-
-          draft.adAccountId = parsedAccount.accountId;
           touched = true;
-
-          const account = this.findProjectConnectAccount(session, parsedAccount.accountId);
-          if (account) {
-            session.selectedAccountId = account.id;
-            if (!draft.name && account.name) {
-              draft.name = account.name;
-            }
-            if (!draft.currency && account.currency) {
-              draft.currency = account.currency.toUpperCase();
-            }
-            if (!draft.code) {
-              draft.code = normalizeProjectIdForCallback(account.name || account.id || 'project');
-            }
-            if (!draft.timezone) {
-              draft.timezone = this.config.defaultTimezone || 'UTC';
-            }
-          }
-
-          const existingEntry = this.findExistingProjectByAccount(session, parsedAccount.accountId);
-          if (existingEntry && (!session.allowUpdate || session.projectKey !== existingEntry.key)) {
-            const pendingCode =
-              existingEntry.record?.code ||
-              existingEntry.record?.id ||
-              existingEntry.record?.name ||
-              existingEntry.key.replace(PROJECT_KEY_PREFIX, '');
-            session.pendingExisting = {
-              key: existingEntry.key,
-              code: pendingCode || '',
-              name: existingEntry.record?.name || '',
-            };
-            session.pendingExistingKey = normalizeProjectIdForCallback(pendingCode || existingEntry.key);
-            session.allowUpdate = false;
-          } else if (!existingEntry) {
-            session.pendingExisting = null;
-            session.pendingExistingKey = null;
-            session.allowUpdate = false;
-            session.projectKey = null;
-            session.existingRaw = null;
-            session.mode = 'create';
-          }
           break;
         }
         case 'preset':
@@ -6157,9 +6513,11 @@ class TelegramBot {
 
   renderProjectConnectDraft(session) {
     const draft = session.draft || {};
-    const accounts = Array.isArray(session.accounts) ? session.accounts : [];
+    const accountChoices = this.getProjectConnectAccountChoices(session, { includeSelected: true });
+    const chatChoices = this.getProjectConnectChatChoices(session, { includeSelected: true });
     const lines = [
       '<b>Черновик проекта</b>',
+      'Используйте кнопки ниже, чтобы выбрать рекламный аккаунт и чат, либо укажите значения вручную.',
       `Аккаунт: ${draft.adAccountId ? `<code>${escapeHtml(draft.adAccountId)}</code>` : '—'}`,
       `Чат: ${draft.chatId ? `<code>${escapeHtml(draft.chatId)}</code>` : '—'}${
         draft.threadId ? ` / <code>${escapeHtml(draft.threadId)}</code>` : ''
@@ -6203,19 +6561,44 @@ class TelegramBot {
       lines.push('', 'Режим: обновление существующего проекта. Изменения перезапишут текущие данные.');
     }
 
-    if (accounts.length > 0) {
+    const availableAccounts = accountChoices.filter((choice) => choice.available);
+    if (availableAccounts.length > 0) {
       lines.push('', '<b>Доступные аккаунты</b>');
-      const preview = accounts.slice(0, 6);
-      for (const account of preview) {
+      const preview = availableAccounts.slice(0, 6);
+      for (const choice of preview) {
+        const account = choice.account;
+        const mark = choice.selected ? '✅' : '•';
         lines.push(
-          `• <code>act_${escapeHtml(account.id)}</code> — ${escapeHtml(account.name || 'без названия')} (${escapeHtml(
+          `${mark} <code>act_${escapeHtml(choice.key)}</code> — ${escapeHtml(account.name || 'без названия')} (${escapeHtml(
             account.currency || 'USD',
           )})`,
         );
       }
-      if (accounts.length > preview.length) {
-        lines.push(`… и ещё ${accounts.length - preview.length}`);
+      if (availableAccounts.length > preview.length) {
+        lines.push(`… и ещё ${availableAccounts.length - preview.length}`);
       }
+    } else if (accountChoices.length === 0) {
+      lines.push('', 'Нет свободных рекламных аккаунтов. Обновите Meta или завершите текущие проекты.');
+    }
+
+    const availableChats = chatChoices.filter((choice) => choice.available);
+    if (availableChats.length > 0) {
+      lines.push('', '<b>Свободные чаты</b>');
+      const preview = availableChats.slice(0, 6);
+      for (const choice of preview) {
+        const chat = choice.chat;
+        const chatLabel = chat.threadId
+          ? `${escapeHtml(chat.chatId)}/${escapeHtml(chat.threadId)}`
+          : escapeHtml(chat.chatId);
+        const title = chat.label ? ` — ${escapeHtml(chat.label)}` : '';
+        const mark = choice.selected ? '✅' : '•';
+        lines.push(`${mark} <code>${chatLabel}</code>${title}`);
+      }
+      if (availableChats.length > preview.length) {
+        lines.push(`… и ещё ${availableChats.length - preview.length}`);
+      }
+    } else if (chatChoices.length === 0) {
+      lines.push('', 'Свободных зарегистрированных чатов нет. Добавьте бота в нужную группу и выполните /register.');
     }
 
     if (Array.isArray(session.chatPresets) && session.chatPresets.length > 0) {
@@ -6235,6 +6618,165 @@ class TelegramBot {
 
     return lines.join('\n');
   }
+
+  renderProjectConnectPanel(session) {
+    if (!session) {
+      return [
+        '<b>Подключение проекта</b>',
+        'Сессия не найдена. Нажмите «Подключить проект» ещё раз.',
+      ].join('\n');
+    }
+
+    const freeAccounts = Array.isArray(session.availableAccounts)
+      ? session.availableAccounts.filter((account) => {
+          const key = normalizeAccountKey(account?.id);
+          const selected = normalizeAccountKey(session?.draft?.adAccountId);
+          if (!key) {
+            return false;
+          }
+          if (account.connectedProject && key !== selected) {
+            return false;
+          }
+          return true;
+        }).length
+      : 0;
+
+    const freeChats = Array.isArray(session.availableChats)
+      ? session.availableChats.filter((entry) => entry && entry.available).length
+      : 0;
+
+    const counts = [];
+    if (freeAccounts > 0) {
+      counts.push(`аккаунтов — ${freeAccounts}`);
+    }
+    if (freeChats > 0) {
+      counts.push(`чатов — ${freeChats}`);
+    }
+
+    const lines = [
+      '<b>Подключение проекта</b>',
+      'Бот подтянул рекламные аккаунты Meta и зарегистрированные чаты. Выберите элементы кнопками ниже или заполните форму вручную (<code>account=…</code>, <code>chat=…</code>).',
+    ];
+
+    if (counts.length > 0) {
+      lines.push(`Свободно: ${counts.join(', ')}.`);
+    } else {
+      lines.push('Свободных аккаунтов или чатов нет — обновите Meta или зарегистрируйте чат через /register.');
+    }
+
+    lines.push('', this.renderProjectConnectDraft(session));
+    return lines.join('\n');
+  }
+
+  buildProjectConnectKeyboard(session) {
+    if (!session) {
+      return undefined;
+    }
+
+    const keyboard = [];
+    const accountChoices = this.getProjectConnectAccountChoices(session, { includeSelected: true });
+    const accountPageSize =
+      Number.isFinite(Number(session.accountPageSize)) && Number(session.accountPageSize) > 0
+        ? Number(session.accountPageSize)
+        : 6;
+    const accountItems = accountChoices.filter((choice) => choice.available || choice.selected);
+    const accountPages = Math.max(1, Math.ceil(accountItems.length / accountPageSize) || 1);
+    const accountPage = Math.max(
+      0,
+      Math.min(Number(session.accountPage) || 0, Math.max(0, accountPages - 1)),
+    );
+    const accountSlice = accountItems.slice(
+      accountPage * accountPageSize,
+      accountPage * accountPageSize + accountPageSize,
+    );
+
+    if (accountSlice.length > 0) {
+      const accountButtons = accountSlice.map((choice) => {
+        const account = choice.account;
+        const label = account?.name ? truncateLabel(account.name, 22) : `act_${choice.key}`;
+        const currency = account?.currency ? ` ${account.currency}` : '';
+        const prefix = choice.selected ? '✅' : '📊';
+        return {
+          text: `${prefix} ${label}${currency}`.trim(),
+          callback_data: `admin:project_connect:account:${choice.key}`,
+        };
+      });
+      const rows = chunkArray(accountButtons, 2);
+      keyboard.push(...rows);
+
+      if (accountPages > 1) {
+        keyboard.push([
+          {
+            text: '◀',
+            callback_data: 'admin:project_connect:page:account:prev',
+          },
+          {
+            text: `${accountPage + 1}/${accountPages}`,
+            callback_data: 'admin:project_connect:noop',
+          },
+          {
+            text: '▶',
+            callback_data: 'admin:project_connect:page:account:next',
+          },
+        ]);
+      }
+    }
+
+    const chatChoices = this.getProjectConnectChatChoices(session, { includeSelected: true });
+    const chatPageSize =
+      Number.isFinite(Number(session.chatPageSize)) && Number(session.chatPageSize) > 0
+        ? Number(session.chatPageSize)
+        : 6;
+    const chatItems = chatChoices.filter((choice) => choice.available || choice.selected);
+    const chatPages = Math.max(1, Math.ceil(chatItems.length / chatPageSize) || 1);
+    const chatPage = Math.max(0, Math.min(Number(session.chatPage) || 0, Math.max(0, chatPages - 1)));
+    const chatSlice = chatItems.slice(chatPage * chatPageSize, chatPage * chatPageSize + chatPageSize);
+
+    if (chatSlice.length > 0) {
+      const chatButtons = chatSlice.map((choice) => {
+        const chat = choice.chat;
+        const title = chat.label || chat.threadTitle || chat.chatTitle || chat.chatId;
+        const label = truncateLabel(title || chat.chatId, 22);
+        const prefix = choice.selected ? '✅' : '💬';
+        const thread = chat.threadId ? `:${chat.threadId}` : '';
+        return {
+          text: `${prefix} ${label}`,
+          callback_data: `admin:project_connect:chat:${chat.chatId}${thread}`,
+        };
+      });
+      const rows = chunkArray(chatButtons, 2);
+      keyboard.push(...rows);
+
+      if (chatPages > 1) {
+        keyboard.push([
+          {
+            text: '◀',
+            callback_data: 'admin:project_connect:page:chat:prev',
+          },
+          {
+            text: `${chatPage + 1}/${chatPages}`,
+            callback_data: 'admin:project_connect:noop',
+          },
+          {
+            text: '▶',
+            callback_data: 'admin:project_connect:page:chat:next',
+          },
+        ]);
+      }
+    }
+
+    keyboard.push([
+      { text: '♻️ Обновить', callback_data: 'admin:project_connect:refresh' },
+      { text: '🛑 Отмена', callback_data: 'admin:project_connect:cancel' },
+    ]);
+
+    if (keyboard.length === 0) {
+      return undefined;
+    }
+
+    return { inline_keyboard: keyboard };
+  }
+
 
   async notifyProjectCreated(record, { initiator, sourceChatId, action = 'created', previous = null } = {}) {
     if (!record || typeof record !== 'object') {
@@ -7936,6 +8478,250 @@ class TelegramBot {
     const chatId = message?.chat?.id ?? callback?.from?.id ?? null;
 
     try {
+      if (data.startsWith('admin:project_connect:')) {
+        const payload = data.slice('admin:project_connect:'.length);
+        const parts = payload.split(':');
+        const action = parts[0] || '';
+        const session = await this.loadAdminSession(userId);
+
+        if (!session || session.kind !== 'project_connect') {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Сессия подключения не найдена. Нажмите «Подключить проект» ещё раз.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'project_connect_session_missing' };
+        }
+
+        let shouldUpdate = false;
+        let answerText = '';
+        let showAlert = false;
+
+        const updatePanel = async () => {
+          const text = this.renderProjectConnectPanel(session);
+          const replyMarkup = this.buildProjectConnectKeyboard(session);
+          if (message?.chat?.id && message?.message_id) {
+            try {
+              await this.telegram.editMessageText({
+                chat_id: message.chat.id,
+                message_id: message.message_id,
+                text,
+                parse_mode: 'HTML',
+                disable_web_page_preview: true,
+                reply_markup: replyMarkup,
+              });
+            } catch (error) {
+              console.warn('Failed to edit project connect message', error);
+              if (chatId) {
+                await this.sendMessageWithFallback(
+                  {
+                    chat_id: chatId,
+                    text,
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true,
+                    reply_markup: replyMarkup,
+                  },
+                  message,
+                );
+              }
+            }
+          } else if (chatId) {
+            await this.sendMessageWithFallback(
+              {
+                chat_id: chatId,
+                text,
+                parse_mode: 'HTML',
+                disable_web_page_preview: true,
+                reply_markup: replyMarkup,
+              },
+              message,
+            );
+          }
+        };
+
+        switch (action) {
+          case 'account': {
+            const rawTarget = parts[1] || '';
+            const target = rawTarget.startsWith('act_') ? rawTarget : `act_${rawTarget}`;
+            const result = this.applyProjectConnectAccount(session, target, { userId });
+            if (!result.ok) {
+              const messageText = this.describeProjectConnectError(result.error);
+              answerText = messageText.replace(/<[^>]+>/g, '');
+              showAlert = true;
+              break;
+            }
+
+            shouldUpdate = true;
+            answerText = result.account?.name
+              ? `Аккаунт «${result.account.name}» выбран.`
+              : 'Рекламный аккаунт выбран.';
+            this.queueLog({
+              kind: 'admin_session',
+              status: 'updated',
+              session_kind: 'project_connect',
+              user_id: userId,
+              action: 'project_connect_account',
+              account_id: target,
+            });
+            break;
+          }
+          case 'chat': {
+            const chatIdPart = parts[1] || '';
+            const threadPart = parts[2] || '';
+            const chatKey = buildChatKey(chatIdPart, threadPart);
+            const entry = Array.isArray(session.chatEntries)
+              ? session.chatEntries.find((item) => item && item.key === chatKey)
+              : null;
+            if (!entry) {
+              answerText = 'Чат не найден. Зарегистрируйте его через /register.';
+              showAlert = true;
+              break;
+            }
+
+            const applyResult = this.applyProjectConnectChatEntry(session, entry);
+            if (!applyResult.ok) {
+              const messageText = this.describeProjectConnectError(applyResult.error || 'chat_required');
+              answerText = messageText.replace(/<[^>]+>/g, '');
+              showAlert = true;
+              break;
+            }
+
+            shouldUpdate = true;
+            answerText = entry.label
+              ? `Чат «${entry.label}» выбран.`
+              : 'Чат выбран.';
+            this.queueLog({
+              kind: 'admin_session',
+              status: 'updated',
+              session_kind: 'project_connect',
+              user_id: userId,
+              action: 'project_connect_chat',
+              chat_id: entry.chatId,
+              thread_id: entry.threadId || '',
+            });
+            break;
+          }
+          case 'page': {
+            const target = parts[1] || '';
+            const direction = parts[2] || '';
+            if (target === 'account') {
+              const items = this.getProjectConnectAccountChoices(session, { includeSelected: true }).filter(
+                (choice) => choice.available || choice.selected,
+              );
+              const pageSize =
+                Number.isFinite(Number(session.accountPageSize)) && Number(session.accountPageSize) > 0
+                  ? Number(session.accountPageSize)
+                  : 6;
+              const pages = Math.max(1, Math.ceil(items.length / pageSize) || 1);
+              let page = Math.max(0, Math.min(Number(session.accountPage) || 0, pages - 1));
+              if (direction === 'next') {
+                page = Math.min(page + 1, pages - 1);
+              } else if (direction === 'prev') {
+                page = Math.max(page - 1, 0);
+              } else if (/^\d+$/.test(direction)) {
+                page = Math.max(0, Math.min(Number(direction), pages - 1));
+              }
+              session.accountPage = page;
+              shouldUpdate = true;
+              answerText = 'Страница аккаунтов изменена.';
+            } else if (target === 'chat') {
+              const items = this.getProjectConnectChatChoices(session, { includeSelected: true }).filter(
+                (choice) => choice.available || choice.selected,
+              );
+              const pageSize =
+                Number.isFinite(Number(session.chatPageSize)) && Number(session.chatPageSize) > 0
+                  ? Number(session.chatPageSize)
+                  : 6;
+              const pages = Math.max(1, Math.ceil(items.length / pageSize) || 1);
+              let page = Math.max(0, Math.min(Number(session.chatPage) || 0, pages - 1));
+              if (direction === 'next') {
+                page = Math.min(page + 1, pages - 1);
+              } else if (direction === 'prev') {
+                page = Math.max(page - 1, 0);
+              } else if (/^\d+$/.test(direction)) {
+                page = Math.max(0, Math.min(Number(direction), pages - 1));
+              }
+              session.chatPage = page;
+              shouldUpdate = true;
+              answerText = 'Страница чатов изменена.';
+            } else {
+              answerText = 'Страница недоступна.';
+            }
+            break;
+          }
+          case 'refresh': {
+            session.accountPage = 0;
+            session.chatPage = 0;
+            await this.populateProjectConnectSession(session, { forceRefreshMeta: true });
+            this.refreshProjectConnectSuggestions(session);
+            shouldUpdate = true;
+            answerText = 'Данные Meta и список чатов обновлены.';
+            this.queueLog({
+              kind: 'admin_session',
+              status: 'updated',
+              session_kind: 'project_connect',
+              user_id: userId,
+              action: 'project_connect_refresh',
+            });
+            break;
+          }
+          case 'cancel': {
+            await this.clearAdminSession(userId);
+            if (message?.chat?.id && message?.message_id) {
+              try {
+                await this.telegram.editMessageText({
+                  chat_id: message.chat.id,
+                  message_id: message.message_id,
+                  text: '🛑 Сессия подключения отменена.',
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: true,
+                });
+              } catch (error) {
+                console.warn('Failed to edit cancelled project connect message', error);
+              }
+            }
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: 'Сессия подключения отменена.',
+            });
+            this.queueLog({
+              kind: 'admin_session',
+              status: 'cancelled',
+              session_kind: 'project_connect',
+              user_id: userId,
+              action: 'project_connect_cancel',
+            });
+            return { handled: true };
+          }
+          case 'noop': {
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Выберите пункт меню.' });
+            return { handled: true };
+          }
+          default: {
+            answerText = 'Действие не поддерживается.';
+            showAlert = true;
+            break;
+          }
+        }
+
+        if (shouldUpdate) {
+          await this.populateProjectConnectSession(session);
+          this.refreshProjectConnectSuggestions(session);
+          await this.saveAdminSession(session);
+          await updatePanel();
+        } else {
+          await this.saveAdminSession(session);
+        }
+
+        await this.telegram.answerCallbackQuery({
+          callback_query_id: id,
+          text: answerText || 'Готово.',
+          show_alert: showAlert,
+        });
+
+        return { handled: true };
+      }
+
       if (data === 'admin:fb:auth') {
         const workerUrl = typeof this.config.workerUrl === 'string' ? this.config.workerUrl.trim() : '';
         if (!workerUrl) {
@@ -8031,48 +8817,32 @@ class TelegramBot {
           accounts = Array.isArray(status?.facebook?.adAccounts) ? status.facebook.adAccounts : [];
         }
 
-        await this.startProjectConnectSession({
+        const session = await this.startProjectConnectSession({
           userId,
           chatId,
           threadId: message?.message_thread_id ?? null,
           accounts,
         });
 
-        const lines = [
-          '<b>Подключение проекта</b>',
-          'Укажите параметры через <code>ключ=значение</code>:',
-          '<code>account=act_123456789</code>',
-          '<code>chat=-100123456789:5</code>',
-          '<code>preset=sales</code> — применить шаблон чата (если настроено)',
-          '<code>code=my-project</code>',
-          '<code>name=Название проекта</code>',
-          '<code>timezone=Asia/Tashkent</code>',
-          '',
-          'После ввода отправьте <code>save</code>, чтобы сохранить проект, или /cancel для отмены.',
-        ];
-
-        if (Array.isArray(accounts) && accounts.length > 0) {
-          lines.push('', '<b>Доступные аккаунты</b>');
-          const preview = accounts.slice(0, 6);
-          for (const account of preview) {
-            const accountId = String(account?.accountId ?? account?.id ?? '').replace(/^act_/, '');
-            lines.push(
-              `• <code>act_${escapeHtml(accountId)}</code> — ${escapeHtml(account?.name || 'без названия')} (${escapeHtml(
-                account?.currency || 'USD',
-              )})`,
-            );
-          }
-          if (accounts.length > preview.length) {
-            lines.push(`… и ещё ${accounts.length - preview.length}`);
-          }
+        if (!session) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось открыть форму. Попробуйте ещё раз.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'project_connect_session_failed' };
         }
+
+        const body = this.renderProjectConnectPanel(session);
+        const replyMarkup = this.buildProjectConnectKeyboard(session);
 
         await this.sendMessageWithFallback(
           {
             chat_id: chatId,
-            text: lines.join('\n'),
+            text: body,
             parse_mode: 'HTML',
             disable_web_page_preview: true,
+            reply_markup: replyMarkup,
           },
           message,
         );
