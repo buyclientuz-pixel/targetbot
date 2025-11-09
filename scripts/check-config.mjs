@@ -12,6 +12,10 @@ const NPM_PROXY_ENV_KEYS = [
   'npm_config_https_proxy',
   'NPM_CONFIG_HTTP_PROXY',
   'NPM_CONFIG_HTTPS_PROXY',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'http_proxy',
+  'https_proxy',
 ];
 
 function sanitizeNpmProxyEnv(baseEnv = process.env) {
