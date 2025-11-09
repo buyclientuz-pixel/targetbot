@@ -1,6 +1,7 @@
 {
   "scripts": {
-    "test": "node ./test/run-tests.mjs"
+    "test": "node ./test/run-tests.mjs",
+    "check:config": "node ./scripts/check-config.mjs"
   },
   "devDependencies": {
     "miniflare": "^4.20251105.0",
