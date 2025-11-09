@@ -118,6 +118,13 @@ async function main() {
     log('ok', `Найден токен Telegram (${tokenEntry.key}).`);
   } else {
     log('error', 'Токен Telegram не найден (BOT_TOKEN или алиасы).');
+    console.log(
+      [
+        '  • Локально положите токен в файл .dev.vars или .env строкой BOT_TOKEN="<значение>";',
+        '  • Для Cloudflare выполните: wrangler secret put BOT_TOKEN (введите токен при запросе);',
+        '  • В веб-интерфейсе Cloudflare откройте Workers → ваш воркер → Settings → Variables → Add secret.',
+      ].join('\n')
+    );
   }
 
   const admins = parseAdminIds(env.ADMIN_IDS);

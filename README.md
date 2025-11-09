@@ -37,6 +37,31 @@
 
 > Секреты никогда не коммитятся в git. Используйте `wrangler secret put` или `.dev.vars`/`.env` в локальной разработке.
 
+## Как добавить ключи и токены
+
+### Локальная разработка
+1. Создайте файл `.dev.vars` (Cloudflare будет читать его в режиме `wrangler dev`).
+2. Пропишите строки в формате `KEY="value"`. Минимальный набор:
+   ```env
+   BOT_TOKEN="<токен_бота_из_@BotFather>"
+   ADMIN_IDS="7623982602,573424022"
+   DEFAULT_TZ="Asia/Tashkent"
+   ```
+3. Для запуска через Node.js или других инструментов можно задать те же значения в `.env`.
+
+> `.dev.vars` и `.env` не коммитятся в репозиторий — убедитесь, что файлы перечислены в `.gitignore` (уже настроено).
+
+### Продуктивный воркер в Cloudflare
+1. Выполните `npx wrangler secret put BOT_TOKEN` и вставьте токен из @BotFather.
+2. Аналогично можно добавить `ADMIN_IDS`, `DEFAULT_TZ` и другие приватные значения (`wrangler secret put <KEY>`).
+3. Либо откройте Cloudflare Dashboard → Workers & Pages → нужный воркер → **Settings** → **Variables** → **Add variable/secret**.
+4. После обновления секретов перезапустите деплой: `npm run deploy` или GitHub Actions.
+
+### Проверка
+1. Запустите `npm run check:config -- --ping-telegram` — скрипт найдёт токен и проверит `getMe`.
+2. В браузере откройте `/health?ping=telegram` — убедитесь, что воркер видит токен и текущий webhook.
+3. Отправьте в Telegram `/pingtest` — бот вернёт 10 сообщений, подтверждая доставку.
+
 ## Быстрый старт
 ```bash
 # Установить зависимости (на проде используется npx, но локально можно сделать install)
