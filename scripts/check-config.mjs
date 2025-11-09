@@ -15,6 +15,7 @@ const BOT_TOKEN_ENV_KEYS = [
   'TELEGRAM_BOT_API_TOKEN',
 ];
 const OPTIONAL_ENV_KEYS = ['FB_LONG_TOKEN', 'WORKER_URL', 'GS_WEBHOOK'];
+const TELEGRAM_TIMEOUT_MS = 9000;
 
 function hasValue(value) {
   return typeof value === 'string' && value.trim().length > 0;
@@ -92,6 +93,65 @@ function isPlaceholder(value) {
 const args = process.argv.slice(2);
 const strictKv = args.includes('--require-dedicated-kv');
 const pingTelegram = args.includes('--ping-telegram');
+const checkWebhook = args.includes('--check-webhook');
+
+function createAbortController(timeoutMs = TELEGRAM_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    signal: controller.signal,
+    clear() {
+      clearTimeout(timer);
+    },
+  };
+}
+
+async function callTelegramApi(token, method, { payload = null, timeoutMs = TELEGRAM_TIMEOUT_MS, httpMethod } = {}) {
+  if (typeof fetch !== 'function') {
+    throw new Error('глобальный fetch недоступен в этой версии Node.');
+  }
+
+  const { signal, clear } = createAbortController(timeoutMs);
+  const url = `https://api.telegram.org/bot${token}/${method}`;
+  const init = { method: httpMethod ?? (payload ? 'POST' : 'GET'), signal };
+
+  if (init.method === 'POST') {
+    init.headers = { 'content-type': 'application/json' };
+    init.body = JSON.stringify(payload ?? {});
+  }
+
+  try {
+    const response = await fetch(url, init);
+    const textBody = await response.text();
+    let data = {};
+    if (textBody) {
+      try {
+        data = JSON.parse(textBody);
+      } catch (error) {
+        throw new Error(`ответ не JSON: ${error.message}`);
+      }
+    }
+
+    if (!response.ok) {
+      const description = data?.description || textBody || `HTTP ${response.status}`;
+      throw new Error(description);
+    }
+
+    if (data?.ok === false) {
+      throw new Error(data?.description || 'unknown error');
+    }
+
+    return data?.result ?? null;
+  } catch (error) {
+    const message = error?.message ?? String(error);
+    if (/The operation was aborted|aborterror/i.test(message)) {
+      throw new Error('превышен таймаут Telegram API');
+    }
+    throw new Error(message);
+  } finally {
+    clear();
+  }
+}
 
 async function listWranglerSecrets() {
   if (process.env.CHECK_CONFIG_SKIP_WRANGLER === '1') {
@@ -197,8 +257,6 @@ if (remoteBotTokens.length > 0) {
 if (pingTelegram) {
   if (localBotTokens.length === 0) {
     logStatus('warn', 'Пинг Telegram пропущен: токен не найден в локальных переменных.');
-  } else if (typeof fetch !== 'function') {
-    logStatus('warn', 'Пинг Telegram пропущен: глобальный fetch недоступен в текущей версии Node.');
   } else {
     const tokenKey = localBotTokens[0];
     const rawToken = envSnapshot[tokenKey];
@@ -208,36 +266,74 @@ if (pingTelegram) {
       const tokenValue = rawToken.trim();
       const startedAt = Date.now();
       try {
-        const response = await fetch(`https://api.telegram.org/bot${tokenValue}/getMe`);
-        const textBody = await response.text();
-        let payload = {};
-        let parseFailed = false;
-        if (textBody) {
-          try {
-            payload = JSON.parse(textBody);
-          } catch (error) {
-            parseFailed = true;
-            logStatus('error', `Ответ Telegram не разобран: ${error.message}`);
-          }
-        }
-
-        if (parseFailed) {
-          logStatus('error', 'Telegram вернул непредвиденный ответ.');
-        } else if (!response.ok || payload?.ok === false) {
-          const description =
-            payload?.description || payload?.error?.message || textBody || `HTTP ${response.status}`;
-          logStatus('error', `Telegram вернул ошибку: ${description}`);
-        } else {
-          const bot = payload?.result ?? {};
-          const latency = Date.now() - startedAt;
-          const username = bot.username ? `@${bot.username}` : 'без username';
-          logStatus(
-            'ok',
-            `Telegram бот доступен (${username}, id ${bot.id ?? 'неизвестно'}), отклик ${latency}мс.`,
-          );
-        }
+        const bot = await callTelegramApi(tokenValue, 'getMe', { httpMethod: 'GET' });
+        const latency = Date.now() - startedAt;
+        const username = bot?.username ? `@${bot.username}` : 'без username';
+        logStatus('ok', `Telegram бот доступен (${username}, id ${bot?.id ?? 'неизвестно'}), отклик ${latency}мс.`);
       } catch (error) {
         logStatus('error', `Не удалось связаться с Telegram: ${error.message}`);
+      }
+    }
+  }
+}
+
+if (checkWebhook) {
+  if (localBotTokens.length === 0) {
+    logStatus('warn', 'Проверка webhook пропущена: токен не найден в локальных переменных.');
+  } else {
+    const tokenKey = localBotTokens[0];
+    const rawToken = envSnapshot[tokenKey];
+    if (!hasValue(rawToken)) {
+      logStatus('warn', `Проверка webhook пропущена: переменная ${tokenKey} пуста.`);
+    } else {
+      const tokenValue = rawToken.trim();
+      try {
+        const info = await callTelegramApi(tokenValue, 'getWebhookInfo', { httpMethod: 'GET' });
+        const webhookUrl = info?.url ?? '';
+        if (!webhookUrl) {
+          logStatus('warn', 'Webhook Telegram не настроен: метод getWebhookInfo вернул пустой url.');
+        } else {
+          logStatus('ok', `Webhook Telegram указывает на ${webhookUrl}.`);
+        }
+
+        const workerBase = hasValue(envSnapshot.WORKER_URL)
+          ? envSnapshot.WORKER_URL.trim().replace(/\/+$/, '')
+          : null;
+        if (workerBase) {
+          const expected = `${workerBase}/tg`;
+          const normalizedExpected = expected.replace(/\/+$/, '');
+          const normalizedActual = webhookUrl ? webhookUrl.replace(/\/+$/, '') : '';
+          if (!webhookUrl) {
+            logStatus('error', `Webhook отсутствует, ожидается ${expected}.`);
+          } else if (normalizedActual === normalizedExpected) {
+            logStatus('ok', 'Webhook URL совпадает с WORKER_URL.');
+          } else {
+            logStatus(
+              'warn',
+              `Webhook указывает на ${webhookUrl}, ожидалось ${expected}. Обновите setWebhook после деплоя.`,
+            );
+          }
+        } else {
+          logStatus('warn', 'WORKER_URL не задан, сравнение webhook URL пропущено.');
+        }
+
+        if (info?.pending_update_count > 0) {
+          logStatus('warn', `У Telegram в очереди ${info.pending_update_count} необработанных обновлений.`);
+        }
+
+        if (info?.last_error_message) {
+          const errorDate = info?.last_error_date ? new Date(info.last_error_date * 1000).toISOString() : 'неизвестно';
+          logStatus('warn', `Последняя ошибка webhook (${errorDate}): ${info.last_error_message}`);
+        }
+
+        if (info?.last_synchronization_error) {
+          const syncDate = info?.last_synchronization_error_date
+            ? new Date(info.last_synchronization_error_date * 1000).toISOString()
+            : 'неизвестно';
+          logStatus('warn', `Последняя ошибка синхронизации (${syncDate}): ${info.last_synchronization_error}`);
+        }
+      } catch (error) {
+        logStatus('error', `Не удалось получить getWebhookInfo: ${error.message}`);
       }
     }
   }

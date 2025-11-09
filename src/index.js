@@ -508,21 +508,83 @@ async function handleHealth(env, { pingTelegram = false } = {}) {
   };
 
   if (pingTelegram) {
-    response.telegram = { ping: { ok: false, reason: 'bot_token_missing' } };
+    const telegramStatus = (response.telegram = {
+      ping: { ok: false, reason: 'bot_token_missing' },
+    });
 
     if (botToken.value) {
       const startedAt = Date.now();
       try {
         const me = await telegramGetMe(env, botToken.value);
-        response.telegram.ping = {
+        telegramStatus.ping = {
           ok: true,
           username: me?.username ?? null,
           first_name: me?.first_name ?? null,
           id: me?.id ?? null,
           latency_ms: Date.now() - startedAt,
         };
+
+        let webhookInfo = null;
+        let webhookError = null;
+        try {
+          webhookInfo = await telegramGetWebhookInfo(env, botToken.value);
+        } catch (error) {
+          webhookError = error;
+          console.error('handleHealth telegram webhook info failed', error);
+        }
+
+        const workerBaseUrl = ensureWorkerUrl(env);
+        const expectedWebhookUrl = `${workerBaseUrl}/tg`;
+        const toIso = (seconds) =>
+          Number.isFinite(seconds) ? new Date(seconds * 1000).toISOString() : null;
+
+        const webhookStatus = {
+          ok: !webhookError,
+          configured: Boolean(webhookInfo?.url),
+          url: webhookInfo?.url ?? null,
+          expected_url: expectedWebhookUrl,
+          url_match: null,
+          has_custom_certificate: Boolean(webhookInfo?.has_custom_certificate),
+          pending_update_count: webhookInfo?.pending_update_count ?? 0,
+          max_connections: webhookInfo?.max_connections ?? null,
+          ip_address: webhookInfo?.ip_address ?? null,
+          allowed_updates: Array.isArray(webhookInfo?.allowed_updates)
+            ? webhookInfo.allowed_updates
+            : [],
+          last_error_message: webhookInfo?.last_error_message ?? null,
+          last_error_date: webhookInfo?.last_error_date ?? null,
+          last_error_date_iso: toIso(webhookInfo?.last_error_date ?? null),
+          last_synchronization_error: webhookInfo?.last_synchronization_error ?? null,
+          last_synchronization_error_date: webhookInfo?.last_synchronization_error_date ?? null,
+          last_synchronization_error_date_iso: toIso(
+            webhookInfo?.last_synchronization_error_date ?? null,
+          ),
+        };
+
+        if (webhookError) {
+          webhookStatus.error = webhookError?.message ?? String(webhookError ?? 'unknown error');
+        }
+
+        if (webhookStatus.url) {
+          const normalizedExpected = expectedWebhookUrl.replace(/\/+$/, '');
+          const normalizedActual = webhookStatus.url.replace(/\/+$/, '');
+          webhookStatus.url_match = normalizedActual === normalizedExpected;
+        }
+
+        telegramStatus.webhook = webhookStatus;
+
+        if (
+          !webhookStatus.ok ||
+          !webhookStatus.configured ||
+          webhookStatus.url_match === false ||
+          webhookStatus.pending_update_count > 0 ||
+          webhookStatus.last_error_message ||
+          webhookStatus.last_synchronization_error
+        ) {
+          status = 'degraded';
+        }
       } catch (error) {
-        response.telegram.ping = {
+        telegramStatus.ping = {
           ok: false,
           reason: 'telegram_unreachable',
           error: error?.message ?? String(error ?? 'unknown error'),
@@ -531,7 +593,7 @@ async function handleHealth(env, { pingTelegram = false } = {}) {
       }
     }
 
-    if (!response.telegram.ping.ok) {
+    if (!telegramStatus.ping.ok) {
       status = 'degraded';
     }
   }
@@ -1677,6 +1739,21 @@ async function telegramGetMe(env, tokenOverride) {
   );
 
   const payload = await parseTelegramResponse(response, 'getMe');
+  return payload?.result ?? null;
+}
+
+async function telegramGetWebhookInfo(env, tokenOverride) {
+  const botToken = typeof tokenOverride === 'string' && tokenOverride.trim()
+    ? tokenOverride.trim()
+    : getBotToken(env);
+
+  const response = await fetchWithTimeout(
+    `https://api.telegram.org/bot${botToken}/getWebhookInfo`,
+    {},
+    TELEGRAM_TIMEOUT_MS,
+  );
+
+  const payload = await parseTelegramResponse(response, 'getWebhookInfo');
   return payload?.result ?? null;
 }
 
