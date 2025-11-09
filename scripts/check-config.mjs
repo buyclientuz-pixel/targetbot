@@ -5,7 +5,15 @@ import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 const REQUIRED_ENV_KEYS = ['ADMIN_IDS', 'DEFAULT_TZ', 'FB_APP_ID', 'FB_APP_SECRET'];
-const BOT_TOKEN_ENV_KEYS = ['BOT_TOKEN', 'TG_API_TOKEN', 'TELEGRAM_BOT_TOKEN'];
+const BOT_TOKEN_ENV_KEYS = [
+  'BOT_TOKEN',
+  'TG_API_TOKEN',
+  'TG_BOT_TOKEN',
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_TOKEN',
+  'TELEGRAM_API_TOKEN',
+  'TELEGRAM_BOT_API_TOKEN',
+];
 const OPTIONAL_ENV_KEYS = ['FB_LONG_TOKEN', 'WORKER_URL', 'GS_WEBHOOK'];
 
 function hasValue(value) {
@@ -149,15 +157,19 @@ if (missingEnv.length > 0 && wranglerSecrets.ok && wranglerSecrets.names.length 
   missingEnv = missingEnv.filter((key) => !wranglerSecrets.names.includes(key));
 }
 
-const remoteBotTokens = wranglerSecrets.ok ? BOT_TOKEN_ENV_KEYS.filter((key) => wranglerSecrets.names.includes(key)) : [];
+const remoteBotTokens = wranglerSecrets.ok
+  ? BOT_TOKEN_ENV_KEYS.filter((key) => wranglerSecrets.names.includes(key))
+  : [];
 const hasBotToken = localBotTokens.length > 0 || remoteBotTokens.length > 0;
 
 if (remoteBotTokens.length > 0) {
   remoteCovered = [...new Set([...remoteCovered, ...remoteBotTokens])];
 }
 
+const botTokenAliasLabel = `${BOT_TOKEN_ENV_KEYS[0]} (алиасы: ${BOT_TOKEN_ENV_KEYS.slice(1).join(', ')})`;
+
 if (!hasBotToken) {
-  missingEnv = [...missingEnv, 'BOT_TOKEN (или TG_API_TOKEN, TELEGRAM_BOT_TOKEN)'];
+  missingEnv = [...missingEnv, botTokenAliasLabel];
 }
 
 if (missingEnv.length > 0) {
@@ -171,6 +183,14 @@ if (remoteCovered.length > 0) {
     'ok',
     `Секреты, найденные через wrangler (Cloudflare): ${remoteCovered.join(', ')}`,
   );
+}
+
+if (localBotTokens.length > 0) {
+  logStatus('ok', `Локально найден Telegram токен в переменных: ${localBotTokens.join(', ')}`);
+}
+
+if (remoteBotTokens.length > 0) {
+  logStatus('ok', `В Cloudflare Secrets обнаружены токены: ${remoteBotTokens.join(', ')}`);
 }
 
 if (wranglerSecrets.attempted && !wranglerSecrets.ok && !wranglerSecrets.skipped) {

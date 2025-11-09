@@ -265,7 +265,15 @@ const CAMPAIGN_EDITOR_PAGE_SIZE = 6;
 
 const KV_WARNINGS = new Set();
 const REQUIRED_ENV_KEYS = ['ADMIN_IDS', 'DEFAULT_TZ', 'FB_APP_ID', 'FB_APP_SECRET'];
-const BOT_TOKEN_ENV_KEYS = ['BOT_TOKEN', 'TG_API_TOKEN', 'TELEGRAM_BOT_TOKEN'];
+const BOT_TOKEN_ENV_KEYS = [
+  'BOT_TOKEN',
+  'TG_API_TOKEN',
+  'TG_BOT_TOKEN',
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_TOKEN',
+  'TELEGRAM_API_TOKEN',
+  'TELEGRAM_BOT_API_TOKEN',
+];
 
 function escapeHtml(input = '') {
   return String(input)
@@ -403,6 +411,22 @@ function resolveBotToken(env) {
   return { value: null, source: null };
 }
 
+function listConfiguredBotTokenKeys(env) {
+  if (!env || typeof env !== 'object') {
+    return [];
+  }
+
+  const configured = [];
+  for (const key of BOT_TOKEN_ENV_KEYS) {
+    const raw = env[key];
+    if (typeof raw === 'string' && raw.trim()) {
+      configured.push(key);
+    }
+  }
+
+  return configured;
+}
+
 function validateRequiredEnv(env) {
   const missing = [];
   for (const key of REQUIRED_ENV_KEYS) {
@@ -411,7 +435,9 @@ function validateRequiredEnv(env) {
 
   const token = resolveBotToken(env);
   if (!token.value) {
-    missing.push('env.BOT_TOKEN (или TG_API_TOKEN, TELEGRAM_BOT_TOKEN)');
+    const [primaryKey, ...aliases] = BOT_TOKEN_ENV_KEYS;
+    const aliasLabel = aliases.length ? ` (алиасы: ${aliases.join(', ')})` : '';
+    missing.push(`env.${primaryKey}${aliasLabel}`);
   }
 
   return missing;
@@ -450,6 +476,8 @@ function renderDebugPage(state) {
 async function handleHealth(env) {
   const missingEnv = validateRequiredEnv(env);
   const primaryKv = Boolean(getPrimaryKv(env));
+  const botToken = resolveBotToken(env);
+  const configuredBotTokenKeys = listConfiguredBotTokenKeys(env);
   const dedicatedBindings = ['REPORTS_NAMESPACE', 'BILLING_NAMESPACE', 'LOGS_NAMESPACE'];
   const kvWarnings = [];
   const activeDedicated = [];
@@ -466,6 +494,12 @@ async function handleHealth(env) {
     status,
     timestamp: new Date().toISOString(),
     missingEnv,
+    botToken: {
+      configured: Boolean(botToken.value),
+      source: botToken.source,
+      configuredKeys: configuredBotTokenKeys,
+      aliases: BOT_TOKEN_ENV_KEYS,
+    },
     kv: {
       primaryBound: primaryKv,
       dedicatedBound: activeDedicated,
