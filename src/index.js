@@ -1585,6 +1585,41 @@ function getBotToken(env) {
   throw new Error(`Не найден токен Telegram. Заполните одну из переменных: ${aliases}.`);
 }
 
+async function parseTelegramResponse(response, context) {
+  const textBody = await response.text();
+  let payload;
+
+  if (textBody) {
+    try {
+      payload = JSON.parse(textBody);
+    } catch (error) {
+      throw new Error(
+        `Telegram API ${context} parse error: ${error?.message ?? error ?? 'invalid JSON'}`,
+      );
+    }
+  } else {
+    payload = {};
+  }
+
+  if (!response.ok) {
+    const description =
+      payload?.description ??
+      payload?.error?.message ??
+      textBody ??
+      `HTTP ${response.status}`;
+    throw new Error(`Telegram API ${context} error (HTTP ${response.status}): ${description}`);
+  }
+
+  if (payload?.ok === false) {
+    const description = payload?.description ?? payload?.error?.message ?? 'unknown error';
+    const code = payload?.error_code ?? payload?.error?.code;
+    const codeSuffix = code ? ` (code ${code})` : '';
+    throw new Error(`Telegram API ${context} error${codeSuffix}: ${description}`);
+  }
+
+  return payload;
+}
+
 async function telegramRequest(env, method, payload) {
   const botToken = getBotToken(env);
 
@@ -1597,12 +1632,7 @@ async function telegramRequest(env, method, payload) {
     },
   );
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Telegram API error (${response.status}): ${body}`);
-  }
-
-  return response.json();
+  return parseTelegramResponse(response, method);
 }
 
 async function telegramSendDocumentToChat(env, { chatId, threadId, filename, content, caption }) {
@@ -1632,12 +1662,7 @@ async function telegramSendDocumentToChat(env, { chatId, threadId, filename, con
     },
   );
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Telegram sendDocument error (${response.status}): ${body}`);
-  }
-
-  return response.json();
+  return parseTelegramResponse(response, 'sendDocument');
 }
 
 async function telegramSendDocument(env, project, { filename, content, caption }) {
