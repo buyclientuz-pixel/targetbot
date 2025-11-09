@@ -110,6 +110,25 @@ function safeJsonParse(value) {
   }
 }
 
+function isValidWebhookToken(candidate, botToken) {
+  if (!candidate || !botToken) {
+    return false;
+  }
+
+  const normalizedCandidate = String(candidate).trim();
+  if (!normalizedCandidate) {
+    return false;
+  }
+
+  const validTokens = new Set([String(botToken)]);
+  const shortToken = String(botToken).split(':')[0];
+  if (shortToken) {
+    validTokens.add(shortToken);
+  }
+
+  return validTokens.has(normalizedCandidate);
+}
+
 function createAbort(timeoutMs = TELEGRAM_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -292,6 +311,14 @@ class TelegramClient {
 
   async editMessageText(payload) {
     return this.call('editMessageText', payload);
+  }
+
+  async setWebhook(payload) {
+    return this.call('setWebhook', payload);
+  }
+
+  async deleteWebhook(payload = {}) {
+    return this.call('deleteWebhook', payload);
   }
 }
 
@@ -942,6 +969,10 @@ class WorkerApp {
       return this.handleHealth(url);
     }
 
+    if (url.pathname === '/manage/telegram/webhook') {
+      return this.handleTelegramWebhookManage(url);
+    }
+
     if (url.pathname === '/fb_auth') {
       return htmlResponse('<h1>Meta OAuth</h1><p>Этап в разработке. Функция появится в следующих релизах.</p>');
     }
@@ -1024,13 +1055,7 @@ class WorkerApp {
       const first = segments[0]?.toLowerCase();
       if (['tg', 'telegram', 'webhook'].includes(first) && segments.length === 2) {
         const candidate = segments[1];
-        const validTokens = new Set([this.config.botToken]);
-        const shortToken = this.config.botToken.split(':')[0];
-        if (shortToken) {
-          validTokens.add(shortToken);
-        }
-
-        if (!validTokens.has(candidate)) {
+        if (!isValidWebhookToken(candidate, this.config.botToken)) {
           return jsonResponse({ ok: false, error: 'invalid_webhook_token' }, { status: 403 });
         }
       }
@@ -1043,6 +1068,140 @@ class WorkerApp {
 
     const result = await bot.handleUpdate(update);
     return jsonResponse({ ok: true, result });
+  }
+
+  async handleTelegramWebhookManage(url) {
+    if (!this.config.botToken) {
+      return jsonResponse({ ok: false, error: 'BOT_TOKEN отсутствует' }, { status: 503 });
+    }
+
+    if (!this.telegramClient?.isUsable) {
+      return jsonResponse({ ok: false, error: 'telegram_client_unavailable' }, { status: 503 });
+    }
+
+    const token = url.searchParams.get('token');
+    if (!isValidWebhookToken(token, this.config.botToken)) {
+      return jsonResponse({ ok: false, error: 'forbidden' }, { status: 403 });
+    }
+
+    const actionFromQuery = url.searchParams.get('action')?.toLowerCase();
+    const method = this.request.method.toUpperCase();
+    const action =
+      actionFromQuery || (method === 'POST' ? 'set' : method === 'DELETE' ? 'delete' : 'info');
+    const dropPending = /^(1|true|yes|on)$/i.test(url.searchParams.get('drop') || '');
+
+    const defaultUrl = (() => {
+      const base = (this.config.workerUrl || '').replace(/\/+$/, '');
+      if (!base) {
+        return '';
+      }
+      const shortToken = this.config.botToken.split(':')[0];
+      if (shortToken) {
+        return `${base}/telegram/${shortToken}`;
+      }
+      return `${base}/telegram`;
+    })();
+
+    const telegram = this.telegramClient;
+
+    switch (action) {
+      case 'info': {
+        try {
+          const info = await telegram.getWebhookInfo();
+          return jsonResponse({ ok: true, action: 'info', info, suggested_url: defaultUrl });
+        } catch (error) {
+          return jsonResponse(
+            { ok: false, error: error?.message || String(error), action: 'info' },
+            { status: 502 },
+          );
+        }
+      }
+
+      case 'delete': {
+        try {
+          const result = await telegram.deleteWebhook({ drop_pending_updates: dropPending });
+          return jsonResponse({
+            ok: true,
+            action: 'delete',
+            drop_pending_updates: dropPending,
+            result,
+          });
+        } catch (error) {
+          return jsonResponse(
+            { ok: false, error: error?.message || String(error), action: 'delete' },
+            { status: 502 },
+          );
+        }
+      }
+
+      case 'set':
+      case 'refresh': {
+        const explicitUrl = url.searchParams.get('url')?.trim();
+        const targetUrl = explicitUrl || defaultUrl;
+        if (!targetUrl) {
+          return jsonResponse(
+            { ok: false, error: 'missing_webhook_url', action },
+            { status: 400 },
+          );
+        }
+
+        const secretToken = url.searchParams.get('secret')?.trim();
+        const maxConnections = Number.parseInt(url.searchParams.get('max_connections') || '', 10);
+        const updatesParam = url.searchParams.get('updates') || '';
+        const allowedUpdates = updatesParam
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean);
+        const ipAddress = url.searchParams.get('ip_address')?.trim();
+
+        const payload = { url: targetUrl };
+        if (secretToken) {
+          payload.secret_token = secretToken;
+        }
+        if (Number.isFinite(maxConnections) && maxConnections > 0) {
+          payload.max_connections = maxConnections;
+        }
+        if (allowedUpdates.length > 0) {
+          payload.allowed_updates = allowedUpdates;
+        }
+        if (ipAddress) {
+          payload.ip_address = ipAddress;
+        }
+        if (dropPending) {
+          payload.drop_pending_updates = true;
+        }
+
+        try {
+          let deleteResult = null;
+          if (action === 'refresh') {
+            deleteResult = await telegram.deleteWebhook({ drop_pending_updates: dropPending });
+            await delay(500);
+          }
+
+          const setResult = await telegram.setWebhook(payload);
+          return jsonResponse({
+            ok: true,
+            action,
+            url: targetUrl,
+            drop_pending_updates: dropPending,
+            delete_result: deleteResult,
+            set_result: setResult,
+            allowed_updates: payload.allowed_updates ?? null,
+            max_connections: payload.max_connections ?? null,
+            ip_address: payload.ip_address ?? null,
+            secret_token: secretToken ? 'set' : null,
+          });
+        } catch (error) {
+          return jsonResponse(
+            { ok: false, error: error?.message || String(error), action },
+            { status: 502 },
+          );
+        }
+      }
+
+      default:
+        return jsonResponse({ ok: false, error: 'unsupported_action' }, { status: 400 });
+    }
   }
 
   async handleScheduled(event) {
