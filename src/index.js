@@ -452,15 +452,42 @@ async function handleHealth(env) {
   return json(response, { status: httpStatus });
 }
 
-function parseAdminIds(env) {
-  const configured = String(env.ADMIN_IDS || '')
-    .split(',')
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => Number(part))
-    .filter((id) => Number.isFinite(id));
+function normalizeAdminId(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(Math.trunc(value));
+  }
 
-  const merged = new Set([...DEFAULT_ADMIN_IDS, ...configured]);
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const unquoted = trimmed.replace(/^['"]|['"]$/g, '');
+    if (!unquoted) {
+      return null;
+    }
+
+    if (/^\d+$/.test(unquoted)) {
+      const normalized = unquoted.replace(/^0+(?=\d)/, '');
+      return normalized.length ? normalized : '0';
+    }
+  }
+
+  return null;
+}
+
+function parseAdminIds(env) {
+  const defaults = DEFAULT_ADMIN_IDS.map((value) => normalizeAdminId(value)).filter(Boolean);
+
+  const rawAdminIds = typeof env.ADMIN_IDS === 'string' ? env.ADMIN_IDS : '';
+  const sanitized = rawAdminIds.replace(/[\[\]"']/g, ' ');
+  const configured = sanitized
+    .split(/[;,\s]+/)
+    .map((part) => normalizeAdminId(part))
+    .filter(Boolean);
+
+  const merged = new Set([...defaults, ...configured]);
   return Array.from(merged.values());
 }
 
@@ -3212,9 +3239,13 @@ function ensureWorkerUrl(env) {
 }
 
 function isAdmin(env, userId) {
-  if (!userId) return false;
+  const normalized = normalizeAdminId(userId);
+  if (!normalized) {
+    return false;
+  }
+
   const admins = parseAdminIds(env);
-  return admins.includes(Number(userId));
+  return admins.includes(normalized);
 }
 
 async function listRegisteredChats(env, cursor, limit = DEFAULT_PAGE_SIZE) {
