@@ -7,6 +7,31 @@ import { spawn } from 'node:child_process';
 const REQUIRED_ENV_KEYS = ['BOT_TOKEN', 'ADMIN_IDS', 'DEFAULT_TZ', 'FB_APP_ID', 'FB_APP_SECRET'];
 const OPTIONAL_ENV_KEYS = ['FB_LONG_TOKEN', 'WORKER_URL', 'GS_WEBHOOK'];
 
+const NPM_PROXY_ENV_KEYS = [
+  'npm_config_http_proxy',
+  'npm_config_https_proxy',
+  'NPM_CONFIG_HTTP_PROXY',
+  'NPM_CONFIG_HTTPS_PROXY',
+];
+
+function sanitizeNpmProxyEnv(baseEnv = process.env) {
+  const cleaned = { ...baseEnv };
+  let mutated = false;
+  for (const key of NPM_PROXY_ENV_KEYS) {
+    if (key in cleaned) {
+      delete cleaned[key];
+      mutated = true;
+    }
+  }
+  return mutated ? cleaned : baseEnv;
+}
+
+for (const key of NPM_PROXY_ENV_KEYS) {
+  if (process.env[key]) {
+    delete process.env[key];
+  }
+}
+
 function hasValue(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -90,9 +115,11 @@ async function listWranglerSecrets() {
 
   return await new Promise((resolve) => {
     let child;
+    const spawnEnv = sanitizeNpmProxyEnv();
     try {
       child = spawn('npx', ['wrangler', 'secret', 'list', '--format', 'json'], {
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: spawnEnv,
       });
     } catch (error) {
       resolve({ attempted: true, ok: false, names: [], error: error.message });
