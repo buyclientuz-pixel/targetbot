@@ -62,6 +62,18 @@ export async function kvList(prefix?: string, cursor?: string): Promise<ListResp
 }
 
 async function request(
+  method: "GET",
+  key: string,
+  body?: string,
+  options?: { expirationTtl?: number }
+): Promise<string | null>;
+async function request(
+  method: "PUT" | "DELETE",
+  key: string,
+  body?: string,
+  options?: { expirationTtl?: number }
+): Promise<void>;
+async function request(
   method: "GET" | "PUT" | "DELETE",
   key: string,
   body?: string,

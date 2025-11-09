@@ -15,22 +15,22 @@ const SCHEDULE_PREFIX = "report:schedule:";
 const ADMIN_KEY = "admins";
 const SETTINGS_KEY = "settings";
 
-const projectSchema = z.object({
-  id: z.string().min(1).optional(),
+const chatRefSchema = z.object({
+  chatId: z.number(),
+  title: z.string().optional(),
+  tgTopicLink: z.string().optional(),
+  threadId: z.number().optional(),
+});
+
+const projectStoredSchema = z.object({
+  id: z.string().min(1),
   projectName: z.string().optional(),
   accountName: z.string().optional(),
   description: z.string().optional(),
-  chats: z
-    .array(
-      z.object({
-        chatId: z.number(),
-        title: z.string().optional(),
-        tgTopicLink: z.string().optional(),
-        threadId: z.number().optional(),
-      })
-    )
-    .default([]),
+  chats: z.array(chatRefSchema).default([]),
 });
+
+const projectUpsertSchema = projectStoredSchema.partial({ id: true });
 
 const chatSchema = z.object({
   chatId: z.number(),
@@ -42,11 +42,13 @@ const chatSchema = z.object({
   updatedAt: z.string().optional(),
 });
 
+const reportSlotSchema = z.enum(["daily_9", "daily_18", "weekly_mon", "monthly_1"]);
+
 const scheduleSchema = z.object({
   projectId: z.string().min(1),
   tz: z.string().min(1),
   cron: z.string().min(1),
-  targets: z.array(z.string()),
+  targets: z.array(reportSlotSchema),
   preset: z.union([z.literal("today"), z.literal("yesterday"), z.literal("last_7d")]),
   lastRunAt: z.string().optional(),
 });
@@ -78,7 +80,7 @@ export async function listProjects(): Promise<Project[]> {
     for (const key of keys) {
       const raw = await kvGet(key);
       if (!raw) continue;
-      const parsed = projectSchema.safeParse(JSON.parse(raw));
+      const parsed = projectStoredSchema.safeParse(JSON.parse(raw));
       if (!parsed.success) {
         continue;
       }
@@ -100,14 +102,14 @@ export async function getProject(projectId: string): Promise<Project | null> {
   if (!raw) {
     return null;
   }
-  const parsed = projectSchema.safeParse(JSON.parse(raw));
+  const parsed = projectStoredSchema.safeParse(JSON.parse(raw));
   return parsed.success ? parsed.data : null;
 }
 
 export async function upsertProject(
   project: Omit<Project, "id"> & { id?: string }
 ): Promise<Project> {
-  const parsed = projectSchema.parse(project);
+  const parsed = projectUpsertSchema.parse(project);
   const enriched: Project = {
     ...parsed,
     id: parsed.id ?? randomUUID(),
@@ -199,7 +201,7 @@ export async function getSchedule(projectId: string): Promise<ReportSchedule | n
 export async function saveSchedule(schedule: ReportSchedule): Promise<ReportSchedule> {
   const parsed = scheduleSchema.parse(schedule);
   await kvPut(`${SCHEDULE_PREFIX}${parsed.projectId}`, JSON.stringify(parsed));
-  return parsed;
+  return parsed as ReportSchedule;
 }
 
 export async function loadAdminRoles(): Promise<Record<string, Role>> {

@@ -15,11 +15,14 @@ async function request<T>(
   const { WORKER_URL } = loadEnv();
   const url = `${WORKER_URL}${path}`;
 
+  const headers = new globalThis.Headers(options.headers as HeadersInit);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
   const response = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-    },
     ...options,
+    headers,
   });
 
   if (!response.ok) {

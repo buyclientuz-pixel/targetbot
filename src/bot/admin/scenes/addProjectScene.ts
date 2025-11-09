@@ -30,7 +30,8 @@ export async function addProjectScene(
   let projectName: string | undefined;
   while (!projectName) {
     const nameMessage = await conversation.waitFor("message:text");
-    const result = titleSchema.safeParse(nameMessage.message.text);
+    const messageText = nameMessage.message?.text ?? "";
+    const result = titleSchema.safeParse(messageText);
     if (!result.success) {
       await ctx.reply("Название не может быть пустым. Попробуйте снова.");
       continue;
@@ -43,7 +44,7 @@ export async function addProjectScene(
     { parse_mode: "Markdown" }
   );
   const descriptionMessage = await conversation.waitFor("message:text");
-  const description = descriptionMessage.message.text.trim();
+  const description = descriptionMessage.message?.text?.trim() ?? "";
   const projectDescription = description === "-" ? undefined : description;
 
   const knownChats = await listChats();

@@ -64,7 +64,7 @@ adminRouter.command("admin", async (ctx) => {
 });
 
 adminRouter.callbackQuery(/.*/, async (ctx, next) => {
-  const raw = ctx.callbackQuery.data;
+  const raw = ctx.callbackQuery?.data;
   if (!raw) {
     return next();
   }

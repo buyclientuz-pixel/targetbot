@@ -50,7 +50,11 @@ export async function linkChatScene(
     );
     while (!project) {
       const response = await conversation.waitFor("message:text");
-      const candidate = response.message.text.trim();
+      const candidate = response.message?.text?.trim();
+      if (!candidate) {
+        await ctx.reply("Введите ID проекта.");
+        continue;
+      }
       const found = projects.find((item) => item.id === candidate);
       if (!found) {
         await ctx.reply("Проект не найден. Попробуйте снова.");
