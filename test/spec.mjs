@@ -29,7 +29,7 @@ class MockKVNamespace {
   }
 
   async list(options = {}) {
-    const { prefix, limit, reverse } = options;
+    const { prefix, limit, reverse, cursor } = options;
     let entries = Array.from(this.#store.entries()).filter(([name]) =>
       prefix ? name.startsWith(prefix) : true
     );
@@ -38,7 +38,20 @@ class MockKVNamespace {
       entries = entries.reverse();
     }
 
-    const limited = typeof limit === "number" ? entries.slice(0, limit) : entries;
+    let startIndex = 0;
+    if (typeof cursor === "string" && cursor.length > 0) {
+      const parsed = Number.parseInt(cursor, 10);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        startIndex = parsed;
+      }
+    }
+
+    const sliced = entries.slice(startIndex);
+    const limited =
+      typeof limit === "number" ? sliced.slice(0, limit) : sliced.slice();
+
+    const nextIndex = startIndex + limited.length;
+    const hasMore = nextIndex < entries.length;
 
     return {
       keys: limited.map(([name, record]) => ({
@@ -46,8 +59,8 @@ class MockKVNamespace {
         metadata: record.metadata,
         expiration: record.expiration,
       })),
-      list_complete: limited.length === entries.length,
-      cursor: "",
+      list_complete: !hasMore,
+      cursor: hasMore ? String(nextIndex) : "",
     };
   }
 }
@@ -103,6 +116,7 @@ test("lists stored reports", async () => {
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.reports.length, 2);
+  assert.equal(body.cursor, null);
   assert.deepEqual(body.reports[0], {
     id: "report-2024-02",
     value: { total: 20 },
@@ -228,8 +242,209 @@ test("stores webhook payloads and exposes them via logs", async () => {
   const { id } = await webhookResponse.json();
   assert.ok(await env.LOGS_NAMESPACE.get(id));
 
-  const logsResponse = await worker.fetch(createRequest("https://example.com/logs?limit=1"), env, ctx);
+  const logsResponse = await worker.fetch(
+    createRequest("https://example.com/logs?limit=1"),
+    env,
+    ctx
+  );
   const logs = await logsResponse.json();
   assert.equal(logs.logs.length, 1);
+  assert.equal(logs.cursor, null);
   assert.equal(logs.logs[0].id, id);
+});
+
+test("creates, lists, updates, and deletes targets", async () => {
+  const env = createEnv();
+
+  const createResponse = await worker.fetch(
+    createRequest("https://example.com/targets", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Spring launch",
+        platform: "facebook",
+        objective: "leads",
+        dailyBudget: 120,
+        tags: ["finance", "spring"],
+        owner: "alyona",
+      }),
+    }),
+    env,
+    ctx
+  );
+
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+  assert.ok(created.id);
+  assert.equal(created.status, "draft");
+  assert.equal(created.metrics.impressions, 0);
+
+  const listResponse = await worker.fetch(
+    createRequest("https://example.com/targets?limit=10"),
+    env,
+    ctx
+  );
+  const listBody = await listResponse.json();
+  assert.equal(listBody.targets.length, 1);
+  assert.equal(listBody.cursor, null);
+  assert.equal(listBody.targets[0].name, "Spring launch");
+
+  const updateResponse = await worker.fetch(
+    createRequest(`https://example.com/targets/${created.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ status: "active", dailyBudget: 200 }),
+    }),
+    env,
+    ctx
+  );
+  assert.equal(updateResponse.status, 200);
+  const updated = await updateResponse.json();
+  assert.equal(updated.status, "active");
+  assert.equal(updated.dailyBudget, 200);
+
+  const metricsResponse = await worker.fetch(
+    createRequest(`https://example.com/targets/${created.id}/metrics`, {
+      method: "POST",
+      body: JSON.stringify({ impressions: 1000, clicks: 45, spend: 320.5, leads: 5 }),
+    }),
+    env,
+    ctx
+  );
+  assert.equal(metricsResponse.status, 200);
+  const metricsUpdate = await metricsResponse.json();
+  assert.equal(metricsUpdate.metrics.impressions, 1000);
+  assert.equal(metricsUpdate.metrics.clicks, 45);
+
+  const metricsFetchResponse = await worker.fetch(
+    createRequest(`https://example.com/targets/${created.id}/metrics`),
+    env,
+    ctx
+  );
+  const metricsBody = await metricsFetchResponse.json();
+  assert.equal(metricsBody.metrics.leads, 5);
+  assert.ok(metricsBody.kpis.ctr > 0);
+
+  const summaryResponse = await worker.fetch(
+    createRequest("https://example.com/reports/summary"),
+    env,
+    ctx
+  );
+  const summary = await summaryResponse.json();
+  assert.equal(summary.totals.targets, 1);
+  assert.equal(summary.totals.impressions, 1000);
+  assert.equal(summary.byStatus.active.impressions, 1000);
+
+  const deleteResponse = await worker.fetch(
+    createRequest(`https://example.com/targets/${created.id}`, { method: "DELETE" }),
+    env,
+    ctx
+  );
+  assert.equal(deleteResponse.status, 204);
+
+  const missingResponse = await worker.fetch(
+    createRequest(`https://example.com/targets/${created.id}`),
+    env,
+    ctx
+  );
+  assert.equal(missingResponse.status, 404);
+});
+
+test("supports filtering and pagination for targets", async () => {
+  const env = createEnv();
+
+  async function create(name, status, platform) {
+    const response = await worker.fetch(
+      createRequest("https://example.com/targets", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          platform,
+          objective: "sales",
+          dailyBudget: 50,
+          status,
+          tags: [platform],
+        }),
+      }),
+      env,
+      ctx
+    );
+    return response.json();
+  }
+
+  await create("Alpha", "active", "facebook");
+  await create("Beta", "paused", "instagram");
+  await create("Gamma", "active", "facebook");
+  await create("Delta", "active", "facebook");
+
+  const firstPage = await worker.fetch(
+    createRequest("https://example.com/targets?limit=2&status=active"),
+    env,
+    ctx
+  );
+  const firstPageBody = await firstPage.json();
+  assert.equal(firstPageBody.targets.length, 2);
+  assert.ok(firstPageBody.cursor);
+
+  const secondPage = await worker.fetch(
+    createRequest(
+      `https://example.com/targets?limit=2&status=active&cursor=${firstPageBody.cursor}`
+    ),
+    env,
+    ctx
+  );
+  const secondPageBody = await secondPage.json();
+  assert.equal(secondPageBody.targets.length, 1);
+  assert.equal(secondPageBody.cursor, null);
+
+  const instagramTargets = await worker.fetch(
+    createRequest("https://example.com/targets?platform=instagram"),
+    env,
+    ctx
+  );
+  const instagramBody = await instagramTargets.json();
+  assert.equal(instagramBody.targets.length, 1);
+  assert.equal(instagramBody.targets[0].name, "Beta");
+});
+
+test("validates target payloads", async () => {
+  const env = createEnv();
+
+  const createResponse = await worker.fetch(
+    createRequest("https://example.com/targets", {
+      method: "POST",
+      body: JSON.stringify({ objective: "awareness" }),
+    }),
+    env,
+    ctx
+  );
+
+  assert.equal(createResponse.status, 400);
+  const error = await createResponse.json();
+  assert.match(error.error, /name/i);
+
+  const env2 = createEnv();
+  const createValid = await worker.fetch(
+    createRequest("https://example.com/targets", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Delta",
+        platform: "facebook",
+        objective: "sales",
+        dailyBudget: 70,
+      }),
+    }),
+    env2,
+    ctx
+  );
+  const validBody = await createValid.json();
+
+  const invalidUpdate = await worker.fetch(
+    createRequest(`https://example.com/targets/${validBody.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ dailyBudget: -10 }),
+    }),
+    env2,
+    ctx
+  );
+
+  assert.equal(invalidUpdate.status, 400);
 });
