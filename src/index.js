@@ -274,6 +274,7 @@ const BOT_TOKEN_ENV_KEYS = [
   'TELEGRAM_API_TOKEN',
   'TELEGRAM_BOT_API_TOKEN',
 ];
+const TELEGRAM_WEBHOOK_CACHE = { checkedAt: 0, status: null };
 
 function escapeHtml(input = '') {
   return String(input)
@@ -291,6 +292,19 @@ function escapeHtmlAttribute(input = '') {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/'/g, '&#39;');
+}
+
+function normalizeWebhookUrl(url) {
+  if (typeof url !== 'string') {
+    return '';
+  }
+
+  const trimmed = url.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  return trimmed.replace(/\/+$/, '');
 }
 
 function sanitizeReportPresetName(input) {
@@ -473,7 +487,7 @@ function renderDebugPage(state) {
 </html>`;
 }
 
-async function handleHealth(env, { pingTelegram = false } = {}) {
+async function handleHealth(env, { pingTelegram = false, ensureWebhook = false } = {}) {
   const missingEnv = validateRequiredEnv(env);
   const primaryKv = Boolean(getPrimaryKv(env));
   const botToken = resolveBotToken(env);
@@ -565,10 +579,51 @@ async function handleHealth(env, { pingTelegram = false } = {}) {
           webhookStatus.error = webhookError?.message ?? String(webhookError ?? 'unknown error');
         }
 
+        const normalizedExpected = normalizeWebhookUrl(expectedWebhookUrl);
         if (webhookStatus.url) {
-          const normalizedExpected = expectedWebhookUrl.replace(/\/+$/, '');
-          const normalizedActual = webhookStatus.url.replace(/\/+$/, '');
+          const normalizedActual = normalizeWebhookUrl(webhookStatus.url);
           webhookStatus.url_match = normalizedActual === normalizedExpected;
+        }
+
+        if (ensureWebhook) {
+          const shouldForce =
+            !webhookStatus.configured ||
+            webhookStatus.url_match === false ||
+            webhookStatus.pending_update_count > 0 ||
+            webhookStatus.last_error_message ||
+            webhookStatus.last_synchronization_error;
+          const ensureResult = await ensureTelegramWebhook(env, {
+            force: shouldForce,
+            dropPendingUpdates: true,
+            minIntervalMs: 0,
+          });
+          telegramStatus.webhook.ensure = ensureResult;
+
+          if (ensureResult.ok && ensureResult.info) {
+            webhookStatus.url = ensureResult.info.url ?? webhookStatus.url;
+            webhookStatus.configured = Boolean(ensureResult.info.url);
+            webhookStatus.pending_update_count = ensureResult.info.pending_update_count ?? 0;
+            webhookStatus.max_connections = ensureResult.info.max_connections ?? webhookStatus.max_connections;
+            webhookStatus.allowed_updates = Array.isArray(ensureResult.info.allowed_updates)
+              ? ensureResult.info.allowed_updates
+              : webhookStatus.allowed_updates;
+            webhookStatus.last_error_message = ensureResult.info.last_error_message ?? null;
+            webhookStatus.last_error_date = ensureResult.info.last_error_date ?? null;
+            webhookStatus.last_error_date_iso = toIso(ensureResult.info.last_error_date ?? null);
+            webhookStatus.last_synchronization_error = ensureResult.info.last_synchronization_error ?? null;
+            webhookStatus.last_synchronization_error_date = ensureResult.info.last_synchronization_error_date ?? null;
+            webhookStatus.last_synchronization_error_date_iso = toIso(
+              ensureResult.info.last_synchronization_error_date ?? null,
+            );
+            if (ensureResult.info.url) {
+              const normalizedActual = normalizeWebhookUrl(ensureResult.info.url);
+              webhookStatus.url_match = normalizedActual === normalizedExpected;
+            }
+          }
+
+          if (!ensureResult.ok) {
+            status = 'degraded';
+          }
         }
 
         telegramStatus.webhook = webhookStatus;
@@ -1755,6 +1810,98 @@ async function telegramGetWebhookInfo(env, tokenOverride) {
 
   const payload = await parseTelegramResponse(response, 'getWebhookInfo');
   return payload?.result ?? null;
+}
+
+async function telegramSetWebhook(env, { url, dropPendingUpdates = false, maxConnections = 10 } = {}) {
+  if (typeof url !== 'string' || !url.trim()) {
+    throw new Error('Webhook URL не указан. Заполните env.WORKER_URL.');
+  }
+
+  const payload = { url: url.trim() };
+  if (Number.isFinite(maxConnections) && maxConnections > 0) {
+    payload.max_connections = Math.min(100, Math.max(1, Math.trunc(maxConnections)));
+  }
+  if (dropPendingUpdates) {
+    payload.drop_pending_updates = true;
+  }
+
+  const result = await telegramRequest(env, 'setWebhook', payload);
+  return result?.result ?? result;
+}
+
+async function ensureTelegramWebhook(env, options = {}) {
+  const { force = false, dropPendingUpdates = false, minIntervalMs = 60_000 } = options;
+  const now = Date.now();
+  if (!force && TELEGRAM_WEBHOOK_CACHE.status && now - TELEGRAM_WEBHOOK_CACHE.checkedAt < minIntervalMs) {
+    return { ...TELEGRAM_WEBHOOK_CACHE.status, cached: true };
+  }
+
+  TELEGRAM_WEBHOOK_CACHE.checkedAt = now;
+
+  const botToken = resolveBotToken(env);
+  if (!botToken.value) {
+    const status = { ok: false, error: 'bot_token_missing' };
+    TELEGRAM_WEBHOOK_CACHE.status = status;
+    return status;
+  }
+
+  const expectedUrl = `${ensureWorkerUrl(env)}/tg`;
+  const normalizedExpected = normalizeWebhookUrl(expectedUrl);
+
+  let webhookInfo = null;
+  let infoError = null;
+  try {
+    webhookInfo = await telegramGetWebhookInfo(env, botToken.value);
+  } catch (error) {
+    infoError = error;
+    console.error('ensureTelegramWebhook getWebhookInfo error', error);
+  }
+
+  const normalizedCurrent = normalizeWebhookUrl(webhookInfo?.url ?? '');
+  const pendingCount = Number.isFinite(webhookInfo?.pending_update_count)
+    ? Number(webhookInfo.pending_update_count)
+    : 0;
+  const hasErrors = Boolean(webhookInfo?.last_error_message || webhookInfo?.last_synchronization_error);
+
+  let shouldUpdate = force || !normalizedCurrent || normalizedCurrent !== normalizedExpected || Boolean(infoError);
+
+  if (!shouldUpdate && dropPendingUpdates && (pendingCount > 0 || hasErrors)) {
+    shouldUpdate = true;
+  }
+
+  if (!shouldUpdate) {
+    const status = { ok: true, updated: false, info: webhookInfo, expectedUrl };
+    TELEGRAM_WEBHOOK_CACHE.status = status;
+    return status;
+  }
+
+  try {
+    const result = await telegramSetWebhook(env, {
+      url: expectedUrl,
+      dropPendingUpdates: dropPendingUpdates || pendingCount > 0 || hasErrors,
+      maxConnections: 10,
+    });
+    const refreshed = await telegramGetWebhookInfo(env, botToken.value).catch(() => webhookInfo);
+    const status = {
+      ok: true,
+      updated: true,
+      result,
+      info: refreshed ?? webhookInfo,
+      expectedUrl,
+    };
+    TELEGRAM_WEBHOOK_CACHE.status = status;
+    return status;
+  } catch (error) {
+    console.error('ensureTelegramWebhook setWebhook error', error);
+    const status = {
+      ok: false,
+      error: error?.message ?? String(error ?? 'unknown error'),
+      info: webhookInfo,
+      expectedUrl,
+    };
+    TELEGRAM_WEBHOOK_CACHE.status = status;
+    return status;
+  }
 }
 
 async function telegramSendDocumentToChat(env, { chatId, threadId, filename, content, caption }) {
@@ -13219,7 +13366,8 @@ export default {
     if (pathname === '/health') {
       const ping = url.searchParams.get('ping');
       const pingTelegram = ping === 'telegram' || ping === 'all';
-      return handleHealth(env, { pingTelegram });
+      const ensureWebhook = url.searchParams.get('ensure_webhook') === '1';
+      return handleHealth(env, { pingTelegram, ensureWebhook });
     }
 
     if (pathname === '/') {
@@ -13253,6 +13401,20 @@ export default {
     const timezone = env.DEFAULT_TZ || 'UTC';
     const now = new Date();
     const hm = getLocalHm(now, timezone);
+
+    try {
+      const webhookGuard = await ensureTelegramWebhook(env, {
+        dropPendingUpdates: true,
+        minIntervalMs: 5 * 60 * 1000,
+      });
+      if (!webhookGuard.ok) {
+        console.error('scheduled ensureTelegramWebhook failed', webhookGuard.error);
+      } else if (webhookGuard.updated) {
+        console.log('scheduled ensureTelegramWebhook updated', webhookGuard.expectedUrl);
+      }
+    } catch (error) {
+      console.error('scheduled ensureTelegramWebhook error', error);
+    }
 
     let projects = [];
     try {
