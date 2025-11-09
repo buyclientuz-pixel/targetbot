@@ -19,6 +19,182 @@ const TELEGRAM_LOG_KEY = 'log:telegram';
 const TELEGRAM_LOG_LIMIT = 50;
 const CHAT_KEY_PREFIX = 'chat:';
 const PROJECT_KEY_PREFIX = 'project:';
+const META_STATUS_KEY = 'meta:status';
+
+function resolveDefaultWebhookUrl(config, { origin = '' } = {}) {
+  if (config?.telegramWebhookUrl) {
+    return config.telegramWebhookUrl;
+  }
+
+  const preferredBase = typeof config?.workerUrl === 'string' ? config.workerUrl.trim() : '';
+  const base = (preferredBase || origin || '').replace(/\/+$/, '');
+  if (!base) {
+    return '';
+  }
+
+  const token = typeof config?.botToken === 'string' ? config.botToken : '';
+  const shortToken = token.split(':')[0];
+  if (shortToken) {
+    return `${base}/telegram/${shortToken}`;
+  }
+
+  return `${base}/telegram`;
+}
+
+function formatUsd(value, { digitsBelowOne = 2, digitsAboveOne = 2 } = {}) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) {
+    return '';
+  }
+
+  const absAmount = Math.abs(amount);
+  const minimumFractionDigits = absAmount < 1 ? digitsBelowOne : 0;
+  const maximumFractionDigits = absAmount < 1
+    ? Math.max(digitsBelowOne, digitsAboveOne, minimumFractionDigits)
+    : Math.max(digitsAboveOne, minimumFractionDigits, 2);
+
+  let formatted = new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits,
+    maximumFractionDigits,
+  }).format(amount);
+
+  if (absAmount >= 1 && digitsAboveOne === 0) {
+    formatted = formatted.replace(/,(\d*?)0+$/, (match, digits) => (digits ? `,${digits}` : ''));
+    formatted = formatted.replace(/,$/, '');
+  }
+
+  return `${formatted}$`;
+}
+
+function formatCpaRange(minValue, maxValue) {
+  const min = Number(minValue);
+  const max = Number(maxValue);
+  const hasMin = Number.isFinite(min);
+  const hasMax = Number.isFinite(max);
+
+  if (!hasMin && !hasMax) {
+    return '';
+  }
+
+  const minText = hasMin ? formatUsd(min, { digitsBelowOne: 2, digitsAboveOne: 0 }) : '—';
+  const maxText = hasMax ? formatUsd(max, { digitsBelowOne: 2, digitsAboveOne: 0 }) : '—';
+
+  return `${minText} / ${maxText}`;
+}
+
+function pickMetaStatus(envStatus) {
+  if (!envStatus || typeof envStatus !== 'object') {
+    return null;
+  }
+  return envStatus;
+}
+
+function buildMetaAdminSection(metaStatus, { timezone } = {}) {
+  const section = [];
+  const status = pickMetaStatus(metaStatus) || {};
+  const message = typeof status.message === 'string' ? status.message.trim() : '';
+  if (message) {
+    section.push(`Сообщение: ${escapeHtml(message)}`);
+  }
+
+  section.push('<b>Facebook</b>');
+
+  const facebook = status.facebook && typeof status.facebook === 'object' ? status.facebook : {};
+  const connected = Boolean(facebook.connected);
+  const connectionEmoji = connected ? '🟢' : '🔴';
+  section.push(`Статус: ${connectionEmoji} ${connected ? 'Подключено' : 'Не подключено'}`);
+
+  if (facebook.accountName) {
+    section.push(`Аккаунт: <b>${escapeHtml(facebook.accountName)}</b>`);
+  }
+
+  if (facebook.accountId) {
+    section.push(`ID: <code>${escapeHtml(facebook.accountId)}</code>`);
+  }
+
+  const adAccounts = Array.isArray(facebook.adAccounts) ? facebook.adAccounts : [];
+  section.push(`Рекламных аккаунтов: <b>${adAccounts.length}</b>`);
+
+  for (const account of adAccounts) {
+    const accountLines = buildMetaAdAccountLines(account);
+    if (accountLines.length > 0) {
+      section.push(...accountLines);
+    }
+  }
+
+  const updatedAt = facebook.updatedAt || facebook.updated_at;
+  if (updatedAt) {
+    section.push(`Обновлено: ${escapeHtml(formatTimestamp(updatedAt, timezone))}`);
+  }
+
+  return section;
+}
+
+function buildMetaAdAccountLines(account) {
+  if (!account || typeof account !== 'object') {
+    return [];
+  }
+
+  const lines = [];
+  const name = account.name || account.id || 'Рекламный аккаунт';
+  const statusText =
+    account.statusLabel || account.status_label || account.paymentStatusLabel || account.status || '';
+  const issueHints = [];
+  if (account.paymentIssues && Array.isArray(account.paymentIssues)) {
+    issueHints.push(...account.paymentIssues.filter(Boolean));
+  }
+  if (account.paymentIssue) {
+    issueHints.push(account.paymentIssue);
+  }
+  if (account.blockReason || account.block_reason) {
+    issueHints.push(account.blockReason || account.block_reason);
+  }
+  if (account.debtComment || account.debt_comment) {
+    issueHints.push(account.debtComment || account.debt_comment);
+  }
+
+  const requiresAttention = Boolean(
+    account.requiresAttention ||
+      account.paymentIssue ||
+      account.paymentIssues?.length ||
+      account.blocked ||
+      /payment/i.test(String(account.status || '')),
+  );
+  const badge = requiresAttention ? '⚠️' : '✅';
+  const headerDetails = [statusText, issueHints.length ? issueHints.join(' • ') : '']
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' • ');
+  const headerSuffix = headerDetails ? ` — ${escapeHtml(headerDetails)}` : '';
+  lines.push(`• ${badge} <b>${escapeHtml(name)}</b>${headerSuffix}`);
+
+  const last4 =
+    account.defaultPaymentMethodLast4 ||
+    account.default_card_last4 ||
+    account.card_last4 ||
+    account.paymentMethodLast4;
+  if (last4) {
+    lines.push(`  ◦ 💳 ****${escapeHtml(String(last4))}`);
+  }
+
+  const debt =
+    account.debtUsd ?? account.debt_usd ?? account.debtUSD ?? account.debt ?? account.balance_due_usd;
+  if (Number.isFinite(Number(debt)) && Number(debt) !== 0) {
+    lines.push(`  ◦ Долг: <b>${formatUsd(Number(debt), { digitsBelowOne: 2, digitsAboveOne: 2 })}</b>`);
+  }
+
+  const running = account.runningCampaigns ?? account.campaignsRunning ?? account.activeCampaigns;
+  const cpaMin = account.cpaMinUsd ?? account.cpaMin ?? account.cpa_min_usd ?? account.cpa_min;
+  const cpaMax = account.cpaMaxUsd ?? account.cpaMax ?? account.cpa_max_usd ?? account.cpa_max;
+  const cpaRange = formatCpaRange(cpaMin, cpaMax);
+  if (Number.isFinite(Number(running)) || cpaRange) {
+    const runningText = Number.isFinite(Number(running)) ? `<b>${Number(running)}</b>` : '<b>0</b>';
+    const cpaText = cpaRange ? ` (CPA: ${cpaRange})` : '';
+    lines.push(`  ◦ Кампании: ${runningText}${cpaText}`);
+  }
+
+  return lines;
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -280,6 +456,11 @@ class KvStorage {
     const parsed = safeJsonParse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed.slice(Math.max(parsed.length - limit, 0));
+  }
+
+  async readMetaStatus() {
+    const data = await this.getJson('DB', META_STATUS_KEY);
+    return pickMetaStatus(data);
   }
 }
 class TelegramClient {
@@ -747,6 +928,106 @@ class TelegramBot {
     }
   }
 
+  getDefaultWebhookUrl() {
+    return resolveDefaultWebhookUrl(this.config);
+  }
+
+  async ensureWebhookActive({ autoRegister = true } = {}) {
+    if (!this.telegram?.isUsable) {
+      return { info: null, ensured: false, defaultUrl: this.getDefaultWebhookUrl(), error: 'telegram_unavailable' };
+    }
+
+    let info = null;
+    let capturedError = null;
+    try {
+      info = await this.telegram.getWebhookInfo();
+    } catch (error) {
+      capturedError = error;
+    }
+
+    const defaultUrl = this.getDefaultWebhookUrl();
+    let ensured = false;
+
+    if (autoRegister && defaultUrl && (!info || !info.url)) {
+      try {
+        await this.telegram.setWebhook({ url: defaultUrl });
+        ensured = true;
+        info = await this.telegram.getWebhookInfo();
+        capturedError = null;
+        this.queueLog({ kind: 'webhook', status: 'auto_set', url: defaultUrl });
+      } catch (error) {
+        capturedError = error;
+        this.queueLog({
+          kind: 'webhook',
+          status: 'auto_set_failed',
+          url: defaultUrl,
+          error: error?.message || String(error),
+        });
+      }
+    }
+
+    return {
+      info,
+      ensured,
+      defaultUrl,
+      error: capturedError ? capturedError?.message || String(capturedError) : null,
+    };
+  }
+
+  async refreshWebhook({ dropPending = true } = {}) {
+    if (!this.telegram?.isUsable) {
+      return { ok: false, error: 'telegram_unavailable' };
+    }
+
+    let info = null;
+    try {
+      info = await this.telegram.getWebhookInfo();
+    } catch (error) {
+      info = null;
+    }
+
+    const currentUrl = typeof info?.url === 'string' ? info.url.trim() : '';
+    const fallbackUrl = this.getDefaultWebhookUrl();
+    const targetUrl = currentUrl || fallbackUrl;
+
+    if (!targetUrl) {
+      return { ok: false, error: 'webhook_url_unknown', info };
+    }
+
+    try {
+      const deleteResult = await this.telegram.deleteWebhook({ drop_pending_updates: dropPending });
+      await delay(500);
+      const payload = { url: targetUrl };
+      if (dropPending) {
+        payload.drop_pending_updates = true;
+      }
+      const setResult = await this.telegram.setWebhook(payload);
+      let finalInfo = null;
+      try {
+        finalInfo = await this.telegram.getWebhookInfo();
+      } catch (error) {
+        finalInfo = info;
+      }
+      this.queueLog({
+        kind: 'webhook',
+        status: 'refreshed',
+        url: targetUrl,
+        drop_pending_updates: dropPending,
+      });
+      return { ok: true, url: targetUrl, deleteResult, setResult, info: finalInfo };
+    } catch (error) {
+      const message = error?.message || String(error);
+      this.queueLog({
+        kind: 'webhook',
+        status: 'refresh_failed',
+        url: targetUrl,
+        drop_pending_updates: dropPending,
+        error: message,
+      });
+      return { ok: false, error: message, url: targetUrl, info };
+    }
+  }
+
   queueLog(entry) {
     if (!this.executionContext) return;
     const record = { ...entry };
@@ -758,17 +1039,63 @@ class TelegramBot {
   }
 
   async buildAdminPanelPayload() {
-    const [chatKeys, projectKeys, recentLogs] = await Promise.all([
+    const [metaStatus, chatKeys, projectKeys, recentLogs, webhookStatus] = await Promise.all([
+      this.storage.readMetaStatus(),
       this.storage.listKeys('DB', CHAT_KEY_PREFIX, 100),
       this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 100),
       this.storage.readTelegramLog(5),
+      this.ensureWebhookActive({ autoRegister: true }),
     ]);
 
-    const summary = [
-      '<b>Админ-панель (MVP)</b>',
-      `• Зарегистрированных чатов: <b>${chatKeys.length}</b>`,
-      `• Проектов: <b>${projectKeys.length}</b>`,
-    ];
+    const summary = ['<b>Админ-панель</b>'];
+
+    const metaSection = buildMetaAdminSection(metaStatus, { timezone: this.config.defaultTimezone });
+    if (metaSection.length > 0) {
+      summary.push('', ...metaSection);
+    }
+
+    const webhookInfo = webhookStatus?.info || null;
+    const webhookDefaultUrl = webhookStatus?.defaultUrl || '';
+    const webhookActive = Boolean(webhookInfo?.url);
+    const webhookLines = ['<b>Telegram</b>'];
+    const webhookStatusText = webhookActive
+      ? `<code>${escapeHtml(webhookInfo.url)}</code>`
+      : 'не настроен';
+    webhookLines.push(`Вебхук: ${webhookActive ? '🟢' : '🔴'} ${webhookStatusText}`);
+
+    if (webhookDefaultUrl && (!webhookActive || webhookInfo.url !== webhookDefaultUrl)) {
+      webhookLines.push(`Рекомендуемый URL: <code>${escapeHtml(webhookDefaultUrl)}</code>`);
+    }
+
+    if (webhookStatus?.ensured) {
+      webhookLines.push('Автоматическое подключение выполнено ✅');
+    }
+
+    if (webhookStatus?.error) {
+      webhookLines.push(`Ошибка: <code>${escapeHtml(webhookStatus.error)}</code>`);
+    }
+
+    if (typeof webhookInfo?.pending_update_count === 'number') {
+      webhookLines.push(`В очереди: <b>${webhookInfo.pending_update_count}</b>`);
+    }
+
+    if (webhookInfo?.last_error_message) {
+      webhookLines.push(`Последняя ошибка: ${escapeHtml(webhookInfo.last_error_message)}`);
+    }
+
+    if (webhookInfo?.last_error_date) {
+      webhookLines.push(
+        `Последняя ошибка в: ${escapeHtml(
+          formatTimestamp(webhookInfo.last_error_date * 1000, this.config.defaultTimezone),
+        )}`,
+      );
+    }
+
+    summary.push('', ...webhookLines);
+
+    summary.push('', '<b>Сводка</b>');
+    summary.push(`• Зарегистрированных чатов: <b>${chatKeys.length}</b>`);
+    summary.push(`• Проектов: <b>${projectKeys.length}</b>`);
 
     if (this.config.defaultTimezone) {
       summary.push(`• Таймзона по умолчанию: <code>${escapeHtml(this.config.defaultTimezone)}</code>`);
@@ -793,8 +1120,14 @@ class TelegramBot {
 
     const replyMarkup = {
       inline_keyboard: [
-        [{ text: '🔄 Обновить', callback_data: 'admin:refresh' }],
-        [{ text: '📄 Логи', callback_data: 'admin:logs' }],
+        [{ text: '🔐 Авторизоваться в Facebook', callback_data: 'admin:fb:auth' }],
+        [{ text: '➕ Подключить проект', callback_data: 'admin:project:connect' }],
+        [{ text: '📁 Проекты', callback_data: 'admin:projects' }],
+        [
+          { text: '🔄 Обновиться', callback_data: 'admin:refresh' },
+          { text: '📄 Логи', callback_data: 'admin:logs' },
+        ],
+        [{ text: '🔁 Вебхук', callback_data: 'admin:webhook:refresh' }],
       ],
     };
 
@@ -836,6 +1169,142 @@ class TelegramBot {
     const chatId = message?.chat?.id ?? callback?.from?.id ?? null;
 
     try {
+      if (data === 'admin:fb:auth') {
+        await this.telegram.answerCallbackQuery({
+          callback_query_id: id,
+          text: 'OAuth Meta подключим на следующем шаге.',
+          show_alert: true,
+        });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+        });
+        return { handled: true };
+      }
+
+      if (data === 'admin:project:connect') {
+        if (!chatId) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось определить чат.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'chat_missing' };
+        }
+
+        const body = [
+          '<b>Подключение проекта</b>',
+          '1. Авторизуйтесь в Facebook из панели.',
+          '2. Отметьте нужный бизнес-менеджер и рекламные аккаунты.',
+          '3. Назначьте каналы доставки отчётов.',
+          '',
+          'Интеграция находится в разработке — уведомим, когда появится UI.',
+        ].join('\n');
+
+        await this.sendMessageWithFallback(
+          {
+            chat_id: chatId,
+            text: body,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+          },
+          message,
+        );
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Инструкция отправлена.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+        });
+        return { handled: true };
+      }
+
+      if (data === 'admin:projects') {
+        if (!chatId) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось определить чат.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'chat_missing' };
+        }
+
+        const projectKeys = await this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 50);
+        const items = projectKeys.map((key) => key.replace(PROJECT_KEY_PREFIX, '')).filter(Boolean);
+        const body = items.length
+          ? ['<b>Подключённые проекты</b>', ...items.map((item) => `• ${escapeHtml(item)}`)].join('\n')
+          : '<b>Проекты пока не подключены.</b>';
+
+        await this.sendMessageWithFallback(
+          {
+            chat_id: chatId,
+            text: body,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+          },
+          message,
+        );
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Список проектов отправлен.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+        });
+        return { handled: true };
+      }
+
+      if (data === 'admin:webhook:refresh') {
+        const result = await this.refreshWebhook({ dropPending: true });
+        if (!result.ok) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: `Ошибка: ${result.error ?? 'не удалось обновить вебхук'}`,
+            show_alert: true,
+          });
+          this.queueLog({
+            kind: 'callback',
+            status: 'error',
+            data,
+            chat_id: chatId,
+            user_id: userId,
+            error: result.error,
+          });
+          return { handled: false, error: result.error || 'webhook_refresh_failed' };
+        }
+
+        if (message?.message_id && message?.chat?.id) {
+          const panel = await this.buildAdminPanelPayload();
+          await this.telegram.editMessageText({
+            chat_id: message.chat.id,
+            message_id: message.message_id,
+            text: panel.text,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            reply_markup: panel.reply_markup,
+          });
+        }
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Вебхук перезапущен.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+          url: result.url,
+        });
+        return { handled: true };
+      }
+
       if (data === 'admin:refresh') {
         if (!message?.message_id || !message?.chat?.id) {
           await this.telegram.answerCallbackQuery({
@@ -939,6 +1408,7 @@ class AppConfig {
     this.workerUrl = typeof env.WORKER_URL === 'string' ? env.WORKER_URL.trim() : '';
     this.metaAppId = typeof env.FB_APP_ID === 'string' ? env.FB_APP_ID.trim() : '';
     this.metaAppSecret = typeof env.FB_APP_SECRET === 'string' ? env.FB_APP_SECRET.trim() : '';
+    this.telegramWebhookUrl = AppConfig.resolveWebhookUrl(env);
   }
 
   static resolveToken(env = {}) {
@@ -957,6 +1427,17 @@ class AppConfig {
       if (value) return value;
     }
 
+    return '';
+  }
+
+  static resolveWebhookUrl(env = {}) {
+    const candidateKeys = ['TELEGRAM_WEBHOOK_URL', 'TG_WEBHOOK_URL', 'WEBHOOK_URL'];
+    for (const key of candidateKeys) {
+      const value = typeof env[key] === 'string' ? env[key].trim() : '';
+      if (value) {
+        return value;
+      }
+    }
     return '';
   }
 }
@@ -1152,18 +1633,7 @@ class WorkerApp {
       actionFromQuery || (method === 'POST' ? 'set' : method === 'DELETE' ? 'delete' : 'info');
     const dropPending = /^(1|true|yes|on)$/i.test(url.searchParams.get('drop') || '');
 
-    const defaultUrl = (() => {
-      const preferredBase = (this.config.workerUrl || '').replace(/\/+$/, '');
-      const base = preferredBase || url.origin.replace(/\/+$/, '');
-      if (!base) {
-        return '';
-      }
-      const shortToken = this.config.botToken.split(':')[0];
-      if (shortToken) {
-        return `${base}/telegram/${shortToken}`;
-      }
-      return `${base}/telegram`;
-    })();
+    const defaultUrl = resolveDefaultWebhookUrl(this.config, { origin: url.origin });
 
     const telegram = this.telegramClient;
 
