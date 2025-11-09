@@ -1007,6 +1007,17 @@ function formatInteger(value) {
   return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Math.round(value));
 }
 
+function formatFloat(value, { digits = 2 } = {}) {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+
+  return new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value);
+}
+
 function formatPercentage(value, { digits = 1 } = {}) {
   if (!Number.isFinite(value)) {
     return '—';
@@ -1160,6 +1171,59 @@ function extractReportCampaignFilter(rawProject) {
   }
 
   return [];
+}
+
+function extractPortalTokens(rawProject) {
+  const tokens = new Set();
+
+  const visit = (value, depth = 0) => {
+    if (!value || depth > 4) {
+      return;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed) {
+        tokens.add(trimmed);
+      }
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        visit(item, depth + 1);
+      }
+      return;
+    }
+
+    if (typeof value === 'object') {
+      for (const [key, nested] of Object.entries(value)) {
+        if (!key) continue;
+        if (/token|secret|sig|hash|key/i.test(key)) {
+          visit(nested, depth + 1);
+        }
+      }
+    }
+  };
+
+  if (rawProject && typeof rawProject === 'object') {
+    visit(rawProject.portal);
+    visit(rawProject.client_portal);
+    visit(rawProject.clientPortal);
+    visit(rawProject.client?.portal);
+    visit(rawProject.client?.token);
+    visit(rawProject.client?.tokens);
+    visit(rawProject.tokens?.portal);
+    visit(rawProject.tokens?.client);
+    visit(rawProject.access?.portal);
+    visit(rawProject.portal_token);
+    visit(rawProject.portal_tokens);
+    visit(rawProject.portal_secret);
+    visit(rawProject.portal_sig);
+    visit(rawProject.portal_signature);
+  }
+
+  return tokens;
 }
 
 function formatScheduleLines(schedule, { timezone } = {}) {
@@ -2283,6 +2347,399 @@ function renderAdminDashboard({
   return lines.join('\n');
 }
 
+function resolvePortalKpiMeta(kpi) {
+  if (kpi && typeof kpi === 'object') {
+    if (Number.isFinite(kpi.cpl)) {
+      return { label: 'CPL', target: Number(kpi.cpl) };
+    }
+    if (Number.isFinite(kpi.cpa)) {
+      return { label: 'CPA', target: Number(kpi.cpa) };
+    }
+  }
+  return { label: 'CPA', target: null };
+}
+
+function selectPortalTopCampaigns(report, { limit = 3 } = {}) {
+  const campaigns = Array.isArray(report?.campaigns) ? report.campaigns.slice() : [];
+  campaigns.sort((a, b) => (b?.spendUsd ?? 0) - (a?.spendUsd ?? 0));
+
+  return campaigns.slice(0, Math.max(0, limit)).map((campaign) => {
+    const spendText = formatUsd(campaign?.spendUsd, { digitsBelowOne: 2, digitsAboveOne: 2 }) || '—';
+    const cost = Number.isFinite(campaign?.cpaUsd)
+      ? Number(campaign.cpaUsd)
+      : safeDivision(campaign?.spendUsd, campaign?.leads);
+    const costText = Number.isFinite(cost)
+      ? formatUsd(cost, { digitsBelowOne: 2, digitsAboveOne: 2 }) || '—'
+      : '—';
+
+    return {
+      id: campaign?.id || '',
+      name: campaign?.name || (campaign?.id ? `Campaign ${campaign.id}` : 'Campaign'),
+      spendText,
+      costText,
+    };
+  });
+}
+
+function renderClientPortalPage({
+  project,
+  account,
+  periods,
+  timezone,
+  generatedAt,
+  managerLink,
+  currency,
+  kpi,
+}) {
+  const projectName = escapeHtml(project?.name || 'Проект');
+  const projectCode = project?.code ? `<span class="project-code">#${escapeHtml(project.code)}</span>` : '';
+  const currencyLabel = escapeHtml(currency || account?.currency || project?.metrics?.currency || 'USD');
+  const snapshot = resolveTimezoneSnapshot(generatedAt, timezone);
+  const updatedLabel = snapshot
+    ? `${snapshot.day}.${snapshot.month}.${snapshot.year} ${String(snapshot.hour).padStart(2, '0')}:${String(snapshot.minute).padStart(2, '0')} (${escapeHtml(snapshot.timezone)})`
+    : escapeHtml(new Date(generatedAt).toISOString());
+
+  const billingSource =
+    project?.billingNextAt ||
+    account?.billingNextAt ||
+    account?.billing_next_at ||
+    account?.next_payment_date ||
+    null;
+  const billingCountdown = formatDaysUntil(billingSource, { now: generatedAt, showSign: false });
+  const billingDateLabel = billingSource ? formatDateLabel(billingSource, { timezone }) : '';
+  const billingText = billingDateLabel
+    ? `${escapeHtml(billingDateLabel)}${billingCountdown.label !== '—' ? ` · ${escapeHtml(billingCountdown.label)}` : ''}`
+    : '—';
+
+  const kpiMeta = resolvePortalKpiMeta(kpi);
+
+  const metricDefs = [
+    { key: 'spend', label: `Расход (${currencyLabel})` },
+    { key: 'leads', label: 'Лиды' },
+    { key: 'cpa', label: kpiMeta.label },
+    { key: 'reach', label: 'Reach' },
+    { key: 'impressions', label: 'Показы' },
+    { key: 'frequency', label: 'Frequency' },
+  ];
+
+  const formatMetricValue = (report, key) => {
+    if (!report || typeof report !== 'object' || !report.totals) {
+      return '—';
+    }
+    const totals = report.totals;
+    switch (key) {
+      case 'spend': {
+        const formatted = formatUsd(totals.spendUsd, { digitsBelowOne: 2, digitsAboveOne: 2 });
+        return formatted || '—';
+      }
+      case 'leads':
+        return formatInteger(totals.leads);
+      case 'cpa': {
+        const value = Number.isFinite(totals.cpaUsd)
+          ? Number(totals.cpaUsd)
+          : safeDivision(totals.spendUsd, totals.leads);
+        const formatted = formatUsd(value, { digitsBelowOne: 2, digitsAboveOne: 2 });
+        return formatted || '—';
+      }
+      case 'reach':
+        return formatInteger(totals.reach);
+      case 'impressions':
+        return formatInteger(totals.impressions);
+      case 'frequency': {
+        const freq = safeDivision(totals.impressions, totals.reach);
+        return formatFloat(freq, { digits: 2 });
+      }
+      default:
+        return '—';
+    }
+  };
+
+  const headerCells = periods
+    .map((period) => {
+      const subtitle = period?.report?.range?.label || '';
+      return `<th><div>${escapeHtml(period.label)}</div>${subtitle ? `<span class="th-sub">${escapeHtml(subtitle)}</span>` : ''}</th>`;
+    })
+    .join('');
+
+  const rows = metricDefs
+    .map((metric) => {
+      const cells = periods
+        .map((period) => {
+          const value = period?.error ? '—' : formatMetricValue(period?.report, metric.key);
+          return `<td>${escapeHtml(value)}</td>`;
+        })
+        .join('');
+      return `<tr><th>${escapeHtml(metric.label)}</th>${cells}</tr>`;
+    })
+    .join('');
+
+  const errorLines = periods
+    .filter((period) => period?.error)
+    .map((period) => `• ${escapeHtml(period.label)} — ${escapeHtml(period.error)}`);
+
+  const errorBlock =
+    errorLines.length > 0
+      ? `<div class="error-block"><strong>⚠️ Не удалось обновить часть данных:</strong><br>${errorLines.join('<br>')}</div>`
+      : '';
+
+  const preferredOrder = ['week', 'month', 'today', 'yesterday'];
+  let topSource = null;
+  for (const key of preferredOrder) {
+    topSource = periods.find(
+      (period) =>
+        period?.id === key &&
+        !period?.error &&
+        Array.isArray(period?.report?.campaigns) &&
+        period.report.campaigns.length > 0,
+    );
+    if (topSource) {
+      break;
+    }
+  }
+  if (!topSource) {
+    topSource = periods.find(
+      (period) => !period?.error && Array.isArray(period?.report?.campaigns) && period.report.campaigns.length > 0,
+    );
+  }
+
+  const topCampaigns = selectPortalTopCampaigns(topSource?.report, { limit: 3 });
+  const topTitle = topSource ? `Топ кампании (${escapeHtml(topSource.label)})` : 'Топ кампании';
+  const topBlock =
+    topCampaigns.length > 0
+      ? `<ul class="campaign-list">${topCampaigns
+          .map(
+            (item) =>
+              `<li><span class="campaign-name">${escapeHtml(item.name)}</span><span class="campaign-metrics">${escapeHtml(
+                item.spendText,
+              )} | ${escapeHtml(kpiMeta.label)}: ${escapeHtml(item.costText)}</span></li>`,
+          )
+          .join('')}</ul>`
+      : '<p class="muted">Кампании ещё не накопили статистику.</p>';
+
+  const managerButton = managerLink
+    ? `<a class="primary-button" href="${escapeHtml(managerLink)}" target="_blank" rel="noopener noreferrer">Написать менеджеру</a>`
+    : '<span class="primary-button disabled" aria-disabled="true">Ссылка на чат не настроена</span>';
+
+  return `<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${projectName}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background-color: #0f1115;
+        color: #f5f6f8;
+      }
+      body {
+        margin: 0;
+        background: #0f1115;
+      }
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 32px 20px 48px;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: baseline;
+        margin-bottom: 24px;
+      }
+      h1 {
+        font-size: 1.75rem;
+        margin: 0;
+        font-weight: 600;
+      }
+      .project-code {
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 999px;
+        padding: 4px 12px;
+        font-size: 0.85rem;
+        letter-spacing: 0.02em;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        margin-bottom: 32px;
+      }
+      .card {
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 16px;
+        padding: 18px 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .card label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #8f9299;
+      }
+      .card strong {
+        font-size: 1.2rem;
+        font-weight: 600;
+      }
+      .stats-table {
+        background: rgba(255, 255, 255, 0.02);
+        border-radius: 20px;
+        padding: 20px;
+        overflow-x: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        min-width: 540px;
+      }
+      th,
+      td {
+        padding: 12px 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        text-align: left;
+        font-size: 0.95rem;
+      }
+      th {
+        font-weight: 600;
+      }
+      td {
+        font-variant-numeric: tabular-nums;
+      }
+      table tr:last-child th,
+      table tr:last-child td {
+        border-bottom: none;
+      }
+      .th-sub {
+        display: block;
+        margin-top: 4px;
+        font-size: 0.75rem;
+        color: #8f9299;
+        font-weight: 400;
+      }
+      .section-title {
+        margin: 36px 0 12px;
+        font-size: 1.25rem;
+        font-weight: 600;
+      }
+      .campaign-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .campaign-name {
+        display: block;
+        font-weight: 600;
+      }
+      .campaign-metrics {
+        color: #c7cad1;
+        font-size: 0.9rem;
+        margin-top: 2px;
+        display: block;
+      }
+      .muted {
+        color: #8f9299;
+      }
+      .primary-button {
+        display: inline-block;
+        margin-top: 32px;
+        padding: 14px 24px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, #3772ff, #4a9bff);
+        color: #fff;
+        text-decoration: none;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+      .primary-button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 24px rgba(55, 114, 255, 0.25);
+      }
+      .primary-button.disabled {
+        background: rgba(255, 255, 255, 0.08);
+        color: #8f9299;
+        cursor: default;
+        pointer-events: none;
+      }
+      footer {
+        margin-top: 40px;
+        font-size: 0.8rem;
+        color: #6f7279;
+      }
+      .error-block {
+        margin-top: 16px;
+        padding: 12px 16px;
+        border-radius: 12px;
+        background: rgba(255, 99, 132, 0.12);
+        color: #ff9ba7;
+      }
+      @media (max-width: 640px) {
+        header {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+        .stats-table {
+          padding: 16px;
+        }
+        th,
+        td {
+          padding: 10px 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>${projectName}</h1>
+        ${projectCode}
+      </header>
+      <section class="cards">
+        <div class="card">
+          <label>Следующая оплата</label>
+          <strong>${billingText}</strong>
+        </div>
+        <div class="card">
+          <label>Обновлено</label>
+          <strong>${updatedLabel}</strong>
+        </div>
+        <div class="card">
+          <label>Валюта отчётов</label>
+          <strong>${currencyLabel}</strong>
+        </div>
+      </section>
+      <section class="stats-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Показатель</th>
+              ${headerCells}
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+        ${errorBlock}
+      </section>
+      <section>
+        <h2 class="section-title">${topTitle}</h2>
+        ${topBlock}
+      </section>
+      ${managerButton}
+      <footer>Portal powered by Targetbot · Таймзона: ${escapeHtml(timezone || snapshot?.timezone || 'UTC')}</footer>
+    </main>
+  </body>
+</html>`;
+}
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -2466,6 +2923,67 @@ function safeDecode(value) {
     console.warn('Failed to decode component', value, error);
     return value;
   }
+}
+
+async function sha256Hex(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+
+  if (!globalThis.crypto || !globalThis.crypto.subtle) {
+    return '';
+  }
+
+  try {
+    const encoded = new TextEncoder().encode(String(value));
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', encoded);
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+  } catch (error) {
+    console.warn('Failed to compute SHA-256 hash', error);
+    return '';
+  }
+}
+
+async function portalSignatureMatches(signature, { code, tokens } = {}) {
+  const candidate = typeof signature === 'string' ? signature.trim() : '';
+  if (!candidate) {
+    return false;
+  }
+
+  const normalizedTokens = [];
+  if (tokens && typeof tokens[Symbol.iterator] === 'function') {
+    for (const token of tokens) {
+      if (typeof token !== 'string') {
+        continue;
+      }
+      const trimmed = token.trim();
+      if (trimmed) {
+        normalizedTokens.push(trimmed);
+      }
+    }
+  }
+
+  for (const token of normalizedTokens) {
+    if (token === candidate) {
+      return true;
+    }
+  }
+
+  if (!globalThis.crypto || !globalThis.crypto.subtle) {
+    return false;
+  }
+
+  const base = code ? String(code).trim() : '';
+  for (const token of normalizedTokens) {
+    const digest = await sha256Hex(base ? `${base}:${token}` : token);
+    if (digest && digest === candidate) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function createAbort(timeoutMs = TELEGRAM_TIMEOUT_MS) {
@@ -6148,6 +6666,7 @@ class AppConfig {
     this.metaGraphVersion = AppConfig.resolveMetaGraphVersion(env);
     this.metaManageToken = AppConfig.resolveMetaManageToken(env);
     this.telegramWebhookUrl = AppConfig.resolveWebhookUrl(env);
+    this.portalAccessToken = AppConfig.resolvePortalToken(env);
   }
 
   static resolveToken(env = {}) {
@@ -6204,6 +6723,17 @@ class AppConfig {
 
   static resolveMetaManageToken(env = {}) {
     const candidateKeys = ['META_MANAGE_TOKEN', 'FB_MANAGE_TOKEN', 'MANAGE_TOKEN'];
+    for (const key of candidateKeys) {
+      const value = typeof env[key] === 'string' ? env[key].trim() : '';
+      if (value) {
+        return value;
+      }
+    }
+    return '';
+  }
+
+  static resolvePortalToken(env = {}) {
+    const candidateKeys = ['PORTAL_TOKEN', 'PORTAL_SIGNING_SECRET', 'PORTAL_SECRET'];
     for (const key of candidateKeys) {
       const value = typeof env[key] === 'string' ? env[key].trim() : '';
       if (value) {
@@ -6296,7 +6826,7 @@ class WorkerApp {
     }
 
     if (normalizedPath.startsWith('/p/')) {
-      return htmlResponse('<h1>Портал клиента</h1><p>Раздел пока в разработке.</p>', { status: 501 });
+      return this.handleClientPortal(url, { normalizedPath });
     }
 
     if (normalizedPath === '/') {
@@ -6442,6 +6972,128 @@ class WorkerApp {
         { status: 502 },
       );
     }
+  }
+
+  async handleClientPortal(url, { normalizedPath } = {}) {
+    if (!this.metaService) {
+      return htmlResponse('<h1>Портал недоступен</h1><p>Сервис Meta временно отключён.</p>', { status: 503 });
+    }
+
+    const segments = typeof normalizedPath === 'string' ? normalizedPath.split('/').filter(Boolean) : [];
+    if (segments.length < 2) {
+      return htmlResponse('<h1>Ссылка некорректна</h1><p>Не указан код проекта.</p>', { status: 400 });
+    }
+
+    const projectCode = safeDecode(segments[1] || '');
+    if (!projectCode) {
+      return htmlResponse('<h1>Ссылка некорректна</h1><p>Не удалось распознать проект.</p>', { status: 400 });
+    }
+
+    const signature = pickFirstFilled(
+      url.searchParams.get('sig'),
+      url.searchParams.get('signature'),
+      url.searchParams.get('token'),
+      url.searchParams.get('key'),
+    );
+
+    if (!signature) {
+      return htmlResponse(
+        '<h1>Требуется подпись</h1><p>Добавьте параметр <code>sig</code> или запросите новую ссылку у менеджера.</p>',
+        { status: 401 },
+      );
+    }
+
+    const context = await this.resolveProjectContext(projectCode, {
+      forceMetaRefresh: url.searchParams.get('refresh') === '1',
+    });
+
+    if (!context?.project) {
+      return htmlResponse('<h1>Проект не найден</h1><p>Ссылка устарела или проект ещё не подключён.</p>', { status: 404 });
+    }
+
+    const tokens = extractPortalTokens(context.rawProject);
+    if (this.config.portalAccessToken) {
+      tokens.add(this.config.portalAccessToken);
+    }
+    if (this.config.metaManageToken) {
+      tokens.add(this.config.metaManageToken);
+    }
+
+    if (tokens.size === 0) {
+      return htmlResponse(
+        '<h1>Доступ ограничен</h1><p>Для проекта ещё не настроен токен клиентского портала.</p>',
+        { status: 403 },
+      );
+    }
+
+    const projectIdentifier = context.project.code || context.project.id || projectCode;
+    const signatureOk = await portalSignatureMatches(signature, {
+      code: projectIdentifier,
+      tokens,
+    });
+
+    if (!signatureOk) {
+      return htmlResponse(
+        '<h1>Доступ запрещён</h1><p>Проверьте подпись ссылки или запросите новую у менеджера проекта.</p>',
+        { status: 403 },
+      );
+    }
+
+    const timezone =
+      extractScheduleSettings(context.rawProject)?.timezone || this.config.defaultTimezone || 'UTC';
+    const campaignFilter = extractReportCampaignFilter(context.rawProject);
+    const kpi = extractProjectKpi(context.rawProject);
+
+    const definitions = [
+      { id: 'today', label: 'Сегодня', preset: 'today' },
+      { id: 'yesterday', label: 'Вчера', preset: 'yesterday' },
+      { id: 'week', label: '7 дней', preset: 'week' },
+      { id: 'month', label: 'МТД', preset: 'month' },
+    ];
+
+    const periods = [];
+    let inferredCurrency = context.account?.currency || context.project?.metrics?.currency || null;
+
+    for (const definition of definitions) {
+      try {
+        const report = await this.metaService.fetchAccountReport({
+          project: context.project,
+          account: context.account,
+          preset: definition.preset,
+          timezone,
+          campaignIds: campaignFilter,
+        });
+
+        if (!inferredCurrency && report?.currency) {
+          inferredCurrency = report.currency;
+        }
+
+        periods.push({ id: definition.id, label: definition.label, report, error: null });
+      } catch (error) {
+        periods.push({
+          id: definition.id,
+          label: definition.label,
+          report: null,
+          error: error?.message || 'Не удалось загрузить статистику',
+        });
+      }
+    }
+
+    const managerLink =
+      context.project?.chatUrl || buildTelegramTopicUrl(context.project?.chatId, context.project?.threadId);
+
+    const html = renderClientPortalPage({
+      project: context.project,
+      account: context.account,
+      periods,
+      timezone,
+      generatedAt: new Date(),
+      managerLink,
+      currency: inferredCurrency,
+      kpi,
+    });
+
+    return htmlResponse(html);
   }
 
   async handleTelegramWebhookManage(url, { normalizedPath } = {}) {
