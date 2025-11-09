@@ -1516,13 +1516,24 @@ async function fetchAccountHealthSummary(env, project, token) {
   }
 }
 
-async function telegramRequest(env, method, payload) {
-  if (typeof env.BOT_TOKEN !== 'string' || env.BOT_TOKEN.trim() === '') {
+function getBotToken(env) {
+  if (typeof env.BOT_TOKEN !== 'string') {
     throw new Error('BOT_TOKEN не задан. Невозможно обратиться к Telegram API.');
   }
 
+  const trimmed = env.BOT_TOKEN.trim();
+  if (!trimmed) {
+    throw new Error('BOT_TOKEN пуст. Невозможно обратиться к Telegram API.');
+  }
+
+  return trimmed;
+}
+
+async function telegramRequest(env, method, payload) {
+  const botToken = getBotToken(env);
+
   const response = await fetchWithTimeout(
-    `https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`,
+    `https://api.telegram.org/bot${botToken}/${method}`,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1539,9 +1550,7 @@ async function telegramRequest(env, method, payload) {
 }
 
 async function telegramSendDocumentToChat(env, { chatId, threadId, filename, content, caption }) {
-  if (typeof env.BOT_TOKEN !== 'string' || env.BOT_TOKEN.trim() === '') {
-    throw new Error('BOT_TOKEN не задан. Невозможно отправить документ.');
-  }
+  const botToken = getBotToken(env);
   if (!chatId) {
     throw new Error('Не указан chat_id для отправки документа.');
   }
@@ -1560,7 +1569,7 @@ async function telegramSendDocumentToChat(env, { chatId, threadId, filename, con
   form.append('document', blob, filename ?? 'report.csv');
 
   const response = await fetchWithTimeout(
-    `https://api.telegram.org/bot${env.BOT_TOKEN}/sendDocument`,
+    `https://api.telegram.org/bot${botToken}/sendDocument`,
     {
       method: 'POST',
       body: form,
