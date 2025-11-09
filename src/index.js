@@ -109,6 +109,24 @@ function sanitizeInsightsFields(fields = []) {
 
   return safe;
 }
+
+function sanitizeFieldsParamValue(value) {
+  if (Array.isArray(value)) {
+    const safeList = sanitizeInsightsFields(value);
+    return safeList.length ? safeList.join(',') : '';
+  }
+
+  if (typeof value === 'string') {
+    const parts = value
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    const safeList = sanitizeInsightsFields(parts);
+    return safeList.length ? safeList.join(',') : '';
+  }
+
+  return value;
+}
 const DEFAULT_REPORT_METRIC = {
   label: 'Результаты',
   short: 'result',
@@ -1267,7 +1285,17 @@ async function graphGet(path, { token, params = {} } = {}) {
   }
   for (const [key, value] of Object.entries(params)) {
     if (typeof value === 'undefined' || value === null) continue;
-    url.searchParams.set(key, String(value));
+
+    let normalized = value;
+    if (key === 'fields') {
+      const sanitized = sanitizeFieldsParamValue(value);
+      if (!sanitized) {
+        continue;
+      }
+      normalized = sanitized;
+    }
+
+    url.searchParams.set(key, String(normalized));
   }
 
   return fetchJsonWithTimeout(url.toString(), { method: 'GET' }, META_TIMEOUT_MS);
@@ -1280,7 +1308,17 @@ async function graphPost(path, { token, params = {}, body = {} } = {}) {
   }
   for (const [key, value] of Object.entries(params)) {
     if (typeof value === 'undefined' || value === null) continue;
-    url.searchParams.set(key, String(value));
+
+    let normalized = value;
+    if (key === 'fields') {
+      const sanitized = sanitizeFieldsParamValue(value);
+      if (!sanitized) {
+        continue;
+      }
+      normalized = sanitized;
+    }
+
+    url.searchParams.set(key, String(normalized));
   }
 
   const form = new URLSearchParams();
