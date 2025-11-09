@@ -22,6 +22,7 @@ const PROJECT_KEY_PREFIX = 'project:';
 const ADMIN_SESSION_KEY_PREFIX = 'admin:session:';
 const META_STATUS_KEY = 'meta:status';
 const META_TOKEN_KEY = 'meta:token';
+const META_ACCOUNT_SNAPSHOT_KEY = 'meta:accounts';
 const META_OAUTH_STATE_PREFIX = 'meta:oauth:state:';
 const META_OAUTH_SESSION_PREFIX = 'meta:oauth:session:';
 const META_OAUTH_STATE_TTL_SECONDS = 10 * 60;
@@ -207,6 +208,21 @@ function buildTelegramTopicUrl(chatId, threadId) {
   }
 
   return `https://t.me/c/${normalized}/${thread}`;
+}
+
+function deepEqualObjects(first, second) {
+  if (first === second) {
+    return true;
+  }
+  if (!first || !second || typeof first !== 'object' || typeof second !== 'object') {
+    return false;
+  }
+  try {
+    return JSON.stringify(first) === JSON.stringify(second);
+  } catch (error) {
+    console.warn('Failed to compare objects', error);
+    return false;
+  }
 }
 
 function normalizeProjectIdForCallback(id) {
@@ -2637,20 +2653,31 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
   const facebook = status.facebook && typeof status.facebook === 'object' ? status.facebook : {};
   const accounts = Array.isArray(facebook.adAccounts) ? facebook.adAccounts : [];
   const accountById = new Map();
+  const accountOrder = [];
   for (const account of accounts) {
     if (!account || typeof account !== 'object') continue;
     const accountId = account.accountId || account.id;
     if (accountId) {
-      accountById.set(String(accountId), account);
+      const key = String(accountId).replace(/^act_/, '');
+      if (!accountById.has(key)) {
+        accountById.set(key, account);
+        accountOrder.push(key);
+      }
     }
   }
 
   const now = new Date();
-  const summaries = [];
+  const items = [];
+  const usedAccounts = new Set();
 
   for (const record of projects) {
     if (!record) continue;
-    const account = record.adAccountId ? accountById.get(String(record.adAccountId)) : null;
+    const normalizedAccountId = normalizeAccountKey(record.adAccountId || record.meta?.accountId || record.meta_account_id);
+    const account = normalizedAccountId ? accountById.get(normalizedAccountId) : null;
+    if (normalizedAccountId) {
+      usedAccounts.add(normalizedAccountId);
+    }
+
     const spendUsd =
       (account && Number.isFinite(Number(account.spendTodayUsd)) ? Number(account.spendTodayUsd) : null) ??
       (Number.isFinite(Number(record.metrics?.spendTodayUsd)) ? Number(record.metrics.spendTodayUsd) : null);
@@ -2685,8 +2712,9 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       : null;
     const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd);
 
+    const displayName = record.name || account?.name || record.id;
     const headerParts = [
-      record.name || (account?.name ?? record.id),
+      displayName,
       spendUsd !== null ? formatUsd(spendUsd, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—',
       daysUntil.label,
     ];
@@ -2721,7 +2749,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       lines.push(`Код проекта: <code>${escapeHtml(record.code)}</code>`);
     }
 
-    summaries.push({
+    items.push({
       id: record.id,
       callbackId: normalizeProjectIdForCallback(record.id),
       chatUrl: record.chatUrl || '',
@@ -2729,36 +2757,59 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       daysUntil,
       spendUsd,
       currency,
+      title: displayName,
+      accountId: normalizedAccountId ? `act_${normalizedAccountId}` : '',
+      placeholder: false,
     });
   }
 
-  if (summaries.length === 0 && accounts.length > 0) {
-    for (const account of accounts) {
-      if (!account) continue;
-      const daysUntil = formatDaysUntil(account.billingNextAt || account.billing_next_at, { now });
-      const statusEmoji = determineAccountSignal(account, { daysUntilDue: daysUntil });
-      const header = [
-        account.name || account.id || 'Рекламный аккаунт',
-        account.spendTodayUsd !== null && account.spendTodayUsd !== undefined
-          ? formatUsd(Number(account.spendTodayUsd), { digitsBelowOne: 2, digitsAboveOne: 2 })
-          : '—',
-        daysUntil.label,
-      ];
-      const lines = [];
-      lines.push(`<b>${escapeHtml(header.join(' | '))}</b>`);
-      const statusLabel = account.paymentStatusLabel || account.statusLabel || account.status || '—';
-      lines.push(`Статус: ${statusEmoji} ${escapeHtml(statusLabel)}`);
-      summaries.push({
-        id: account.accountId || account.id,
-        callbackId: normalizeProjectIdForCallback(account.accountId || account.id),
-        chatUrl: '',
-        lines,
-        daysUntil,
-      });
+  const placeholders = [];
+  for (const key of accountOrder) {
+    if (usedAccounts.has(key)) {
+      continue;
     }
+    const account = accountById.get(key);
+    if (!account) continue;
+    const daysUntil = formatDaysUntil(account.billingNextAt || account.billing_next_at, { now });
+    const statusEmoji = determineAccountSignal(account, { daysUntilDue: daysUntil });
+    const header = [
+      account.name || account.id || 'Рекламный аккаунт',
+      account.spendTodayUsd !== null && account.spendTodayUsd !== undefined
+        ? formatUsd(Number(account.spendTodayUsd), { digitsBelowOne: 2, digitsAboveOne: 2 })
+        : '—',
+      daysUntil.label,
+    ];
+    const lines = [];
+    lines.push(`<b>${escapeHtml(header.join(' | '))}</b>`);
+    const statusLabel = account.paymentStatusLabel || account.statusLabel || account.status || '—';
+    lines.push(`Статус: ${statusEmoji} ${escapeHtml(statusLabel)}`);
+    if (account.paymentIssues && account.paymentIssues.length > 0) {
+      lines.push(`Проблемы: ${escapeHtml(account.paymentIssues.filter(Boolean).join(' • '))}`);
+    }
+    lines.push('Проект ещё не создан. Используйте «Подключить проект».');
+
+    placeholders.push({
+      id: account.accountId || account.id,
+      callbackId: normalizeProjectIdForCallback(account.accountId || account.id),
+      chatUrl: '',
+      lines,
+      daysUntil,
+      title: account.name || account.id || 'Рекламный аккаунт',
+      accountId: key ? `act_${key}` : '',
+      placeholder: true,
+      currency: account.currency || 'USD',
+      spendUsd: Number.isFinite(Number(account.spendTodayUsd)) ? Number(account.spendTodayUsd) : null,
+    });
   }
 
-  return summaries;
+  const placeholderLimit = 4;
+  const placeholdersShown = placeholders.slice(0, placeholderLimit);
+
+  return {
+    items: items.concat(placeholdersShown),
+    placeholderCount: placeholders.length,
+    placeholdersShown: placeholdersShown.length,
+  };
 }
 
 function renderAdminDashboard({
@@ -2767,6 +2818,8 @@ function renderAdminDashboard({
   webhook,
   totals,
   timezone,
+  placeholderCount = 0,
+  placeholdersShown = 0,
 }) {
   const lines = ['<b>Админ-панель</b>'];
   const status = pickMetaStatus(metaStatus) || {};
@@ -2815,6 +2868,13 @@ function renderAdminDashboard({
     for (const summary of projectSummaries) {
       lines.push('', ...summary.lines);
     }
+  }
+
+  if (placeholderCount > 0 && placeholdersShown > 0) {
+    lines.push(
+      '',
+      `Без проекта: ${placeholdersShown} из ${placeholderCount} аккаунтов Meta. Используйте «Подключить проект».`,
+    );
   }
 
   if (webhook) {
@@ -3900,6 +3960,20 @@ class KvStorage {
     const data = await this.getJson('DB', META_STATUS_KEY);
     return pickMetaStatus(data);
   }
+
+  async readMetaAccountSnapshot() {
+    const snapshot = await this.getJson('DB', META_ACCOUNT_SNAPSHOT_KEY);
+    if (!snapshot || typeof snapshot !== 'object') {
+      return { updatedAt: null, accounts: [], stale: false, error: null };
+    }
+    const accounts = Array.isArray(snapshot.accounts) ? snapshot.accounts : [];
+    return {
+      updatedAt: snapshot.updatedAt || snapshot.updated_at || null,
+      accounts,
+      stale: Boolean(snapshot.stale),
+      error: snapshot.error || null,
+    };
+  }
 }
 
 class MetaClient {
@@ -4106,6 +4180,7 @@ class MetaService {
     if (!token) {
       const status = this.createEmptyStatus({ updatedAt: now, error: 'Meta токен не задан' });
       await this.storage.putJson('DB', META_STATUS_KEY, status);
+      await this.persistAccountDiagnostics(status, { updatedAt: now, stale: true, error: status.facebook.error });
       return { status, source: 'error', refreshed: false, stale: false, error: status.facebook.error };
     }
 
@@ -4118,6 +4193,7 @@ class MetaService {
     try {
       const status = await this.collectOverview({ client, now });
       await this.storage.putJson('DB', META_STATUS_KEY, status);
+      await this.persistAccountDiagnostics(status, { updatedAt: now, stale: false });
       return { status, source: 'live', refreshed: true, stale: false, error: null };
     } catch (error) {
       console.error('Meta overview refresh failed', error);
@@ -4127,7 +4203,97 @@ class MetaService {
         error: error?.message || 'Meta API error',
       });
       await this.storage.putJson('DB', META_STATUS_KEY, fallback);
+      await this.persistAccountDiagnostics(fallback, {
+        updatedAt: now,
+        stale: true,
+        error: error?.message || 'Meta API error',
+      });
       return { status: fallback, source: 'error', refreshed: false, stale: true, error: fallback.facebook.error };
+    }
+  }
+
+  async persistAccountDiagnostics(status, { updatedAt, stale = false, error = null } = {}) {
+    if (!this.storage || typeof this.storage.putJson !== 'function') {
+      return false;
+    }
+
+    const snapshot = pickMetaStatus(status) || {};
+    const facebook = snapshot.facebook && typeof snapshot.facebook === 'object' ? snapshot.facebook : {};
+    const accounts = Array.isArray(facebook.adAccounts) ? facebook.adAccounts : [];
+    const nowDate = parseDateInput(updatedAt) || new Date();
+
+    const diagnostics = accounts.map((account) => {
+      if (!account || typeof account !== 'object') {
+        return null;
+      }
+
+      const accountId = String(account.accountId ?? account.id ?? '').replace(/^act_/, '');
+      if (!accountId) {
+        return null;
+      }
+
+      const billingSource = account.billingNextAt || account.billing_next_at || null;
+      const countdown = formatDaysUntil(billingSource, { now: nowDate });
+      const issues = [];
+      if (Array.isArray(account.paymentIssues)) {
+        for (const issue of account.paymentIssues) {
+          if (issue) issues.push(String(issue));
+        }
+      }
+      if (account.paymentIssue) {
+        issues.push(String(account.paymentIssue));
+      }
+      if (account.blockReason) {
+        issues.push(String(account.blockReason));
+      }
+
+      const debt = Number(account.debtUsd ?? account.debt_usd ?? account.balance);
+      const spendToday = Number(account.spendTodayUsd ?? account.spend_today_usd);
+      const cpaMin = Number(account.cpaMinUsd ?? account.cpa_min_usd ?? account.cpaMin);
+      const cpaMax = Number(account.cpaMaxUsd ?? account.cpa_max_usd ?? account.cpaMax);
+      const runningCampaigns = Number(account.runningCampaigns ?? account.activeCampaigns ?? account.campaignsRunning);
+
+      return {
+        id: account.id || `act_${accountId}`,
+        accountId: `act_${accountId}`,
+        name: account.name || account.id || `act_${accountId}`,
+        currency: account.currency || null,
+        spendTodayUsd: Number.isFinite(spendToday) ? spendToday : null,
+        billingNextAt: billingSource,
+        billingDueInDays: Number.isFinite(countdown.value) ? countdown.value : null,
+        billingDueLabel: account.billingDueLabel || countdown.label || null,
+        status: account.paymentStatusLabel || account.statusLabel || account.status || '',
+        requiresAttention: Boolean(
+          account.requiresAttention || issues.length > 0 || (Number.isFinite(countdown.value) && countdown.value <= 3),
+        ),
+        issues,
+        debtUsd: Number.isFinite(debt) ? debt : null,
+        cardLast4:
+          account.defaultPaymentMethodLast4 ||
+          account.paymentMethodLast4 ||
+          account.card_last4 ||
+          account.default_card_last4 ||
+          null,
+        runningCampaigns: Number.isFinite(runningCampaigns) ? runningCampaigns : null,
+        cpaMinUsd: Number.isFinite(cpaMin) ? cpaMin : null,
+        cpaMaxUsd: Number.isFinite(cpaMax) ? cpaMax : null,
+        signal: determineAccountSignal(account, { daysUntilDue: countdown }),
+        updatedAt: updatedAt || facebook.updatedAt || facebook.updated_at || new Date().toISOString(),
+      };
+    }).filter(Boolean);
+
+    try {
+      await this.storage.putJson('DB', META_ACCOUNT_SNAPSHOT_KEY, {
+        updatedAt: updatedAt || facebook.updatedAt || facebook.updated_at || new Date().toISOString(),
+        stale: Boolean(stale || facebook.stale),
+        error: error || facebook.error || null,
+        accountCount: diagnostics.length,
+        accounts: diagnostics,
+      });
+      return true;
+    } catch (persistError) {
+      console.warn('Failed to persist Meta account diagnostics', persistError);
+      return false;
     }
   }
 
@@ -7507,9 +7673,12 @@ class TelegramBot {
       }),
     );
 
-    const projectSummaries = buildProjectSummaries(projectRecords, metaStatus, {
+    const projectSummaryResult = buildProjectSummaries(projectRecords, metaStatus, {
       timezone: this.config.defaultTimezone,
     });
+    const projectSummaries = projectSummaryResult.items;
+    const placeholderCount = projectSummaryResult.placeholderCount || 0;
+    const placeholdersShown = projectSummaryResult.placeholdersShown || 0;
 
     const dashboard = renderAdminDashboard({
       metaStatus,
@@ -7517,6 +7686,8 @@ class TelegramBot {
       webhook: webhookStatus,
       totals: { projects: projectKeys.length, chats: chatKeys.length },
       timezone: this.config.defaultTimezone,
+      placeholderCount,
+      placeholdersShown,
     });
 
     const summary = [dashboard];
@@ -7525,6 +7696,13 @@ class TelegramBot {
       summary.push(
         '',
         `Показаны первые ${projectRecords.length} проектов из ${projectKeys.length}. Откройте раздел «Проекты» для полного списка.`,
+      );
+    }
+
+    if (placeholderCount > placeholdersShown) {
+      summary.push(
+        '',
+        `Аккаунтов Meta без проекта: показано ${placeholdersShown} из ${placeholderCount}. Используйте «Подключить проект» для остальных.`,
       );
     }
 
@@ -7553,6 +7731,16 @@ class TelegramBot {
     ];
 
     for (const summaryItem of projectSummaries) {
+      if (summaryItem.placeholder) {
+        inlineKeyboard.push([
+          {
+            text: summaryItem.accountId ? `➕ Подключить ${summaryItem.accountId}` : '➕ Подключить проект',
+            callback_data: 'admin:project:connect',
+          },
+        ]);
+        continue;
+      }
+
       const base = `admin:project:${summaryItem.callbackId}`;
       const chatButton = summaryItem.chatUrl
         ? { text: '💬 Перейти в чат', url: summaryItem.chatUrl }
@@ -7869,10 +8057,70 @@ class TelegramBot {
         }
 
         const projectKeys = await this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 50);
-        const items = projectKeys.map((key) => key.replace(PROJECT_KEY_PREFIX, '')).filter(Boolean);
-        const body = items.length
-          ? ['<b>Подключённые проекты</b>', ...items.map((item) => `• ${escapeHtml(item)}`)].join('\n')
-          : '<b>Проекты пока не подключены.</b>';
+        const projectRecords = await Promise.all(
+          projectKeys.map(async (key) => {
+            try {
+              const data = await this.storage.getJson('DB', key);
+              return normalizeProjectRecord(key, data);
+            } catch (error) {
+              console.warn('Failed to load project for list', key, error);
+              return normalizeProjectRecord(key, null);
+            }
+          }),
+        );
+
+        let metaStatus = await this.storage.readMetaStatus();
+        if (this.metaService) {
+          try {
+            const ensure = await this.metaService.ensureOverview({
+              backgroundRefresh: true,
+              executionContext: this.executionContext,
+            });
+            metaStatus = ensure?.status ?? metaStatus;
+          } catch (error) {
+            console.warn('Failed to refresh Meta overview for project list', error);
+          }
+        }
+
+        const summaryResult = buildProjectSummaries(projectRecords, metaStatus, {
+          timezone: this.config.defaultTimezone,
+        });
+        const items = summaryResult.items;
+        const lines = [];
+        if (items.length === 0) {
+          lines.push('<b>Проекты пока не подключены.</b>');
+        } else {
+          lines.push('<b>Подключённые проекты</b>');
+          for (const item of items) {
+            if (item.placeholder) {
+              lines.push(
+                `• [Meta] ${escapeHtml(item.title || item.accountId || 'Рекламный аккаунт')} — ${
+                  item.accountId ? `<code>${escapeHtml(item.accountId)}</code>` : 'без ID'
+                } (не подключен)`,
+              );
+            } else {
+              lines.push(
+                `• ${escapeHtml(item.title || item.id)}${
+                  item.accountId ? ` — <code>${escapeHtml(item.accountId)}</code>` : ''
+                }`,
+              );
+            }
+          }
+        }
+
+        if (summaryResult.placeholderCount > summaryResult.placeholdersShown) {
+          lines.push(
+            `… ещё ${
+              summaryResult.placeholderCount - summaryResult.placeholdersShown
+            } аккаунтов Meta ожидают подключения.`,
+          );
+        }
+
+        if (projectKeys.length > projectRecords.length) {
+          lines.push('Показаны не все проекты — используйте KV или поиск для полного списка.');
+        }
+
+        const body = lines.join('\n');
 
         await this.sendMessageWithFallback(
           {
@@ -8740,6 +8988,16 @@ class WorkerApp {
     this.executionContext = executionContext;
     this.storage = new KvStorage(env);
     this.config = new AppConfig(env);
+    if (!this.config.workerUrl && request && typeof request.url === 'string') {
+      try {
+        const origin = new URL(request.url).origin;
+        if (origin && origin !== 'null') {
+          this.config.workerUrl = origin;
+        }
+      } catch (error) {
+        console.warn('Failed to derive worker origin from request', error);
+      }
+    }
     this.metaService = new MetaService({ config: this.config, storage: this.storage, env: this.env });
     this._telegramClient = null;
     this._bot = null;
@@ -8936,7 +9194,18 @@ class WorkerApp {
     if (action === 'refresh' || wantsRefresh) {
       try {
         const result = await this.metaService.refreshOverview();
-        return jsonResponse({ ok: true, action: 'refresh', ...result });
+        if (result?.status) {
+          const syncTask = this.syncProjectsFromMetaStatus(result.status).catch((error) => {
+            console.error('Project sync during /manage/meta refresh failed', error);
+          });
+          if (this.executionContext?.waitUntil) {
+            this.executionContext.waitUntil(syncTask);
+          } else {
+            await syncTask;
+          }
+        }
+        const diagnostics = await this.storage.readMetaAccountSnapshot();
+        return jsonResponse({ ok: true, action: 'refresh', ...result, diagnostics });
       } catch (error) {
         return jsonResponse(
           { ok: false, error: error?.message || String(error), action: 'refresh' },
@@ -8950,7 +9219,8 @@ class WorkerApp {
         backgroundRefresh,
         executionContext: this.executionContext,
       });
-      return jsonResponse({ ok: true, action: 'info', ...result });
+      const diagnostics = await this.storage.readMetaAccountSnapshot();
+      return jsonResponse({ ok: true, action: 'info', ...result, diagnostics });
     } catch (error) {
       return jsonResponse(
         { ok: false, error: error?.message || String(error), action: 'info' },
@@ -8986,6 +9256,207 @@ class WorkerApp {
 
     const fallback = this.buildWorkerAbsoluteUrl('/fb_cb', { url });
     return fallback;
+  }
+
+  async syncProjectsFromMetaStatus(status, { limit = 200 } = {}) {
+    const snapshot = pickMetaStatus(status) || {};
+    const facebook = snapshot.facebook && typeof snapshot.facebook === 'object' ? snapshot.facebook : {};
+    const accounts = Array.isArray(facebook.adAccounts) ? facebook.adAccounts : [];
+    if (accounts.length === 0) {
+      return { updated: 0, matched: 0, remaining: 0 };
+    }
+
+    const accountIndex = new Map();
+    for (const account of accounts) {
+      if (!account || typeof account !== 'object') {
+        continue;
+      }
+      const normalized = normalizeAccountKey(account.accountId ?? account.id);
+      if (!normalized || accountIndex.has(normalized)) {
+        continue;
+      }
+      accountIndex.set(normalized, account);
+    }
+
+    if (accountIndex.size === 0) {
+      return { updated: 0, matched: 0, remaining: 0 };
+    }
+
+    const projectKeys = await this.storage.listKeys('DB', PROJECT_KEY_PREFIX, limit);
+    if (!Array.isArray(projectKeys) || projectKeys.length === 0) {
+      return { updated: 0, matched: 0, remaining: accountIndex.size };
+    }
+
+    const nowIso = new Date().toISOString();
+    const updatedAt = facebook.updatedAt || facebook.updated_at || nowIso;
+    let updatedCount = 0;
+    let matchedCount = 0;
+
+    for (const key of projectKeys) {
+      let record = null;
+      try {
+        record = await this.storage.getJson('DB', key);
+      } catch (error) {
+        console.warn('Failed to load project for Meta sync', key, error);
+        continue;
+      }
+
+      if (!record || typeof record !== 'object') {
+        continue;
+      }
+
+      const accountKey = normalizeAccountKey(
+        record.meta_account_id ||
+          record.ad_account_id ||
+          record.account_id ||
+          record.adAccountId ||
+          record.meta?.accountId,
+      );
+
+      if (!accountKey || !accountIndex.has(accountKey)) {
+        continue;
+      }
+
+      const account = accountIndex.get(accountKey);
+      const merged = this.mergeMetaAccountDiagnostics(record, account, { updatedAt });
+      if (merged.changed) {
+        merged.record.updated_at = nowIso;
+        try {
+          await this.storage.putJson('DB', key, merged.record);
+          updatedCount += 1;
+        } catch (error) {
+          console.error('Failed to update project with Meta diagnostics', key, error);
+        }
+      }
+
+      matchedCount += 1;
+      accountIndex.delete(accountKey);
+    }
+
+    return { updated: updatedCount, matched: matchedCount, remaining: accountIndex.size };
+  }
+
+  mergeMetaAccountDiagnostics(record, account, { updatedAt } = {}) {
+    const result = record && typeof record === 'object' ? { ...record } : {};
+    result.meta = { ...(result.meta || {}) };
+    result.metrics = { ...(result.metrics || {}) };
+    if (result.billing) {
+      result.billing = { ...result.billing };
+    }
+
+    const diagnostics = { ...(result.meta?.diagnostics || {}) };
+    const now = parseDateInput(updatedAt) || new Date();
+    let changed = false;
+
+    const accountId = normalizeAccountKey(account?.accountId ?? account?.id);
+    if (accountId) {
+      const prefixed = `act_${accountId}`;
+      if (result.meta.accountId !== prefixed) {
+        result.meta.accountId = prefixed;
+        changed = true;
+      }
+      if (!result.meta.accountKey) {
+        result.meta.accountKey = prefixed;
+      }
+    }
+
+    const accountName = account?.name || '';
+    if (accountName && result.meta.accountName !== accountName) {
+      result.meta.accountName = accountName;
+      if (!result.name || result.name === record?.meta?.accountName) {
+        result.name = accountName;
+      }
+      changed = true;
+    }
+
+    const currency = account?.currency ? String(account.currency).toUpperCase() : '';
+    if (currency && result.metrics.currency !== currency) {
+      result.metrics.currency = currency;
+      changed = true;
+    }
+
+    const spendToday = Number(account?.spendTodayUsd ?? account?.spend_today_usd);
+    if (Number.isFinite(spendToday)) {
+      if (result.metrics.spend_today_usd !== spendToday || result.metrics.spendTodayUsd !== spendToday) {
+        result.metrics.spend_today_usd = spendToday;
+        result.metrics.spendTodayUsd = spendToday;
+        changed = true;
+      }
+      diagnostics.spendTodayUsd = spendToday;
+    }
+
+    const billingSource = account?.billingNextAt || account?.billing_next_at || null;
+    const countdown = formatDaysUntil(billingSource, { now });
+    if (billingSource) {
+      if (!result.billing) {
+        result.billing = {};
+      }
+      if (result.billing.next_payment_at !== billingSource) {
+        result.billing.next_payment_at = billingSource;
+        changed = true;
+      }
+    }
+    if (countdown.label && (!result.billing || result.billing.due_label !== countdown.label)) {
+      result.billing = { ...(result.billing || {}), due_label: countdown.label };
+      changed = true;
+    }
+    if (Number.isFinite(countdown.value)) {
+      const currentDueDays = Number(result.billing?.due_days);
+      if (currentDueDays !== countdown.value) {
+        result.billing = { ...(result.billing || {}), due_days: countdown.value };
+        changed = true;
+      }
+    }
+
+    const issues = [];
+    if (Array.isArray(account?.paymentIssues)) {
+      for (const issue of account.paymentIssues) {
+        if (issue) issues.push(String(issue));
+      }
+    }
+    if (account?.paymentIssue) {
+      issues.push(String(account.paymentIssue));
+    }
+
+    const cardLast4 =
+      account?.defaultPaymentMethodLast4 ||
+      account?.paymentMethodLast4 ||
+      account?.card_last4 ||
+      account?.default_card_last4 ||
+      null;
+
+    const debt = Number(account?.debtUsd ?? account?.debt_usd ?? account?.balance);
+    const cpaMin = Number(account?.cpaMinUsd ?? account?.cpa_min_usd ?? account?.cpaMin);
+    const cpaMax = Number(account?.cpaMaxUsd ?? account?.cpa_max_usd ?? account?.cpaMax);
+    const runningCampaigns = Number(account?.runningCampaigns ?? account?.campaignsRunning ?? account?.activeCampaigns);
+
+    diagnostics.status = account?.paymentStatusLabel || account?.statusLabel || account?.status || diagnostics.status || '';
+    diagnostics.issues = issues;
+    diagnostics.requiresAttention = Boolean(
+      account?.requiresAttention ||
+        issues.length > 0 ||
+        (Number.isFinite(countdown.value) && countdown.value <= 3) ||
+        account?.debtUsd,
+    );
+    diagnostics.billingNextAt = billingSource || null;
+    diagnostics.billingDueLabel = countdown.label || account?.billingDueLabel || diagnostics.billingDueLabel || null;
+    diagnostics.billingDueInDays = Number.isFinite(countdown.value) ? countdown.value : diagnostics.billingDueInDays ?? null;
+    diagnostics.cardLast4 = cardLast4 || diagnostics.cardLast4 || null;
+    diagnostics.debtUsd = Number.isFinite(debt) ? debt : diagnostics.debtUsd ?? null;
+    diagnostics.runningCampaigns = Number.isFinite(runningCampaigns)
+      ? runningCampaigns
+      : diagnostics.runningCampaigns ?? null;
+    diagnostics.cpaMinUsd = Number.isFinite(cpaMin) ? cpaMin : diagnostics.cpaMinUsd ?? null;
+    diagnostics.cpaMaxUsd = Number.isFinite(cpaMax) ? cpaMax : diagnostics.cpaMaxUsd ?? null;
+    diagnostics.signal = determineAccountSignal(account, { daysUntilDue: countdown });
+    diagnostics.updated_at = updatedAt || new Date().toISOString();
+
+    if (!deepEqualObjects(result.meta.diagnostics, diagnostics)) {
+      result.meta.diagnostics = diagnostics;
+      changed = true;
+    }
+
+    return { record: result, changed };
   }
 
   async loadMetaOauthSession(sessionId) {
@@ -9249,7 +9720,19 @@ class WorkerApp {
     if (this.metaService) {
       const refreshTask = this.metaService
         .refreshOverview()
-        .catch((error) => console.error('Meta overview refresh after OAuth failed', error));
+        .then(async (result) => {
+          if (result?.status) {
+            try {
+              await this.syncProjectsFromMetaStatus(result.status);
+            } catch (syncError) {
+              console.error('Project sync after Meta refresh failed', syncError);
+            }
+          }
+          return result;
+        })
+        .catch((error) => {
+          console.error('Meta overview refresh after OAuth failed', error);
+        });
       if (this.executionContext?.waitUntil) {
         this.executionContext.waitUntil(refreshTask);
       } else {
