@@ -305,6 +305,649 @@ function collectCpaSamples(insights) {
   return samples;
 }
 
+const LEAD_ACTION_HINTS = ['lead', 'generate_lead', 'complete_registration', 'omni_lead'];
+
+function actionMatches(type, hints = LEAD_ACTION_HINTS) {
+  const normalized = String(type ?? '').toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return hints.some((hint) => normalized === hint || normalized.includes(hint));
+}
+
+function sumActionMetric(actions, hints = LEAD_ACTION_HINTS) {
+  if (!Array.isArray(actions)) {
+    return 0;
+  }
+
+  let total = 0;
+  for (const action of actions) {
+    const type = action?.action_type ?? action?.actionType ?? action?.event_type;
+    if (!actionMatches(type, hints)) {
+      continue;
+    }
+
+    const value = Number(action?.value ?? action?.count ?? action?.amount);
+    if (Number.isFinite(value)) {
+      total += value;
+    }
+  }
+
+  return total;
+}
+
+function extractCostPerAction(costPerActionList, hints = LEAD_ACTION_HINTS) {
+  if (!Array.isArray(costPerActionList)) {
+    return null;
+  }
+
+  for (const entry of costPerActionList) {
+    const type = entry?.action_type ?? entry?.actionType;
+    if (!actionMatches(type, hints)) {
+      continue;
+    }
+
+    const value = Number(entry?.value ?? entry?.cost ?? entry?.amount);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function normalizeCampaignSummary(campaign) {
+  if (!campaign || typeof campaign !== 'object') {
+    return null;
+  }
+
+  const id = campaign.id || '';
+  const name = campaign.name || `Campaign ${id}`;
+  const status = String(campaign.effective_status || campaign.status || '').toUpperCase();
+  const insightEntries = Array.isArray(campaign?.insights?.data) ? campaign.insights.data : [];
+
+  let spendTotal = 0;
+  let spendFound = false;
+  let leadsTotal = 0;
+  let conversionsTotal = 0;
+  let lastEntry = null;
+
+  for (const entry of insightEntries) {
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+
+    const spend = parseMetaCurrency(entry.spend);
+    if (Number.isFinite(spend)) {
+      spendTotal += spend;
+      spendFound = true;
+    }
+
+    leadsTotal += sumActionMetric(entry.actions, LEAD_ACTION_HINTS);
+    conversionsTotal += sumActionMetric(entry.action_values, LEAD_ACTION_HINTS);
+    lastEntry = entry;
+  }
+
+  if (!lastEntry && insightEntries.length > 0) {
+    lastEntry = insightEntries[insightEntries.length - 1];
+  }
+
+  const spendUsd = spendFound ? spendTotal : null;
+  const leads = leadsTotal > 0 ? leadsTotal : null;
+  const conversions = conversionsTotal > 0 ? conversionsTotal : null;
+
+  const costFromEntry = lastEntry ? extractCostPerAction(lastEntry.cost_per_action_type, LEAD_ACTION_HINTS) : null;
+  const calculatedCpa = Number.isFinite(spendUsd) && Number.isFinite(leads) && leads > 0 ? spendUsd / leads : null;
+  const cpaUsd = Number.isFinite(costFromEntry) ? costFromEntry : calculatedCpa;
+
+  const reach = Number(lastEntry?.reach);
+  const impressions = Number(lastEntry?.impressions);
+  const clicks = Number(lastEntry?.inline_link_clicks ?? lastEntry?.clicks);
+  const frequency = Number(lastEntry?.frequency);
+  const ctr = Number.isFinite(clicks) && Number.isFinite(impressions) && impressions > 0 ? (clicks / impressions) * 100 : null;
+
+  return {
+    id,
+    name,
+    status,
+    spendUsd: Number.isFinite(spendUsd) ? spendUsd : null,
+    leads: Number.isFinite(leads) ? leads : null,
+    conversions: Number.isFinite(conversions) ? conversions : null,
+    cpaUsd: Number.isFinite(cpaUsd) ? cpaUsd : null,
+    reach: Number.isFinite(reach) ? reach : null,
+    impressions: Number.isFinite(impressions) ? impressions : null,
+    clicks: Number.isFinite(clicks) ? clicks : null,
+    frequency: Number.isFinite(frequency) ? frequency : null,
+    ctr: Number.isFinite(ctr) ? ctr : null,
+  };
+}
+
+function formatInteger(value) {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Math.round(value));
+}
+
+function formatPercentage(value, { digits = 1 } = {}) {
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+  return `${new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value)}%`;
+}
+
+function formatDateLabel(value, { timezone } = {}) {
+  const date = parseDateInput(value);
+  if (!date) {
+    return '';
+  }
+
+  const options = { day: 'numeric', month: 'long', year: 'numeric' };
+  if (timezone) {
+    options.timeZone = timezone;
+  }
+
+  try {
+    return new Intl.DateTimeFormat('ru-RU', options).format(date);
+  } catch (error) {
+    console.warn('Failed to format date label', value, error);
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+function extractProjectKpi(rawProject) {
+  if (!rawProject || typeof rawProject !== 'object') {
+    return null;
+  }
+
+  const source =
+    rawProject.kpi ||
+    rawProject.metrics?.kpi ||
+    rawProject.settings?.kpi ||
+    rawProject.config?.kpi ||
+    null;
+
+  if (!source || typeof source !== 'object') {
+    return null;
+  }
+
+  const currency =
+    source.currency ||
+    rawProject.metrics?.currency ||
+    rawProject.currency ||
+    rawProject.meta?.currency ||
+    'USD';
+
+  const parseValue = (value) => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  return {
+    objective: source.objective || source.goal || source.target || source.type || null,
+    cpa: parseValue(source.cpa ?? source.target_cpa ?? source.targetCpa),
+    cpl: parseValue(source.cpl ?? source.target_cpl ?? source.targetCpl),
+    leadsPerDay: parseValue(source.leads_per_day ?? source.leadsPerDay ?? source.target_leads_per_day),
+    dailyBudget: parseValue(source.daily_budget ?? source.dailyBudget ?? source.budget_per_day),
+    currency,
+  };
+}
+
+function formatKpiLines(kpi) {
+  if (!kpi) {
+    return ['KPI не заданы. Нажмите «🎯 KPI», чтобы настроить цели.'];
+  }
+
+  const lines = [];
+  if (kpi.objective) {
+    lines.push(`Цель: <b>${escapeHtml(String(kpi.objective).toUpperCase())}</b>`);
+  }
+
+  if (Number.isFinite(kpi.cpa)) {
+    lines.push(`CPA: <b>${formatUsd(kpi.cpa, { digitsBelowOne: 2, digitsAboveOne: 0 })}</b>`);
+  } else if (Number.isFinite(kpi.cpl)) {
+    lines.push(`CPL: <b>${formatUsd(kpi.cpl, { digitsBelowOne: 2, digitsAboveOne: 0 })}</b>`);
+  }
+
+  if (Number.isFinite(kpi.leadsPerDay)) {
+    lines.push(`Лидов в день: <b>${formatInteger(kpi.leadsPerDay)}</b>`);
+  }
+
+  if (Number.isFinite(kpi.dailyBudget)) {
+    const suffix = kpi.currency ? ` ${escapeHtml(kpi.currency)}` : '';
+    lines.push(`Бюджет/день: <b>${formatInteger(kpi.dailyBudget)}</b>${suffix}`);
+  }
+
+  if (lines.length === 0) {
+    lines.push('KPI заполнены не полностью — нажмите «🎯 KPI», чтобы уточнить цели.');
+  }
+
+  return lines;
+}
+
+function extractScheduleSettings(rawProject) {
+  if (!rawProject || typeof rawProject !== 'object') {
+    return null;
+  }
+
+  const schedule =
+    rawProject.schedule ||
+    rawProject.reporting?.schedule ||
+    rawProject.settings?.schedule ||
+    rawProject.config?.schedule ||
+    null;
+
+  if (!schedule || typeof schedule !== 'object') {
+    return null;
+  }
+
+  return {
+    cadence: schedule.cadence || schedule.type || schedule.frequency || null,
+    times: Array.isArray(schedule.times) ? schedule.times : schedule.time ? [schedule.time] : [],
+    periods: Array.isArray(schedule.periods) ? schedule.periods : schedule.range ? [schedule.range] : [],
+    timezone: schedule.timezone || schedule.tz || rawProject.timezone || rawProject.tz || null,
+    quietWeekends: Boolean(schedule.quiet_weekends ?? schedule.quietWeekends ?? schedule.mute_weekends),
+  };
+}
+
+function formatScheduleLines(schedule, { timezone } = {}) {
+  if (!schedule) {
+    return ['Расписание ещё не настроено. Нажмите «⚙️ Настройки», чтобы задать время отчётов.'];
+  }
+
+  const lines = [];
+  const cadenceLabel = schedule.cadence
+    ? {
+        daily: 'ежедневно',
+        weekdays: 'по будням',
+        weekends: 'по выходным',
+        weekly: 'еженедельно',
+        custom: 'по расписанию',
+      }[String(schedule.cadence).toLowerCase()] || schedule.cadence
+    : 'по расписанию';
+
+  if (schedule.periods && schedule.periods.length > 0) {
+    lines.push(`Периоды: ${schedule.periods.map((period) => escapeHtml(String(period))).join(', ')}`);
+  }
+
+  if (schedule.times && schedule.times.length > 0) {
+    lines.push(`Время: ${schedule.times.map((time) => escapeHtml(String(time))).join(', ')}`);
+  }
+
+  lines.push(`Частота: <b>${escapeHtml(cadenceLabel)}</b>`);
+
+  if (schedule.quietWeekends) {
+    lines.push('Тихие выходные: <b>включены</b>');
+  } else {
+    lines.push('Тихие выходные: выключены');
+  }
+
+  if (schedule.timezone || timezone) {
+    lines.push(`Таймзона: <code>${escapeHtml(schedule.timezone || timezone)}</code>`);
+  }
+
+  return lines;
+}
+
+function extractAlertSettings(rawProject) {
+  if (!rawProject || typeof rawProject !== 'object') {
+    return null;
+  }
+
+  const alerts = rawProject.alerts || rawProject.settings?.alerts || rawProject.config?.alerts || null;
+  if (!alerts || typeof alerts !== 'object') {
+    return null;
+  }
+
+  return {
+    zeroSpend: alerts.zero_spend || alerts.zeroSpend || null,
+    billing: alerts.billing || alerts.payment || null,
+    anomalies: alerts.anomalies || null,
+    creatives: alerts.creatives || alerts.creative_fatigue || null,
+  };
+}
+
+function formatAlertLines(alerts, { account, campaigns }) {
+  const lines = [];
+
+  const zeroSpendActive = Boolean(alerts?.zeroSpend?.enabled ?? alerts?.zeroSpend);
+  const billingActive = Boolean(alerts?.billing?.enabled ?? alerts?.billing);
+  const anomaliesActive = Boolean(alerts?.anomalies?.enabled ?? alerts?.anomalies);
+  const creativesActive = Boolean(alerts?.creatives?.enabled ?? alerts?.creatives);
+
+  if (zeroSpendActive) {
+    const checkTime = alerts?.zeroSpend?.time || alerts?.zeroSpend?.hour || '12:00';
+    lines.push(`⏰ Нулевой расход: напоминание в ${escapeHtml(String(checkTime))}`);
+  }
+
+  if (billingActive) {
+    const times = alerts?.billing?.times || alerts?.billing?.hours || ['10:00', '14:00', '18:00'];
+    lines.push(`💳 Биллинг: контроль в ${times.map((time) => escapeHtml(String(time))).join(', ')}`);
+  }
+
+  if (anomaliesActive) {
+    lines.push('📉 Аномалии: мониторинг включён.');
+  }
+
+  if (creativesActive) {
+    lines.push('🧩 Креативы: отслеживается усталость объявлений.');
+  }
+
+  if (lines.length === 0) {
+    lines.push('Алерты пока не настроены. Нажмите «⚙️ Настройки», чтобы активировать уведомления.');
+  }
+
+  const campaignFatigue = Array.isArray(campaigns)
+    ? campaigns.filter(
+        (campaign) =>
+          Number.isFinite(campaign.frequency) &&
+          campaign.frequency > 3.5 &&
+          Number.isFinite(campaign.ctr) &&
+          campaign.ctr < 0.5,
+      )
+    : [];
+
+  if (campaignFatigue.length > 0) {
+    lines.push(
+      `🧩 Усталость креативов: ${campaignFatigue
+        .slice(0, 3)
+        .map((campaign) => escapeHtml(campaign.name))
+        .join(', ')}${campaignFatigue.length > 3 ? '…' : ''}`,
+    );
+  }
+
+  if (account?.paymentIssues?.length) {
+    lines.push(`⚠️ Оплата: ${escapeHtml(account.paymentIssues.join(' • '))}`);
+  }
+
+  if (
+    account &&
+    Number.isFinite(account.spendTodayUsd) &&
+    account.spendTodayUsd === 0 &&
+    Number.isFinite(account.runningCampaigns) &&
+    account.runningCampaigns > 0
+  ) {
+    lines.push('⚠️ Сегодня расход = 0 при активных кампаниях. Проверьте статусы объявлений.');
+  }
+
+  return lines;
+}
+
+function buildCampaignLines(campaigns, { limit = 6 } = {}) {
+  if (!Array.isArray(campaigns) || campaigns.length === 0) {
+    return ['Активных кампаний не найдено.'];
+  }
+
+  const lines = [];
+  const display = campaigns.slice(0, limit);
+  for (const campaign of display) {
+    const spendText = Number.isFinite(campaign.spendUsd)
+      ? formatUsd(campaign.spendUsd, { digitsBelowOne: 2, digitsAboveOne: 2 })
+      : '—';
+    const leadsText = Number.isFinite(campaign.leads) ? formatInteger(campaign.leads) : '—';
+    const cpaText = Number.isFinite(campaign.cpaUsd)
+      ? formatUsd(campaign.cpaUsd, { digitsBelowOne: 2, digitsAboveOne: 0 })
+      : '—';
+    lines.push(`• <b>${escapeHtml(campaign.name)}</b> — ${spendText} | Лиды: ${leadsText} | CPA: ${cpaText}`);
+  }
+
+  if (campaigns.length > limit) {
+    lines.push(`… и ещё ${formatInteger(campaigns.length - limit)} кампаний`);
+  }
+
+  return lines;
+}
+
+function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
+  const lines = [];
+  const title = project?.name || account?.name || project?.id || 'Проект';
+  const subtitle = project?.code ? `#${project.code}` : project?.id ? `ID: ${project.id}` : '';
+
+  lines.push(`<b>${escapeHtml(title)}</b>`);
+  if (subtitle) {
+    lines.push(escapeHtml(subtitle));
+  }
+
+  if (project?.chatTitle) {
+    lines.push(`Чат: ${escapeHtml(project.chatTitle)}`);
+  }
+
+  lines.push('', '<b>Статус Meta</b>');
+  const billingCountdown = formatDaysUntil(account?.billingNextAt || project?.billingNextAt);
+  const statusEmoji = determineAccountSignal(account, { daysUntilDue: billingCountdown });
+  const statusLabel = account?.paymentStatusLabel || account?.statusLabel || account?.status || '—';
+  lines.push(`${statusEmoji} ${escapeHtml(statusLabel)}`);
+  if (account?.billingDueLabel) {
+    lines.push(`До оплаты: ${escapeHtml(account.billingDueLabel)}`);
+  } else if (billingCountdown?.label && billingCountdown.label !== '—') {
+    lines.push(`До оплаты: ${escapeHtml(billingCountdown.label)}`);
+  }
+  if (account?.paymentIssues?.length) {
+    lines.push(`Проблемы: ${escapeHtml(account.paymentIssues.join(' • '))}`);
+  }
+
+  lines.push('', '<b>Финансы</b>');
+  const spendToday = Number.isFinite(account?.spendTodayUsd)
+    ? account.spendTodayUsd
+    : Number.isFinite(project?.metrics?.spendTodayUsd)
+    ? project.metrics.spendTodayUsd
+    : null;
+  lines.push(
+    `Потрачено сегодня: <b>${
+      Number.isFinite(spendToday) ? formatUsd(spendToday, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—'
+    }</b>`,
+  );
+
+  const nextPayment = account?.billingNextAt || project?.billingNextAt || null;
+  const nextPaymentLabel = formatDateLabel(nextPayment, { timezone });
+  if (nextPaymentLabel) {
+    const countdownLabel = billingCountdown?.label && billingCountdown.label !== '—' ? ` (${billingCountdown.label})` : '';
+    lines.push(`Дата следующей оплаты: ${escapeHtml(nextPaymentLabel)}${countdownLabel}`);
+  }
+
+  if (Number.isFinite(account?.debtUsd) && account.debtUsd !== 0) {
+    lines.push(`Долг: <b>${formatUsd(account.debtUsd, { digitsBelowOne: 2, digitsAboveOne: 2 })}</b>`);
+  }
+
+  const last4 =
+    account?.defaultPaymentMethodLast4 ||
+    account?.default_card_last4 ||
+    account?.card_last4 ||
+    account?.paymentMethodLast4 ||
+    null;
+  if (last4) {
+    lines.push(`Карта по умолчанию: 💳 ****${escapeHtml(String(last4))}`);
+  }
+
+  lines.push('', '<b>Актуальные кампании</b>');
+  const campaigns = Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [];
+  lines.push(...buildCampaignLines(campaigns));
+
+  const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd);
+  if (cpaRange) {
+    lines.push(`CPA (7д): ${cpaRange}`);
+  }
+
+  const kpi = extractProjectKpi(rawProject);
+  lines.push('', '<b>KPI</b>', ...formatKpiLines(kpi));
+
+  const schedule = extractScheduleSettings(rawProject);
+  lines.push('', '<b>Расписание</b>', ...formatScheduleLines(schedule, { timezone }));
+
+  const alerts = extractAlertSettings(rawProject);
+  lines.push('', '<b>Алерты</b>', ...formatAlertLines(alerts, { account, campaigns }));
+
+  return { text: lines.join('\n'), campaigns, kpi };
+}
+
+function formatReportPresetLabel(preset) {
+  switch (preset) {
+    case 'today':
+      return 'Сегодня';
+    case 'yesterday':
+      return 'Вчера';
+    case 'week':
+      return 'Последние 7 дней';
+    case 'month':
+      return 'С начала месяца';
+    default:
+      return 'Период';
+  }
+}
+
+function buildReportKpiLine(kpi, { totalSpend, totalLeads, totalDailyBudget }) {
+  if (!kpi) {
+    return null;
+  }
+
+  const parts = [];
+  if (Number.isFinite(kpi.cpl) || Number.isFinite(kpi.cpa)) {
+    const target = Number.isFinite(kpi.cpl) ? kpi.cpl : kpi.cpa;
+    const label = Number.isFinite(kpi.cpl) ? 'CPL' : 'CPA';
+    const actual = Number.isFinite(totalLeads) && totalLeads > 0 ? totalSpend / totalLeads : null;
+    const ok = Number.isFinite(actual) ? actual <= target : false;
+    const emoji = ok ? '✅' : '⚠️';
+    parts.push(`${label}≤${formatUsd(target, { digitsBelowOne: 2, digitsAboveOne: 0 })} ${emoji}`);
+  }
+
+  if (Number.isFinite(kpi.leadsPerDay)) {
+    const ok = Number.isFinite(totalLeads) ? totalLeads >= kpi.leadsPerDay : false;
+    const emoji = ok ? '✅' : '⚠️';
+    parts.push(`Л/д≥${formatInteger(kpi.leadsPerDay)} ${emoji}`);
+  }
+
+  if (Number.isFinite(kpi.dailyBudget)) {
+    const ok = Number.isFinite(totalDailyBudget) ? totalDailyBudget <= kpi.dailyBudget : true;
+    const emoji = ok ? '✅' : '⚠️';
+    parts.push(`Бюд/д≤${formatInteger(kpi.dailyBudget)} ${emoji}`);
+  }
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  return `KPI: ${parts.join(' | ')}`;
+}
+
+function buildProjectReportPreview({ project, account, rawProject, preset }) {
+  const lines = [];
+  const codeLine = project?.code ? `#${project.code}` : project?.id ? `#${project.id}` : null;
+  if (codeLine) {
+    lines.push(escapeHtml(codeLine));
+  }
+
+  const periodLabel = formatReportPresetLabel(preset);
+  lines.push(`<b>Отчёт</b> (${escapeHtml(periodLabel)})`);
+
+  const campaigns = Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [];
+  let totalSpend = 0;
+  let totalLeads = 0;
+
+  if (campaigns.length === 0) {
+    lines.push('• Данных по кампаниям пока нет.');
+  } else {
+    for (const campaign of campaigns) {
+      const spend = Number.isFinite(campaign.spendUsd) ? campaign.spendUsd : null;
+      const leads = Number.isFinite(campaign.leads) ? campaign.leads : null;
+      if (Number.isFinite(spend)) {
+        totalSpend += spend;
+      }
+      if (Number.isFinite(leads)) {
+        totalLeads += leads;
+      }
+
+      const spendText = Number.isFinite(spend)
+        ? formatUsd(spend, { digitsBelowOne: 2, digitsAboveOne: 2 })
+        : '—';
+      const leadsText = Number.isFinite(leads) ? formatInteger(leads) : '—';
+      const cpl = Number.isFinite(spend) && Number.isFinite(leads) && leads > 0 ? spend / leads : null;
+      const cplText = Number.isFinite(cpl)
+        ? formatUsd(cpl, { digitsBelowOne: 2, digitsAboveOne: 0 })
+        : '—';
+      lines.push(`• <b>${escapeHtml(campaign.name)}</b> — ${spendText} | Лиды: ${leadsText} | CPL: ${cplText}`);
+    }
+  }
+
+  const totalCpl = Number.isFinite(totalSpend) && Number.isFinite(totalLeads) && totalLeads > 0 ? totalSpend / totalLeads : null;
+  const totalSpendText = Number.isFinite(totalSpend)
+    ? formatUsd(totalSpend, { digitsBelowOne: 2, digitsAboveOne: 2 })
+    : '—';
+  const totalLeadsText = Number.isFinite(totalLeads) ? formatInteger(totalLeads) : '—';
+  const totalCplText = Number.isFinite(totalCpl)
+    ? formatUsd(totalCpl, { digitsBelowOne: 2, digitsAboveOne: 0 })
+    : '—';
+
+  lines.push(`<b>ИТОГО:</b> ${totalSpendText} | Лиды: ${totalLeadsText} | CPL: ${totalCplText}`);
+
+  const kpi = extractProjectKpi(rawProject);
+  const kpiLine = buildReportKpiLine(kpi, {
+    totalSpend,
+    totalLeads,
+    totalDailyBudget: Number.isFinite(account?.spendTodayUsd) ? account.spendTodayUsd : totalSpend,
+  });
+
+  if (kpiLine) {
+    lines.push(kpiLine);
+  }
+
+  return { text: lines.join('\n'), campaigns };
+}
+
+function buildProjectDetailKeyboard(base, { chatUrl } = {}) {
+  const keyboard = [];
+  keyboard.push([
+    { text: '📊 Сегодня', callback_data: `${base}:report:today` },
+    { text: '📅 Вчера', callback_data: `${base}:report:yesterday` },
+    { text: '🗓 7 дней', callback_data: `${base}:report:week` },
+  ]);
+  keyboard.push([
+    { text: '📆 Месяц', callback_data: `${base}:report:month` },
+    { text: '📍 Диапазон', callback_data: `${base}:report:custom` },
+    { text: '📄 CSV', callback_data: `${base}:report:csv` },
+  ]);
+  keyboard.push([
+    { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
+    { text: '🎯 KPI', callback_data: `${base}:kpi` },
+    { text: '⏸ Автопауза', callback_data: `${base}:autopause` },
+  ]);
+  keyboard.push([
+    { text: '⚙️ Настройки', callback_data: `${base}:settings` },
+    { text: '💳 Оплата', callback_data: `${base}:payment` },
+    chatUrl ? { text: '💬 Чат', url: chatUrl } : { text: '💬 Чат', callback_data: `${base}:chat` },
+  ]);
+  keyboard.push([
+    { text: '🔁 Обновить', callback_data: `${base}:refresh` },
+    { text: '⬅️ В админку', callback_data: 'admin:panel' },
+  ]);
+
+  return { inline_keyboard: keyboard };
+}
+
+function buildProjectReportKeyboard(base) {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Сегодня', callback_data: `${base}:report:today` },
+        { text: 'Вчера', callback_data: `${base}:report:yesterday` },
+        { text: '7 дней', callback_data: `${base}:report:week` },
+      ],
+      [
+        { text: 'Месяц', callback_data: `${base}:report:month` },
+        { text: 'Диапазон', callback_data: `${base}:report:custom` },
+        { text: 'CSV', callback_data: `${base}:report:csv` },
+      ],
+      [
+        { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
+        { text: '⬅️ К проекту', callback_data: `${base}:open` },
+      ],
+    ],
+  };
+}
+
 function cloneMetaStatus(status) {
   if (!status || typeof status !== 'object') {
     return null;
@@ -1378,16 +2021,28 @@ class MetaService {
         searchParams: {
           limit: '50',
           effective_status: '["ACTIVE","PAUSED","SCHEDULED","IN_PROCESS"]',
-          fields: 'id,name,effective_status,insights.date_preset(last_7d){cpa,cost_per_action_type}',
+          fields:
+            'id,name,effective_status,insights.date_preset(last_7d){spend,actions,action_values,cost_per_action_type,reach,impressions,frequency,clicks,inline_link_clicks}',
         },
       });
 
       const campaigns = Array.isArray(response?.data) ? response.data : [];
       const activeCount = campaigns.filter((item) => String(item?.effective_status || '').toUpperCase() === 'ACTIVE').length;
       const cpaSamples = [];
+      const summaries = [];
+
       for (const campaign of campaigns) {
         if (Array.isArray(campaign?.insights?.data)) {
           cpaSamples.push(...collectCpaSamples(campaign.insights.data));
+          const summary = normalizeCampaignSummary(campaign);
+          if (summary) {
+            summaries.push(summary);
+          }
+        } else {
+          const summary = normalizeCampaignSummary(campaign);
+          if (summary) {
+            summaries.push(summary);
+          }
         }
       }
 
@@ -1397,6 +2052,7 @@ class MetaService {
       account.runningCampaigns = activeCount;
       account.cpaMinUsd = Number.isFinite(cpaMin) ? cpaMin : null;
       account.cpaMaxUsd = Number.isFinite(cpaMax) ? cpaMax : null;
+      account.campaignSummaries = summaries.sort((a, b) => (b.spendUsd ?? 0) - (a.spendUsd ?? 0));
     } catch (error) {
       console.warn('Failed to load campaign stats', accountId, error);
     }
@@ -2143,8 +2799,13 @@ class TelegramBot {
         : { text: '💬 Перейти в чат', callback_data: `${base}:chat` };
       inlineKeyboard.push([
         chatButton,
+        { text: 'ℹ️ Детали', callback_data: `${base}:open` },
+        { text: '💳 Оплата', callback_data: `${base}:payment` },
+      ]);
+      inlineKeyboard.push([
         { text: '📊 Отчёт', callback_data: `${base}:report` },
         { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
+        { text: '📄 CSV', callback_data: `${base}:report:csv` },
       ]);
       inlineKeyboard.push([
         { text: '🎯 Управление KPI', callback_data: `${base}:kpi` },
@@ -2156,6 +2817,97 @@ class TelegramBot {
     const replyMarkup = { inline_keyboard: inlineKeyboard };
 
     return { text: summary.join('\n'), reply_markup: replyMarkup };
+  }
+
+  async resolveProjectContext(callbackId, { forceMetaRefresh = false } = {}) {
+    const rawCallback = String(callbackId ?? '');
+    const targetId = normalizeProjectIdForCallback(rawCallback);
+    const projectKeys = await this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 100);
+
+    let matchedRecord = null;
+    let matchedRaw = null;
+
+    for (const key of projectKeys) {
+      try {
+        const raw = await this.storage.getJson('DB', key);
+        const record = normalizeProjectRecord(key, raw);
+        const candidates = new Set([
+          normalizeProjectIdForCallback(record.id),
+          normalizeProjectIdForCallback(record.code || record.name || ''),
+          record.id ? String(record.id).toLowerCase() : '',
+          record.code ? String(record.code).toLowerCase() : '',
+        ]);
+
+        if (candidates.has(targetId) || candidates.has(rawCallback.toLowerCase())) {
+          matchedRecord = record;
+          matchedRaw = raw || {};
+          break;
+        }
+      } catch (error) {
+        console.warn('Failed to resolve project record', key, error);
+      }
+    }
+
+    let metaResult = null;
+    if (this.metaService) {
+      metaResult = forceMetaRefresh
+        ? await this.metaService.refreshOverview()
+        : await this.metaService.ensureOverview({
+            backgroundRefresh: true,
+            executionContext: this.executionContext,
+          });
+    } else {
+      const status = await this.storage.readMetaStatus();
+      metaResult = { status };
+    }
+
+    const metaStatus = metaResult?.status ?? metaResult ?? null;
+    const accounts = Array.isArray(metaStatus?.facebook?.adAccounts)
+      ? metaStatus.facebook.adAccounts
+      : [];
+
+    let account = null;
+    if (matchedRecord?.adAccountId) {
+      const targetAccountId = String(matchedRecord.adAccountId).replace(/^act_/, '');
+      account = accounts.find((item) => {
+        const accountId = String(item?.accountId ?? item?.id ?? '').replace(/^act_/, '');
+        return accountId && accountId === targetAccountId;
+      });
+    }
+
+    if (!account) {
+      account = accounts.find((item) => {
+        const accountId = String(item?.accountId ?? item?.id ?? '').replace(/^act_/, '');
+        const normalized = normalizeProjectIdForCallback(accountId || item?.name || '');
+        return normalized === targetId;
+      });
+    }
+
+    if (!matchedRecord && account) {
+      matchedRecord = {
+        id: account.accountId || account.id,
+        key: `${PROJECT_KEY_PREFIX}${account.accountId || account.id}`,
+        code: '',
+        name: account.name || account.id,
+        adAccountId: account.accountId || account.id,
+        chatId: '',
+        threadId: '',
+        chatTitle: '',
+        chatUrl: '',
+        metrics: {
+          spendTodayUsd: account.spendTodayUsd ?? null,
+          currency: account.currency || 'USD',
+        },
+      };
+      matchedRaw = {};
+    }
+
+    return {
+      project: matchedRecord,
+      rawProject: matchedRaw,
+      account: account || null,
+      metaStatus,
+    };
   }
 
   async handleAdminCallback(callback, data) {
@@ -2360,6 +3112,39 @@ class TelegramBot {
         return { handled: true };
       }
 
+      if (data === 'admin:panel') {
+        if (!chatId) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось определить чат.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'chat_missing' };
+        }
+
+        const panel = await this.buildAdminPanelPayload();
+        await this.sendMessageWithFallback(
+          {
+            chat_id: chatId,
+            text: panel.text,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            reply_markup: panel.reply_markup,
+          },
+          message,
+        );
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Админ-панель отправлена.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+        });
+        return { handled: true };
+      }
+
       if (data === 'admin:logs') {
         if (!chatId) {
           await this.telegram.answerCallbackQuery({
@@ -2400,38 +3185,283 @@ class TelegramBot {
         const parts = data.split(':');
         const projectId = parts[2] || '';
         const action = parts[3] || 'open';
-        const responses = {
-          report: '📊 Отчёты скоро будут доступны из панели.',
-          digest: '📈 Сводные отчёты находятся в разработке.',
-          kpi: '🎯 Управление KPI появится на следующих итерациях.',
-          autopause: '⏸ Автопауза кампаний будет доступна после настройки KPI.',
-          settings: '⚙️ Расширенные настройки проекта в разработке.',
-          chat: 'Чат проекта пока не привязан. Добавьте его через «Подключить проект».',
-        };
+        const subAction = parts[4] || '';
+        const base = `admin:project:${projectId}`;
 
-        let text = responses[action] || 'Функция будет добавлена на следующих этапах.';
-        let showAlert = action !== 'report' && action !== 'digest';
-        if (action === 'chat' && data.includes(':chat') && data.length > 0 && parts.length <= 4) {
-          showAlert = true;
+        if (!chatId) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось определить чат для вывода информации о проекте.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'chat_missing' };
+        }
+
+        const context = await this.resolveProjectContext(projectId, {
+          forceMetaRefresh: action === 'refresh',
+        });
+
+        if (!context.project) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Проект не найден. Проверьте настройки админ-панели.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'project_missing' };
+        }
+
+        if (action === 'open' || action === 'refresh') {
+          const detail = buildProjectDetailMessage({
+            project: context.project,
+            account: context.account,
+            rawProject: context.rawProject,
+            timezone: this.config.defaultTimezone,
+          });
+          const replyMarkup = buildProjectDetailKeyboard(base, {
+            chatUrl: context.project.chatUrl,
+          });
+
+          await this.sendMessageWithFallback(
+            {
+              chat_id: chatId,
+              text: detail.text,
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              reply_markup: replyMarkup,
+            },
+            message,
+          );
+
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: action === 'refresh' ? 'Данные проекта обновлены.' : 'Открываю проект.',
+          });
+
+          this.queueLog({
+            kind: 'callback',
+            status: 'ok',
+            data,
+            chat_id: chatId,
+            user_id: userId,
+            project_id: context.project.id,
+          });
+
+          return { handled: true };
+        }
+
+        if (action === 'report') {
+          if (subAction === 'csv') {
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: 'Экспорт CSV появится после подключения хранилища.',
+              show_alert: true,
+            });
+            return { handled: true };
+          }
+
+          if (subAction === 'custom') {
+            await this.sendMessageWithFallback(
+              {
+                chat_id: chatId,
+                text: [
+                  '<b>Пользовательский период отчёта</b>',
+                  'Отправьте даты в формате <code>YYYY-MM-DD YYYY-MM-DD</code>.',
+                  'Например: <code>2024-05-01 2024-05-07</code>.',
+                ].join('\n'),
+                parse_mode: 'HTML',
+                disable_web_page_preview: true,
+              },
+              message,
+            );
+
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: 'Жду диапазон дат в следующем сообщении.',
+            });
+            return { handled: true };
+          }
+
+          const preset = subAction || 'today';
+          const preview = buildProjectReportPreview({
+            project: context.project,
+            account: context.account,
+            rawProject: context.rawProject,
+            preset,
+          });
+
+          await this.sendMessageWithFallback(
+            {
+              chat_id: chatId,
+              text: preview.text,
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              reply_markup: buildProjectReportKeyboard(base),
+            },
+            message,
+          );
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Отчёт подготовлен.' });
+          this.queueLog({
+            kind: 'callback',
+            status: 'ok',
+            data,
+            chat_id: chatId,
+            user_id: userId,
+            project_id: context.project.id,
+            action: `report:${preset}`,
+          });
+
+          return { handled: true };
+        }
+
+        if (action === 'digest') {
+          await this.sendMessageWithFallback(
+            {
+              chat_id: chatId,
+              text: [
+                '<b>Сводный отчёт</b>',
+                'В следующей итерации добавим комбинированный отчёт (неделя + сегодня/вчера) и автоматическую отправку клиенту.',
+                'Сейчас можно воспользоваться кнопками периодов для просмотра статистики.',
+              ].join('\n'),
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              reply_markup: buildProjectReportKeyboard(base),
+            },
+            message,
+          );
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Сводный отчёт в разработке.' });
+          return { handled: true };
+        }
+
+        if (action === 'kpi') {
+          const kpi = extractProjectKpi(context.rawProject);
+          const body = ['<b>KPI проекта</b>', ...formatKpiLines(kpi)];
+          await this.sendMessageWithFallback(
+            {
+              chat_id: chatId,
+              text: body.join('\n'),
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '✏️ Изменить KPI', callback_data: `${base}:kpi:edit` },
+                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                  ],
+                ],
+              },
+            },
+            message,
+          );
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'KPI отображены.' });
+          return { handled: true };
+        }
+
+        if (action === 'autopause') {
+          await this.sendMessageWithFallback(
+            {
+              chat_id: chatId,
+              text: [
+                '<b>Автопауза</b>',
+                'Настройка пауз кампаний по KPI появится после подключения автоматического управления.',
+                'Подготовьте список кампаний и порог превышения CPL/CPA — бот будет отслеживать их ежедневно.',
+              ].join('\n'),
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: [[{ text: '⬅️ К проекту', callback_data: `${base}:open` }]],
+              },
+            },
+            message,
+          );
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Автопауза скоро будет.' });
+          return { handled: true };
+        }
+
+        if (action === 'settings') {
+          const schedule = extractScheduleSettings(context.rawProject);
+          const alerts = extractAlertSettings(context.rawProject);
+          const body = [
+            '<b>Настройки проекта</b>',
+            '',
+            '<b>Расписание</b>',
+            ...formatScheduleLines(schedule, { timezone: this.config.defaultTimezone }),
+            '',
+            '<b>Алерты</b>',
+            ...formatAlertLines(alerts, { account: context.account, campaigns: context.account?.campaignSummaries }),
+            '',
+            'В следующих версиях добавим пошаговый мастер для настройки расписаний и уведомлений прямо из Telegram.',
+          ];
+
+          await this.sendMessageWithFallback(
+            {
+              chat_id: chatId,
+              text: body.join('\n'),
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: [[{ text: '⬅️ К проекту', callback_data: `${base}:open` }]],
+              },
+            },
+            message,
+          );
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Настройки показаны.' });
+          return { handled: true };
+        }
+
+        if (action === 'payment') {
+          const lines = [
+            '<b>Оплата Facebook</b>',
+            'Чтобы отметить платёж вручную, отправьте сумму и дату в следующем сообщении.',
+            'Например: <code>Оплатили 120$ 2024-05-12</code>.',
+            'Бот зафиксирует событие в журнале и снимет предупреждение о задолженности.',
+          ];
+
+          await this.sendMessageWithFallback(
+            {
+              chat_id: chatId,
+              text: lines.join('\n'),
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: [[{ text: '⬅️ К проекту', callback_data: `${base}:open` }]],
+              },
+            },
+            message,
+          );
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Жду информацию об оплате.' });
+          return { handled: true };
+        }
+
+        if (action === 'chat') {
+          if (context.project.chatUrl) {
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: 'Открываю чат проекта.',
+              url: context.project.chatUrl,
+            });
+            return { handled: true };
+          }
+
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Чат проекта пока не привязан. Добавьте его в карточке проекта.',
+            show_alert: true,
+          });
+          return { handled: true };
         }
 
         await this.telegram.answerCallbackQuery({
           callback_query_id: id,
-          text,
-          show_alert: showAlert,
+          text: 'Действие пока не поддерживается.',
+          show_alert: true,
         });
-
-        this.queueLog({
-          kind: 'callback',
-          status: 'planned',
-          data,
-          chat_id: chatId,
-          user_id: userId,
-          project_id: projectId,
-          project_action: action,
-        });
-
-        return { handled: true, reason: 'project_action_placeholder' };
+        return { handled: false, reason: `unhandled_action_${action}` };
       }
 
       await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Действие пока не поддерживается.' });
