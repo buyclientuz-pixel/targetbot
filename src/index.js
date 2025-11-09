@@ -3299,21 +3299,27 @@ function renderChatsPage(items, pagination = {}) {
     lines.push('Пока нет зарегистрированных топиков. Используйте /register в нужной теме.');
   } else {
     items.forEach((item) => {
-      const title = item.title ? ` — ${escapeHtml(item.title)}` : '';
-      const thread = item.thread_id ?? 0;
-      lines.push(`• <code>${item.chat_id}</code> · thread <code>${thread}</code>${title}`);
+      const chatDescriptor = {
+        chat_id: item.chat_id,
+        thread_id: item.thread_id ?? 0,
+        title: item.title ?? null,
+      };
+      lines.push(formatChatLine(chatDescriptor));
 
-      const link = buildTelegramTopicLink(item.chat_id, thread);
+      const link = buildTelegramTopicLink(chatDescriptor.chat_id, chatDescriptor.thread_id);
       if (link) {
         const labelParts = [];
-        if (item.title) {
-          const short = item.title.length > 32 ? `${item.title.slice(0, 31)}…` : item.title;
+        if (chatDescriptor.title) {
+          const short =
+            chatDescriptor.title.length > 32
+              ? `${chatDescriptor.title.slice(0, 31)}…`
+              : chatDescriptor.title;
           labelParts.push(short);
         } else {
-          labelParts.push(String(item.chat_id));
+          labelParts.push(String(chatDescriptor.chat_id));
         }
-        if (thread > 0) {
-          labelParts.push(`#${thread}`);
+        if (chatDescriptor.thread_id > 0) {
+          labelParts.push(`#${chatDescriptor.thread_id}`);
         }
         inline_keyboard.push([
           {
@@ -3476,38 +3482,69 @@ async function fetchAccountBestCampaignCpa(env, accountId, token, range) {
   }
 }
 
-function describeAccountStatus(account = {}) {
-  const statusCode = Number(account.account_status);
-  const disableReason = Number(account.disable_reason);
+function describeAccountStatus(account = {}, health = null, currency = 'USD') {
+  const source = health ?? account ?? {};
+  const statusCode = Number(source.account_status);
+  const disableReason = Number(source.disable_reason);
+  const isPrepay = Boolean(source.is_prepay_account);
+  const balance = Number(source.balance);
+  const spendCap = Number(source.spend_cap);
+  const amountSpent = Number(source.amount_spent);
+  const funding = source?.funding_source_details?.display_string ?? null;
 
   if (!Number.isFinite(statusCode)) {
-    return { label: 'Неизвестно', tone: 'neutral' };
+    return { label: 'Неизвестно', tone: 'neutral', detail: funding ?? null };
   }
 
+  let label = 'Активен';
+  let tone = 'ok';
+  let detail = funding ?? null;
+
   if ([2, 3, 7, 8, 9, 1002].includes(statusCode)) {
-    if ([18, 25, 26].includes(disableReason)) {
-      return { label: 'Сбой оплаты', tone: 'error' };
-    }
-    return { label: 'Выключен', tone: 'error' };
+    label = 'Выключен';
+    tone = 'error';
   }
 
   if ([101, 102].includes(statusCode)) {
-    return { label: 'Ошибка доступа', tone: 'warning' };
+    label = 'Ошибка доступа';
+    tone = 'warning';
   }
 
-  return { label: 'Активен', tone: 'ok' };
+  if ([18, 25, 26].includes(disableReason)) {
+    label = 'Сбой оплаты';
+    tone = 'error';
+    detail = 'Проверьте источник оплаты и лимиты.';
+  } else if (isPrepay && Number.isFinite(balance) && balance <= 0) {
+    label = 'Нужна оплата';
+    tone = 'error';
+    detail = `Баланс ${formatCurrency(balance, currency)}.`;
+  } else if (Number.isFinite(spendCap) && spendCap > 0 && Number.isFinite(amountSpent) && amountSpent >= spendCap) {
+    label = 'Достигнут лимит';
+    tone = 'warning';
+    detail = `Расход ${formatCurrency(amountSpent, currency)} из лимита ${formatCurrency(spendCap, currency)}.`;
+  }
+
+  return { label, tone, detail };
 }
 
 function evaluateAccountPerformance(snapshot = {}) {
-  const avgCpa = snapshot.last7?.cpa ?? snapshot.today?.cpa ?? null;
-  const bestCpa = snapshot.bestCampaign?.cpa ?? null;
+  const primaryCpa = [snapshot.billing?.cpa, snapshot.last7?.cpa, snapshot.today?.cpa].find(
+    (value) => Number.isFinite(value) && value > 0,
+  );
 
-  if (!Number.isFinite(avgCpa) || avgCpa <= 0) {
+  if (!Number.isFinite(primaryCpa) || primaryCpa <= 0) {
     return { label: 'Нет данных', emoji: '⚪️' };
   }
 
-  const base = Number.isFinite(bestCpa) && bestCpa > 0 ? bestCpa : avgCpa;
-  const ratio = avgCpa / base;
+  const bestCandidate = [
+    snapshot.bestCampaign?.cpa,
+    snapshot.billing?.cpa,
+    snapshot.last7?.cpa,
+    snapshot.today?.cpa,
+  ].filter((value) => Number.isFinite(value) && value > 0);
+
+  const reference = bestCandidate.length ? Math.min(...bestCandidate) : primaryCpa;
+  const ratio = primaryCpa / reference;
 
   if (ratio <= 1.3) {
     return { label: 'Отлично', emoji: '🟢' };
@@ -3518,7 +3555,7 @@ function evaluateAccountPerformance(snapshot = {}) {
   return { label: 'Плохо', emoji: '🔴' };
 }
 
-async function buildAccountSnapshot(env, account, { token, timezone }) {
+async function buildAccountSnapshot(env, account, { token, timezone, projects = [] } = {}) {
   if (!token || !account?.id) {
     return {};
   }
@@ -3527,13 +3564,59 @@ async function buildAccountSnapshot(env, account, { token, timezone }) {
   const last7Range = getPeriodRange('last_7d', timezone);
   const monthRange = getPeriodRange('month_to_date', timezone);
 
-  const [today, last7, month, lifetime, bestCampaign] = await Promise.all([
+  const [today, last7, month, lifetime, bestCampaign, health] = await Promise.all([
     fetchAccountInsightsRange(env, account.id, token, todayRange),
     fetchAccountInsightsRange(env, account.id, token, last7Range),
     fetchAccountInsightsRange(env, account.id, token, monthRange),
     fetchAccountInsightsRange(env, account.id, token, { preset: 'lifetime' }),
     fetchAccountBestCampaignCpa(env, account.id, token, last7Range),
+    (async () => {
+      try {
+        return await fetchAccountHealthSummary(env, { act: account.id }, token);
+      } catch (error) {
+        console.error('buildAccountSnapshot health error', account.id, error);
+        return null;
+      }
+    })(),
   ]);
+
+  const billingProjects = Array.isArray(projects) ? projects : [];
+  const billingDates = billingProjects
+    .map((project) =>
+      typeof project?.billing_paid_at === 'string' && isValidYmd(project.billing_paid_at)
+        ? project.billing_paid_at
+        : null,
+    )
+    .filter(Boolean)
+    .sort();
+
+  let billingSummary = null;
+
+  if (billingDates.length) {
+    const since = billingDates[billingDates.length - 1];
+    const todayYmd = getTodayYmd(timezone) || null;
+    if (since && todayYmd) {
+      const normalizedSince = since > todayYmd ? todayYmd : since;
+      if (normalizedSince <= todayYmd) {
+        try {
+          const spendSincePaid = await fetchAccountInsightsRange(env, account.id, token, {
+            since: normalizedSince,
+            until: todayYmd,
+          });
+          if (spendSincePaid) {
+            billingSummary = {
+              since: normalizedSince,
+              spend: spendSincePaid.spend ?? 0,
+              results: spendSincePaid.results ?? 0,
+              cpa: Number.isFinite(spendSincePaid.cpa) ? spendSincePaid.cpa : null,
+            };
+          }
+        } catch (error) {
+          console.error('buildAccountSnapshot billing range error', account.id, since, error);
+        }
+      }
+    }
+  }
 
   return {
     today,
@@ -3541,6 +3624,8 @@ async function buildAccountSnapshot(env, account, { token, timezone }) {
     month,
     lifetime,
     bestCampaign,
+    billing: billingSummary,
+    health,
   };
 }
 
@@ -3715,7 +3800,12 @@ async function renderAccountsPage(env, uid, profile, accounts = [], options = {}
   if (token) {
     await Promise.all(
       slice.map(async (account) => {
-        const snapshot = await buildAccountSnapshot(env, account, { token, timezone });
+        const related = projectIndex.get(normalizeAccountId(account.id)) || [];
+        const snapshot = await buildAccountSnapshot(env, account, {
+          token,
+          timezone,
+          projects: related,
+        });
         accountSnapshots.set(account.id, snapshot);
       }),
     );
@@ -3730,26 +3820,46 @@ async function renderAccountsPage(env, uid, profile, accounts = [], options = {}
     lines.push('');
     for (const account of slice) {
       const snapshot = accountSnapshots.get(account.id) ?? {};
-      const status = describeAccountStatus(account);
+      const currency = getCurrencyFromMeta(snapshot.health ?? account);
+      const status = describeAccountStatus(account, snapshot.health, currency);
       const score = evaluateAccountPerformance(snapshot);
 
-      const todaySpend = formatCurrency(snapshot.today?.spend ?? 0, account.currency || 'USD');
-      const bestCpaLabel = snapshot.bestCampaign?.cpa
-        ? formatCpa(snapshot.bestCampaign.cpa, account.currency || 'USD')
-        : '—';
-      const avgCpaLabel = snapshot.last7?.cpa
-        ? formatCpa(snapshot.last7.cpa, account.currency || 'USD')
-        : '—';
+      const headlineSpendValue = snapshot.billing?.spend ?? snapshot.today?.spend ?? 0;
+      const headlineSpend = formatCurrency(headlineSpendValue, currency);
+
+      const cpaCandidates = [
+        snapshot.bestCampaign?.cpa,
+        snapshot.billing?.cpa,
+        snapshot.last7?.cpa,
+        snapshot.today?.cpa,
+      ].filter((value) => Number.isFinite(value) && value > 0);
+      const minCpa = cpaCandidates.length ? Math.min(...cpaCandidates) : null;
+      const avgCpaBase = [snapshot.billing?.cpa, snapshot.last7?.cpa, snapshot.today?.cpa].find(
+        (value) => Number.isFinite(value) && value > 0,
+      );
+
+      const minCpaLabel = Number.isFinite(minCpa) ? formatCpa(minCpa, currency) : '—';
+      const avgCpaLabel = Number.isFinite(avgCpaBase) ? formatCpa(avgCpaBase, currency) : '—';
 
       const summary = [
-        `${escapeHtml(account.name)} — ${todaySpend}`,
-        `Лучш. CPA: ${bestCpaLabel}`,
-        `CPA ср.: ${avgCpaLabel}`,
+        `${escapeHtml(account.name)} — ${headlineSpend}`,
+        `Мин. CPA: ${minCpaLabel}`,
+        `Сред. CPA: ${avgCpaLabel}`,
         status.label,
         `${score.emoji} ${score.label}`,
       ].join(' · ');
 
       lines.push(`• <b>${summary}</b>`);
+      if (snapshot.billing?.since) {
+        lines.push(`  с оплаты от ${escapeHtml(formatDateLabel(snapshot.billing.since))}`);
+      }
+      if (status.detail) {
+        lines.push(`  ${escapeHtml(status.detail)}`);
+      }
+      lines.push('');
+    }
+    if (slice.length) {
+      lines.pop();
     }
   }
 
@@ -3758,25 +3868,32 @@ async function renderAccountsPage(env, uid, profile, accounts = [], options = {}
   for (const account of slice) {
     const projects = projectIndex.get(normalizeAccountId(account.id)) || [];
     const snapshot = accountSnapshots.get(account.id) ?? {};
-    const status = describeAccountStatus(account);
+    const currency = getCurrencyFromMeta(snapshot.health ?? account);
+    const status = describeAccountStatus(account, snapshot.health, currency);
     const score = evaluateAccountPerformance(snapshot);
 
-    const todaySpend = formatCurrency(snapshot.today?.spend ?? 0, account.currency || 'USD');
-    const bestCpaLabel = snapshot.bestCampaign?.cpa
-      ? formatCpa(snapshot.bestCampaign.cpa, account.currency || 'USD')
-      : '—';
-    const avgCpaLabel = snapshot.last7?.cpa
-      ? formatCpa(snapshot.last7.cpa, account.currency || 'USD')
-      : '—';
+    const headlineSpendValue = snapshot.billing?.spend ?? snapshot.today?.spend ?? 0;
+    const headlineSpend = formatCurrency(headlineSpendValue, currency);
 
-    const labelParts = [
-      account.name,
-      todaySpend,
-      `Лучший ${bestCpaLabel}`,
-      `Средний ${avgCpaLabel}`,
-      status.label,
-      `${score.emoji} ${score.label}`,
-    ];
+    const cpaCandidates = [
+      snapshot.bestCampaign?.cpa,
+      snapshot.billing?.cpa,
+      snapshot.last7?.cpa,
+      snapshot.today?.cpa,
+    ].filter((value) => Number.isFinite(value) && value > 0);
+    const minCpa = cpaCandidates.length ? Math.min(...cpaCandidates) : null;
+    const avgCpaBase = [snapshot.billing?.cpa, snapshot.last7?.cpa, snapshot.today?.cpa].find(
+      (value) => Number.isFinite(value) && value > 0,
+    );
+
+    const minCpaLabel = Number.isFinite(minCpa) ? formatCpa(minCpa, currency) : '—';
+    const avgCpaLabel = Number.isFinite(avgCpaBase) ? formatCpa(avgCpaBase, currency) : '—';
+
+    const labelParts = [account.name, headlineSpend];
+    if (minCpaLabel !== '—') labelParts.push(`Мин ${minCpaLabel}`);
+    if (avgCpaLabel !== '—') labelParts.push(`Ср ${avgCpaLabel}`);
+    labelParts.push(status.label);
+    labelParts.push(`${score.emoji}`);
 
     if (projects.length === 1) {
       inline_keyboard.push([
@@ -7224,12 +7341,16 @@ function renderProjectDetails(project, chatRecord, portalRecord = null, options 
   }
 
   if (accountHealth) {
-    const status = describeAccountStatus(accountHealth);
+    const currency = getCurrencyFromMeta(accountHealth);
+    const status = describeAccountStatus(accountHealth, accountHealth, currency);
     const reason = describeDisableReason(accountHealth.disable_reason);
     const fragments = [status.label];
     if (reason) fragments.push(reason);
     if (accountHealth.funding_source_details?.display_string) {
       fragments.push(accountHealth.funding_source_details.display_string);
+    }
+    if (status.detail) {
+      fragments.push(status.detail);
     }
     lines.push(`Статус аккаунта: ${escapeHtml(fragments.join(' · '))}`);
   } else {
@@ -9420,10 +9541,11 @@ async function renderProjectsPage(env, items, pagination = {}) {
           )
         : 'нет привязки';
       const schedule = escapeHtml(project.times.join(', '));
+      const chatTitle = chatRecord?.title || 'Проект';
 
       textLines.push(
         [
-          `• <b>${codeLabel}</b> → ${escapeHtml(accountName)}`,
+          `• <b>${escapeHtml(chatTitle)}</b> → ${escapeHtml(accountName)} (${codeLabel})`,
           `  чат: ${chatLabel}`,
           `  период: ${escapeHtml(project.period)} · ${schedule}`,
         ].join('\n'),
@@ -9448,11 +9570,15 @@ async function renderProjectsPage(env, items, pagination = {}) {
 
       const accountLabel = accountMeta?.name || project.act || project.code;
       const chatTitle = chatRecord?.title || null;
-      const parts = [accountLabel];
+      const parts = [];
       if (chatTitle) {
         parts.push(chatTitle);
       }
-      const label = `⚙️ ${parts.join(' · ')}`;
+      parts.push(accountLabel);
+      if (project.code) {
+        parts.push(`#${project.code}`);
+      }
+      const label = `⚙️ ${parts.join(' → ')}`;
 
       keyboard.push([
         {
