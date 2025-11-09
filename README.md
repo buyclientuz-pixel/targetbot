@@ -17,6 +17,8 @@
   Параметр `telegram_logs=1` прикладывает последние события вебхука.
 - **Проверка связки:** команда `/pingtest` отправляет десять сообщений подряд через `waitUntil` — так проще убедиться, что Cloudflare
   принимает вебхук и Telegram получает ответы.
+- **CI → секреты → Cloudflare:** GitHub Actions перед деплоем автоматически синхронизирует секреты из настроек репозитория в Secrets
+  воркера, поэтому однажды заданные значения (`BOT_TOKEN`, `ADMIN_IDS`, `FB_APP_*` и др.) переезжают в Cloudflare без ручных действий.
 
 ## Что предстоит сделать дальше
 1. Реализовать Meta OAuth (`/fb_auth`, `/fb_cb`, `/fb_debug`) и хранение long-lived токена в KV.
@@ -35,7 +37,7 @@
 | `FB_APP_SECRET`       | Секрет Meta приложения                   | планируется | — |
 | `GS_WEBHOOK`          | Вебхук Google Apps Script (опционально)  | опционально | — |
 
-> Секреты никогда не коммитятся в git. Используйте `wrangler secret put` или `.dev.vars`/`.env` в локальной разработке.
+> Секреты никогда не коммитятся в git. Используйте `wrangler secret put`, `.dev.vars`/`.env` в локальной разработке или GitHub Actions secrets.
 
 ## Как добавить ключи и токены
 
@@ -51,7 +53,14 @@
 
 > `.dev.vars` и `.env` не коммитятся в репозиторий — убедитесь, что файлы перечислены в `.gitignore` (уже настроено).
 
-### Продуктивный воркер в Cloudflare
+### GitHub Actions → Cloudflare
+1. В репозитории GitHub откройте **Settings → Secrets and variables → Actions** и задайте секреты: `BOT_TOKEN`, `ADMIN_IDS`,
+   `DEFAULT_TZ`, `WORKER_URL`, `FB_APP_ID`, `FB_APP_SECRET`, `FB_LONG_TOKEN`, `GS_WEBHOOK` (по необходимости).
+2. При следующем деплое workflow автоматически выполнит `wrangler secret put <KEY>` для каждого из заполненных значений и перенесёт их
+   в ваш воркер Cloudflare (environment `production`).
+3. После успешного шага «Sync Worker secrets from GitHub Actions» в журнале появятся сообщения `Synced secret <KEY>` для каждого ключа.
+
+### Продуктивный воркер в Cloudflare вручную
 1. Выполните `npx wrangler secret put BOT_TOKEN` и вставьте токен из @BotFather.
 2. Аналогично можно добавить `ADMIN_IDS`, `DEFAULT_TZ` и другие приватные значения (`wrangler secret put <KEY>`).
 3. Либо откройте Cloudflare Dashboard → Workers & Pages → нужный воркер → **Settings** → **Variables** → **Add variable/secret**.
