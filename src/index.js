@@ -129,6 +129,53 @@ function isValidWebhookToken(candidate, botToken) {
   return validTokens.has(normalizedCandidate);
 }
 
+function parseAuthorizationToken(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const bearerMatch = trimmed.match(/^Bearer\s+(.+)$/i);
+  if (bearerMatch) {
+    return bearerMatch[1].trim();
+  }
+
+  const tokenMatch = trimmed.match(/^Token\s+(.+)$/i);
+  if (tokenMatch) {
+    return tokenMatch[1].trim();
+  }
+
+  return '';
+}
+
+function pickFirstFilled(...candidates) {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (trimmed) {
+        return trimmed;
+      }
+    }
+  }
+  return '';
+}
+
+function safeDecode(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  try {
+    return decodeURIComponent(value);
+  } catch (error) {
+    console.warn('Failed to decode component', value, error);
+    return value;
+  }
+}
+
 function createAbort(timeoutMs = TELEGRAM_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -957,6 +1004,7 @@ class WorkerApp {
     const url = new URL(this.request.url);
 
     const trimmedPath = url.pathname.replace(/\/+$/, '');
+    const normalizedPath = trimmedPath || '/';
 
     if (
       this.request.method === 'POST' &&
@@ -965,31 +1013,34 @@ class WorkerApp {
       return this.handleTelegramWebhook({ url });
     }
 
-    if (url.pathname === '/health') {
+    if (normalizedPath === '/health') {
       return this.handleHealth(url);
     }
 
-    if (url.pathname === '/manage/telegram/webhook') {
-      return this.handleTelegramWebhookManage(url);
+    if (
+      normalizedPath === '/manage/telegram/webhook' ||
+      normalizedPath.startsWith('/manage/telegram/webhook/')
+    ) {
+      return this.handleTelegramWebhookManage(url, { normalizedPath });
     }
 
-    if (url.pathname === '/fb_auth') {
+    if (normalizedPath === '/fb_auth') {
       return htmlResponse('<h1>Meta OAuth</h1><p>Этап в разработке. Функция появится в следующих релизах.</p>');
     }
 
-    if (url.pathname === '/fb_cb') {
+    if (normalizedPath === '/fb_cb') {
       return htmlResponse('<h1>Meta OAuth Callback</h1><p>Обработчик ещё не реализован.</p>', { status: 501 });
     }
 
-    if (url.pathname === '/fb_debug') {
+    if (normalizedPath === '/fb_debug') {
       return htmlResponse('<h1>Meta Debug</h1><p>Диагностика появится позже.</p>', { status: 501 });
     }
 
-    if (url.pathname.startsWith('/p/')) {
+    if (normalizedPath.startsWith('/p/')) {
       return htmlResponse('<h1>Портал клиента</h1><p>Раздел пока в разработке.</p>', { status: 501 });
     }
 
-    if (url.pathname === '/' || url.pathname === '') {
+    if (normalizedPath === '/') {
       return htmlResponse('<h1>Targetbot (этап 1)</h1><p>Базовый каркас воркера активен.</p>');
     }
 
@@ -1070,7 +1121,7 @@ class WorkerApp {
     return jsonResponse({ ok: true, result });
   }
 
-  async handleTelegramWebhookManage(url) {
+  async handleTelegramWebhookManage(url, { normalizedPath } = {}) {
     if (!this.config.botToken) {
       return jsonResponse({ ok: false, error: 'BOT_TOKEN отсутствует' }, { status: 503 });
     }
@@ -1079,19 +1130,31 @@ class WorkerApp {
       return jsonResponse({ ok: false, error: 'telegram_client_unavailable' }, { status: 503 });
     }
 
-    const token = url.searchParams.get('token');
+    const segments = typeof normalizedPath === 'string'
+      ? normalizedPath.split('/').filter(Boolean)
+      : [];
+    const pathToken = segments.length >= 4 ? safeDecode(segments[3]) : '';
+    const pathAction = segments.length >= 5 ? safeDecode(segments[4] || '') : '';
+
+    const headerToken = pickFirstFilled(
+      this.request.headers.get('x-telegram-token'),
+      parseAuthorizationToken(this.request.headers.get('authorization')),
+    );
+
+    const token = pickFirstFilled(url.searchParams.get('token'), url.searchParams.get('bot'), pathToken, headerToken);
     if (!isValidWebhookToken(token, this.config.botToken)) {
       return jsonResponse({ ok: false, error: 'forbidden' }, { status: 403 });
     }
 
-    const actionFromQuery = url.searchParams.get('action')?.toLowerCase();
+    const actionFromQuery = pickFirstFilled(url.searchParams.get('action'), pathAction)?.toLowerCase();
     const method = this.request.method.toUpperCase();
     const action =
       actionFromQuery || (method === 'POST' ? 'set' : method === 'DELETE' ? 'delete' : 'info');
     const dropPending = /^(1|true|yes|on)$/i.test(url.searchParams.get('drop') || '');
 
     const defaultUrl = (() => {
-      const base = (this.config.workerUrl || '').replace(/\/+$/, '');
+      const preferredBase = (this.config.workerUrl || '').replace(/\/+$/, '');
+      const base = preferredBase || url.origin.replace(/\/+$/, '');
       if (!base) {
         return '';
       }
@@ -1224,7 +1287,15 @@ class WorkerApp {
 const worker = {
   async fetch(request, env, executionContext) {
     const app = new WorkerApp(request, env, executionContext);
-    return app.handleFetch();
+    try {
+      return await app.handleFetch();
+    } catch (error) {
+      console.error('Unhandled fetch error', error);
+      return jsonResponse(
+        { ok: false, error: error?.message || 'internal_error' },
+        { status: 500 },
+      );
+    }
   },
 
   async scheduled(event, env, executionContext) {
