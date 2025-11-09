@@ -61,9 +61,11 @@ function parseEnvFile(content) {
   return result;
 }
 
+const ENV_CANDIDATES = ['.dev.vars', '.env', 'config/env.defaults'];
+
 async function loadEnvSnapshot() {
   const snapshot = { ...process.env };
-  for (const filename of ['.dev.vars', '.env']) {
+  for (const filename of ENV_CANDIDATES) {
     const fullPath = resolve(process.cwd(), filename);
     if (!existsSync(fullPath)) continue;
     try {
