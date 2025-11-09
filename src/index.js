@@ -22,6 +22,17 @@ const PROJECT_KEY_PREFIX = 'project:';
 const ADMIN_SESSION_KEY_PREFIX = 'admin:session:';
 const META_STATUS_KEY = 'meta:status';
 const META_TOKEN_KEY = 'meta:token';
+const META_OAUTH_STATE_PREFIX = 'meta:oauth:state:';
+const META_OAUTH_SESSION_PREFIX = 'meta:oauth:session:';
+const META_OAUTH_STATE_TTL_SECONDS = 10 * 60;
+const META_OAUTH_SESSION_TTL_SECONDS = 15 * 60;
+const META_OAUTH_DEFAULT_SCOPES = [
+  'ads_management',
+  'ads_read',
+  'business_management',
+  'pages_read_engagement',
+  'pages_show_list',
+];
 const META_DEFAULT_GRAPH_VERSION = 'v18.0';
 const META_OVERVIEW_MAX_AGE_MS = 2 * 60 * 1000;
 const ADMIN_PROJECT_PREVIEW_LIMIT = 6;
@@ -158,6 +169,21 @@ function determineAccountSignal(account, { daysUntilDue } = {}) {
   }
 
   return '🟢';
+}
+
+function generateRandomToken(length = 32) {
+  const size = Math.max(16, Math.ceil(length));
+  const bytes = new Uint8Array(size);
+  crypto.getRandomValues(bytes);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (const byte of bytes) {
+    result += alphabet.charAt(byte % alphabet.length);
+    if (result.length >= length) {
+      break;
+    }
+  }
+  return result.slice(0, length);
 }
 
 function buildTelegramTopicUrl(chatId, threadId) {
@@ -2390,6 +2416,10 @@ function renderClientPortalPage({
   managerLink,
   currency,
   kpi,
+  insights = [],
+  signature = '',
+  csvLinks = [],
+  feedbackStatus = '',
 }) {
   const projectName = escapeHtml(project?.name || 'Проект');
   const projectCode = project?.code ? `<span class="project-code">#${escapeHtml(project.code)}</span>` : '';
@@ -2412,6 +2442,40 @@ function renderClientPortalPage({
     : '—';
 
   const kpiMeta = resolvePortalKpiMeta(kpi);
+
+  const insightsList = Array.isArray(insights) ? insights.filter(Boolean) : [];
+  const insightsBlock =
+    insightsList.length > 0
+      ? `<ul class="insights-list">${insightsList.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`
+      : '<p class="muted">Новых замечаний нет — показатели держатся стабильно.</p>';
+
+  const csvSection = csvLinks.length
+    ? `<section class="downloads">
+        <h2 class="section-title">Экспорт отчётов</h2>
+        <div class="download-buttons">
+          ${csvLinks
+            .map((link) => `<a class="secondary-button" href="${escapeHtml(link.href)}">${escapeHtml(link.label)} · CSV</a>`)
+            .join('')}
+        </div>
+      </section>`
+    : '';
+
+  const feedbackNotice =
+    feedbackStatus === 'sent'
+      ? '<div class="notice success">Спасибо! Сообщение доставлено менеджеру.</div>'
+      : feedbackStatus === 'error'
+      ? '<div class="notice error">Не удалось отправить сообщение. Попробуйте ещё раз или воспользуйтесь кнопкой ниже.</div>'
+      : '';
+
+  const feedbackSection = `<section class="feedback">
+      <h2 class="section-title">Задать вопрос</h2>
+      ${feedbackNotice}
+      <form method="post" class="feedback-form">
+        <textarea name="message" rows="4" required placeholder="Напишите вопрос или комментарий…"></textarea>
+        ${signature ? `<input type="hidden" name="sig" value="${escapeHtml(signature)}" />` : ''}
+        <button type="submit">Отправить менеджеру</button>
+      </form>
+    </section>`;
 
   const metricDefs = [
     { key: 'spend', label: `Расход (${currencyLabel})` },
@@ -2625,6 +2689,25 @@ function renderClientPortalPage({
         font-size: 1.25rem;
         font-weight: 600;
       }
+      .insights-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .insights-list li {
+        position: relative;
+        padding-left: 20px;
+        color: #d6d8de;
+      }
+      .insights-list li::before {
+        content: '•';
+        position: absolute;
+        left: 0;
+        color: #4a9bff;
+      }
       .campaign-list {
         list-style: none;
         padding: 0;
@@ -2667,6 +2750,76 @@ function renderClientPortalPage({
         color: #8f9299;
         cursor: default;
         pointer-events: none;
+      }
+      .secondary-button {
+        display: inline-block;
+        padding: 12px 20px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #f5f6f8;
+        text-decoration: none;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        transition: background 0.15s ease, transform 0.15s ease;
+      }
+      .secondary-button:hover {
+        background: rgba(74, 155, 255, 0.2);
+        transform: translateY(-1px);
+      }
+      .download-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .feedback-form {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-top: 12px;
+      }
+      .feedback-form textarea {
+        min-height: 120px;
+        resize: vertical;
+        border-radius: 12px;
+        padding: 12px 16px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.02);
+        color: #f5f6f8;
+        font-family: inherit;
+      }
+      .feedback-form button {
+        align-self: flex-start;
+        padding: 12px 22px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, #20bf55, #01baef);
+        color: #fff;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        border: none;
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+      }
+      .feedback-form button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 24px rgba(1, 186, 239, 0.25);
+      }
+      .notice {
+        border-radius: 12px;
+        padding: 12px 16px;
+        margin-bottom: 12px;
+        font-size: 0.95rem;
+      }
+      .notice.success {
+        background: rgba(76, 175, 80, 0.15);
+        color: #b7f5c0;
+      }
+      .notice.error {
+        background: rgba(255, 99, 132, 0.15);
+        color: #ffb3be;
+      }
+      .downloads {
+        margin-top: 40px;
       }
       footer {
         margin-top: 40px;
@@ -2715,6 +2868,10 @@ function renderClientPortalPage({
           <strong>${currencyLabel}</strong>
         </div>
       </section>
+      <section>
+        <h2 class="section-title">Краткие выводы</h2>
+        ${insightsBlock}
+      </section>
       <section class="stats-table">
         <table>
           <thead>
@@ -2729,15 +2886,181 @@ function renderClientPortalPage({
         </table>
         ${errorBlock}
       </section>
+      ${csvSection}
       <section>
         <h2 class="section-title">${topTitle}</h2>
         ${topBlock}
       </section>
+      ${feedbackSection}
       ${managerButton}
       <footer>Portal powered by Targetbot · Таймзона: ${escapeHtml(timezone || snapshot?.timezone || 'UTC')}</footer>
     </main>
   </body>
 </html>`;
+}
+
+function generatePortalInsights({ periods, kpi, currency }) {
+  const list = [];
+  if (!Array.isArray(periods) || periods.length === 0) {
+    return ['Показатели недоступны — нет свежих отчётов Meta.'];
+  }
+
+  const totalsById = new Map();
+  for (const period of periods) {
+    if (!period || period.error || !period.report?.totals) {
+      continue;
+    }
+    totalsById.set(period.id, period.report.totals);
+  }
+
+  const today = totalsById.get('today');
+  const yesterday = totalsById.get('yesterday');
+  const week = totalsById.get('week');
+  const month = totalsById.get('month');
+
+  const formatCurrencyValue = (value) => {
+    const formatted = formatUsd(value, { digitsBelowOne: 2, digitsAboveOne: 2 });
+    if (!formatted) {
+      return '';
+    }
+    if (!currency || currency === 'USD') {
+      return formatted;
+    }
+    return `${formatted.replace('$', '').trim()} ${currency}`.trim();
+  };
+
+  if (today && yesterday) {
+    const spendChange = percentChange(today.spendUsd, yesterday.spendUsd);
+    if (Number.isFinite(spendChange) && Math.abs(spendChange) >= 0.05) {
+      const direction = spendChange > 0 ? 'вырос' : 'снизился';
+      const percentText = formatChangePercent(spendChange, { digits: Math.abs(spendChange) < 0.15 ? 1 : 0 }) || '';
+      list.push(`Расход сегодня ${direction} на ${percentText} относительно вчера.`);
+    }
+
+    const leadsChange = percentChange(today.leads, yesterday.leads);
+    if (Number.isFinite(leadsChange) && Math.abs(leadsChange) >= 0.1) {
+      const direction = leadsChange > 0 ? 'выше' : 'ниже';
+      const percentText = formatChangePercent(leadsChange, { digits: 0 }) || '';
+      list.push(`Количество лидов сегодня ${direction} вчерашнего на ${percentText}.`);
+    }
+
+    const todayCpa = safeDivision(today.spendUsd, today.leads);
+    const yesterdayCpa = safeDivision(yesterday.spendUsd, yesterday.leads);
+    const cpaChange = percentChange(todayCpa, yesterdayCpa);
+    if (Number.isFinite(cpaChange) && Math.abs(cpaChange) >= 0.1) {
+      const direction = cpaChange > 0 ? 'вырос' : 'снизился';
+      const percentText = formatChangePercent(cpaChange, { digits: 0 }) || '';
+      list.push(`Средний ${kpi?.cpl ? 'CPL' : 'CPA'} сегодня ${direction} на ${percentText} относительно вчера.`);
+    }
+  }
+
+  if (today && !yesterday && Number(today.spendUsd) > 0) {
+    list.push(`Сегодня запущены кампании с расходом ${formatCurrencyValue(today.spendUsd)}.`);
+  }
+
+  const kpiMeta = resolvePortalKpiMeta(kpi);
+  const weekCost = Number.isFinite(week?.cpaUsd) ? week.cpaUsd : safeDivision(week?.spendUsd, week?.leads);
+  if (Number.isFinite(kpiMeta.target) && Number.isFinite(weekCost)) {
+    const diffRatio = kpiMeta.target ? (weekCost - kpiMeta.target) / kpiMeta.target : null;
+    if (Number.isFinite(diffRatio) && Math.abs(diffRatio) >= 0.1) {
+      const direction = diffRatio > 0 ? 'выше' : 'ниже';
+      const percentText = formatChangePercent(diffRatio, { digits: 0 }) || '';
+      list.push(`${kpiMeta.label} за 7 дней ${direction} KPI на ${percentText} (факт: ${formatCurrencyValue(weekCost)}).`);
+    } else {
+      list.push(`${kpiMeta.label} за 7 дней соответствует KPI (факт: ${formatCurrencyValue(weekCost)}).`);
+    }
+  }
+
+  if (Number.isFinite(kpi?.leadsPerDay) && week && Number.isFinite(week.leads)) {
+    const avgLeads = week.leads / 7;
+    const diffRatio = percentChange(avgLeads, kpi.leadsPerDay);
+    if (Number.isFinite(diffRatio) && Math.abs(diffRatio) >= 0.1) {
+      const direction = diffRatio > 0 ? 'выше' : 'ниже';
+      const percentText = formatChangePercent(diffRatio, { digits: 0 }) || '';
+      list.push(`Средний дневной поток лидов за неделю ${direction} цели на ${percentText}.`);
+    } else {
+      list.push(
+        `Средний поток лидов за неделю близок к цели (${avgLeads.toFixed(1)} из ${kpi.leadsPerDay} в день).`,
+      );
+    }
+  }
+
+  if (month && Number.isFinite(month.spendUsd)) {
+    list.push(`С начала месяца израсходовано ${formatCurrencyValue(month.spendUsd)}.`);
+  }
+
+  if (list.length === 0) {
+    list.push('Показатели стабильны — значимых отклонений не обнаружено.');
+  }
+
+  return list;
+}
+
+function renderPortalCsv({ project, account, period, report, timezone, generatedAt, currency, kpi }) {
+  const lines = [];
+  const add = (section, name, metric, value, unit = '') => {
+    lines.push([section, name, metric, value, unit].map(toCsvValue).join(','));
+  };
+
+  add('meta', 'project_name', 'value', project?.name || '', '');
+  add('meta', 'project_code', 'value', project?.code || project?.id || '', '');
+  add('meta', 'account_name', 'value', account?.name || account?.id || '', '');
+  if (timezone) {
+    add('meta', 'timezone', 'value', timezone, '');
+  }
+  add('meta', 'generated_at', 'value', new Date(generatedAt).toISOString(), '');
+
+  if (report?.range?.label) {
+    add('range', period?.label || '', 'label', report.range.label, '');
+  }
+  if (report?.range?.since || report?.range?.until) {
+    add('range', period?.label || '', 'since', report.range.since || '', '');
+    add('range', period?.label || '', 'until', report.range.until || '', '');
+  }
+
+  const totals = report?.totals || {};
+  const kpiMeta = resolvePortalKpiMeta(kpi);
+  add('totals', period?.label || '', 'spend', formatCsvNumber(totals.spendUsd), currency || 'USD');
+  add('totals', period?.label || '', 'leads', formatCsvNumber(totals.leads, { digits: 0 }), '');
+  const cost = Number.isFinite(totals.cpaUsd) ? totals.cpaUsd : safeDivision(totals.spendUsd, totals.leads);
+  add('totals', period?.label || '', kpiMeta.label.toLowerCase(), formatCsvNumber(cost), currency || 'USD');
+  add('totals', period?.label || '', 'reach', formatCsvNumber(totals.reach, { digits: 0 }), '');
+  add('totals', period?.label || '', 'impressions', formatCsvNumber(totals.impressions, { digits: 0 }), '');
+  const frequency = safeDivision(totals.impressions, totals.reach);
+  add('totals', period?.label || '', 'frequency', formatCsvNumber(frequency), '');
+
+  const campaigns = Array.isArray(report?.campaigns) ? report.campaigns : [];
+  const topCampaigns = campaigns.slice(0, 20);
+  for (const campaign of topCampaigns) {
+    const name = campaign?.name || campaign?.id || 'Campaign';
+    add('campaign', name, 'spend', formatCsvNumber(campaign?.spendUsd), currency || 'USD');
+    add('campaign', name, 'leads', formatCsvNumber(campaign?.leads, { digits: 0 }), '');
+    const campaignCost = Number.isFinite(campaign?.cpaUsd)
+      ? campaign.cpaUsd
+      : safeDivision(campaign?.spendUsd, campaign?.leads);
+    add('campaign', name, kpiMeta.label.toLowerCase(), formatCsvNumber(campaignCost), currency || 'USD');
+  }
+
+  return lines.join('\n');
+}
+
+function toCsvValue(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  const stringValue = String(value);
+  if (/[",\n]/.test(stringValue)) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+}
+
+function formatCsvNumber(value, { digits = 2 } = {}) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return '';
+  }
+  return num.toFixed(digits);
 }
 
 function escapeHtml(value) {
@@ -3219,6 +3542,27 @@ class MetaService {
     }
 
     return '';
+  }
+
+  async debugToken({ token } = {}) {
+    const target = typeof token === 'string' && token.trim() ? token.trim() : await this.resolveAccessToken();
+    if (!target) {
+      throw new Error('Meta токен не задан.');
+    }
+
+    if (!this.config?.metaAppId || !this.config?.metaAppSecret) {
+      throw new Error('Укажите FB_APP_ID и FB_APP_SECRET для debug_token.');
+    }
+
+    const inspector = new MetaClient({
+      accessToken: `${this.config.metaAppId}|${this.config.metaAppSecret}`,
+      version: this.config?.metaGraphVersion || META_DEFAULT_GRAPH_VERSION,
+      fetcher: this.fetcher,
+    });
+
+    return inspector.request('/debug_token', {
+      searchParams: { input_token: target },
+    });
   }
 
   createEmptyStatus({ updatedAt = new Date().toISOString(), error = null } = {}) {
@@ -4154,6 +4498,82 @@ class TelegramBot {
     }
   }
 
+  async createMetaOAuthSession({ adminId, chatId, threadId } = {}) {
+    const workerUrl = typeof this.config.workerUrl === 'string' ? this.config.workerUrl.trim() : '';
+    if (!workerUrl) {
+      return null;
+    }
+
+    const base = workerUrl.replace(/\/+$/, '');
+    const sessionId = generateRandomToken(48);
+    const payload = {
+      sessionId,
+      adminId: adminId ? String(adminId) : null,
+      chatId: chatId ? String(chatId) : null,
+      threadId: threadId ? String(threadId) : null,
+      createdAt: new Date().toISOString(),
+      returnTo: `${base}/fb_debug?session=${sessionId}`,
+    };
+
+    try {
+      await this.storage.putJson('DB', `${META_OAUTH_SESSION_PREFIX}${sessionId}`, payload, {
+        expirationTtl: META_OAUTH_SESSION_TTL_SECONDS,
+      });
+      this.queueLog({
+        kind: 'meta_oauth_session',
+        status: 'created',
+        user_id: adminId || null,
+        session_id: sessionId,
+      });
+      return { id: sessionId, link: `${base}/fb_auth?session=${sessionId}`, payload };
+    } catch (error) {
+      console.error('Failed to create Meta OAuth session', error);
+      return null;
+    }
+  }
+
+  async startProjectConnectSession({ userId, chatId, threadId, accounts = [] } = {}) {
+    if (!userId) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const session = {
+      kind: 'project_connect',
+      userId,
+      chatId: chatId ? String(chatId) : null,
+      threadId: threadId ? String(threadId) : null,
+      createdAt: now,
+      updatedAt: now,
+      draft: {
+        chatId: chatId ? String(chatId) : '',
+        threadId: threadId ? String(threadId) : '',
+        code: '',
+        name: '',
+        adAccountId: '',
+        timezone: this.config.defaultTimezone || '',
+        currency: '',
+        chatTitle: '',
+      },
+      accounts: Array.isArray(accounts)
+        ? accounts.map((account) => ({
+            id: String(account?.accountId ?? account?.id ?? '').replace(/^act_/, ''),
+            name: account?.name || '',
+            currency: account?.currency || '',
+          }))
+        : [],
+    };
+
+    await this.saveAdminSession(session);
+    this.queueLog({
+      kind: 'admin_session',
+      status: 'started',
+      session_kind: 'project_connect',
+      user_id: userId,
+    });
+    return session;
+  }
+
   async startAdminSession({ userId, chatId, threadId, project, kind, base }) {
     if (!userId || !kind || !project) {
       return null;
@@ -4237,6 +4657,10 @@ class TelegramBot {
 
     if (session.kind === 'report_custom') {
       return this.handleReportCustomSessionInput({ session, message, text: trimmed });
+    }
+
+    if (session.kind === 'project_connect') {
+      return this.handleProjectConnectSessionInput({ session, message, text: trimmed });
     }
 
     return { handled: false };
@@ -4485,6 +4909,286 @@ class TelegramBot {
     });
 
     return { handled: true };
+  }
+
+  async handleProjectConnectSessionInput({ session, message, text }) {
+    const userId = session.userId;
+    const updates = parseKeyValueForm(text);
+    let shouldSave = false;
+    let touched = false;
+
+    if (!session.draft || typeof session.draft !== 'object') {
+      session.draft = {
+        chatId: session.chatId || '',
+        threadId: session.threadId || '',
+        code: '',
+        name: '',
+        adAccountId: '',
+        timezone: this.config.defaultTimezone || '',
+        currency: '',
+        chatTitle: '',
+      };
+    }
+    const draft = session.draft;
+
+    if (updates.size === 0) {
+      await this.sendReply(message, this.renderProjectConnectDraft(session));
+      return { handled: true };
+    }
+
+    for (const [rawKey, rawValue] of updates) {
+      const key = String(rawKey || '').toLowerCase();
+      const value = typeof rawValue === 'string' ? rawValue.trim() : String(rawValue ?? '').trim();
+
+      if (!key) {
+        continue;
+      }
+
+      if (['save', 'done', 'готово', 'сохранить'].includes(key)) {
+        shouldSave = true;
+        continue;
+      }
+
+      if (!value) {
+        continue;
+      }
+
+      switch (key) {
+        case 'account':
+        case 'ad_account':
+        case 'adaccount':
+        case 'ad': {
+          const normalized = value.replace(/\s+/g, '').replace(/^act_/, '');
+          if (normalized) {
+            draft.adAccountId = `act_${normalized}`;
+            touched = true;
+          }
+          break;
+        }
+        case 'chat': {
+          const parts = value.split(':');
+          const chatId = parts[0]?.trim();
+          const thread = parts[1]?.trim();
+          if (chatId) {
+            draft.chatId = chatId;
+            touched = true;
+          }
+          if (thread) {
+            draft.threadId = thread;
+          }
+          break;
+        }
+        case 'thread':
+        case 'topic':
+          draft.threadId = value;
+          touched = true;
+          break;
+        case 'code':
+          draft.code = value.toLowerCase();
+          touched = true;
+          break;
+        case 'name':
+          draft.name = value;
+          touched = true;
+          break;
+        case 'timezone':
+          draft.timezone = value;
+          touched = true;
+          break;
+        case 'currency':
+          draft.currency = value.toUpperCase();
+          touched = true;
+          break;
+        case 'title':
+        case 'chat_title':
+          draft.chatTitle = value;
+          touched = true;
+          break;
+        case 'portal':
+        case 'portal_token':
+        case 'token':
+          draft.portalToken = value;
+          touched = true;
+          break;
+        case 'kpi':
+          draft.kpiNote = value;
+          touched = true;
+          break;
+        default:
+          break;
+      }
+    }
+
+    await this.saveAdminSession(session);
+
+    if (shouldSave) {
+      const result = await this.finishProjectConnectSession(session);
+      if (!result.ok) {
+        const errorMessage = this.describeProjectConnectError(result.error, result.detail);
+        await this.sendReply(message, errorMessage);
+        return { handled: true };
+      }
+
+      await this.clearAdminSession(userId);
+
+      const record = result.record;
+      const lines = [
+        '<b>Проект подключён</b>',
+        `Код: <code>${escapeHtml(record.code)}</code>`,
+        `Аккаунт: <code>act_${escapeHtml(String(record.meta_account_id || record.ad_account_id))}</code>`,
+        `Чат: <code>${escapeHtml(record.chat.id)}</code>${
+          record.chat.thread_id ? ` / <code>${escapeHtml(record.chat.thread_id)}</code>` : ''
+        }`,
+        `Таймзона: ${escapeHtml(record.settings?.timezone || 'UTC')}`,
+        '',
+        'Откройте /admin → Проекты, чтобы настроить KPI, отчёты и алерты.',
+      ];
+
+      await this.sendReply(message, lines.join('\n'));
+      return { handled: true };
+    }
+
+    if (!touched) {
+      await this.sendReply(
+        message,
+        'Укажите поля вида <code>account=act_123</code>, <code>chat=-100123:5</code>, <code>code=project</code>. Для сохранения отправьте <code>save</code>.',
+      );
+      return { handled: true };
+    }
+
+    await this.sendReply(message, this.renderProjectConnectDraft(session));
+    return { handled: true };
+  }
+
+  describeProjectConnectError(code, detail) {
+    switch (code) {
+      case 'account_required':
+        return 'Укажите рекламный аккаунт: <code>account=act_123456789</code>.';
+      case 'chat_required':
+        return 'Укажите чат проекта: <code>chat=-100123456789:5</code>.';
+      case 'thread_required':
+        return 'Укажите topic ID в форуме: <code>thread=5</code>.';
+      case 'code_invalid':
+        return 'Код проекта не распознан. Используйте латинские буквы, цифры и дефис: <code>code=project-name</code>.';
+      case 'code_conflict':
+        return 'Проект с таким кодом уже существует. Укажите другой <code>code=</code>.';
+      case 'storage_failed':
+        return `Не удалось сохранить проект: ${escapeHtml(detail || 'ошибка KV')}`;
+      default:
+        return 'Не удалось сохранить проект. Попробуйте ещё раз или обратитесь к разработчику.';
+    }
+  }
+
+  renderProjectConnectDraft(session) {
+    const draft = session.draft || {};
+    const accounts = Array.isArray(session.accounts) ? session.accounts : [];
+    const lines = [
+      '<b>Черновик проекта</b>',
+      `Аккаунт: ${draft.adAccountId ? `<code>${escapeHtml(draft.adAccountId)}</code>` : '—'}`,
+      `Чат: ${draft.chatId ? `<code>${escapeHtml(draft.chatId)}</code>` : '—'}${
+        draft.threadId ? ` / <code>${escapeHtml(draft.threadId)}</code>` : ''
+      }`,
+      `Код: ${draft.code ? `<code>${escapeHtml(draft.code)}</code>` : '—'}`,
+      `Название: ${draft.name ? escapeHtml(draft.name) : '—'}`,
+      `Таймзона: ${escapeHtml(draft.timezone || this.config.defaultTimezone || 'не задана')}`,
+      '',
+      'Заполните недостающие поля и отправьте <code>save</code>, чтобы сохранить проект. Для отмены используйте /cancel.',
+    ];
+
+    if (accounts.length > 0) {
+      lines.push('', '<b>Доступные аккаунты</b>');
+      const preview = accounts.slice(0, 6);
+      for (const account of preview) {
+        lines.push(
+          `• <code>act_${escapeHtml(account.id)}</code> — ${escapeHtml(account.name || 'без названия')} (${escapeHtml(
+            account.currency || 'USD',
+          )})`,
+        );
+      }
+      if (accounts.length > preview.length) {
+        lines.push(`… и ещё ${accounts.length - preview.length}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  async finishProjectConnectSession(session) {
+    const draft = session.draft || {};
+
+    if (!draft.adAccountId) {
+      return { ok: false, error: 'account_required' };
+    }
+    if (!draft.chatId) {
+      return { ok: false, error: 'chat_required' };
+    }
+    if (!draft.threadId) {
+      return { ok: false, error: 'thread_required' };
+    }
+
+    const slugSource = draft.code || draft.name || draft.adAccountId;
+    const slug = normalizeProjectIdForCallback(slugSource || '');
+    if (!slug) {
+      return { ok: false, error: 'code_invalid' };
+    }
+
+    const projectKey = `${PROJECT_KEY_PREFIX}${slug}`;
+    const existing = await this.storage.getJson('DB', projectKey);
+    if (existing) {
+      return { ok: false, error: 'code_conflict' };
+    }
+
+    const accountId = String(draft.adAccountId).replace(/^act_/, '');
+    const accountMeta = Array.isArray(session.accounts)
+      ? session.accounts.find((account) => account.id === accountId)
+      : null;
+
+    const record = {
+      id: slug,
+      code: draft.code || slug,
+      name: draft.name || accountMeta?.name || slug,
+      ad_account_id: accountId,
+      meta_account_id: accountId,
+      chat: {
+        id: draft.chatId,
+        thread_id: draft.threadId,
+        title: draft.chatTitle || '',
+        url: buildTelegramTopicUrl(draft.chatId, draft.threadId),
+      },
+      settings: {
+        timezone: draft.timezone || this.config.defaultTimezone || 'UTC',
+      },
+      metrics: {
+        currency: draft.currency || accountMeta?.currency || 'USD',
+      },
+      meta: {
+        accountId,
+      },
+      created_at: new Date().toISOString(),
+    };
+
+    if (draft.portalToken) {
+      record.portal = { token: draft.portalToken };
+    }
+    if (draft.kpiNote) {
+      record.notes = { kpi: draft.kpiNote };
+    }
+
+    try {
+      await this.storage.putJson('DB', projectKey, record);
+    } catch (error) {
+      console.error('Failed to persist project record', projectKey, error);
+      return { ok: false, error: 'storage_failed', detail: error?.message || String(error) };
+    }
+
+    this.queueLog({
+      kind: 'project',
+      status: 'created',
+      project_key: projectKey,
+      user_id: session.userId,
+    });
+
+    return { ok: true, key: projectKey, record };
   }
 
   async handleScheduleSessionInput({ session, message, text }) {
@@ -5896,57 +6600,136 @@ class TelegramBot {
 
     try {
       if (data === 'admin:fb:auth') {
-        await this.telegram.answerCallbackQuery({
-          callback_query_id: id,
-          text: 'OAuth Meta подключим на следующем шаге.',
-          show_alert: true,
+        const workerUrl = typeof this.config.workerUrl === 'string' ? this.config.workerUrl.trim() : '';
+        if (!workerUrl) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Укажите WORKER_URL в окружении воркера.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'worker_url_missing' };
+        }
+
+        const session = await this.createMetaOAuthSession({
+          adminId: userId,
+          chatId,
+          threadId: message?.message_thread_id ?? null,
         });
+
+        if (!session) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось подготовить ссылку OAuth. Попробуйте позже.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'oauth_session_failed' };
+        }
+
+        const body = [
+          '<b>Авторизация Meta</b>',
+          'Откройте ссылку, чтобы выдать боту доступ к рекламным аккаунтам.',
+          'После завершения авторизации вернитесь в админ-панель — токен сохранится автоматически.',
+        ];
+
+        const replyMarkup = {
+          inline_keyboard: [[{ text: 'Открыть Meta OAuth', url: session.link }]],
+        };
+
+        await this.sendMessageWithFallback(
+          {
+            chat_id: chatId,
+            text: `${body.join('\n')}\n\n${escapeHtml(session.link)}`,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+            reply_markup: replyMarkup,
+          },
+          message,
+        );
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Ссылка для авторизации отправлена.' });
         this.queueLog({
           kind: 'callback',
           status: 'ok',
           data,
           chat_id: chatId,
           user_id: userId,
+          action: 'meta_oauth_link',
         });
         return { handled: true };
       }
 
       if (data === 'admin:project:connect') {
-        if (!chatId) {
-          await this.telegram.answerCallbackQuery({
-            callback_query_id: id,
-            text: 'Не удалось определить чат.',
-            show_alert: true,
-          });
-          return { handled: false, reason: 'chat_missing' };
+        let accounts = [];
+        if (this.metaService) {
+          try {
+            const overview = await this.metaService.ensureOverview({
+              backgroundRefresh: true,
+              executionContext: this.executionContext,
+            });
+            accounts = Array.isArray(overview?.status?.facebook?.adAccounts)
+              ? overview.status.facebook.adAccounts
+              : [];
+          } catch (error) {
+            console.warn('Failed to load Meta overview for project connect', error);
+          }
+        } else {
+          const status = await this.storage.readMetaStatus();
+          accounts = Array.isArray(status?.facebook?.adAccounts) ? status.facebook.adAccounts : [];
         }
 
-        const body = [
+        await this.startProjectConnectSession({
+          userId,
+          chatId,
+          threadId: message?.message_thread_id ?? null,
+          accounts,
+        });
+
+        const lines = [
           '<b>Подключение проекта</b>',
-          '1. Авторизуйтесь в Facebook из панели.',
-          '2. Отметьте нужный бизнес-менеджер и рекламные аккаунты.',
-          '3. Назначьте каналы доставки отчётов.',
+          'Укажите параметры через <code>ключ=значение</code>:',
+          '<code>account=act_123456789</code>',
+          '<code>chat=-100123456789:5</code>',
+          '<code>code=my-project</code>',
+          '<code>name=Название проекта</code>',
+          '<code>timezone=Asia/Tashkent</code>',
           '',
-          'Интеграция находится в разработке — уведомим, когда появится UI.',
-        ].join('\n');
+          'После ввода отправьте <code>save</code>, чтобы сохранить проект, или /cancel для отмены.',
+        ];
+
+        if (Array.isArray(accounts) && accounts.length > 0) {
+          lines.push('', '<b>Доступные аккаунты</b>');
+          const preview = accounts.slice(0, 6);
+          for (const account of preview) {
+            const accountId = String(account?.accountId ?? account?.id ?? '').replace(/^act_/, '');
+            lines.push(
+              `• <code>act_${escapeHtml(accountId)}</code> — ${escapeHtml(account?.name || 'без названия')} (${escapeHtml(
+                account?.currency || 'USD',
+              )})`,
+            );
+          }
+          if (accounts.length > preview.length) {
+            lines.push(`… и ещё ${accounts.length - preview.length}`);
+          }
+        }
 
         await this.sendMessageWithFallback(
           {
             chat_id: chatId,
-            text: body,
+            text: lines.join('\n'),
             parse_mode: 'HTML',
             disable_web_page_preview: true,
           },
           message,
         );
 
-        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Инструкция отправлена.' });
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Форма отправлена.' });
         this.queueLog({
           kind: 'callback',
           status: 'ok',
           data,
           chat_id: chatId,
           user_id: userId,
+          action: 'project_connect_start',
         });
         return { handled: true };
       }
@@ -6667,6 +7450,7 @@ class AppConfig {
     this.metaManageToken = AppConfig.resolveMetaManageToken(env);
     this.telegramWebhookUrl = AppConfig.resolveWebhookUrl(env);
     this.portalAccessToken = AppConfig.resolvePortalToken(env);
+    this.metaOAuthRedirectUrl = AppConfig.resolveMetaRedirectUrl(env);
   }
 
   static resolveToken(env = {}) {
@@ -6734,6 +7518,22 @@ class AppConfig {
 
   static resolvePortalToken(env = {}) {
     const candidateKeys = ['PORTAL_TOKEN', 'PORTAL_SIGNING_SECRET', 'PORTAL_SECRET'];
+    for (const key of candidateKeys) {
+      const value = typeof env[key] === 'string' ? env[key].trim() : '';
+      if (value) {
+        return value;
+      }
+    }
+    return '';
+  }
+
+  static resolveMetaRedirectUrl(env = {}) {
+    const candidateKeys = [
+      'META_REDIRECT_URL',
+      'META_OAUTH_REDIRECT',
+      'FB_REDIRECT_URL',
+      'FB_OAUTH_REDIRECT',
+    ];
     for (const key of candidateKeys) {
       const value = typeof env[key] === 'string' ? env[key].trim() : '';
       if (value) {
@@ -6814,15 +7614,15 @@ class WorkerApp {
     }
 
     if (normalizedPath === '/fb_auth') {
-      return htmlResponse('<h1>Meta OAuth</h1><p>Этап в разработке. Функция появится в следующих релизах.</p>');
+      return this.handleFacebookAuth(url);
     }
 
     if (normalizedPath === '/fb_cb') {
-      return htmlResponse('<h1>Meta OAuth Callback</h1><p>Обработчик ещё не реализован.</p>', { status: 501 });
+      return this.handleFacebookCallback(url);
     }
 
     if (normalizedPath === '/fb_debug') {
-      return htmlResponse('<h1>Meta Debug</h1><p>Диагностика появится позже.</p>', { status: 501 });
+      return this.handleFacebookDebug(url);
     }
 
     if (normalizedPath.startsWith('/p/')) {
@@ -6974,11 +7774,426 @@ class WorkerApp {
     }
   }
 
+  buildWorkerAbsoluteUrl(path = '', { url } = {}) {
+    const base =
+      (typeof this.config.workerUrl === 'string' && this.config.workerUrl.trim()) ||
+      (url?.origin ? url.origin.replace(/\/+$/, '') : '');
+    if (!base) {
+      return '';
+    }
+
+    if (!path) {
+      return base;
+    }
+
+    const normalized = path.startsWith('/') ? path : `/${path}`;
+    return `${base}${normalized}`;
+  }
+
+  resolveMetaRedirectUrl(url, { session } = {}) {
+    if (session?.redirectUri) {
+      return session.redirectUri;
+    }
+
+    if (this.config.metaOAuthRedirectUrl) {
+      return this.config.metaOAuthRedirectUrl;
+    }
+
+    const fallback = this.buildWorkerAbsoluteUrl('/fb_cb', { url });
+    return fallback;
+  }
+
+  async loadMetaOauthSession(sessionId) {
+    const id = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!id) {
+      return null;
+    }
+    try {
+      return await this.storage.getJson('DB', `${META_OAUTH_SESSION_PREFIX}${id}`);
+    } catch (error) {
+      console.warn('Failed to load Meta OAuth session', id, error);
+      return null;
+    }
+  }
+
+  async deleteMetaOauthSession(sessionId) {
+    const id = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (!id) {
+      return false;
+    }
+    try {
+      await this.storage.deleteKey('DB', `${META_OAUTH_SESSION_PREFIX}${id}`);
+      return true;
+    } catch (error) {
+      console.warn('Failed to delete Meta OAuth session', id, error);
+      return false;
+    }
+  }
+
+  async handleFacebookAuth(url) {
+    if (!this.config.metaAppId || !this.config.metaAppSecret) {
+      return htmlResponse(
+        '<h1>Meta OAuth не настроен</h1><p>Укажите переменные <code>FB_APP_ID</code> и <code>FB_APP_SECRET</code> в окружении воркера.</p>',
+        { status: 503 },
+      );
+    }
+
+    const sessionId = (url.searchParams.get('session') || '').trim();
+    const session = await this.loadMetaOauthSession(sessionId);
+
+    const tokenCandidate = pickFirstFilled(
+      url.searchParams.get('token'),
+      url.searchParams.get('auth'),
+      url.searchParams.get('access_token'),
+    );
+
+    if (!session && !isValidMetaManageToken(tokenCandidate, this.config)) {
+      return htmlResponse(
+        '<h1>Доступ запрещён</h1><p>Добавьте параметр <code>token</code> или инициируйте авторизацию из админ-панели.</p>',
+        { status: 403 },
+      );
+    }
+
+    const redirectUri = this.resolveMetaRedirectUrl(url, { session });
+    if (!redirectUri) {
+      return htmlResponse(
+        '<h1>Не удалось определить redirect_uri</h1><p>Задайте <code>META_REDIRECT_URL</code> или <code>WORKER_URL</code>.</p>',
+        { status: 500 },
+      );
+    }
+
+    const scopeCandidate = pickFirstFilled(
+      url.searchParams.get('scope'),
+      url.searchParams.get('scopes'),
+      url.searchParams.get('permissions'),
+      Array.isArray(session?.scopes) ? session.scopes.join(',') : '',
+      session?.scope,
+    );
+    const scopeList = scopeCandidate
+      ? Array.from(
+          new Set(
+            String(scopeCandidate)
+              .split(/[\s,]+/)
+              .map((item) => item.trim())
+              .filter(Boolean),
+          ),
+        )
+      : META_OAUTH_DEFAULT_SCOPES;
+
+    const state = generateRandomToken(48);
+    const createdAt = new Date().toISOString();
+    const returnToCandidate = pickFirstFilled(url.searchParams.get('return_to'), session?.returnTo);
+    const defaultReturn = this.buildWorkerAbsoluteUrl('/fb_debug', { url });
+    const returnTo = returnToCandidate || defaultReturn;
+
+    const statePayload = {
+      state,
+      createdAt,
+      redirectUri,
+      returnTo,
+      scopes: scopeList,
+      sessionId: sessionId || null,
+      adminId: session?.adminId || null,
+      chatId: session?.chatId || null,
+      threadId: session?.threadId || null,
+      workerUrl: this.config.workerUrl || null,
+    };
+
+    try {
+      await this.storage.putJson('DB', `${META_OAUTH_STATE_PREFIX}${state}`, statePayload, {
+        expirationTtl: META_OAUTH_STATE_TTL_SECONDS,
+      });
+    } catch (error) {
+      console.error('Failed to persist Meta OAuth state', error);
+      return htmlResponse(
+        '<h1>OAuth недоступен</h1><p>Не удалось сохранить состояние авторизации. Повторите попытку позже.</p>',
+        { status: 500 },
+      );
+    }
+
+    const version = (this.config.metaGraphVersion || META_DEFAULT_GRAPH_VERSION).replace(/^\/+|\/+$/g, '');
+    const dialogUrl = new URL(`https://www.facebook.com/${version}/dialog/oauth`);
+    dialogUrl.searchParams.set('client_id', this.config.metaAppId);
+    dialogUrl.searchParams.set('redirect_uri', redirectUri);
+    dialogUrl.searchParams.set('state', state);
+    dialogUrl.searchParams.set('response_type', 'code');
+    dialogUrl.searchParams.set('auth_type', 'rerequest');
+    dialogUrl.searchParams.set('scope', scopeList.join(','));
+
+    return Response.redirect(dialogUrl.toString(), 302);
+  }
+
+  async handleFacebookCallback(url) {
+    const errorType = url.searchParams.get('error');
+    if (errorType) {
+      const message = url.searchParams.get('error_description') || url.searchParams.get('error_message') || 'Авторизация отменена.';
+      return htmlResponse(
+        `<h1>Meta OAuth не завершён</h1><p>${escapeHtml(message)}</p><p>Попробуйте снова из админ-панели.</p>`,
+        { status: 400 },
+      );
+    }
+
+    const code = (url.searchParams.get('code') || '').trim();
+    const stateId = (url.searchParams.get('state') || '').trim();
+    if (!code || !stateId) {
+      return htmlResponse(
+        '<h1>Параметры отсутствуют</h1><p>Не удалось получить код авторизации или state.</p>',
+        { status: 400 },
+      );
+    }
+
+    const stateKey = `${META_OAUTH_STATE_PREFIX}${stateId}`;
+    let state = null;
+    try {
+      state = await this.storage.getJson('DB', stateKey);
+    } catch (error) {
+      console.warn('Failed to read Meta OAuth state', stateId, error);
+    }
+
+    if (!state) {
+      return htmlResponse('<h1>Сессия истекла</h1><p>State не найден или устарел. Запустите авторизацию заново.</p>', {
+        status: 400,
+      });
+    }
+
+    await this.storage.deleteKey('DB', stateKey).catch((error) => {
+      console.warn('Failed to cleanup Meta OAuth state', stateId, error);
+    });
+
+    if (!this.config.metaAppId || !this.config.metaAppSecret) {
+      return htmlResponse(
+        '<h1>Meta OAuth не настроен</h1><p>Укажите переменные <code>FB_APP_ID</code> и <code>FB_APP_SECRET</code>.</p>',
+        { status: 503 },
+      );
+    }
+
+    const redirectUri = state.redirectUri || this.resolveMetaRedirectUrl(url);
+    if (!redirectUri) {
+      return htmlResponse(
+        '<h1>Не удалось определить redirect_uri</h1><p>Запросите авторизацию повторно с корректной конфигурацией.</p>',
+        { status: 500 },
+      );
+    }
+
+    const version = (this.config.metaGraphVersion || META_DEFAULT_GRAPH_VERSION).replace(/^\/+|\/+$/g, '');
+    const exchangeParams = new URLSearchParams({
+      client_id: this.config.metaAppId,
+      redirect_uri: redirectUri,
+      client_secret: this.config.metaAppSecret,
+      code,
+    });
+
+    let shortLived = null;
+    try {
+      const response = await fetch(`https://graph.facebook.com/${version}/oauth/access_token?${exchangeParams.toString()}`);
+      const data = await response.json();
+      if (!response.ok || !data?.access_token) {
+        throw new Error(data?.error?.message || `OAuth exchange failed (${response.status})`);
+      }
+      shortLived = data;
+    } catch (error) {
+      console.error('Meta OAuth exchange failed', error);
+      return htmlResponse(
+        `<h1>Не удалось получить токен</h1><p>${escapeHtml(error?.message || String(error))}</p>`,
+        { status: 502 },
+      );
+    }
+
+    let longLived = shortLived;
+    try {
+      const exchange = new URL(`https://graph.facebook.com/${version}/oauth/access_token`);
+      exchange.searchParams.set('grant_type', 'fb_exchange_token');
+      exchange.searchParams.set('client_id', this.config.metaAppId);
+      exchange.searchParams.set('client_secret', this.config.metaAppSecret);
+      exchange.searchParams.set('fb_exchange_token', shortLived.access_token);
+
+      const response = await fetch(exchange);
+      const data = await response.json();
+      if (response.ok && data?.access_token) {
+        longLived = data;
+      }
+    } catch (error) {
+      console.warn('Meta long-lived exchange failed, falling back to short-lived token', error);
+    }
+
+    const accessToken = longLived?.access_token || shortLived?.access_token;
+    if (!accessToken) {
+      return htmlResponse('<h1>Токен пуст</h1><p>Meta не вернул access_token. Попробуйте ещё раз.</p>', { status: 502 });
+    }
+
+    const payload = {
+      token: accessToken,
+      access_token: accessToken,
+      obtained_at: new Date().toISOString(),
+      expires_in: longLived?.expires_in ?? shortLived?.expires_in ?? null,
+      short_lived_expires_in: shortLived?.expires_in ?? null,
+      token_type: longLived?.token_type || shortLived?.token_type || 'bearer',
+      scope: Array.isArray(state?.scopes) ? state.scopes : META_OAUTH_DEFAULT_SCOPES,
+      source: 'oauth',
+    };
+
+    let profile = null;
+    try {
+      const profileUrl = new URL(`https://graph.facebook.com/${version}/me`);
+      profileUrl.searchParams.set('fields', 'id,name');
+      profileUrl.searchParams.set('access_token', accessToken);
+      const response = await fetch(profileUrl);
+      const data = await response.json();
+      if (response.ok) {
+        profile = data;
+        payload.profile = { id: data?.id || null, name: data?.name || null };
+      }
+    } catch (error) {
+      console.warn('Meta profile fetch failed after OAuth', error);
+    }
+
+    try {
+      await this.storage.putJson('DB', META_TOKEN_KEY, payload);
+    } catch (error) {
+      console.error('Failed to store Meta token', error);
+      return htmlResponse(
+        `<h1>Не удалось сохранить токен</h1><p>${escapeHtml(error?.message || String(error))}</p>`,
+        { status: 500 },
+      );
+    }
+
+    if (state.sessionId) {
+      await this.deleteMetaOauthSession(state.sessionId);
+    }
+
+    if (this.metaService) {
+      const refreshTask = this.metaService
+        .refreshOverview()
+        .catch((error) => console.error('Meta overview refresh after OAuth failed', error));
+      if (this.executionContext?.waitUntil) {
+        this.executionContext.waitUntil(refreshTask);
+      } else {
+        await refreshTask;
+      }
+    }
+
+    const expiresIn = Number(longLived?.expires_in ?? shortLived?.expires_in ?? 0);
+    const expiresLabel = expiresIn
+      ? formatDaysUntil(new Date(Date.now() + expiresIn * 1000)).label
+      : '—';
+
+    const successLines = [
+      '<h1>Meta OAuth завершён</h1>',
+      '<p>Токен сохранён в Cloudflare KV и будет использоваться для запросов Graph API.</p>',
+      profile?.name ? `<p>Подключённый профиль: <strong>${escapeHtml(profile.name)}</strong></p>` : '',
+      expiresLabel !== '—' ? `<p>Срок действия токена: <strong>${escapeHtml(expiresLabel)}</strong></p>` : '',
+      state.returnTo ? `<p><a href="${escapeHtml(state.returnTo)}">Вернуться к диагностике</a></p>` : '',
+    ].filter(Boolean);
+
+    const successHtml = successLines.join('');
+
+    const notifyTargets = [];
+    if (state.chatId) {
+      notifyTargets.push({
+        chat_id: state.chatId,
+        message_thread_id: state.threadId ? Number(state.threadId) : undefined,
+      });
+    }
+    if (state.adminId && (!state.chatId || state.chatId !== state.adminId)) {
+      notifyTargets.push({ chat_id: state.adminId });
+    }
+
+    if (notifyTargets.length > 0 && this.telegramClient?.isUsable) {
+      const textLines = [
+        '✅ <b>Meta OAuth завершён</b>',
+        profile?.name ? `Профиль: <b>${escapeHtml(profile.name)}</b>` : null,
+        expiresLabel !== '—' ? `Срок действия: <b>${escapeHtml(expiresLabel)}</b>` : null,
+        'Токен обновлён и сохранён в KV.',
+      ].filter(Boolean);
+      const text = textLines.join('\n');
+      for (const target of notifyTargets) {
+        try {
+          await this.telegramClient.sendMessage({
+            chat_id: target.chat_id,
+            message_thread_id: target.message_thread_id,
+            text,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+          });
+        } catch (error) {
+          console.error('Failed to notify OAuth completion', target.chat_id, error);
+        }
+      }
+    }
+
+    return htmlResponse(successHtml);
+  }
+
+  async handleFacebookDebug(url) {
+    const sessionId = (url.searchParams.get('session') || '').trim();
+    const session = await this.loadMetaOauthSession(sessionId);
+    const tokenCandidate = pickFirstFilled(
+      url.searchParams.get('token'),
+      url.searchParams.get('auth'),
+      url.searchParams.get('access_token'),
+    );
+
+    if (!session && !isValidMetaManageToken(tokenCandidate, this.config)) {
+      return htmlResponse(
+        '<h1>Доступ запрещён</h1><p>Используйте параметр <code>token</code> или ссылку из админ-панели.</p>',
+        { status: 403 },
+      );
+    }
+
+    let stored = null;
+    try {
+      stored = await this.storage.getJson('DB', META_TOKEN_KEY);
+    } catch (error) {
+      console.warn('Failed to read stored Meta token', error);
+    }
+
+    const refreshDebug = /^(1|true|yes|refresh)$/i.test(url.searchParams.get('refresh') || '');
+    let debugInfo = null;
+    if (refreshDebug && this.metaService) {
+      try {
+        debugInfo = await this.metaService.debugToken({ token: stored?.token || stored?.access_token });
+      } catch (error) {
+        debugInfo = { error: error?.message || String(error) };
+      }
+    }
+
+    const parts = [
+      '<h1>Meta OAuth диагностика</h1>',
+      stored
+        ? `<p>Токен сохранён: <strong>${escapeHtml(stored.obtained_at || stored.updated_at || 'неизвестно')}</strong></p>`
+        : '<p>Токен не найден в KV.</p>',
+      stored?.profile?.name
+        ? `<p>Профиль: <strong>${escapeHtml(stored.profile.name)}</strong> (ID: ${escapeHtml(stored.profile.id || '—')})</p>`
+        : '',
+      stored?.expires_in
+        ? `<p>Осталось: <strong>${escapeHtml(
+            formatDaysUntil(new Date(Date.now() + Number(stored.expires_in) * 1000)).label,
+          )}</strong></p>`
+        : '',
+      '<details><summary>Сырые данные токена</summary><pre>',
+      escapeHtml(JSON.stringify(stored, null, 2) || 'null'),
+      '</pre></details>',
+    ];
+
+    if (debugInfo) {
+      parts.push('<details open><summary>debug_token</summary><pre>');
+      parts.push(escapeHtml(JSON.stringify(debugInfo, null, 2)));
+      parts.push('</pre></details>');
+    } else {
+      parts.push(
+        `<p><a href="${escapeHtml(url.toString().includes('?') ? `${url.toString()}&refresh=1` : `${url.toString()}?refresh=1`)}">Обновить debug_token</a></p>`,
+      );
+    }
+
+    return htmlResponse(parts.join(''));
+  }
+
   async handleClientPortal(url, { normalizedPath } = {}) {
     if (!this.metaService) {
       return htmlResponse('<h1>Портал недоступен</h1><p>Сервис Meta временно отключён.</p>', { status: 503 });
     }
 
+    const method = (this.request.method || 'GET').toUpperCase();
     const segments = typeof normalizedPath === 'string' ? normalizedPath.split('/').filter(Boolean) : [];
     if (segments.length < 2) {
       return htmlResponse('<h1>Ссылка некорректна</h1><p>Не указан код проекта.</p>', { status: 400 });
@@ -6989,12 +8204,35 @@ class WorkerApp {
       return htmlResponse('<h1>Ссылка некорректна</h1><p>Не удалось распознать проект.</p>', { status: 400 });
     }
 
-    const signature = pickFirstFilled(
+    let signature = pickFirstFilled(
       url.searchParams.get('sig'),
       url.searchParams.get('signature'),
       url.searchParams.get('token'),
       url.searchParams.get('key'),
     );
+
+    let formPayload = null;
+    let jsonPayload = null;
+
+    if (method === 'POST') {
+      const contentType = (this.request.headers.get('content-type') || '').toLowerCase();
+      try {
+        if (contentType.includes('application/json')) {
+          jsonPayload = await this.request.json();
+        } else {
+          formPayload = await this.request.formData();
+        }
+      } catch (error) {
+        console.warn('Failed to parse portal request body', error);
+      }
+
+      if (!signature) {
+        signature = pickFirstFilled(
+          formPayload && typeof formPayload.get === 'function' ? formPayload.get('sig') : null,
+          jsonPayload && typeof jsonPayload === 'object' ? jsonPayload.sig : null,
+        );
+      }
+    }
 
     if (!signature) {
       return htmlResponse(
@@ -7003,8 +8241,9 @@ class WorkerApp {
       );
     }
 
+    const refreshRequested = url.searchParams.get('refresh') === '1';
     const context = await this.resolveProjectContext(projectCode, {
-      forceMetaRefresh: url.searchParams.get('refresh') === '1',
+      forceMetaRefresh: refreshRequested,
     });
 
     if (!context?.project) {
@@ -7051,6 +8290,32 @@ class WorkerApp {
       { id: 'month', label: 'МТД', preset: 'month' },
     ];
 
+    if (method === 'POST') {
+      return this.handleClientPortalPost({
+        context,
+        signature,
+        projectCode,
+        url,
+        formData: formPayload,
+        jsonBody: jsonPayload,
+      });
+    }
+
+    const formatParam = (url.searchParams.get('format') || '').toLowerCase();
+    if (formatParam === 'csv') {
+      const targetId = (url.searchParams.get('period') || '').toLowerCase();
+      const definition = definitions.find((item) => item.id === targetId) || definitions[0];
+      return this.handleClientPortalCsv({
+        context,
+        definition,
+        timezone,
+        campaignFilter,
+        kpi,
+        url,
+        projectCode,
+      });
+    }
+
     const periods = [];
     let inferredCurrency = context.account?.currency || context.project?.metrics?.currency || null;
 
@@ -7082,6 +8347,25 @@ class WorkerApp {
     const managerLink =
       context.project?.chatUrl || buildTelegramTopicUrl(context.project?.chatId, context.project?.threadId);
 
+    const insights = generatePortalInsights({
+      periods,
+      kpi,
+      currency: inferredCurrency || context.account?.currency || 'USD',
+    });
+
+    const csvLinks = definitions.map((definition) => {
+      const linkUrl = new URL(url.toString());
+      linkUrl.searchParams.set('format', 'csv');
+      linkUrl.searchParams.set('period', definition.id);
+      linkUrl.searchParams.delete('feedback');
+      if (!linkUrl.searchParams.get('sig')) {
+        linkUrl.searchParams.set('sig', signature);
+      }
+      return { id: definition.id, label: definition.label, href: linkUrl.toString() };
+    });
+
+    const feedbackStatus = url.searchParams.get('feedback') || '';
+
     const html = renderClientPortalPage({
       project: context.project,
       account: context.account,
@@ -7091,9 +8375,189 @@ class WorkerApp {
       managerLink,
       currency: inferredCurrency,
       kpi,
+      insights,
+      signature,
+      csvLinks,
+      feedbackStatus,
     });
 
     return htmlResponse(html);
+  }
+
+  async handleClientPortalPost({ context, signature, projectCode, url, formData, jsonBody }) {
+    let messageText = '';
+    if (formData && typeof formData.get === 'function') {
+      const raw = formData.get('message');
+      messageText = raw ? String(raw).trim() : '';
+    }
+    if (!messageText && jsonBody && typeof jsonBody === 'object') {
+      const raw = jsonBody.message ?? jsonBody.text ?? '';
+      messageText = raw ? String(raw).trim() : '';
+    }
+
+    const acceptHeader = (this.request.headers.get('accept') || '').toLowerCase();
+    const contentTypeHeader = (this.request.headers.get('content-type') || '').toLowerCase();
+    const wantsJson =
+      acceptHeader.includes('application/json') || contentTypeHeader.includes('application/json');
+
+    if (!messageText) {
+      if (wantsJson) {
+        return jsonResponse({ ok: false, error: 'message_required' }, { status: 400 });
+      }
+      const failureUrl = new URL(url.toString());
+      if (!failureUrl.searchParams.get('sig') && signature) {
+        failureUrl.searchParams.set('sig', signature);
+      }
+      failureUrl.searchParams.set('feedback', 'error');
+      failureUrl.searchParams.delete('format');
+      failureUrl.searchParams.delete('period');
+      return Response.redirect(failureUrl.toString(), 303);
+    }
+
+    try {
+      await this.sendPortalFeedback({ context, projectCode, messageText });
+    } catch (error) {
+      console.error('Portal feedback delivery failed', error);
+      if (wantsJson) {
+        return jsonResponse({ ok: false, error: error?.message || 'delivery_failed' }, { status: 502 });
+      }
+      const failureUrl = new URL(url.toString());
+      if (!failureUrl.searchParams.get('sig') && signature) {
+        failureUrl.searchParams.set('sig', signature);
+      }
+      failureUrl.searchParams.set('feedback', 'error');
+      failureUrl.searchParams.delete('format');
+      failureUrl.searchParams.delete('period');
+      return Response.redirect(failureUrl.toString(), 303);
+    }
+
+    if (wantsJson) {
+      return jsonResponse({ ok: true });
+    }
+
+    const redirectTarget = new URL(url.toString());
+    if (!redirectTarget.searchParams.get('sig') && signature) {
+      redirectTarget.searchParams.set('sig', signature);
+    }
+    redirectTarget.searchParams.set('feedback', 'sent');
+    redirectTarget.searchParams.delete('format');
+    redirectTarget.searchParams.delete('period');
+    return Response.redirect(redirectTarget.toString(), 303);
+  }
+
+  async handleClientPortalCsv({ context, definition, timezone, campaignFilter, kpi, url, projectCode }) {
+    let report;
+    try {
+      report = await this.metaService.fetchAccountReport({
+        project: context.project,
+        account: context.account,
+        preset: definition.preset,
+        timezone,
+        campaignIds: campaignFilter,
+      });
+    } catch (error) {
+      return htmlResponse(
+        `<h1>Не удалось подготовить CSV</h1><p>${escapeHtml(error?.message || String(error))}</p>`,
+        { status: 502 },
+      );
+    }
+
+    const currency =
+      report?.currency || context.account?.currency || context.project?.metrics?.currency || 'USD';
+
+    const csv = renderPortalCsv({
+      project: context.project,
+      account: context.account,
+      period: { id: definition.id, label: definition.label },
+      report,
+      timezone,
+      generatedAt: new Date(),
+      currency,
+      kpi,
+    });
+
+    const filenameBase = normalizeProjectIdForCallback(
+      context.project?.code || context.project?.id || projectCode || 'project',
+    );
+    const filename = `${filenameBase || 'project'}-${definition.id}.csv`;
+
+    return new Response(csv, {
+      headers: {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': `attachment; filename="${filename}"`,
+        'cache-control': 'no-store',
+      },
+    });
+  }
+
+  async sendPortalFeedback({ context, projectCode, messageText }) {
+    const telegram = this.telegramClient;
+    if (!telegram?.isUsable) {
+      throw new Error('telegram_unavailable');
+    }
+
+    const project = context.project || {};
+    const account = context.account || {};
+
+    const lines = [
+      '💬 <b>Сообщение из клиентского портала</b>',
+      project.name || project.code || project.id || projectCode
+        ? `Проект: <b>${escapeHtml(project.name || project.code || project.id || projectCode)}</b>`
+        : null,
+      account.name ? `Рекламный аккаунт: <code>${escapeHtml(account.name)}</code>` : null,
+      '',
+      escapeHtml(messageText),
+    ].filter(Boolean);
+
+    const text = lines.join('\n');
+    const payloads = [];
+
+    if (project.chatId) {
+      const payload = {
+        chat_id: project.chatId,
+        text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      };
+      if (project.threadId) {
+        payload.message_thread_id = Number(project.threadId);
+      }
+      payloads.push(payload);
+    }
+
+    for (const adminId of this.config.adminIds) {
+      if (!adminId) {
+        continue;
+      }
+      if (payloads.some((payload) => String(payload.chat_id) === String(adminId))) {
+        continue;
+      }
+      payloads.push({
+        chat_id: adminId,
+        text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      });
+    }
+
+    if (payloads.length === 0) {
+      throw new Error('no_targets');
+    }
+
+    let delivered = false;
+    for (const payload of payloads) {
+      try {
+        await telegram.sendMessage(payload);
+        delivered = true;
+      } catch (error) {
+        console.error('Portal feedback send failed', payload.chat_id, error);
+      }
+    }
+
+    if (!delivered) {
+      throw new Error('delivery_failed');
+    }
+    return true;
   }
 
   async handleTelegramWebhookManage(url, { normalizedPath } = {}) {
