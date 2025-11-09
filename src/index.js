@@ -37,6 +37,8 @@ const PORTAL_PREFIX = 'portal:';
 const PORTAL_SIG_BYTES = 24;
 const PROFILE_PREFIX = 'profiles:';
 const PROFILE_TTL_SECONDS = 60 * 60 * 24 * 30;
+const TELEGRAM_LOG_KEY = 'log:telegram:updates';
+const TELEGRAM_LOG_LIMIT = 50;
 const PROJECT_CODE_PATTERN = /^[a-z0-9_-]{3,32}$/i;
 const PERIOD_OPTIONS = [
   { value: 'today', label: 'Сегодня' },
@@ -487,7 +489,10 @@ function renderDebugPage(state) {
 </html>`;
 }
 
-async function handleHealth(env, { pingTelegram = false, ensureWebhook = false } = {}) {
+async function handleHealth(
+  env,
+  { pingTelegram = false, ensureWebhook = false, includeTelegramLogs = false, telegramLogsLimit = 20 } = {},
+) {
   const missingEnv = validateRequiredEnv(env);
   const primaryKv = Boolean(getPrimaryKv(env));
   const botToken = resolveBotToken(env);
@@ -651,6 +656,14 @@ async function handleHealth(env, { pingTelegram = false, ensureWebhook = false }
     if (!telegramStatus.ping.ok) {
       status = 'degraded';
     }
+  }
+
+  if (includeTelegramLogs) {
+    const entries = await loadRecentTelegramLogs(env, telegramLogsLimit);
+    response.telegram_logs = {
+      count: entries.length,
+      entries,
+    };
   }
 
   response.status = status;
@@ -1466,6 +1479,68 @@ async function deletePortalRecord(env, code) {
     await kv.delete(getPortalKey(code));
   } catch (error) {
     console.error('deletePortalRecord error', error);
+  }
+}
+
+function sanitizeTelegramLogEntry(entry = {}) {
+  const base = {
+    ts: new Date().toISOString(),
+    kind: typeof entry.kind === 'string' ? entry.kind : 'unknown',
+    ok: entry.ok !== false,
+  };
+
+  const optional = {
+    command: typeof entry.command === 'string' ? entry.command.slice(0, 64) : undefined,
+    data: typeof entry.data === 'string' ? entry.data.slice(0, 96) : undefined,
+    chat_id: typeof entry.chat_id === 'number' ? entry.chat_id : undefined,
+    thread_id: typeof entry.thread_id === 'number' ? entry.thread_id : undefined,
+    error: typeof entry.error === 'string' ? entry.error.slice(0, 160) : undefined,
+    note: typeof entry.note === 'string' ? entry.note.slice(0, 120) : undefined,
+  };
+
+  const compact = { ...base };
+  for (const [key, value] of Object.entries(optional)) {
+    if (typeof value !== 'undefined' && value !== null && value !== '') {
+      compact[key] = value;
+    }
+  }
+
+  return compact;
+}
+
+async function appendTelegramLog(env, entry = {}) {
+  const kv = getLogsKv(env) ?? getPrimaryKv(env);
+  if (!kv) return;
+
+  const record = sanitizeTelegramLogEntry(entry);
+
+  try {
+    const raw = await kv.get(TELEGRAM_LOG_KEY);
+    const current = raw ? JSON.parse(raw) : [];
+    const next = Array.isArray(current) ? current : [];
+    next.push(record);
+    const trimmed = next.slice(-TELEGRAM_LOG_LIMIT);
+    await kv.put(TELEGRAM_LOG_KEY, JSON.stringify(trimmed));
+  } catch (error) {
+    console.error('appendTelegramLog error', error);
+  }
+}
+
+async function loadRecentTelegramLogs(env, limit = 20) {
+  const kv = getLogsKv(env) ?? getPrimaryKv(env);
+  if (!kv) return [];
+
+  try {
+    const raw = await kv.get(TELEGRAM_LOG_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.length) {
+      return [];
+    }
+    return parsed.slice(-Math.max(1, Math.min(limit, TELEGRAM_LOG_LIMIT)));
+  } catch (error) {
+    console.error('loadRecentTelegramLogs error', error);
+    return [];
   }
 }
 
@@ -3377,6 +3452,25 @@ async function handleTelegramWebhook(request, env, ctx) {
     return methodNotAllowed(['POST']);
   }
 
+  const scheduleLog = (entry) => {
+    if (!entry) return;
+    try {
+      if (ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(
+          appendTelegramLog(env, entry).catch((error) => {
+            console.error('appendTelegramLog waitUntil error', error);
+          }),
+        );
+      } else {
+        appendTelegramLog(env, entry).catch((error) => {
+          console.error('appendTelegramLog error', error);
+        });
+      }
+    } catch (error) {
+      console.error('scheduleLog error', error);
+    }
+  };
+
   const buildTelegramResponse = (summary) => {
     const result = summary?.result;
     if (result && typeof result === 'object' && result.ok === false) {
@@ -3406,6 +3500,16 @@ async function handleTelegramWebhook(request, env, ctx) {
 
     if (payload.callback_query) {
       const result = await handleCallbackQuery(env, payload.callback_query);
+      const data = payload.callback_query?.data ?? '';
+      const message = payload.callback_query?.message ?? null;
+      scheduleLog({
+        kind: 'callback',
+        ok: result?.ok !== false,
+        data: typeof data === 'string' ? data : undefined,
+        chat_id: message?.chat?.id ?? undefined,
+        thread_id: message?.message_thread_id ?? undefined,
+        error: result?.error ? String(result.error) : undefined,
+      });
       summary.handled = true;
       summary.kind = 'callback_query';
       summary.result = result;
@@ -3413,11 +3517,19 @@ async function handleTelegramWebhook(request, env, ctx) {
     }
 
     if (!message) {
+      scheduleLog({ kind: 'ignored', ok: false, note: 'no_message' });
       return buildTelegramResponse({ handled: false, reason: 'no_message' });
     }
 
     const textContent = extractText(message).trim();
     if (!textContent) {
+      scheduleLog({
+        kind: 'ignored',
+        ok: false,
+        chat_id: message.chat?.id ?? undefined,
+        thread_id: message.message_thread_id ?? undefined,
+        note: 'empty_text',
+      });
       return buildTelegramResponse({ handled: false, reason: 'empty_text' });
     }
 
@@ -3428,6 +3540,14 @@ async function handleTelegramWebhook(request, env, ctx) {
 
     if (rawCommand.startsWith('/')) {
       const result = await handleTelegramCommand(env, message, command, args, ctx);
+      scheduleLog({
+        kind: 'command',
+        command,
+        ok: result?.ok !== false,
+        chat_id: message.chat?.id ?? undefined,
+        thread_id: message.message_thread_id ?? undefined,
+        error: result?.error ? String(result.error) : undefined,
+      });
       summary.handled = true;
       summary.kind = 'command';
       summary.command = command;
@@ -3436,6 +3556,13 @@ async function handleTelegramWebhook(request, env, ctx) {
     }
 
     const stateResult = await handleUserStateMessage(env, message, textContent);
+    scheduleLog({
+      kind: 'state',
+      ok: Boolean(stateResult?.handled),
+      chat_id: message.chat?.id ?? undefined,
+      thread_id: message.message_thread_id ?? undefined,
+      note: stateResult?.handled ? `state:${stateResult.step ?? 'unknown'}` : 'state:ignored',
+    });
     summary.kind = 'state';
     summary.result = stateResult;
     summary.handled = Boolean(stateResult.handled);
@@ -3443,6 +3570,7 @@ async function handleTelegramWebhook(request, env, ctx) {
     return buildTelegramResponse(summary);
   } catch (error) {
     console.error('handleTelegramWebhook fatal error', error);
+    scheduleLog({ kind: 'error', ok: false, error: error?.message ?? String(error) });
     return json(
       {
         ok: false,
@@ -13420,7 +13548,15 @@ export default {
       const ping = url.searchParams.get('ping');
       const pingTelegram = ping === 'telegram' || ping === 'all';
       const ensureWebhook = url.searchParams.get('ensure_webhook') === '1';
-      return handleHealth(env, { pingTelegram, ensureWebhook });
+      const includeTelegramLogs =
+        url.searchParams.get('telegram_logs') === '1' ||
+        url.searchParams.get('logs') === 'telegram';
+      const logsLimitParam = Number(url.searchParams.get('telegram_logs_limit'));
+      const telegramLogsLimit = Number.isFinite(logsLimitParam) && logsLimitParam > 0
+        ? Math.min(Math.trunc(logsLimitParam), TELEGRAM_LOG_LIMIT)
+        : undefined;
+
+      return handleHealth(env, { pingTelegram, ensureWebhook, includeTelegramLogs, telegramLogsLimit });
     }
 
     if (pathname === '/') {
