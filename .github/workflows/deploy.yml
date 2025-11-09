@@ -26,35 +26,28 @@ jobs:
       - name: Sync Worker secrets from GitHub Actions
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TG_API_TOKEN: ${{ secrets.TG_API_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           ADMIN_IDS: ${{ secrets.ADMIN_IDS }}
           DEFAULT_TZ: ${{ secrets.DEFAULT_TZ }}
           WORKER_URL: ${{ secrets.WORKER_URL }}
           FB_APP_ID: ${{ secrets.FB_APP_ID }}
           FB_APP_SECRET: ${{ secrets.FB_APP_SECRET }}
           FB_LONG_TOKEN: ${{ secrets.FB_LONG_TOKEN }}
+          META_LONG_TOKEN: ${{ secrets.META_LONG_TOKEN }}
+          META_MANAGE_TOKEN: ${{ secrets.META_MANAGE_TOKEN }}
+          FB_MANAGE_TOKEN: ${{ secrets.FB_MANAGE_TOKEN }}
+          PORTAL_TOKEN: ${{ secrets.PORTAL_TOKEN }}
+          PORTAL_SIGNING_SECRET: ${{ secrets.PORTAL_SIGNING_SECRET }}
           GS_WEBHOOK: ${{ secrets.GS_WEBHOOK }}
-        run: |
-          set -euo pipefail
-
-          sync_secret() {
-            local key="$1"
-            local value="$2"
-            if [ -z "$value" ]; then
-              echo "Skipping $key (not provided)."
-              return
-            fi
-            printf '%s' "$value" | npx wrangler@4.46.0 secret put "$key" --env production --config wrangler.toml >/dev/null
-            echo "Synced secret $key."
-          }
-
-          sync_secret BOT_TOKEN "$BOT_TOKEN"
-          sync_secret ADMIN_IDS "$ADMIN_IDS"
-          sync_secret DEFAULT_TZ "$DEFAULT_TZ"
-          sync_secret WORKER_URL "$WORKER_URL"
-          sync_secret FB_APP_ID "$FB_APP_ID"
-          sync_secret FB_APP_SECRET "$FB_APP_SECRET"
-          sync_secret FB_LONG_TOKEN "$FB_LONG_TOKEN"
-          sync_secret GS_WEBHOOK "$GS_WEBHOOK"
+          PROJECT_MANAGER_IDS: ${{ secrets.PROJECT_MANAGER_IDS }}
+          PROJECT_MANAGERS: ${{ secrets.PROJECT_MANAGERS }}
+          PROJECT_ACCOUNT_ACCESS: ${{ secrets.PROJECT_ACCOUNT_ACCESS }}
+          PROJECT_ACCOUNT_ALLOWLIST: ${{ secrets.PROJECT_ACCOUNT_ALLOWLIST }}
+          PROJECT_CHAT_PRESETS: ${{ secrets.PROJECT_CHAT_PRESETS }}
+          PROJECT_CHAT_TEMPLATES: ${{ secrets.PROJECT_CHAT_TEMPLATES }}
+          CHAT_PRESETS: ${{ secrets.CHAT_PRESETS }}
+        run: npm run sync:secrets -- --env production
 
       - name: Deploy with Wrangler
         run: npm run deploy -- --env production
