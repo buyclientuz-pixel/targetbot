@@ -23,6 +23,7 @@ const META_STATUS_KEY = 'meta:status';
 const META_TOKEN_KEY = 'meta:token';
 const META_DEFAULT_GRAPH_VERSION = 'v18.0';
 const META_OVERVIEW_MAX_AGE_MS = 2 * 60 * 1000;
+const ADMIN_PROJECT_PREVIEW_LIMIT = 6;
 
 function resolveDefaultWebhookUrl(config, { origin = '' } = {}) {
   if (config?.telegramWebhookUrl) {
@@ -83,6 +84,98 @@ function formatCpaRange(minValue, maxValue) {
   const maxText = hasMax ? formatUsd(max, { digitsBelowOne: 2, digitsAboveOne: 0 }) : '—';
 
   return `${minText} / ${maxText}`;
+}
+
+function parseDateInput(value) {
+  if (!value) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  const stringValue = typeof value === 'string' ? value.trim() : value;
+  if (!stringValue) {
+    return null;
+  }
+
+  const date = new Date(stringValue);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date;
+}
+
+function formatDaysUntil(target, { now = new Date(), showSign = true } = {}) {
+  const date = parseDateInput(target);
+  if (!date) {
+    return { label: '—', value: null, overdue: false };
+  }
+
+  const nowDate = parseDateInput(now) || new Date();
+  const diffMs = date.getTime() - nowDate.getTime();
+  const days = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+  const overdue = days < 0;
+  const absolute = Math.abs(days);
+  const prefix = overdue && showSign ? '−' : '';
+  const value = overdue ? absolute : days;
+  const label = overdue ? `${prefix}${absolute}д` : `${value}д`;
+  return { label, value: days, overdue };
+}
+
+function determineAccountSignal(account, { daysUntilDue } = {}) {
+  const daysValue = typeof daysUntilDue?.value === 'number' ? daysUntilDue.value : null;
+  const hasPaymentIssues = Boolean(
+    account?.requiresAttention ||
+      (Array.isArray(account?.paymentIssues) && account.paymentIssues.length > 0) ||
+      account?.paymentIssue,
+  );
+
+  if (hasPaymentIssues) {
+    return '🔴';
+  }
+
+  if (Number.isFinite(daysValue) && daysValue <= 3) {
+    return '🟡';
+  }
+
+  return '🟢';
+}
+
+function buildTelegramTopicUrl(chatId, threadId) {
+  if (!chatId || !threadId) {
+    return '';
+  }
+
+  const chat = String(chatId);
+  const thread = String(threadId).trim();
+  if (!thread) {
+    return '';
+  }
+
+  if (/^https?:/i.test(chatId)) {
+    return String(chatId);
+  }
+
+  const normalized = chat.startsWith('-100') ? chat.slice(4) : chat.replace(/^-/, '');
+  if (!normalized) {
+    return '';
+  }
+
+  return `https://t.me/c/${normalized}/${thread}`;
+}
+
+function normalizeProjectIdForCallback(id) {
+  const base = String(id ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-');
+  if (!base) {
+    return 'project';
+  }
+  return base.slice(0, 48) || 'project';
 }
 
 function parseMetaCurrency(value) {
@@ -348,6 +441,291 @@ function buildMetaAdAccountLines(account) {
   }
 
   return lines;
+}
+
+function normalizeProjectRecord(key, raw = {}) {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      id: key.replace(PROJECT_KEY_PREFIX, ''),
+      key,
+      name: key.replace(PROJECT_KEY_PREFIX, ''),
+      adAccountId: '',
+    };
+  }
+
+  const keyId = key.replace(PROJECT_KEY_PREFIX, '');
+  const meta = raw.meta || {};
+  const billing = raw.billing || {};
+  const metrics = raw.metrics || {};
+  const chat = raw.chat || raw.telegram || raw.telegram_chat || {};
+
+  const projectId = raw.id || raw.code || raw.project_id || keyId;
+  const adAccountId =
+    raw.meta_account_id ||
+    raw.ad_account_id ||
+    raw.account_id ||
+    meta.adAccountId ||
+    meta.accountId ||
+    raw.facebook_account_id ||
+    '';
+
+  const chatId =
+    chat.id ||
+    chat.chat_id ||
+    raw.chat_id ||
+    raw.telegram_chat_id ||
+    raw.telegram_chat ||
+    raw.telegram_chat_id ||
+    null;
+  const threadId =
+    chat.thread_id ||
+    chat.topic_id ||
+    raw.thread_id ||
+    raw.topic_id ||
+    raw.telegram_topic_id ||
+    null;
+  const chatUrl = chat.url || raw.chat_url || raw.telegram_chat_url || buildTelegramTopicUrl(chatId, threadId);
+
+  return {
+    id: projectId,
+    key,
+    code: raw.code || raw.slug || raw.short_code || '',
+    name: raw.name || raw.title || meta.projectName || meta.accountName || `Проект ${projectId}`,
+    description: raw.description || '',
+    adAccountId: adAccountId ? String(adAccountId) : '',
+    chatId: chatId ? String(chatId) : '',
+    threadId: threadId ? String(threadId) : '',
+    chatTitle: chat.title || chat.chat_title || raw.chat_title || '',
+    chatUrl,
+    billingNextAt:
+      billing.next_payment_at ||
+      billing.next_payment_due_at ||
+      raw.billing_next_at ||
+      raw.billing_due_at ||
+      raw.next_payment_at ||
+      null,
+    metrics: {
+      spendTodayUsd: metrics.spend_today_usd ?? raw.spend_today_usd ?? null,
+      currency: metrics.currency || raw.currency || null,
+    },
+    statusNote: raw.status_note || raw.status || '',
+  };
+}
+
+function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
+  const projects = Array.isArray(projectRecords) ? projectRecords : [];
+  const status = pickMetaStatus(metaStatus) || {};
+  const facebook = status.facebook && typeof status.facebook === 'object' ? status.facebook : {};
+  const accounts = Array.isArray(facebook.adAccounts) ? facebook.adAccounts : [];
+  const accountById = new Map();
+  for (const account of accounts) {
+    if (!account || typeof account !== 'object') continue;
+    const accountId = account.accountId || account.id;
+    if (accountId) {
+      accountById.set(String(accountId), account);
+    }
+  }
+
+  const now = new Date();
+  const summaries = [];
+
+  for (const record of projects) {
+    if (!record) continue;
+    const account = record.adAccountId ? accountById.get(String(record.adAccountId)) : null;
+    const spendUsd =
+      (account && Number.isFinite(Number(account.spendTodayUsd)) ? Number(account.spendTodayUsd) : null) ??
+      (Number.isFinite(Number(record.metrics?.spendTodayUsd)) ? Number(record.metrics.spendTodayUsd) : null);
+
+    const currency = account?.currency || record.metrics?.currency || 'USD';
+    const billingSource = record.billingNextAt || account?.billingNextAt || account?.billing_next_at;
+    const daysUntil = formatDaysUntil(billingSource, { now });
+    const statusEmoji = determineAccountSignal(account, { daysUntilDue: daysUntil });
+    const accountStatusLabel =
+      account?.paymentStatusLabel || account?.statusLabel || account?.status || record.statusNote || '—';
+    const paymentIssues = [];
+    if (Array.isArray(account?.paymentIssues)) {
+      paymentIssues.push(...account.paymentIssues.filter(Boolean));
+    }
+    if (account?.paymentIssue) {
+      paymentIssues.push(account.paymentIssue);
+    }
+    if (record.statusNote) {
+      paymentIssues.push(record.statusNote);
+    }
+
+    const debt = Number.isFinite(Number(account?.debtUsd)) ? Number(account.debtUsd) : null;
+    const cardLast4 =
+      account?.defaultPaymentMethodLast4 ||
+      account?.default_card_last4 ||
+      account?.card_last4 ||
+      account?.paymentMethodLast4 ||
+      '';
+
+    const campaignsRunning = Number.isFinite(Number(account?.runningCampaigns))
+      ? Number(account.runningCampaigns)
+      : null;
+    const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd);
+
+    const headerParts = [
+      record.name || (account?.name ?? record.id),
+      spendUsd !== null ? formatUsd(spendUsd, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—',
+      daysUntil.label,
+    ];
+
+    const lines = [];
+    lines.push(`<b>${escapeHtml(headerParts.join(' | '))}</b>`);
+    lines.push(`Статус: ${statusEmoji} ${escapeHtml(accountStatusLabel)}`);
+
+    if (cardLast4) {
+      lines.push(`Оплата: 💳 ****${escapeHtml(String(cardLast4))}`);
+    }
+
+    if (debt !== null && debt !== 0) {
+      lines.push(`Долг: <b>${formatUsd(debt, { digitsBelowOne: 2, digitsAboveOne: 2 })}</b>`);
+    }
+
+    if (campaignsRunning !== null || cpaRange) {
+      const campaignsText = campaignsRunning !== null ? `${campaignsRunning}` : '0';
+      const suffix = cpaRange ? ` | CPA: ${cpaRange}` : '';
+      lines.push(`Кампании: <b>${campaignsText}</b>${suffix}`);
+    }
+
+    if (paymentIssues.length > 0) {
+      lines.push(`Проблемы: ${escapeHtml(paymentIssues.join(' • '))}`);
+    }
+
+    if (record.chatTitle) {
+      lines.push(`Чат: ${escapeHtml(record.chatTitle)}`);
+    }
+
+    if (record.code) {
+      lines.push(`Код проекта: <code>${escapeHtml(record.code)}</code>`);
+    }
+
+    summaries.push({
+      id: record.id,
+      callbackId: normalizeProjectIdForCallback(record.id),
+      chatUrl: record.chatUrl || '',
+      lines,
+      daysUntil,
+      spendUsd,
+      currency,
+    });
+  }
+
+  if (summaries.length === 0 && accounts.length > 0) {
+    for (const account of accounts) {
+      if (!account) continue;
+      const daysUntil = formatDaysUntil(account.billingNextAt || account.billing_next_at, { now });
+      const statusEmoji = determineAccountSignal(account, { daysUntilDue: daysUntil });
+      const header = [
+        account.name || account.id || 'Рекламный аккаунт',
+        account.spendTodayUsd !== null && account.spendTodayUsd !== undefined
+          ? formatUsd(Number(account.spendTodayUsd), { digitsBelowOne: 2, digitsAboveOne: 2 })
+          : '—',
+        daysUntil.label,
+      ];
+      const lines = [];
+      lines.push(`<b>${escapeHtml(header.join(' | '))}</b>`);
+      const statusLabel = account.paymentStatusLabel || account.statusLabel || account.status || '—';
+      lines.push(`Статус: ${statusEmoji} ${escapeHtml(statusLabel)}`);
+      summaries.push({
+        id: account.accountId || account.id,
+        callbackId: normalizeProjectIdForCallback(account.accountId || account.id),
+        chatUrl: '',
+        lines,
+        daysUntil,
+      });
+    }
+  }
+
+  return summaries;
+}
+
+function renderAdminDashboard({
+  metaStatus,
+  projectSummaries,
+  webhook,
+  totals,
+  timezone,
+}) {
+  const lines = ['<b>Админ-панель</b>'];
+  const status = pickMetaStatus(metaStatus) || {};
+  const message = typeof status.message === 'string' ? status.message.trim() : '';
+  if (message) {
+    lines.push('', `Сообщение: ${escapeHtml(message)}`);
+  }
+
+  const facebook = status.facebook && typeof status.facebook === 'object' ? status.facebook : {};
+  const connected = Boolean(facebook.connected);
+  const connectionEmoji = connected ? '🟢' : '🔴';
+  const accountLabel = facebook.accountName || (connected ? 'Подключено' : 'Нет данных');
+  lines.push('', '<b>Facebook</b>');
+  lines.push(`Статус: ${connectionEmoji} ${escapeHtml(accountLabel)}`);
+  if (facebook.accountId) {
+    lines.push(`ID: <code>${escapeHtml(facebook.accountId)}</code>`);
+  }
+
+  const adAccounts = Array.isArray(facebook.adAccounts) ? facebook.adAccounts : [];
+  lines.push(`Рекламных аккаунтов: <b>${adAccounts.length}</b>`);
+  const attention = adAccounts.filter((account) => determineAccountSignal(account, { daysUntilDue: { value: account.billingDueInDays ?? null } }) === '🔴');
+  if (attention.length > 0) {
+    lines.push(`Требуют внимания: <b>${attention.length}</b>`);
+  }
+
+  if (facebook.error) {
+    lines.push(`Ошибка: ${escapeHtml(String(facebook.error))}`);
+  }
+
+  if (facebook.stale) {
+    lines.push('⚠️ Показаны сохранённые данные.');
+  }
+
+  if (facebook.updatedAt || facebook.updated_at) {
+    lines.push(
+      `Обновлено: ${escapeHtml(
+        formatTimestamp(facebook.updatedAt || facebook.updated_at, timezone),
+      )}`,
+    );
+  }
+
+  lines.push('', `<b>Проекты (${totals.projects})</b>`);
+  if (projectSummaries.length === 0) {
+    lines.push('Проекты ещё не настроены. Используйте меню ниже, чтобы подключить первый проект.');
+  } else {
+    for (const summary of projectSummaries) {
+      lines.push('', ...summary.lines);
+    }
+  }
+
+  if (webhook) {
+    const webhookLines = [];
+    const webhookActive = Boolean(webhook?.info?.url);
+    webhookLines.push(`Вебхук: ${webhookActive ? '🟢' : '🔴'} ${
+      webhookActive ? `<code>${escapeHtml(webhook.info.url)}</code>` : 'не настроен'
+    }`);
+    if (webhook?.info?.pending_update_count) {
+      webhookLines.push(`В очереди: <b>${webhook.info.pending_update_count}</b>`);
+    }
+    if (webhook?.defaultUrl && (!webhookActive || webhook.info.url !== webhook.defaultUrl)) {
+      webhookLines.push(`Рекомендуемый URL: <code>${escapeHtml(webhook.defaultUrl)}</code>`);
+    }
+    if (webhook?.error) {
+      webhookLines.push(`Ошибка: ${escapeHtml(webhook.error)}`);
+    }
+    if (webhook?.ensured) {
+      webhookLines.push('Автоматическое подключение выполнено ✅');
+    }
+    if (webhookLines.length > 0) {
+      lines.push('', '<b>Telegram</b>', ...webhookLines);
+    }
+  }
+
+  if (typeof totals.chats === 'number') {
+    lines.push('', `Зарегистрированных чатов: <b>${totals.chats}</b>`);
+  }
+
+  return lines.join('\n');
 }
 
 function escapeHtml(value) {
@@ -856,6 +1234,7 @@ class MetaService {
   }
 
   async collectOverview({ client, now }) {
+    const nowDate = parseDateInput(now) || new Date();
     let profile = null;
     try {
       profile = await client.request('/me', {
@@ -867,10 +1246,10 @@ class MetaService {
 
     const adAccountsRaw = await this.fetchAllAdAccounts(client);
     const transformed = adAccountsRaw
-      .map((account) => this.transformAdAccount(account))
+      .map((account) => this.transformAdAccount(account, { now: nowDate }))
       .filter((account) => account !== null);
 
-    const enriched = await this.enrichAdAccounts(client, transformed);
+    const enriched = await this.enrichAdAccounts(client, transformed, { now: nowDate });
 
     return {
       message: '',
@@ -930,7 +1309,7 @@ class MetaService {
     return collected;
   }
 
-  async enrichAdAccounts(client, accounts) {
+  async enrichAdAccounts(client, accounts, { now } = {}) {
     if (!Array.isArray(accounts) || accounts.length === 0) {
       return [];
     }
@@ -943,12 +1322,49 @@ class MetaService {
       while (index < accounts.length) {
         const current = index++;
         const account = results[current];
-        results[current] = await this.fetchCampaignSnapshot(client, account);
+        const withCampaigns = await this.fetchCampaignSnapshot(client, account);
+        results[current] = await this.enrichAccountFinancials(client, withCampaigns, { now });
       }
     };
 
     await Promise.all(Array.from({ length: concurrency }, worker));
     return results;
+  }
+
+  async enrichAccountFinancials(client, account, { now } = {}) {
+    if (!account || !account.id) {
+      return account;
+    }
+
+    const updated = { ...account };
+
+    try {
+      const insights = await client.request(`/${account.id}/insights`, {
+        searchParams: {
+          date_preset: 'today',
+          time_increment: '1',
+          limit: '1',
+          fields: 'spend',
+        },
+      });
+
+      if (Array.isArray(insights?.data) && insights.data.length > 0) {
+        const spendValue = parseMetaCurrency(insights.data[0]?.spend);
+        if (Number.isFinite(spendValue)) {
+          updated.spendTodayUsd = spendValue;
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to load ad account spend', account.id, error);
+    }
+
+    if (updated.billingNextAt || updated.billing_next_at) {
+      const countdown = formatDaysUntil(updated.billingNextAt || updated.billing_next_at, { now });
+      updated.billingDueInDays = countdown.value;
+      updated.billingDueLabel = countdown.label;
+    }
+
+    return updated;
   }
 
   async fetchCampaignSnapshot(client, account) {
@@ -988,7 +1404,7 @@ class MetaService {
     return account;
   }
 
-  transformAdAccount(raw) {
+  transformAdAccount(raw, { now } = {}) {
     if (!raw || typeof raw !== 'object') {
       return null;
     }
@@ -1030,6 +1446,17 @@ class MetaService {
     const id = raw.id || (raw.account_id ? `act_${raw.account_id}` : null);
     const accountId = raw.account_id || (typeof raw.id === 'string' ? raw.id.replace(/^act_/, '') : '');
 
+    const billingNextAt =
+      paymentCycle.next_payment_date ||
+      paymentCycle.next_payment_due_date ||
+      paymentCycle.due_date ||
+      raw.billing_next_at ||
+      raw.next_bill_date ||
+      raw.next_payment_date ||
+      null;
+    const billingCountdown = formatDaysUntil(billingNextAt, { now });
+    const billingIso = parseDateInput(billingNextAt)?.toISOString?.() || (billingNextAt ? String(billingNextAt) : null);
+
     return {
       id,
       accountId,
@@ -1045,10 +1472,13 @@ class MetaService {
       cpaMinUsd: null,
       cpaMaxUsd: null,
       currency: raw.currency || raw.default_currency || 'USD',
+      billingNextAt: billingIso,
+      billingDueInDays: billingCountdown.value,
+      billingDueLabel: billingCountdown.label,
       requiresAttention:
         paymentIssues.length > 0 ||
-        Boolean(debtUsd && debtUsd > 0) ||
-        (normalizedStatus && normalizedStatus !== 1 && normalizedStatus !== 0),
+          Boolean(debtUsd && debtUsd > 0) ||
+          (normalizedStatus && normalizedStatus !== 1 && normalizedStatus !== 0),
     };
   }
 }
@@ -1648,65 +2078,39 @@ class TelegramBot {
 
     const metaStatus = this.metaService ? metaResult?.status ?? null : metaResult;
 
-    const summary = ['<b>Админ-панель</b>'];
+    const projectKeySlice = projectKeys.slice(0, ADMIN_PROJECT_PREVIEW_LIMIT);
+    const projectRecords = await Promise.all(
+      projectKeySlice.map(async (key) => {
+        try {
+          const data = await this.storage.getJson('DB', key);
+          return normalizeProjectRecord(key, data);
+        } catch (error) {
+          console.warn('Failed to load project record', key, error);
+          return normalizeProjectRecord(key, null);
+        }
+      }),
+    );
 
-    const metaSection = buildMetaAdminSection(metaStatus, { timezone: this.config.defaultTimezone });
-    if (metaSection.length > 0) {
-      summary.push('', ...metaSection);
-    }
+    const projectSummaries = buildProjectSummaries(projectRecords, metaStatus, {
+      timezone: this.config.defaultTimezone,
+    });
 
-    const webhookInfo = webhookStatus?.info || null;
-    const webhookDefaultUrl = webhookStatus?.defaultUrl || '';
-    const webhookActive = Boolean(webhookInfo?.url);
-    const webhookLines = ['<b>Telegram</b>'];
-    const webhookStatusText = webhookActive
-      ? `<code>${escapeHtml(webhookInfo.url)}</code>`
-      : 'не настроен';
-    webhookLines.push(`Вебхук: ${webhookActive ? '🟢' : '🔴'} ${webhookStatusText}`);
+    const dashboard = renderAdminDashboard({
+      metaStatus,
+      projectSummaries,
+      webhook: webhookStatus,
+      totals: { projects: projectKeys.length, chats: chatKeys.length },
+      timezone: this.config.defaultTimezone,
+    });
 
-    if (webhookDefaultUrl && (!webhookActive || webhookInfo.url !== webhookDefaultUrl)) {
-      webhookLines.push(`Рекомендуемый URL: <code>${escapeHtml(webhookDefaultUrl)}</code>`);
-    }
+    const summary = [dashboard];
 
-    if (webhookStatus?.ensured) {
-      webhookLines.push('Автоматическое подключение выполнено ✅');
-    }
-
-    if (webhookStatus?.error) {
-      webhookLines.push(`Ошибка: <code>${escapeHtml(webhookStatus.error)}</code>`);
-    }
-
-    if (typeof webhookInfo?.pending_update_count === 'number') {
-      webhookLines.push(`В очереди: <b>${webhookInfo.pending_update_count}</b>`);
-    }
-
-    if (webhookInfo?.last_error_message) {
-      webhookLines.push(`Последняя ошибка: ${escapeHtml(webhookInfo.last_error_message)}`);
-    }
-
-    if (webhookInfo?.last_error_date) {
-      webhookLines.push(
-        `Последняя ошибка в: ${escapeHtml(
-          formatTimestamp(webhookInfo.last_error_date * 1000, this.config.defaultTimezone),
-        )}`,
+    if (projectKeys.length > projectRecords.length) {
+      summary.push(
+        '',
+        `Показаны первые ${projectRecords.length} проектов из ${projectKeys.length}. Откройте раздел «Проекты» для полного списка.`,
       );
     }
-
-    summary.push('', ...webhookLines);
-
-    summary.push('', '<b>Сводка</b>');
-    summary.push(`• Зарегистрированных чатов: <b>${chatKeys.length}</b>`);
-    summary.push(`• Проектов: <b>${projectKeys.length}</b>`);
-
-    if (this.config.defaultTimezone) {
-      summary.push(`• Таймзона по умолчанию: <code>${escapeHtml(this.config.defaultTimezone)}</code>`);
-    }
-
-    if (this.config.workerUrl) {
-      summary.push(`• Worker URL: ${escapeHtml(this.config.workerUrl)}`);
-    }
-
-    summary.push('', 'OAuth Meta, отчёты и алерты будут добавлены на следующих этапах.');
 
     if (recentLogs.length > 0) {
       summary.push('', '<b>Последние события Telegram</b>');
@@ -1715,22 +2119,41 @@ class TelegramBot {
         .reverse()
         .map((entry) => formatLogLine(entry, { timezone: this.config.defaultTimezone, limit: 80 }));
       summary.push(...preview);
-    } else {
-      summary.push('', 'Журнал событий пока пуст.');
     }
 
-    const replyMarkup = {
-      inline_keyboard: [
-        [{ text: '🔐 Авторизоваться в Facebook', callback_data: 'admin:fb:auth' }],
-        [{ text: '➕ Подключить проект', callback_data: 'admin:project:connect' }],
-        [{ text: '📁 Проекты', callback_data: 'admin:projects' }],
-        [
-          { text: '🔄 Обновиться', callback_data: 'admin:refresh' },
-          { text: '📄 Логи', callback_data: 'admin:logs' },
-        ],
-        [{ text: '🔁 Вебхук', callback_data: 'admin:webhook:refresh' }],
+    const inlineKeyboard = [
+      [
+        { text: '🔐 Авторизоваться в Facebook', callback_data: 'admin:fb:auth' },
+        { text: '➕ Подключить проект', callback_data: 'admin:project:connect' },
       ],
-    };
+      [
+        { text: '📁 Проекты', callback_data: 'admin:projects' },
+        { text: '🔄 Обновиться', callback_data: 'admin:refresh' },
+      ],
+      [
+        { text: '📄 Логи', callback_data: 'admin:logs' },
+        { text: '🔁 Вебхук', callback_data: 'admin:webhook:refresh' },
+      ],
+    ];
+
+    for (const summaryItem of projectSummaries) {
+      const base = `admin:project:${summaryItem.callbackId}`;
+      const chatButton = summaryItem.chatUrl
+        ? { text: '💬 Перейти в чат', url: summaryItem.chatUrl }
+        : { text: '💬 Перейти в чат', callback_data: `${base}:chat` };
+      inlineKeyboard.push([
+        chatButton,
+        { text: '📊 Отчёт', callback_data: `${base}:report` },
+        { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
+      ]);
+      inlineKeyboard.push([
+        { text: '🎯 Управление KPI', callback_data: `${base}:kpi` },
+        { text: '⏸ Автопауза', callback_data: `${base}:autopause` },
+        { text: '⚙️ Настройки', callback_data: `${base}:settings` },
+      ]);
+    }
+
+    const replyMarkup = { inline_keyboard: inlineKeyboard };
 
     return { text: summary.join('\n'), reply_markup: replyMarkup };
   }
@@ -1971,6 +2394,44 @@ class TelegramBot {
           user_id: userId,
         });
         return { handled: true };
+      }
+
+      if (data.startsWith('admin:project:')) {
+        const parts = data.split(':');
+        const projectId = parts[2] || '';
+        const action = parts[3] || 'open';
+        const responses = {
+          report: '📊 Отчёты скоро будут доступны из панели.',
+          digest: '📈 Сводные отчёты находятся в разработке.',
+          kpi: '🎯 Управление KPI появится на следующих итерациях.',
+          autopause: '⏸ Автопауза кампаний будет доступна после настройки KPI.',
+          settings: '⚙️ Расширенные настройки проекта в разработке.',
+          chat: 'Чат проекта пока не привязан. Добавьте его через «Подключить проект».',
+        };
+
+        let text = responses[action] || 'Функция будет добавлена на следующих этапах.';
+        let showAlert = action !== 'report' && action !== 'digest';
+        if (action === 'chat' && data.includes(':chat') && data.length > 0 && parts.length <= 4) {
+          showAlert = true;
+        }
+
+        await this.telegram.answerCallbackQuery({
+          callback_query_id: id,
+          text,
+          show_alert: showAlert,
+        });
+
+        this.queueLog({
+          kind: 'callback',
+          status: 'planned',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+          project_id: projectId,
+          project_action: action,
+        });
+
+        return { handled: true, reason: 'project_action_placeholder' };
       }
 
       await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Действие пока не поддерживается.' });
