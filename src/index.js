@@ -2137,6 +2137,46 @@ async function telegramSendMessage(env, message, textContent, extra = {}) {
     }
   }
 
+  if (!result.ok) {
+    const authorId = message?.from?.id;
+    const chatId = message?.chat?.id;
+    const authorKey = typeof authorId === 'undefined' || authorId === null ? null : String(authorId);
+    const chatKey = typeof chatId === 'undefined' || chatId === null ? null : String(chatId);
+    const canDm = Boolean(authorKey) && (!chatKey || authorKey !== chatKey);
+
+    if (canDm) {
+      try {
+        const prefix = message?.chat?.title
+          ? `⚠️ Не удалось ответить в чате «${escapeHtml(message.chat.title)}».\n\n`
+          : '⚠️ Не удалось ответить в чате.\n\n';
+        await telegramSendDirect(
+          env,
+          authorId,
+          `${prefix}${textContent}`,
+          {
+            disable_notification: true,
+            disable_web_page_preview: extra.disable_web_page_preview ?? true,
+            parse_mode: extra.parse_mode ?? 'HTML',
+          },
+        );
+        console.warn(
+          'telegramSendMessage fallback to direct message',
+          authorKey,
+          chatKey,
+          result.error,
+        );
+        return { ok: true, fallback: 'direct' };
+      } catch (dmError) {
+        console.error('telegramSendMessage direct fallback error', dmError);
+        return {
+          ok: false,
+          error: result.error,
+          fallback_error: dmError?.message ?? String(dmError ?? 'unknown error'),
+        };
+      }
+    }
+  }
+
   return result;
 }
 
