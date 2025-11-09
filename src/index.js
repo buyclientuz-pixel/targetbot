@@ -20,6 +20,73 @@ const TELEGRAM_LOG_LIMIT = 50;
 const CHAT_KEY_PREFIX = 'chat:';
 const PROJECT_KEY_PREFIX = 'project:';
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function normalizeTelegramId(value) {
+  if (typeof value === 'number' || typeof value === 'string') {
+    return String(value);
+  }
+  return null;
+}
+
+function formatTimestamp(timestamp, timezone) {
+  if (!timestamp) {
+    return 'unknown';
+  }
+
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return String(timestamp);
+  }
+
+  const pad = (value) => String(value).padStart(2, '0');
+
+  if (timezone) {
+    try {
+      const formatter = new Intl.DateTimeFormat('ru-RU', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+      const parts = formatter.formatToParts(date);
+      const lookup = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+      return `${lookup.year}-${lookup.month}-${lookup.day} ${lookup.hour}:${lookup.minute}:${lookup.second}`;
+    } catch (error) {
+      console.warn('Failed to format timestamp with timezone', timezone, error);
+    }
+  }
+
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} UTC`;
+}
+
+function formatLogLine(entry, { timezone, limit = 120 } = {}) {
+  if (!entry || typeof entry !== 'object') {
+    return '• unknown event';
+  }
+
+  const timestamp = formatTimestamp(entry.ts, timezone);
+  const kind = entry.kind ? `<code>${escapeHtml(entry.kind)}</code>` : '<code>event</code>';
+  const statusText = entry.status ? ` ${escapeHtml(`[${entry.status}]`)}` : '';
+  const detailSource =
+    entry.name ?? entry.reason ?? entry.text ?? entry.error ?? entry.chat_id ?? entry.user_id ?? '';
+  const detailRaw = String(detailSource ?? '').trim();
+  const detailTrimmed = detailRaw.length > limit ? `${detailRaw.slice(0, limit)}…` : detailRaw;
+  const detail = detailTrimmed ? ` — ${escapeHtml(detailTrimmed)}` : '';
+
+  return `• ${escapeHtml(timestamp)} — ${kind}${statusText}${detail}`;
+}
+
 function jsonResponse(body, init = {}) {
   const payload = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
   return new Response(payload, { ...init, headers: JSON_HEADERS });
@@ -222,6 +289,10 @@ class TelegramClient {
   async getWebhookInfo() {
     return this.call('getWebhookInfo', {});
   }
+
+  async editMessageText(payload) {
+    return this.call('editMessageText', payload);
+  }
 }
 
 class BotCommandContext {
@@ -389,28 +460,8 @@ class TelegramBot {
         return;
       }
 
-      const [chatKeys, projectKeys] = await Promise.all([
-        this.storage.listKeys('DB', CHAT_KEY_PREFIX, 100),
-        this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 100),
-      ]);
-
-      const summary = [
-        '<b>Админ-панель (MVP)</b>',
-        `• Зарегистрированных чатов: <b>${chatKeys.length}</b>`,
-        `• Проектов: <b>${projectKeys.length}</b>`,
-      ];
-
-      if (this.config.defaultTimezone) {
-        summary.push(`• Таймзона по умолчанию: <code>${this.config.defaultTimezone}</code>`);
-      }
-
-      if (this.config.workerUrl) {
-        summary.push(`• Worker URL: ${this.config.workerUrl}`);
-      }
-
-      summary.push('', 'OAuth Meta, отчёты и алерты будут добавлены на следующих этапах.');
-
-      await context.reply(summary.join('\n'));
+      const panel = await this.buildAdminPanelPayload();
+      await context.reply(panel.text, { reply_markup: panel.reply_markup });
     });
 
     this.registerCommand('pingtest', async (context) => {
@@ -520,6 +571,11 @@ class TelegramBot {
       return { handled: false };
     }
 
+    const data = typeof callback?.data === 'string' ? callback.data : '';
+    if (data.startsWith('admin:')) {
+      return this.handleAdminCallback(callback, data);
+    }
+
     try {
       await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'В разработке' });
       this.queueLog({ kind: 'callback', status: 'ok', data: callback?.data ?? null });
@@ -626,6 +682,180 @@ class TelegramBot {
         .catch((error) => console.error('Failed to append telegram log', error)),
     );
   }
+
+  async buildAdminPanelPayload() {
+    const [chatKeys, projectKeys, recentLogs] = await Promise.all([
+      this.storage.listKeys('DB', CHAT_KEY_PREFIX, 100),
+      this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 100),
+      this.storage.readTelegramLog(5),
+    ]);
+
+    const summary = [
+      '<b>Админ-панель (MVP)</b>',
+      `• Зарегистрированных чатов: <b>${chatKeys.length}</b>`,
+      `• Проектов: <b>${projectKeys.length}</b>`,
+    ];
+
+    if (this.config.defaultTimezone) {
+      summary.push(`• Таймзона по умолчанию: <code>${escapeHtml(this.config.defaultTimezone)}</code>`);
+    }
+
+    if (this.config.workerUrl) {
+      summary.push(`• Worker URL: ${escapeHtml(this.config.workerUrl)}`);
+    }
+
+    summary.push('', 'OAuth Meta, отчёты и алерты будут добавлены на следующих этапах.');
+
+    if (recentLogs.length > 0) {
+      summary.push('', '<b>Последние события Telegram</b>');
+      const preview = recentLogs
+        .slice(Math.max(recentLogs.length - 3, 0))
+        .reverse()
+        .map((entry) => formatLogLine(entry, { timezone: this.config.defaultTimezone, limit: 80 }));
+      summary.push(...preview);
+    } else {
+      summary.push('', 'Журнал событий пока пуст.');
+    }
+
+    const replyMarkup = {
+      inline_keyboard: [
+        [{ text: '🔄 Обновить', callback_data: 'admin:refresh' }],
+        [{ text: '📄 Логи', callback_data: 'admin:logs' }],
+      ],
+    };
+
+    return { text: summary.join('\n'), reply_markup: replyMarkup };
+  }
+
+  async handleAdminCallback(callback, data) {
+    const id = callback?.id;
+    const userId = normalizeTelegramId(callback?.from?.id);
+
+    if (!userId || !this.config.adminIds.has(userId)) {
+      if (id) {
+        try {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: '⛔ Недостаточно прав для выполнения действия.',
+            show_alert: true,
+          });
+        } catch (error) {
+          console.error('Failed to answer unauthorized admin callback', error);
+        }
+      }
+
+      this.queueLog({
+        kind: 'callback',
+        status: 'forbidden',
+        data,
+        user_id: userId,
+      });
+      return { handled: false, reason: 'not_admin' };
+    }
+
+    if (!id) {
+      this.queueLog({ kind: 'callback', status: 'ignored', reason: 'missing_id', data });
+      return { handled: false };
+    }
+
+    const message = callback?.message ?? null;
+    const chatId = message?.chat?.id ?? callback?.from?.id ?? null;
+
+    try {
+      if (data === 'admin:refresh') {
+        if (!message?.message_id || !message?.chat?.id) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Сообщение больше недоступно',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'message_missing' };
+        }
+
+        const panel = await this.buildAdminPanelPayload();
+        await this.telegram.editMessageText({
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          text: panel.text,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+          reply_markup: panel.reply_markup,
+        });
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Панель обновлена.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: message.chat.id,
+          user_id: userId,
+        });
+        return { handled: true };
+      }
+
+      if (data === 'admin:logs') {
+        if (!chatId) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось определить чат.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'chat_missing' };
+        }
+
+        const logs = await this.storage.readTelegramLog(10);
+        const body = logs.length
+          ? ['<b>Журнал Telegram</b>', ...logs.map((entry) => formatLogLine(entry, { timezone: this.config.defaultTimezone, limit: 120 }))].join('\n')
+          : '<b>Журнал Telegram пуст.</b>';
+
+        await this.sendMessageWithFallback(
+          {
+            chat_id: chatId,
+            text: body,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true,
+          },
+          message,
+        );
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Логи отправлены.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+        });
+        return { handled: true };
+      }
+
+      await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Действие пока не поддерживается.' });
+      this.queueLog({
+        kind: 'callback',
+        status: 'ignored',
+        data,
+        chat_id: chatId,
+        user_id: userId,
+      });
+      return { handled: false, reason: 'unknown_admin_action' };
+    } catch (error) {
+      console.error('Admin callback failed', error);
+      await this.telegram.answerCallbackQuery({
+        callback_query_id: id,
+        text: 'Ошибка обработки запроса. Попробуйте позже.',
+        show_alert: true,
+      });
+      this.queueLog({
+        kind: 'callback',
+        status: 'error',
+        data,
+        chat_id: chatId,
+        user_id: userId,
+        error: error?.message || String(error),
+      });
+      return { handled: false, error: error?.message || 'admin_callback_failed' };
+    }
+  }
 }
 class AppConfig {
   constructor(env = {}) {
@@ -699,12 +929,17 @@ class WorkerApp {
   async handleFetch() {
     const url = new URL(this.request.url);
 
-    if (url.pathname === '/health') {
-      return this.handleHealth(url);
+    const trimmedPath = url.pathname.replace(/\/+$/, '');
+
+    if (
+      this.request.method === 'POST' &&
+      /^\/(tg|telegram|webhook)(\/.*)?$/i.test(trimmedPath || '/')
+    ) {
+      return this.handleTelegramWebhook({ url });
     }
 
-    if (url.pathname === '/tg' && this.request.method === 'POST') {
-      return this.handleTelegramWebhook();
+    if (url.pathname === '/health') {
+      return this.handleHealth(url);
     }
 
     if (url.pathname === '/fb_auth') {
@@ -772,7 +1007,7 @@ class WorkerApp {
     return jsonResponse(status);
   }
 
-  async handleTelegramWebhook() {
+  async handleTelegramWebhook({ url } = {}) {
     if (!this.config.botToken) {
       return jsonResponse({ ok: false, error: 'BOT_TOKEN отсутствует' }, { status: 503 });
     }
@@ -782,6 +1017,23 @@ class WorkerApp {
       update = await this.request.json();
     } catch (error) {
       return jsonResponse({ ok: false, error: 'invalid_json' }, { status: 400 });
+    }
+
+    if (url) {
+      const segments = url.pathname.split('/').filter(Boolean);
+      const first = segments[0]?.toLowerCase();
+      if (['tg', 'telegram', 'webhook'].includes(first) && segments.length === 2) {
+        const candidate = segments[1];
+        const validTokens = new Set([this.config.botToken]);
+        const shortToken = this.config.botToken.split(':')[0];
+        if (shortToken) {
+          validTokens.add(shortToken);
+        }
+
+        if (!validTokens.has(candidate)) {
+          return jsonResponse({ ok: false, error: 'invalid_webhook_token' }, { status: 403 });
+        }
+      }
     }
 
     const bot = this.bot;
