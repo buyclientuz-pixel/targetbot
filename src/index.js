@@ -770,6 +770,7 @@ function buildHelpMessage() {
     '• /help — краткая справка',
     '• /register — вызовите внутри нужного топика, чтобы привязать чат',
     '• /admin — открыть панель администратора (для ID из ADMIN_IDS)',
+    '• /pingtest — проверка связки: 10 приветствий за 10 секунд',
     '',
     'Остальные возможности будут добавляться по мере разработки.',
   ].join('\n');
@@ -2219,7 +2220,57 @@ async function handleDigestCommand(env, message, args) {
   }
 }
 
-async function handleTelegramCommand(env, message, command, args) {
+function delay(ms) {
+  const timeout = Number(ms);
+  if (!Number.isFinite(timeout) || timeout <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, timeout));
+}
+
+async function handlePingTestCommand(env, message, ctx) {
+  const runSequence = async () => {
+    for (let index = 0; index < 10; index += 1) {
+      if (index > 0) {
+        await delay(1000);
+      }
+      const result = await telegramSendMessage(env, message, `Привет ${index + 1}/10!`, {
+        disable_reply: true,
+      });
+      if (!result.ok) {
+        console.error('handlePingTestCommand send error', index + 1, result.error);
+        break;
+      }
+    }
+  };
+
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(
+      runSequence().catch((error) => {
+        console.error('handlePingTestCommand sequence error', error);
+      }),
+    );
+
+    return telegramSendMessage(
+      env,
+      message,
+      'Запустил проверку связки: в течение 10 секунд будут приходить сообщения «Привет».',
+      { disable_reply: true },
+    );
+  }
+
+  await telegramSendMessage(
+    env,
+    message,
+    'Контекст не поддерживает отложенные задачи, отправляю приветствия сразу.',
+    { disable_reply: true },
+  );
+
+  await runSequence();
+  return { ok: true, mode: 'inline' };
+}
+
+async function handleTelegramCommand(env, message, command, args, ctx) {
   switch (command) {
     case '/start':
     case '/help':
@@ -2232,6 +2283,8 @@ async function handleTelegramCommand(env, message, command, args) {
       return handleReportCommand(env, message, args);
     case '/digest':
       return handleDigestCommand(env, message, args);
+    case '/pingtest':
+      return handlePingTestCommand(env, message, ctx);
     default:
       if (command.startsWith('/')) {
         return telegramSendMessage(env, message, 'Команда пока не поддерживается.');
@@ -3319,7 +3372,7 @@ function extractText(message) {
   return message.text ?? message.caption ?? '';
 }
 
-async function handleTelegramWebhook(request, env) {
+async function handleTelegramWebhook(request, env, ctx) {
   if (request.method !== 'POST') {
     return methodNotAllowed(['POST']);
   }
@@ -3374,7 +3427,7 @@ async function handleTelegramWebhook(request, env) {
     const args = parts.slice(1);
 
     if (rawCommand.startsWith('/')) {
-      const result = await handleTelegramCommand(env, message, command, args);
+      const result = await handleTelegramCommand(env, message, command, args, ctx);
       summary.handled = true;
       summary.kind = 'command';
       summary.command = command;
@@ -13375,7 +13428,7 @@ export default {
     }
 
     if (pathname === '/tg') {
-      return handleTelegramWebhook(request, env);
+      return handleTelegramWebhook(request, env, ctx);
     }
 
     if (pathname === '/fb_auth') {
