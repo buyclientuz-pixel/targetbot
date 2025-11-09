@@ -2422,18 +2422,22 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   return { text: lines.join('\n'), campaigns };
 }
 
-function buildProjectDetailKeyboard(base, { chatUrl } = {}) {
+function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
   const keyboard = [];
   keyboard.push([
     { text: '📊 Сегодня', callback_data: `${base}:report:today` },
     { text: '📅 Вчера', callback_data: `${base}:report:yesterday` },
     { text: '🗓 7 дней', callback_data: `${base}:report:week` },
   ]);
-  keyboard.push([
+  const reportRow = [
     { text: '📆 Месяц', callback_data: `${base}:report:month` },
     { text: '📍 Диапазон', callback_data: `${base}:report:custom` },
     { text: '📄 CSV', callback_data: `${base}:report:csv` },
-  ]);
+  ];
+  if (portalUrl) {
+    reportRow.push({ text: '🌐 Портал', url: portalUrl });
+  }
+  keyboard.push(reportRow);
   keyboard.push([
     { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
     { text: '🎯 KPI', callback_data: `${base}:kpi` },
@@ -2452,25 +2456,29 @@ function buildProjectDetailKeyboard(base, { chatUrl } = {}) {
   return { inline_keyboard: keyboard };
 }
 
-function buildProjectReportKeyboard(base) {
-  return {
-    inline_keyboard: [
-      [
-        { text: 'Сегодня', callback_data: `${base}:report:today` },
-        { text: 'Вчера', callback_data: `${base}:report:yesterday` },
-        { text: '7 дней', callback_data: `${base}:report:week` },
-      ],
-      [
-        { text: 'Месяц', callback_data: `${base}:report:month` },
-        { text: 'Диапазон', callback_data: `${base}:report:custom` },
-        { text: 'CSV', callback_data: `${base}:report:csv` },
-      ],
-      [
-        { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
-        { text: '⬅️ К проекту', callback_data: `${base}:open` },
-      ],
+function buildProjectReportKeyboard(base, { portalUrl } = {}) {
+  const rows = [
+    [
+      { text: 'Сегодня', callback_data: `${base}:report:today` },
+      { text: 'Вчера', callback_data: `${base}:report:yesterday` },
+      { text: '7 дней', callback_data: `${base}:report:week` },
     ],
-  };
+    [
+      { text: 'Месяц', callback_data: `${base}:report:month` },
+      { text: 'Диапазон', callback_data: `${base}:report:custom` },
+      { text: 'CSV', callback_data: `${base}:report:csv` },
+    ],
+    [
+      { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
+      { text: '⬅️ К проекту', callback_data: `${base}:open` },
+    ],
+  ];
+
+  if (portalUrl) {
+    rows[1].push({ text: '🌐 Портал', url: portalUrl });
+  }
+
+  return { inline_keyboard: rows };
 }
 
 function cloneMetaStatus(status) {
@@ -2653,6 +2661,7 @@ function normalizeProjectRecord(key, raw = {}) {
     raw.telegram_topic_id ||
     null;
   const chatUrl = chat.url || raw.chat_url || raw.telegram_chat_url || buildTelegramTopicUrl(chatId, threadId);
+  const portalTokens = Array.from(extractPortalTokens(raw));
 
   return {
     id: projectId,
@@ -2665,6 +2674,7 @@ function normalizeProjectRecord(key, raw = {}) {
     threadId: threadId ? String(threadId) : '',
     chatTitle: chat.title || chat.chat_title || raw.chat_title || '',
     chatUrl,
+    portalTokens,
     billingNextAt:
       billing.next_payment_at ||
       billing.next_payment_due_at ||
@@ -2711,6 +2721,9 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       usedAccounts.add(normalizedAccountId);
     }
 
+    const portalTokens = Array.isArray(record.portalTokens)
+      ? record.portalTokens.map((token) => String(token || '').trim()).filter(Boolean)
+      : [];
     const spendUsd =
       (account && Number.isFinite(Number(account.spendTodayUsd)) ? Number(account.spendTodayUsd) : null) ??
       (Number.isFinite(Number(record.metrics?.spendTodayUsd)) ? Number(record.metrics.spendTodayUsd) : null);
@@ -2784,6 +2797,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
 
     items.push({
       id: record.id,
+      code: record.code || record.id || '',
       callbackId: normalizeProjectIdForCallback(record.id),
       chatUrl: record.chatUrl || '',
       lines,
@@ -2793,6 +2807,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       title: displayName,
       accountId: normalizedAccountId ? `act_${normalizedAccountId}` : '',
       placeholder: false,
+      portalTokens,
     });
   }
 
@@ -2832,6 +2847,8 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       placeholder: true,
       currency: account.currency || 'USD',
       spendUsd: Number.isFinite(Number(account.spendTodayUsd)) ? Number(account.spendTodayUsd) : null,
+      portalTokens: [],
+      code: '',
     });
   }
 
@@ -4663,7 +4680,6 @@ class MetaService {
     const params = {
       level: 'campaign',
       time_increment: 'all_days',
-      sort: '-spend',
       limit: String(Math.max(1, Math.min(Number(limit) || 40, 100))),
       fields:
         'campaign_id,campaign_name,spend,actions,action_values,cost_per_action_type,reach,impressions,frequency,inline_link_clicks,clicks,date_start,date_stop',
@@ -4949,8 +4965,7 @@ class MetaService {
       paymentCycle: paymentCycle && Object.keys(paymentCycle).length > 0 ? paymentCycle : null,
       requiresAttention:
         paymentIssues.length > 0 ||
-          Boolean(debtUsd && debtUsd > 0) ||
-          (normalizedStatus && normalizedStatus !== 1 && normalizedStatus !== 0),
+          (Number.isFinite(normalizedStatus) && normalizedStatus !== 1 && normalizedStatus !== 0),
     };
   }
 }
@@ -5977,6 +5992,78 @@ class TelegramBot {
     }
   }
 
+  async buildProjectPortalLink(project, { rawProject } = {}) {
+    const workerUrl = typeof this.config.workerUrl === 'string' ? this.config.workerUrl.trim() : '';
+    if (!workerUrl) {
+      return '';
+    }
+
+    if (!project || typeof project !== 'object') {
+      return '';
+    }
+
+    const codeCandidate = project.code || project.id || '';
+    const code = typeof codeCandidate === 'string' ? codeCandidate.trim() : String(codeCandidate || '');
+    if (!code) {
+      return '';
+    }
+
+    const addToken = (value, set) => {
+      if (!value || !set) {
+        return;
+      }
+      const token = String(value).trim();
+      if (token) {
+        set.add(token);
+      }
+    };
+
+    const tokens = new Set();
+    if (Array.isArray(project.portalTokens)) {
+      for (const token of project.portalTokens) {
+        addToken(token, tokens);
+      }
+    }
+    addToken(project.portalToken, tokens);
+    if (project.portal && typeof project.portal === 'object') {
+      addToken(project.portal.token, tokens);
+      addToken(project.portal.secret, tokens);
+    }
+    if (rawProject && typeof rawProject === 'object') {
+      const rawTokens = extractPortalTokens(rawProject);
+      for (const token of rawTokens) {
+        addToken(token, tokens);
+      }
+    }
+    addToken(this.config.portalAccessToken, tokens);
+    addToken(this.config.metaManageToken, tokens);
+
+    if (tokens.size === 0) {
+      return '';
+    }
+
+    let signature = '';
+    for (const token of tokens) {
+      const hashed = await sha256Hex(`${code}:${token}`);
+      if (hashed) {
+        signature = hashed;
+        break;
+      }
+    }
+
+    if (!signature) {
+      const { value } = tokens.values().next();
+      signature = value || '';
+    }
+
+    if (!signature) {
+      return '';
+    }
+
+    const base = workerUrl.replace(/\/+$/, '');
+    return `${base}/p/${encodeURIComponent(code)}?sig=${encodeURIComponent(signature)}`;
+  }
+
   async startAdminSession({ userId, chatId, threadId, project, kind, base }) {
     if (!userId || !kind || !project) {
       return null;
@@ -6295,9 +6382,10 @@ class TelegramBot {
     }
 
     const base = session.base || `admin:project:${session.projectCallbackId || ''}`;
+    const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
 
     await this.sendReply(message, bodyText, {
-      reply_markup: buildProjectReportKeyboard(base),
+      reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
     });
 
     await this.clearAdminSession(userId);
@@ -7390,6 +7478,7 @@ class TelegramBot {
             text = `${text}\n⚠️ Не удалось получить выгрузку Meta.`;
           }
 
+          const portalUrl = await this.buildProjectPortalLink(project, { rawProject });
           const targets = [];
           if (project.chatId) {
             const payload = {
@@ -7412,7 +7501,7 @@ class TelegramBot {
                 text,
                 parse_mode: 'HTML',
                 disable_web_page_preview: true,
-                reply_markup: buildProjectReportKeyboard(`admin:project:${baseCallbackId}`),
+                reply_markup: buildProjectReportKeyboard(`admin:project:${baseCallbackId}`, { portalUrl }),
               },
             });
           }
@@ -8369,16 +8458,21 @@ class TelegramBot {
       const chatButton = summaryItem.chatUrl
         ? { text: '💬 Перейти в чат', url: summaryItem.chatUrl }
         : { text: '💬 Перейти в чат', callback_data: `${base}:chat` };
+      const portalUrl = await this.buildProjectPortalLink(summaryItem);
       inlineKeyboard.push([
         chatButton,
         { text: 'ℹ️ Детали', callback_data: `${base}:open` },
         { text: '💳 Оплата', callback_data: `${base}:payment` },
       ]);
-      inlineKeyboard.push([
+      const reportRow = [
         { text: '📊 Отчёт', callback_data: `${base}:report` },
         { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
         { text: '📄 CSV', callback_data: `${base}:report:csv` },
-      ]);
+      ];
+      if (portalUrl) {
+        reportRow.push({ text: '🌐 Портал', url: portalUrl });
+      }
+      inlineKeyboard.push(reportRow);
       inlineKeyboard.push([
         { text: '🎯 Управление KPI', callback_data: `${base}:kpi` },
         { text: '⏸ Автопауза', callback_data: `${base}:autopause` },
@@ -8466,6 +8560,7 @@ class TelegramBot {
         threadId: '',
         chatTitle: '',
         chatUrl: '',
+        portalTokens: [],
         metrics: {
           spendTodayUsd: account.spendTodayUsd ?? null,
           currency: account.currency || 'USD',
@@ -9333,8 +9428,10 @@ class TelegramBot {
             rawProject: context.rawProject,
             timezone: this.config.defaultTimezone,
           });
+          const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
           const replyMarkup = buildProjectDetailKeyboard(base, {
             chatUrl: context.project.chatUrl,
+            portalUrl,
           });
 
           await this.sendMessageWithFallback(
@@ -9420,6 +9517,7 @@ class TelegramBot {
           const scheduleSettings = extractScheduleSettings(context.rawProject);
           const timezone = scheduleSettings?.timezone || this.config.defaultTimezone;
           const campaignFilter = extractReportCampaignFilter(context.rawProject);
+          const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
 
           let reportData = null;
           if (this.metaService) {
@@ -9482,7 +9580,7 @@ class TelegramBot {
               text: bodyText,
               parse_mode: 'HTML',
               disable_web_page_preview: true,
-              reply_markup: buildProjectReportKeyboard(base),
+              reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
             },
             message,
           );
@@ -9503,6 +9601,7 @@ class TelegramBot {
         }
 
         if (action === 'digest') {
+          const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
           await this.sendMessageWithFallback(
             {
               chat_id: chatId,
@@ -9513,7 +9612,7 @@ class TelegramBot {
               ].join('\n'),
               parse_mode: 'HTML',
               disable_web_page_preview: true,
-              reply_markup: buildProjectReportKeyboard(base),
+              reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
             },
             message,
           );
