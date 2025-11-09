@@ -1,0 +1,20 @@
+# Copy this file to `.dev.vars` (for wrangler dev) or `.env` (for local tooling)
+# and replace placeholder values with your actual secrets. Do NOT commit filled files.
+
+# Telegram bot token issued by @BotFather
+BOT_TOKEN="<paste_telegram_bot_token_here>"
+
+# Comma-separated list of Telegram admin user IDs
+ADMIN_IDS="7623982602,573424022"
+
+# Default timezone for scheduled reports (IANA format)
+DEFAULT_TZ="Asia/Tashkent"
+
+# Public URL of the deployed worker (used for diagnostics)
+WORKER_URL="https://<your-worker>.workers.dev"
+
+# Optional Meta / Google integrations (leave commented until needed)
+# FB_APP_ID=""
+# FB_APP_SECRET=""
+# FB_LONG_TOKEN=""
+# GS_WEBHOOK=""
