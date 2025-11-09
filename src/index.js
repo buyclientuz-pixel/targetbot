@@ -19,6 +19,7 @@ const TELEGRAM_LOG_KEY = 'log:telegram';
 const TELEGRAM_LOG_LIMIT = 50;
 const CHAT_KEY_PREFIX = 'chat:';
 const PROJECT_KEY_PREFIX = 'project:';
+const ADMIN_SESSION_KEY_PREFIX = 'admin:session:';
 const META_STATUS_KEY = 'meta:status';
 const META_TOKEN_KEY = 'meta:token';
 const META_DEFAULT_GRAPH_VERSION = 'v18.0';
@@ -176,6 +177,416 @@ function normalizeProjectIdForCallback(id) {
     return 'project';
   }
   return base.slice(0, 48) || 'project';
+}
+
+function parseKeyValueForm(text) {
+  if (!text) {
+    return new Map();
+  }
+
+  const lines = String(text)
+    .split(/\r?\n|;/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const entries = new Map();
+
+  for (const line of lines) {
+    const match = line.match(/^([^:=]+?)\s*[:=]\s*(.+)$/);
+    if (!match) {
+      continue;
+    }
+
+    const rawKey = match[1]
+      .trim()
+      .toLowerCase()
+      .replace(/[\s/]+/g, '_');
+    const value = match[2].trim();
+    if (!rawKey) {
+      continue;
+    }
+
+    entries.set(rawKey, value);
+  }
+
+  return entries;
+}
+
+function isClearingValue(value) {
+  if (value === null || value === undefined) {
+    return true;
+  }
+
+  const normalized = String(value)
+    .trim()
+    .toLowerCase();
+
+  return normalized === '' || normalized === '-' || normalized === '—' || normalized === 'null';
+}
+
+function normalizeDecimalInput(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const cleaned = String(value)
+    .trim()
+    .replace(/[\s$€₽₸₴£¥₼₽]+/g, '')
+    .replace(',', '.');
+
+  if (!cleaned) {
+    return null;
+  }
+
+  const candidate = Number.parseFloat(cleaned);
+  if (!Number.isFinite(candidate)) {
+    return null;
+  }
+
+  return candidate;
+}
+
+function normalizeBooleanInput(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  const normalized = String(value)
+    .trim()
+    .toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (['1', 'true', 'yes', 'on', 'y', 'да', 'вкл', 'ok', 'enable', 'enabled'].includes(normalized)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off', 'n', 'нет', 'выкл', 'disable', 'disabled'].includes(normalized)) {
+    return false;
+  }
+
+  return null;
+}
+
+const KPI_KEY_ALIASES = {
+  objective: ['objective', 'goal', 'target', 'цел', 'цель', 'тип', 'objective_goal', 'objective_type'],
+  cpa: ['cpa', 'target_cpa', 'цпа', 'стоимость', 'стоимость_действия', 'cost_per_action'],
+  cpl: ['cpl', 'target_cpl', 'цпл', 'стоимость_лида', 'lead_cost'],
+  leadsPerDay: ['leads_per_day', 'leads_day', 'leads', 'lead_per_day', 'lead_day', 'лиды', 'лиды_в_день', 'л/д'],
+  dailyBudget: ['daily_budget', 'budget', 'budget_per_day', 'бюджет', 'бюджет_день', 'budget_day', 'дневной_бюджет'],
+  currency: ['currency', 'валюта', 'currency_code'],
+};
+
+function mapKpiKey(key) {
+  if (!key) {
+    return null;
+  }
+
+  const normalized = key.toLowerCase();
+  for (const [target, aliases] of Object.entries(KPI_KEY_ALIASES)) {
+    if (aliases.some((alias) => normalized === alias || normalized.startsWith(alias))) {
+      return target;
+    }
+  }
+
+  return null;
+}
+
+function parseKpiFormInput(text) {
+  const entries = parseKeyValueForm(text);
+  const touched = new Set();
+  const values = {};
+  const errors = [];
+
+  for (const [rawKey, rawValue] of entries.entries()) {
+    const key = mapKpiKey(rawKey);
+    if (!key) {
+      continue;
+    }
+
+    touched.add(key);
+
+    if (isClearingValue(rawValue)) {
+      values[key] = null;
+      continue;
+    }
+
+    if (key === 'objective') {
+      values.objective = String(rawValue).trim();
+      continue;
+    }
+
+    if (key === 'currency') {
+      values.currency = String(rawValue).trim().toUpperCase();
+      continue;
+    }
+
+    const numeric = normalizeDecimalInput(rawValue);
+    if (!Number.isFinite(numeric)) {
+      errors.push(`Поле ${key} должно быть числом.`);
+      continue;
+    }
+
+    values[key] = numeric;
+  }
+
+  return { values, touched, errors };
+}
+
+const SCHEDULE_KEY_ALIASES = {
+  cadence: ['cadence', 'frequency', 'type', 'режим', 'частота'],
+  times: ['times', 'time', 'hours', 'время', 'часы'],
+  periods: ['periods', 'period', 'range', 'ranges', 'периоды', 'период'],
+  timezone: ['timezone', 'tz', 'таймзона', 'часовой_пояс', 'zone'],
+  quietWeekends: ['quiet_weekends', 'quiet', 'mute_weekends', 'silent', 'weekend_mute', 'тихие', 'тихие_выходные'],
+};
+
+function mapScheduleKey(key) {
+  if (!key) {
+    return null;
+  }
+
+  const normalized = key.toLowerCase();
+  for (const [target, aliases] of Object.entries(SCHEDULE_KEY_ALIASES)) {
+    if (aliases.some((alias) => normalized === alias || normalized.startsWith(alias))) {
+      return target;
+    }
+  }
+
+  return null;
+}
+
+function normalizeCadenceValue(value) {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = String(value)
+    .trim()
+    .toLowerCase();
+
+  const map = {
+    daily: 'daily',
+    ежедневно: 'daily',
+    everyday: 'daily',
+    будни: 'weekdays',
+    weekdays: 'weekdays',
+    рабочие: 'weekdays',
+    weekends: 'weekends',
+    выходные: 'weekends',
+    weekly: 'weekly',
+    неделя: 'weekly',
+    custom: 'custom',
+    индивидуально: 'custom',
+  };
+
+  if (map[normalized]) {
+    return map[normalized];
+  }
+
+  return normalized.replace(/\s+/g, '_');
+}
+
+function normalizeTimeToken(token) {
+  if (!token) {
+    return null;
+  }
+
+  const base = String(token)
+    .trim()
+    .replace('.', ':');
+
+  if (!base) {
+    return null;
+  }
+
+  if (/^\d{1,2}:\d{2}$/.test(base)) {
+    const [hoursRaw, minutesRaw] = base.split(':');
+    const hours = Number.parseInt(hoursRaw, 10);
+    const minutes = Number.parseInt(minutesRaw, 10);
+    if (Number.isFinite(hours) && Number.isFinite(minutes) && hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+    }
+  }
+
+  if (/^\d{3,4}$/.test(base)) {
+    const padded = base.padStart(4, '0');
+    const hours = Number.parseInt(padded.slice(0, 2), 10);
+    const minutes = Number.parseInt(padded.slice(2), 10);
+    if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+      return `${padded.slice(0, 2)}:${padded.slice(2)}`;
+    }
+  }
+
+  return null;
+}
+
+function normalizePeriodToken(token) {
+  if (!token) {
+    return null;
+  }
+
+  const normalized = String(token)
+    .trim()
+    .toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const map = {
+    today: 'today',
+    сегодня: 'today',
+    current: 'today',
+    yesterday: 'yesterday',
+    вчера: 'yesterday',
+    week: 'week',
+    '7d': 'week',
+    '7д': 'week',
+    неделя: 'week',
+    month: 'month',
+    месяц: 'month',
+    '30d': 'month',
+    mtd: 'mtd',
+    'с начала месяца': 'mtd',
+    custom: 'custom',
+    произвольно: 'custom',
+  };
+
+  if (map[normalized]) {
+    return map[normalized];
+  }
+
+  if (/^\d+d$/.test(normalized)) {
+    return normalized;
+  }
+
+  return normalized.replace(/\s+/g, '_');
+}
+
+function parseScheduleFormInput(text) {
+  const entries = parseKeyValueForm(text);
+  const touched = new Set();
+  const values = {};
+  const errors = [];
+
+  for (const [rawKey, rawValue] of entries.entries()) {
+    const key = mapScheduleKey(rawKey);
+    if (!key) {
+      continue;
+    }
+
+    touched.add(key);
+
+    if (key === 'quietWeekends') {
+      if (isClearingValue(rawValue)) {
+        values.quietWeekends = null;
+      } else {
+        const bool = normalizeBooleanInput(rawValue);
+        if (bool === null) {
+          errors.push('Поле quietWeekends должно быть «да/нет».');
+        } else {
+          values.quietWeekends = bool;
+        }
+      }
+      continue;
+    }
+
+    if (isClearingValue(rawValue)) {
+      values[key] = null;
+      continue;
+    }
+
+    if (key === 'cadence') {
+      values.cadence = normalizeCadenceValue(rawValue);
+      continue;
+    }
+
+    if (key === 'timezone') {
+      values.timezone = String(rawValue).trim();
+      continue;
+    }
+
+    if (key === 'times') {
+      const tokens = String(rawValue)
+        .split(/[\s,]+/)
+        .map((token) => token.trim())
+        .filter(Boolean);
+      const normalized = [];
+      for (const token of tokens) {
+        const time = normalizeTimeToken(token);
+        if (!time) {
+          errors.push(`Некорректное время: ${token}`);
+        } else if (!normalized.includes(time)) {
+          normalized.push(time);
+        }
+      }
+      values.times = normalized;
+      continue;
+    }
+
+    if (key === 'periods') {
+      const tokens = String(rawValue)
+        .split(/[\s,]+/)
+        .map((token) => token.trim())
+        .filter(Boolean);
+      const normalized = [];
+      for (const token of tokens) {
+        const period = normalizePeriodToken(token);
+        if (period && !normalized.includes(period)) {
+          normalized.push(period);
+        }
+      }
+      values.periods = normalized;
+      continue;
+    }
+  }
+
+  return { values, touched, errors };
+}
+
+function applyProjectIdentity(target, projectSnapshot) {
+  if (!target || typeof target !== 'object' || !projectSnapshot) {
+    return;
+  }
+
+  const snapshot = projectSnapshot;
+  if (snapshot.id && !target.id) {
+    target.id = snapshot.id;
+  }
+  if (snapshot.code && !target.code) {
+    target.code = snapshot.code;
+  }
+  if (snapshot.name && !target.name) {
+    target.name = snapshot.name;
+  }
+  if (snapshot.adAccountId) {
+    target.ad_account_id = target.ad_account_id || snapshot.adAccountId;
+    target.meta_account_id = target.meta_account_id || snapshot.adAccountId;
+    target.account_id = target.account_id || snapshot.adAccountId;
+    target.meta = target.meta || {};
+    target.meta.adAccountId = target.meta.adAccountId || snapshot.adAccountId;
+    target.meta.accountId = target.meta.accountId || snapshot.adAccountId;
+  }
+  if (snapshot.chatId || snapshot.threadId) {
+    target.chat = target.chat || {};
+    if (snapshot.chatId && !target.chat.id) {
+      target.chat.id = snapshot.chatId;
+    }
+    if (snapshot.threadId && !target.chat.thread_id) {
+      target.chat.thread_id = snapshot.threadId;
+    }
+  }
 }
 
 function parseMetaCurrency(value) {
@@ -1619,6 +2030,13 @@ class KvStorage {
     return true;
   }
 
+  async deleteKey(bindingName, key) {
+    const namespace = this.namespace(bindingName);
+    if (!namespace || typeof namespace.delete !== 'function') return false;
+    await namespace.delete(key);
+    return true;
+  }
+
   async listKeys(bindingName, prefix, limit = 100) {
     const namespace = this.namespace(bindingName);
     if (!namespace || typeof namespace.list !== 'function') return [];
@@ -2332,6 +2750,7 @@ class TelegramBot {
           '• /register — запомнить текущий топик',
           '• /admin — админ-панель (для администраторов)',
           '• /pingtest — проверка связи (10 сообщений за 10 секунд)',
+          '• /cancel — отменить ввод в админских формах',
         ].join('\n'),
       );
     });
@@ -2347,6 +2766,7 @@ class TelegramBot {
           '/report &lt;code&gt; [period] — (зарезервировано)',
           '/digest &lt;code&gt; — (зарезервировано)',
           '/pingtest — 10 сообщений для проверки вебхука',
+          '/cancel — отменить ввод текущей формы',
         ].join('\n'),
       );
     });
@@ -2395,11 +2815,466 @@ class TelegramBot {
       await context.reply(panel.text, { reply_markup: panel.reply_markup });
     });
 
+    this.registerCommand('cancel', async (context) => {
+      const userId = context.userId;
+      if (!userId) {
+        await context.reply('Команда доступна только пользователям.');
+        return;
+      }
+
+      const session = await this.loadAdminSession(userId);
+      if (!session) {
+        await context.reply('Активных операций не найдено.');
+        return;
+      }
+
+      await this.clearAdminSession(userId);
+      await context.reply('🛑 Ввод остановлен. Изменения не сохранены.');
+    });
+
     this.registerCommand('pingtest', async (context) => {
       await context.reply('🚀 Запускаю проверку: в течение 10 секунд придёт 10 сообщений.');
       context.defer(() => this.runPingTest(context));
     });
   }
+  buildAdminSessionKey(userId) {
+    if (!userId) {
+      return null;
+    }
+    return `${ADMIN_SESSION_KEY_PREFIX}${userId}`;
+  }
+
+  async loadAdminSession(userId) {
+    const key = this.buildAdminSessionKey(userId);
+    if (!key) {
+      return null;
+    }
+    try {
+      const data = await this.storage.getJson('DB', key);
+      if (data && typeof data === 'object') {
+        return data;
+      }
+    } catch (error) {
+      console.warn('Failed to load admin session', key, error);
+    }
+    return null;
+  }
+
+  async saveAdminSession(session) {
+    if (!session || !session.userId) {
+      return false;
+    }
+    const key = this.buildAdminSessionKey(session.userId);
+    if (!key) {
+      return false;
+    }
+    const now = new Date().toISOString();
+    const payload = { ...session, updatedAt: now };
+    if (!payload.createdAt) {
+      payload.createdAt = now;
+    }
+    try {
+      await this.storage.putJson('DB', key, payload);
+      return true;
+    } catch (error) {
+      console.error('Failed to save admin session', key, error);
+      return false;
+    }
+  }
+
+  async clearAdminSession(userId) {
+    const key = this.buildAdminSessionKey(userId);
+    if (!key) {
+      return false;
+    }
+    try {
+      await this.storage.deleteKey('DB', key);
+      return true;
+    } catch (error) {
+      console.warn('Failed to clear admin session', key, error);
+      return false;
+    }
+  }
+
+  async startAdminSession({ userId, chatId, threadId, project, kind, base }) {
+    if (!userId || !kind || !project) {
+      return null;
+    }
+
+    const projectKey =
+      project.key ||
+      `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(project.id || project.code || project.name || base || 'project')}`;
+
+    const callbackId = normalizeProjectIdForCallback(project.id || project.code || base || project.name || 'project');
+
+    const session = {
+      kind,
+      userId,
+      chatId: chatId ? String(chatId) : null,
+      threadId: threadId ? String(threadId) : null,
+      projectKey,
+      projectId: project.id || '',
+      projectCode: project.code || '',
+      projectName: project.name || '',
+      projectCallbackId: callbackId,
+      base,
+      projectSnapshot: {
+        id: project.id || '',
+        code: project.code || '',
+        name: project.name || '',
+        adAccountId: project.adAccountId || '',
+        chatId: project.chatId || '',
+        threadId: project.threadId || '',
+      },
+      createdAt: new Date().toISOString(),
+    };
+
+    await this.saveAdminSession(session);
+    this.queueLog({
+      kind: 'admin_session',
+      status: 'started',
+      session_kind: kind,
+      user_id: userId,
+      project_key: projectKey,
+    });
+    return session;
+  }
+
+  async handleAdminSessionInput({ session, message, text }) {
+    if (!session || !session.kind) {
+      return { handled: false };
+    }
+
+    const userId = normalizeTelegramId(message?.from?.id);
+    if (!userId || userId !== session.userId) {
+      return { handled: false };
+    }
+
+    const trimmed = typeof text === 'string' ? text.trim() : '';
+    if (!trimmed) {
+      await this.sendReply(message, 'Отправьте значения в указанном формате. Для отмены используйте /cancel или напишите «отмена».');
+      return { handled: true };
+    }
+
+    if (/^\/?(cancel|отмена|стоп)$/i.test(trimmed)) {
+      await this.clearAdminSession(userId);
+      await this.sendReply(message, '🛑 Ввод остановлен. Изменения не сохранены.');
+      this.queueLog({
+        kind: 'admin_session',
+        status: 'cancelled',
+        session_kind: session.kind,
+        user_id: userId,
+        project_key: session.projectKey,
+      });
+      return { handled: true };
+    }
+
+    if (session.kind === 'kpi_edit') {
+      return this.handleKpiSessionInput({ session, message, text: trimmed });
+    }
+
+    if (session.kind === 'schedule_edit') {
+      return this.handleScheduleSessionInput({ session, message, text: trimmed });
+    }
+
+    return { handled: false };
+  }
+
+  async handleKpiSessionInput({ session, message, text }) {
+    const userId = session.userId;
+    const parseResult = parseKpiFormInput(text);
+    if (parseResult.errors.length > 0) {
+      await this.sendReply(
+        message,
+        ['⚠️ Исправьте ошибки:', ...parseResult.errors.map((line) => `• ${escapeHtml(line)}`), '', 'Повторите ввод или используйте /cancel.'].join('\n'),
+      );
+      this.queueLog({
+        kind: 'admin_session',
+        status: 'error',
+        session_kind: session.kind,
+        user_id: userId,
+        project_key: session.projectKey,
+        error: 'parse_kpi',
+      });
+      return { handled: true };
+    }
+
+    if (parseResult.touched.size === 0) {
+      await this.sendReply(message, 'Не удалось распознать поля. Укажите пары вида <code>cpa=2.4</code> или <code>currency=USD</code>.');
+      return { handled: true };
+    }
+
+    const projectKey = session.projectKey;
+    if (!projectKey) {
+      await this.sendReply(message, 'Не удалось определить проект для сохранения KPI. Попробуйте открыть карточку проекта заново.');
+      await this.clearAdminSession(userId);
+      return { handled: true };
+    }
+
+    let raw = await this.storage.getJson('DB', projectKey);
+    if (!raw || typeof raw !== 'object') {
+      raw = {};
+    }
+
+    applyProjectIdentity(raw, session.projectSnapshot);
+
+    const current =
+      (raw.settings && raw.settings.kpi) ||
+      raw.kpi ||
+      (raw.metrics && raw.metrics.kpi) ||
+      {};
+
+    const next = { ...current };
+
+    if (parseResult.touched.has('objective')) {
+      if (parseResult.values.objective) {
+        next.objective = parseResult.values.objective;
+      } else {
+        delete next.objective;
+      }
+    }
+    if (parseResult.touched.has('currency')) {
+      if (parseResult.values.currency) {
+        next.currency = parseResult.values.currency;
+      } else {
+        delete next.currency;
+      }
+    }
+    if (parseResult.touched.has('cpa')) {
+      if (Number.isFinite(parseResult.values.cpa)) {
+        next.cpa = parseResult.values.cpa;
+      } else {
+        delete next.cpa;
+      }
+    }
+    if (parseResult.touched.has('cpl')) {
+      if (Number.isFinite(parseResult.values.cpl)) {
+        next.cpl = parseResult.values.cpl;
+      } else {
+        delete next.cpl;
+      }
+    }
+    if (parseResult.touched.has('leadsPerDay')) {
+      if (Number.isFinite(parseResult.values.leadsPerDay)) {
+        next.leadsPerDay = parseResult.values.leadsPerDay;
+      } else {
+        delete next.leadsPerDay;
+      }
+    }
+    if (parseResult.touched.has('dailyBudget')) {
+      if (Number.isFinite(parseResult.values.dailyBudget)) {
+        next.dailyBudget = parseResult.values.dailyBudget;
+      } else {
+        delete next.dailyBudget;
+      }
+    }
+
+    const storedKpi = {};
+    if (next.objective) {
+      storedKpi.objective = next.objective;
+    }
+    if (Number.isFinite(next.cpa)) {
+      storedKpi.cpa = next.cpa;
+    }
+    if (Number.isFinite(next.cpl)) {
+      storedKpi.cpl = next.cpl;
+    }
+    if (Number.isFinite(next.leadsPerDay)) {
+      storedKpi.leadsPerDay = next.leadsPerDay;
+    }
+    if (Number.isFinite(next.dailyBudget)) {
+      storedKpi.dailyBudget = next.dailyBudget;
+    }
+    if (next.currency) {
+      storedKpi.currency = next.currency;
+    }
+
+    const now = new Date().toISOString();
+    raw.kpi = { ...storedKpi };
+    raw.settings = raw.settings || {};
+    raw.settings.kpi = { ...storedKpi };
+    raw.metrics = raw.metrics || {};
+    raw.metrics.kpi = { ...storedKpi };
+    raw.updated_at = now;
+    raw.updated_by = userId;
+
+    await this.storage.putJson('DB', projectKey, raw);
+    await this.clearAdminSession(userId);
+
+    const lines = ['<b>KPI обновлены</b>', ...formatKpiLines(storedKpi), '', 'Можно открыть карточку проекта для просмотра изменений.'];
+
+    const base = session.base || `admin:project:${session.projectCallbackId || ''}`;
+    const replyMarkup = {
+      inline_keyboard: [
+        [{ text: '⬅️ К проекту', callback_data: `${base}:open` }],
+        [{ text: '⚙️ Настройки', callback_data: `${base}:settings` }],
+      ],
+    };
+
+    await this.sendReply(message, lines.join('\n'), { reply_markup: replyMarkup });
+    this.queueLog({
+      kind: 'admin_session',
+      status: 'saved',
+      session_kind: session.kind,
+      user_id: userId,
+      project_key: projectKey,
+    });
+
+    return { handled: true };
+  }
+
+  async handleScheduleSessionInput({ session, message, text }) {
+    const userId = session.userId;
+    const parseResult = parseScheduleFormInput(text);
+    if (parseResult.errors.length > 0) {
+      await this.sendReply(
+        message,
+        ['⚠️ Исправьте ошибки:', ...parseResult.errors.map((line) => `• ${escapeHtml(line)}`), '', 'Повторите ввод или используйте /cancel.'].join('\n'),
+      );
+      this.queueLog({
+        kind: 'admin_session',
+        status: 'error',
+        session_kind: session.kind,
+        user_id: userId,
+        project_key: session.projectKey,
+        error: 'parse_schedule',
+      });
+      return { handled: true };
+    }
+
+    if (parseResult.touched.size === 0) {
+      await this.sendReply(
+        message,
+        'Укажите параметры расписания, например <code>times=09:30,19:00</code> или <code>quiet_weekends=yes</code>.',
+      );
+      return { handled: true };
+    }
+
+    const projectKey = session.projectKey;
+    if (!projectKey) {
+      await this.sendReply(message, 'Не удалось определить проект для сохранения расписания. Попробуйте открыть карточку проекта заново.');
+      await this.clearAdminSession(userId);
+      return { handled: true };
+    }
+
+    let raw = await this.storage.getJson('DB', projectKey);
+    if (!raw || typeof raw !== 'object') {
+      raw = {};
+    }
+
+    applyProjectIdentity(raw, session.projectSnapshot);
+
+    const current =
+      (raw.settings && raw.settings.schedule) ||
+      raw.schedule ||
+      (raw.reporting && raw.reporting.schedule) ||
+      {};
+
+    const next = { ...current };
+
+    if (parseResult.touched.has('cadence')) {
+      if (parseResult.values.cadence) {
+        next.cadence = parseResult.values.cadence;
+      } else {
+        delete next.cadence;
+      }
+    }
+
+    if (parseResult.touched.has('timezone')) {
+      if (parseResult.values.timezone) {
+        next.timezone = parseResult.values.timezone;
+      } else {
+        delete next.timezone;
+      }
+    }
+
+    if (parseResult.touched.has('times')) {
+      if (Array.isArray(parseResult.values.times) && parseResult.values.times.length > 0) {
+        next.times = parseResult.values.times;
+      } else {
+        delete next.times;
+      }
+    }
+
+    if (parseResult.touched.has('periods')) {
+      if (Array.isArray(parseResult.values.periods) && parseResult.values.periods.length > 0) {
+        next.periods = parseResult.values.periods;
+      } else {
+        delete next.periods;
+      }
+    }
+
+    if (parseResult.touched.has('quietWeekends')) {
+      if (parseResult.values.quietWeekends === null) {
+        delete next.quietWeekends;
+        delete next.quiet_weekends;
+        delete next.mute_weekends;
+      } else {
+        const flag = Boolean(parseResult.values.quietWeekends);
+        next.quietWeekends = flag;
+        next.quiet_weekends = flag;
+        next.mute_weekends = flag;
+      }
+    }
+
+    const storedSchedule = {};
+    if (next.cadence) {
+      storedSchedule.cadence = next.cadence;
+    }
+    if (Array.isArray(next.times) && next.times.length > 0) {
+      storedSchedule.times = next.times;
+    }
+    if (Array.isArray(next.periods) && next.periods.length > 0) {
+      storedSchedule.periods = next.periods;
+    }
+    if (next.timezone) {
+      storedSchedule.timezone = next.timezone;
+    }
+    if (typeof next.quietWeekends === 'boolean') {
+      storedSchedule.quietWeekends = next.quietWeekends;
+      storedSchedule.quiet_weekends = next.quietWeekends;
+      storedSchedule.mute_weekends = next.quietWeekends;
+    }
+
+    const now = new Date().toISOString();
+    raw.schedule = { ...storedSchedule };
+    raw.settings = raw.settings || {};
+    raw.settings.schedule = { ...storedSchedule };
+    raw.reporting = raw.reporting || {};
+    raw.reporting.schedule = { ...storedSchedule };
+    raw.updated_at = now;
+    raw.updated_by = userId;
+
+    await this.storage.putJson('DB', projectKey, raw);
+    await this.clearAdminSession(userId);
+
+    const lines = [
+      '<b>Расписание сохранено</b>',
+      ...formatScheduleLines(storedSchedule, { timezone: this.config.defaultTimezone }),
+      '',
+      'Настройки можно скорректировать повторно в любой момент.',
+    ];
+
+    const base = session.base || `admin:project:${session.projectCallbackId || ''}`;
+    const replyMarkup = {
+      inline_keyboard: [
+        [{ text: '⬅️ К проекту', callback_data: `${base}:open` }],
+        [{ text: '🎯 KPI', callback_data: `${base}:kpi` }],
+      ],
+    };
+
+    await this.sendReply(message, lines.join('\n'), { reply_markup: replyMarkup });
+    this.queueLog({
+      kind: 'admin_session',
+      status: 'saved',
+      session_kind: session.kind,
+      user_id: userId,
+      project_key: projectKey,
+    });
+
+    return { handled: true };
+  }
+
   async runPingTest(context) {
     const chatId = context.chatId;
     if (!chatId) return;
@@ -2442,6 +3317,17 @@ class TelegramBot {
   async handleMessage(update, message) {
     const text = typeof message?.text === 'string' ? message.text.trim() : '';
     if (!text.startsWith('/')) {
+      const userId = normalizeTelegramId(message?.from?.id);
+      if (userId && this.config.adminIds.has(userId)) {
+        const session = await this.loadAdminSession(userId);
+        if (session) {
+          const result = await this.handleAdminSessionInput({ session, message, text });
+          if (result?.handled) {
+            return result;
+          }
+        }
+      }
+
       this.queueLog({
         kind: 'message',
         chat_id: message?.chat?.id,
@@ -3334,6 +4220,64 @@ class TelegramBot {
           return { handled: true };
         }
 
+        if (action === 'kpi' && subAction === 'edit') {
+          const session = await this.startAdminSession({
+            userId,
+            chatId,
+            threadId: message?.message_thread_id ?? null,
+            project: context.project,
+            kind: 'kpi_edit',
+            base,
+          });
+
+          const kpi = extractProjectKpi(context.rawProject);
+          const instructions = [
+            '<b>Редактор KPI</b>',
+            'Отправьте параметры в формате <code>ключ=значение</code> в следующем сообщении. Примеры:',
+            '<code>objective=LEAD_GENERATION</code>',
+            '<code>cpa=2.4</code>',
+            '<code>leads=12</code>',
+            '<code>budget=50</code>',
+            '<code>currency=USD</code>',
+            'Чтобы очистить значение, укажите <code>-</code> (например, <code>cpl=-</code>). Для отмены — /cancel или «отмена».',
+            '',
+            '<b>Текущие KPI</b>',
+            ...formatKpiLines(kpi),
+          ];
+
+          await this.sendMessageWithFallback(
+            {
+              chat_id: chatId,
+              text: instructions.join('\n'),
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                    { text: '⚙️ Настройки', callback_data: `${base}:settings` },
+                  ],
+                ],
+              },
+            },
+            message,
+          );
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Жду значения KPI.' });
+          this.queueLog({
+            kind: 'callback',
+            status: 'ok',
+            data,
+            chat_id: chatId,
+            user_id: userId,
+            project_id: context.project.id,
+            action: 'kpi_edit_start',
+            session: session ? { kind: session.kind, project_key: session.projectKey } : null,
+          });
+
+          return { handled: true };
+        }
+
         if (action === 'kpi') {
           const kpi = extractProjectKpi(context.rawProject);
           const body = ['<b>KPI проекта</b>', ...formatKpiLines(kpi)];
@@ -3371,13 +4315,77 @@ class TelegramBot {
               parse_mode: 'HTML',
               disable_web_page_preview: true,
               reply_markup: {
-                inline_keyboard: [[{ text: '⬅️ К проекту', callback_data: `${base}:open` }]],
+                inline_keyboard: [
+                  [
+                    { text: '🕒 Изменить расписание', callback_data: `${base}:schedule:edit` },
+                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                  ],
+                ],
               },
             },
             message,
           );
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Автопауза скоро будет.' });
+          return { handled: true };
+        }
+
+        if (action === 'schedule' && subAction === 'edit') {
+          const session = await this.startAdminSession({
+            userId,
+            chatId,
+            threadId: message?.message_thread_id ?? null,
+            project: context.project,
+            kind: 'schedule_edit',
+            base,
+          });
+
+          const schedule = extractScheduleSettings(context.rawProject);
+          const instructions = [
+            '<b>Редактор расписания</b>',
+            'Укажите параметры через <code>ключ=значение</code>. Можно перечислять несколько ключей в одном сообщении:',
+            '<code>cadence=daily</code>',
+            '<code>times=09:30,19:00</code>',
+            '<code>periods=today,week</code>',
+            '<code>timezone=Asia/Tashkent</code>',
+            '<code>quiet_weekends=yes</code>',
+            'Чтобы очистить значение, укажите <code>-</code>. Для отмены — /cancel или «отмена».',
+            '',
+            '<b>Текущее расписание</b>',
+            ...formatScheduleLines(schedule, { timezone: this.config.defaultTimezone }),
+          ];
+
+          await this.sendMessageWithFallback(
+            {
+              chat_id: chatId,
+              text: instructions.join('\n'),
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                    { text: '🎯 KPI', callback_data: `${base}:kpi` },
+                  ],
+                  [{ text: '⚙️ Настройки', callback_data: `${base}:settings` }],
+                ],
+              },
+            },
+            message,
+          );
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Жду параметры расписания.' });
+          this.queueLog({
+            kind: 'callback',
+            status: 'ok',
+            data,
+            chat_id: chatId,
+            user_id: userId,
+            project_id: context.project.id,
+            action: 'schedule_edit_start',
+            session: session ? { kind: session.kind, project_key: session.projectKey } : null,
+          });
+
           return { handled: true };
         }
 
@@ -3393,7 +4401,7 @@ class TelegramBot {
             '<b>Алерты</b>',
             ...formatAlertLines(alerts, { account: context.account, campaigns: context.account?.campaignSummaries }),
             '',
-            'В следующих версиях добавим пошаговый мастер для настройки расписаний и уведомлений прямо из Telegram.',
+            'Используйте кнопки ниже, чтобы изменить расписание или вернуться к проекту.',
           ];
 
           await this.sendMessageWithFallback(
@@ -3403,7 +4411,12 @@ class TelegramBot {
               parse_mode: 'HTML',
               disable_web_page_preview: true,
               reply_markup: {
-                inline_keyboard: [[{ text: '⬅️ К проекту', callback_data: `${base}:open` }]],
+                inline_keyboard: [
+                  [
+                    { text: '🕒 Изменить расписание', callback_data: `${base}:schedule:edit` },
+                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                  ],
+                ],
               },
             },
             message,
