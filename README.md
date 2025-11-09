@@ -87,3 +87,10 @@ The repository now mirrors the code that is live in Cloudflare. Modify `src/inde
 ## Automated deployments (optional)
 
 If you keep this project in a Git repository, you can configure CI/CD (e.g., GitHub Actions) to run `wrangler deploy` on every push to `main`. Store the Cloudflare API token and account ID in the CI secrets to keep them secure.
+
+## Telegram bot admin panel
+
+1. Установите переменные окружения (`BOT_TOKEN`, `ADMIN_IDS`, `DEFAULT_TZ`, `FB_APP_ID`, `FB_APP_SECRET`, `FB_LONG_TOKEN`, `WORKER_URL`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `CF_KV_NAMESPACE_ID`).
+2. Выполните `node scripts/seed-admin.mjs`, чтобы синхронизировать список администраторов в KV.
+3. Запустите бота локально: `npm run dev`.
+4. В Telegram выполните `/admin`, чтобы открыть меню управления.

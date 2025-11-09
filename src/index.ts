@@ -82,6 +82,10 @@ export default {
         return handleBalance(request, env);
       case "/logs":
         return handleGetLogs(request, env, url);
+      case "/portal/link":
+        return handlePortalLink(request, env, url);
+      case "/portal/new":
+        return handlePortalNew(request, env, url);
       case "/targets":
         return handleTargetsCollection(request, env, url);
       default:
@@ -511,6 +515,70 @@ async function handleGetLogs(
   });
 
   return jsonResponse({ logs: logs.records, cursor: logs.cursor });
+}
+
+async function handlePortalLink(
+  request: Request,
+  env: Env,
+  url: URL
+): Promise<Response> {
+  if (request.method !== "GET") {
+    return methodNotAllowed(["GET"]);
+  }
+
+  const projectId = url.searchParams.get("project");
+  if (!projectId) {
+    return errorResponse("Missing project parameter", 400);
+  }
+
+  const projectKey = `project:${projectId}`;
+  const project = await env.REPORTS_NAMESPACE.get(projectKey);
+  if (!project) {
+    return errorResponse(`Project "${projectId}" not found.`, 404);
+  }
+
+  const sigKey = `portal:${projectId}:sig`;
+  const signature = await env.REPORTS_NAMESPACE.get(sigKey);
+  if (!signature) {
+    return errorResponse(`Portal link for project "${projectId}" not issued.`, 404);
+  }
+
+  const link = buildPortalUrl(url, projectId, signature);
+  return jsonResponse({ url: link });
+}
+
+async function handlePortalNew(
+  request: Request,
+  env: Env,
+  url: URL
+): Promise<Response> {
+  if (request.method !== "GET") {
+    return methodNotAllowed(["GET"]);
+  }
+
+  const projectId = url.searchParams.get("project");
+  if (!projectId) {
+    return errorResponse("Missing project parameter", 400);
+  }
+
+  const projectKey = `project:${projectId}`;
+  const project = await env.REPORTS_NAMESPACE.get(projectKey);
+  if (!project) {
+    return errorResponse(`Project "${projectId}" not found.`, 404);
+  }
+
+  const signature = crypto.randomUUID().replace(/-/g, "");
+  await env.REPORTS_NAMESPACE.put(`portal:${projectId}:sig`, signature);
+
+  const link = buildPortalUrl(url, projectId, signature);
+  return jsonResponse({ url: link });
+}
+
+function buildPortalUrl(url: URL, projectId: string, signature: string): string {
+  const base = new URL(url.origin);
+  base.pathname = `/p/${projectId}`;
+  base.search = new URLSearchParams({ sig: signature }).toString();
+  return base.toString();
 }
 
 async function loadBillingData(env: Env): Promise<{ limit: number; spent: number }> {

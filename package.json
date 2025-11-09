@@ -1,10 +1,26 @@
 {
   "scripts": {
+    "dev": "tsx watch src/bot/index.ts",
+    "start": "node dist/bot/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
     "test": "node ./test/run-tests.mjs",
     "check:config": "node ./scripts/check-config.mjs"
   },
+  "dependencies": {
+    "@grammyjs/conversations": "^1.2.0",
+    "@grammyjs/ratelimiter": "^1.1.7",
+    "dayjs": "^1.11.11",
+    "grammy": "^1.21.0",
+    "undici": "^6.13.0",
+    "zod": "^3.23.8"
+  },
   "devDependencies": {
+    "@types/node": "^20.14.12",
+    "eslint": "^8.57.0",
     "miniflare": "^4.20251105.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4",
     "wrangler": "^4.46.0"
   }
 }
