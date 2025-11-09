@@ -4389,7 +4389,6 @@ class MetaService {
       'default_payment_method{last4,display_string}',
       'funding_source_details{display_string}',
       'business_name',
-      'owner_business{name}',
       'adspaymentcycle{threshold_amount,payment_method_last4}',
     ].join(',');
 
