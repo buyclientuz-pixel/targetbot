@@ -459,6 +459,35 @@ function isValidWebhookToken(candidate, botToken) {
   return validTokens.has(normalizedCandidate);
 }
 
+function isValidMetaManageToken(candidate, config) {
+  if (!candidate || !config) {
+    return false;
+  }
+
+  const token = String(candidate).trim();
+  if (!token) {
+    return false;
+  }
+
+  if (isValidWebhookToken(token, config.botToken)) {
+    return true;
+  }
+
+  if (config.metaManageToken && token === config.metaManageToken) {
+    return true;
+  }
+
+  if (config.metaLongToken && token === config.metaLongToken) {
+    return true;
+  }
+
+  if (config.metaAppSecret && token === config.metaAppSecret) {
+    return true;
+  }
+
+  return false;
+}
+
 function parseAuthorizationToken(value) {
   if (typeof value !== 'string') {
     return '';
@@ -1982,6 +2011,7 @@ class AppConfig {
     this.metaAppSecret = typeof env.FB_APP_SECRET === 'string' ? env.FB_APP_SECRET.trim() : '';
     this.metaLongToken = AppConfig.resolveMetaLongToken(env);
     this.metaGraphVersion = AppConfig.resolveMetaGraphVersion(env);
+    this.metaManageToken = AppConfig.resolveMetaManageToken(env);
     this.telegramWebhookUrl = AppConfig.resolveWebhookUrl(env);
   }
 
@@ -2035,6 +2065,17 @@ class AppConfig {
       }
     }
     return META_DEFAULT_GRAPH_VERSION;
+  }
+
+  static resolveMetaManageToken(env = {}) {
+    const candidateKeys = ['META_MANAGE_TOKEN', 'FB_MANAGE_TOKEN', 'MANAGE_TOKEN'];
+    for (const key of candidateKeys) {
+      const value = typeof env[key] === 'string' ? env[key].trim() : '';
+      if (value) {
+        return value;
+      }
+    }
+    return '';
   }
 }
 
@@ -2101,6 +2142,10 @@ class WorkerApp {
       normalizedPath.startsWith('/manage/telegram/webhook/')
     ) {
       return this.handleTelegramWebhookManage(url, { normalizedPath });
+    }
+
+    if (normalizedPath === '/manage/meta' || normalizedPath.startsWith('/manage/meta/')) {
+      return this.handleMetaManage(url, { normalizedPath });
     }
 
     if (normalizedPath === '/fb_auth') {
@@ -2198,6 +2243,70 @@ class WorkerApp {
 
     const result = await bot.handleUpdate(update);
     return jsonResponse({ ok: true, result });
+  }
+
+  async handleMetaManage(url, { normalizedPath } = {}) {
+    if (!this.metaService) {
+      return jsonResponse({ ok: false, error: 'meta_service_unavailable' }, { status: 503 });
+    }
+
+    const segments = typeof normalizedPath === 'string' ? normalizedPath.split('/').filter(Boolean) : [];
+    const pathToken = segments.length >= 3 ? safeDecode(segments[2]) : '';
+    const pathAction = segments.length >= 4 ? safeDecode(segments[3] || '') : '';
+
+    const headerToken = pickFirstFilled(
+      this.request.headers.get('x-meta-token'),
+      this.request.headers.get('x-telegram-token'),
+      parseAuthorizationToken(this.request.headers.get('authorization')),
+    );
+
+    const queryToken = pickFirstFilled(
+      url.searchParams.get('token'),
+      url.searchParams.get('access_token'),
+      url.searchParams.get('auth'),
+    );
+
+    const token = pickFirstFilled(queryToken, pathToken, headerToken);
+    if (!isValidMetaManageToken(token, this.config)) {
+      return jsonResponse({ ok: false, error: 'forbidden' }, { status: 403 });
+    }
+
+    const actionCandidate = pickFirstFilled(url.searchParams.get('action'), pathAction);
+    const action = (actionCandidate || 'info').toLowerCase();
+
+    const wantsRefresh =
+      action !== 'refresh' &&
+      /^(1|true|yes|on)$/i.test(url.searchParams.get('refresh') || url.searchParams.get('force') || '');
+
+    const backgroundParam = url.searchParams.get('background') || url.searchParams.get('bg') || '';
+    const backgroundRefresh = backgroundParam
+      ? /^(1|true|yes|on)$/i.test(backgroundParam)
+      : action === 'ensure';
+
+    if (action === 'refresh' || wantsRefresh) {
+      try {
+        const result = await this.metaService.refreshOverview();
+        return jsonResponse({ ok: true, action: 'refresh', ...result });
+      } catch (error) {
+        return jsonResponse(
+          { ok: false, error: error?.message || String(error), action: 'refresh' },
+          { status: 502 },
+        );
+      }
+    }
+
+    try {
+      const result = await this.metaService.ensureOverview({
+        backgroundRefresh,
+        executionContext: this.executionContext,
+      });
+      return jsonResponse({ ok: true, action: 'info', ...result });
+    } catch (error) {
+      return jsonResponse(
+        { ok: false, error: error?.message || String(error), action: 'info' },
+        { status: 502 },
+      );
+    }
   }
 
   async handleTelegramWebhookManage(url, { normalizedPath } = {}) {
@@ -2336,19 +2445,29 @@ class WorkerApp {
   }
 
   async handleScheduled(event) {
-    if (!this.config.botToken || !this.telegramClient?.isUsable) {
+    if (!this.executionContext) {
       return;
     }
 
-    this.executionContext.waitUntil(
-      (async () => {
-        try {
-          await this.telegramClient.getMe();
-        } catch (error) {
-          console.error('Scheduled Telegram getMe failed', error);
-        }
-      })(),
-    );
+    if (this.config.botToken && this.telegramClient?.isUsable) {
+      this.executionContext.waitUntil(
+        (async () => {
+          try {
+            await this.telegramClient.getMe();
+          } catch (error) {
+            console.error('Scheduled Telegram getMe failed', error);
+          }
+        })(),
+      );
+    }
+
+    if (this.metaService) {
+      this.executionContext.waitUntil(
+        this.metaService.refreshOverview().catch((error) => {
+          console.error('Scheduled Meta refresh failed', error);
+        }),
+      );
+    }
   }
 }
 
