@@ -34,6 +34,12 @@ const REPORT_PRESET_MAP = {
   week: 'last_7d',
   month: 'this_month',
 };
+const ALERT_STATE_PREFIX = 'alert:state:';
+const ALERT_ZERO_DEFAULT_TIME = '12:00';
+const ALERT_BILLING_DEFAULT_TIMES = ['10:00', '14:00', '18:00'];
+const ALERT_FREQUENCY_THRESHOLD = 3.5;
+const ALERT_CTR_THRESHOLD = 0.5;
+const ALERT_CPA_THRESHOLD_MULTIPLIER = 1.2;
 
 function resolveDefaultWebhookUrl(config, { origin = '' } = {}) {
   if (config?.telegramWebhookUrl) {
@@ -454,6 +460,44 @@ function timeStringToMinutes(value) {
   }
 
   return hours * 60 + minutes;
+}
+
+function safeDivision(numerator, denominator) {
+  const a = Number(numerator);
+  const b = Number(denominator);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b === 0) {
+    return null;
+  }
+  return a / b;
+}
+
+function percentChange(current, previous) {
+  const curr = Number(current);
+  const prev = Number(previous);
+  if (!Number.isFinite(curr) || !Number.isFinite(prev) || prev === 0) {
+    return null;
+  }
+  return (curr - prev) / Math.abs(prev);
+}
+
+function formatChangePercent(change, { digits = 0 } = {}) {
+  if (!Number.isFinite(change)) {
+    return null;
+  }
+
+  const percent = Math.abs(change) * 100;
+  const formatted = new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(percent);
+
+  if (change > 0) {
+    return `+${formatted}%`;
+  }
+  if (change < 0) {
+    return `−${formatted}%`;
+  }
+  return `${formatted}%`;
 }
 
 function formatDateIsoInTimeZone(date, timezone) {
@@ -904,6 +948,18 @@ function normalizeCampaignSummary(campaign) {
   const clicks = Number(lastEntry?.inline_link_clicks ?? lastEntry?.clicks);
   const frequency = Number(lastEntry?.frequency);
   const ctr = Number.isFinite(clicks) && Number.isFinite(impressions) && impressions > 0 ? (clicks / impressions) * 100 : null;
+  const dateStart =
+    campaign.date_start ||
+    campaign.dateStart ||
+    lastEntry?.date_start ||
+    lastEntry?.dateStart ||
+    null;
+  const dateStop =
+    campaign.date_stop ||
+    campaign.dateStop ||
+    lastEntry?.date_stop ||
+    lastEntry?.dateStop ||
+    null;
 
   return {
     id,
@@ -918,6 +974,8 @@ function normalizeCampaignSummary(campaign) {
     clicks: Number.isFinite(clicks) ? clicks : null,
     frequency: Number.isFinite(frequency) ? frequency : null,
     ctr: Number.isFinite(ctr) ? ctr : null,
+    dateStart: dateStart || null,
+    dateStop: dateStop || null,
   };
 }
 
@@ -929,12 +987,16 @@ function normalizeInsightEntry(entry) {
   const id = entry.campaign_id || entry.campaignId || entry.id || '';
   const name = entry.campaign_name || entry.campaignName || entry.name || `Campaign ${id}`;
   const effectiveStatus = entry.campaign_effective_status || entry.effective_status || entry.status;
+  const dateStart = entry.date_start || entry.dateStart || null;
+  const dateStop = entry.date_stop || entry.dateStop || null;
 
   return normalizeCampaignSummary({
     id,
     name,
     effective_status: effectiveStatus,
     insights: { data: [entry] },
+    date_start: dateStart,
+    date_stop: dateStop,
   });
 }
 
@@ -1244,6 +1306,186 @@ function formatAlertLines(alerts, { account, campaigns }) {
   }
 
   return lines;
+}
+
+function normalizeTimeList(values, fallback = []) {
+  const source = Array.isArray(values) && values.length > 0 ? values : fallback;
+  const normalized = [];
+  for (const token of source) {
+    const time = normalizeTimeToken(token);
+    if (time && !normalized.includes(time)) {
+      normalized.push(time);
+    }
+  }
+  return normalized;
+}
+
+function collectBillingSignals(account) {
+  if (!account || typeof account !== 'object') {
+    return { issues: [], statusLabel: '', debtUsd: null, cardLast4: '', fingerprint: '' };
+  }
+
+  const issues = [];
+  if (Array.isArray(account.paymentIssues)) {
+    issues.push(...account.paymentIssues.filter(Boolean));
+  }
+  if (account.paymentIssue) {
+    issues.push(account.paymentIssue);
+  }
+
+  const statusLabel = account.paymentStatusLabel || account.statusLabel || account.status || '';
+  const debtRaw = account.debtUsd ?? account.debt_usd ?? account.debtUSD ?? account.balance_due_usd ?? null;
+  const debtUsd = Number.isFinite(Number(debtRaw)) ? Number(debtRaw) : null;
+  const cardLast4 =
+    account.defaultPaymentMethodLast4 ||
+    account.default_card_last4 ||
+    account.card_last4 ||
+    account.paymentMethodLast4 ||
+    '';
+
+  const fingerprintParts = [];
+  if (statusLabel) fingerprintParts.push(statusLabel);
+  if (debtUsd !== null) fingerprintParts.push(debtUsd.toFixed(2));
+  for (const hint of issues) {
+    fingerprintParts.push(String(hint));
+  }
+
+  return {
+    issues,
+    statusLabel,
+    debtUsd,
+    cardLast4,
+    fingerprint: fingerprintParts.join('|'),
+  };
+}
+
+function buildAlertKeyboard(base, extraRows = []) {
+  const inline_keyboard = [];
+  if (Array.isArray(extraRows) && extraRows.length > 0) {
+    for (const row of extraRows) {
+      if (Array.isArray(row) && row.length > 0) {
+        inline_keyboard.push(row);
+      }
+    }
+  }
+
+  inline_keyboard.push([
+    { text: '📊 Сегодня', callback_data: `${base}:report:today` },
+    { text: '⚙️ Настройки', callback_data: `${base}:settings` },
+  ]);
+  inline_keyboard.push([
+    { text: 'Открыть проект', callback_data: `${base}:open` },
+    { text: 'Закрыть', callback_data: 'admin:alert:dismiss' },
+  ]);
+
+  return { inline_keyboard };
+}
+
+function detectCampaignAnomalies(seriesList, { kpiTarget } = {}) {
+  const anomalies = [];
+  for (const series of seriesList) {
+    if (!series || !series.latest || !series.previous) {
+      continue;
+    }
+
+    const latest = series.latest;
+    const previous = series.previous;
+
+    const latestCpa = Number.isFinite(latest.cpaUsd) ? latest.cpaUsd : safeDivision(latest.spendUsd, latest.leads);
+    const previousCpa = Number.isFinite(previous.cpaUsd)
+      ? previous.cpaUsd
+      : safeDivision(previous.spendUsd, previous.leads);
+    const cpaChange = percentChange(latestCpa, previousCpa);
+    const ctrChange = percentChange(latest.ctr, previous.ctr);
+    const impressionsChange = percentChange(latest.impressions, previous.impressions);
+
+    const reasons = [];
+
+    if (Number.isFinite(cpaChange) && cpaChange >= 0.5) {
+      const changeText = formatChangePercent(cpaChange, { digits: 0 }) || '+50%';
+      const latestText = Number.isFinite(latestCpa)
+        ? formatUsd(latestCpa, { digitsBelowOne: 2, digitsAboveOne: 0 })
+        : '—';
+      reasons.push(`CPL/CPA вырос на ${changeText} (до ${latestText})`);
+    }
+
+    if (Number.isFinite(ctrChange) && ctrChange <= -0.4) {
+      const changeText = formatChangePercent(ctrChange, { digits: 0 }) || '−40%';
+      const latestText = Number.isFinite(latest.ctr)
+        ? formatPercentage(latest.ctr, { digits: 1 })
+        : '—';
+      reasons.push(`CTR упал на ${changeText} (сейчас ${latestText})`);
+    }
+
+    if (Number.isFinite(impressionsChange) && impressionsChange <= -0.5) {
+      const changeText = formatChangePercent(impressionsChange, { digits: 0 }) || '−50%';
+      reasons.push(`Показы сократились на ${changeText}`);
+    }
+
+    if (Number.isFinite(latest.frequency) && latest.frequency > ALERT_FREQUENCY_THRESHOLD) {
+      reasons.push(`Частота ${latest.frequency.toFixed(1)} (> ${ALERT_FREQUENCY_THRESHOLD})`);
+    }
+
+    if (reasons.length === 0) {
+      continue;
+    }
+
+    anomalies.push({
+      id: series.id,
+      name: series.name,
+      reasons,
+      latest,
+      previous,
+      latestCpa,
+      previousCpa,
+      kpiTarget: Number.isFinite(kpiTarget) ? kpiTarget : null,
+    });
+  }
+
+  return anomalies;
+}
+
+function detectCreativeFatigue(seriesList, { kpiTarget } = {}) {
+  const target = Number.isFinite(kpiTarget) ? kpiTarget : null;
+  const fatigued = [];
+
+  if (target === null) {
+    return fatigued;
+  }
+
+  for (const series of seriesList) {
+    if (!series || !series.latest) {
+      continue;
+    }
+
+    const latest = series.latest;
+    const cpa = Number.isFinite(latest.cpaUsd) ? latest.cpaUsd : safeDivision(latest.spendUsd, latest.leads);
+    const ctr = Number.isFinite(latest.ctr) ? latest.ctr : null;
+    const frequency = Number.isFinite(latest.frequency) ? latest.frequency : null;
+
+    if (!Number.isFinite(cpa) || cpa <= target * ALERT_CPA_THRESHOLD_MULTIPLIER) {
+      continue;
+    }
+
+    if (frequency === null || frequency <= ALERT_FREQUENCY_THRESHOLD) {
+      continue;
+    }
+
+    if (ctr === null || ctr >= ALERT_CTR_THRESHOLD) {
+      continue;
+    }
+
+    fatigued.push({
+      id: series.id,
+      name: series.name,
+      latest,
+      cpa,
+      ctr,
+      frequency,
+    });
+  }
+
+  return fatigued;
 }
 
 function buildCampaignLines(campaigns, { limit = 6 } = {}) {
@@ -2861,6 +3103,121 @@ class MetaService {
     };
   }
 
+  async fetchCampaignTimeseries({
+    project,
+    account,
+    days = 3,
+    timezone,
+    now = new Date(),
+    limit = 80,
+  } = {}) {
+    const accountCandidate =
+      account?.id ||
+      (account?.accountId ? `act_${account.accountId}` : null) ||
+      (project?.adAccountId ? `act_${String(project.adAccountId).replace(/^act_/, '')}` : null) ||
+      null;
+
+    if (!accountCandidate) {
+      throw new Error('У проекта не указан рекламный аккаунт.');
+    }
+
+    const accountId = String(accountCandidate).startsWith('act_')
+      ? String(accountCandidate)
+      : `act_${String(accountCandidate)}`;
+
+    const token = await this.resolveAccessToken();
+    if (!token) {
+      throw new Error('Meta токен не задан.');
+    }
+
+    const client = new MetaClient({
+      accessToken: token,
+      version: this.config?.metaGraphVersion || META_DEFAULT_GRAPH_VERSION,
+      fetcher: this.fetcher,
+    });
+
+    const normalizedDays = Math.max(2, Math.min(10, Number(days) || 3));
+    const params = {
+      level: 'campaign',
+      time_increment: '1',
+      sort: '-date_start',
+      limit: String(Math.max(1, Math.min(Number(limit) || 80, 200))),
+      fields:
+        'campaign_id,campaign_name,spend,actions,action_values,cost_per_action_type,reach,impressions,frequency,inline_link_clicks,clicks,date_start,date_stop',
+      date_preset: `last_${normalizedDays}d`,
+    };
+
+    const response = await client.request(`/${accountId}/insights`, { searchParams: params });
+    const entries = Array.isArray(response?.data) ? response.data : [];
+
+    const localSnapshot = resolveTimezoneSnapshot(now, timezone || this.config?.defaultTimezone || 'UTC');
+    const localDateIso = localSnapshot?.dateIso || null;
+
+    const series = new Map();
+
+    for (const entry of entries) {
+      const summary = normalizeInsightEntry(entry);
+      if (!summary) {
+        continue;
+      }
+
+      const day = summary.dateStart || entry?.date_start || null;
+      if (localDateIso && day && String(day) >= localDateIso) {
+        continue;
+      }
+
+      let bucket = series.get(summary.id);
+      if (!bucket) {
+        bucket = { id: summary.id, name: summary.name, entries: [] };
+        series.set(summary.id, bucket);
+      }
+
+      bucket.entries.push({
+        dateStart: summary.dateStart || entry?.date_start || null,
+        dateStop: summary.dateStop || entry?.date_stop || null,
+        metrics: summary,
+      });
+    }
+
+    const result = [];
+    for (const bucket of series.values()) {
+      bucket.entries.sort((a, b) => {
+        const first = a.dateStart || a.dateStop || '';
+        const second = b.dateStart || b.dateStop || '';
+        return first.localeCompare(second);
+      });
+
+      const latestEntry = bucket.entries[bucket.entries.length - 1] || null;
+      const previousEntry = bucket.entries[bucket.entries.length - 2] || null;
+
+      result.push({
+        id: bucket.id,
+        name: bucket.name,
+        entries: bucket.entries.map((item) => ({
+          ...item.metrics,
+          dateStart: item.dateStart || null,
+          dateStop: item.dateStop || null,
+        })),
+        latest: latestEntry
+          ? {
+              ...latestEntry.metrics,
+              dateStart: latestEntry.dateStart || null,
+              dateStop: latestEntry.dateStop || null,
+            }
+          : null,
+        previous: previousEntry
+          ? {
+              ...previousEntry.metrics,
+              dateStart: previousEntry.dateStart || null,
+              dateStop: previousEntry.dateStop || null,
+            }
+          : null,
+      });
+    }
+
+    return result;
+  }
+
   transformAdAccount(raw, { now } = {}) {
     if (!raw || typeof raw !== 'object') {
       return null;
@@ -3976,6 +4333,413 @@ class TelegramBot {
     }
   }
 
+  async processAlerts({ now = new Date() } = {}) {
+    const projectKeys = await this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 200);
+    if (projectKeys.length === 0) {
+      return;
+    }
+
+    let metaStatus = null;
+    if (this.metaService) {
+      try {
+        const metaResult = await this.metaService.ensureOverview({
+          backgroundRefresh: true,
+          executionContext: this.executionContext,
+        });
+        metaStatus = metaResult?.status ?? metaResult ?? null;
+      } catch (error) {
+        console.error('Scheduled ensureOverview for alerts failed', error);
+        metaStatus = await this.storage.readMetaStatus();
+      }
+    } else {
+      metaStatus = await this.storage.readMetaStatus();
+    }
+
+    const accounts = Array.isArray(metaStatus?.facebook?.adAccounts)
+      ? metaStatus.facebook.adAccounts
+      : [];
+    const accountMap = new Map();
+    for (const account of accounts) {
+      const accountId = account?.accountId || account?.id;
+      if (accountId) {
+        accountMap.set(String(accountId).replace(/^act_/, ''), account);
+      }
+    }
+
+    const adminTargets = Array.from(this.config.adminIds);
+
+    for (const projectKey of projectKeys) {
+      let rawProject = null;
+      try {
+        rawProject = (await this.storage.getJson('DB', projectKey)) || {};
+      } catch (error) {
+        console.warn('Failed to read project for alerts', projectKey, error);
+        continue;
+      }
+
+      const project = normalizeProjectRecord(projectKey, rawProject);
+      const account = project.adAccountId ? accountMap.get(String(project.adAccountId)) : null;
+
+      const alerts = extractAlertSettings(rawProject) || {};
+      if (!alerts) {
+        continue;
+      }
+
+      const schedule = extractScheduleSettings(rawProject) || {};
+      const timezone = schedule.timezone || this.config.defaultTimezone || 'UTC';
+      const snapshot = resolveTimezoneSnapshot(now, timezone);
+      const localMinutes = snapshot?.minutes ?? 0;
+      const localDateIso = snapshot?.dateIso || formatDateIsoInTimeZone(now, timezone);
+
+      const baseCallbackId = normalizeProjectIdForCallback(project.id || project.code || project.name || projectKey);
+      const base = `admin:project:${baseCallbackId}`;
+      const chatButton = project.chatUrl
+        ? { text: '💬 Чат', url: project.chatUrl }
+        : { text: '💬 Чат', callback_data: `${base}:chat` };
+
+      let campaignSeries = null;
+      const ensureCampaignSeries = async () => {
+        if (campaignSeries || !this.metaService || !account) {
+          return campaignSeries || [];
+        }
+        campaignSeries = await this.metaService.fetchCampaignTimeseries({
+          project,
+          account,
+          timezone,
+          now,
+        });
+        return campaignSeries;
+      };
+
+      const state = (await this.readAlertState(projectKey)) || {};
+      let stateChanged = false;
+
+      const zeroConfig = alerts.zeroSpend;
+      const zeroEnabled = Boolean(zeroConfig?.enabled ?? zeroConfig);
+      if (zeroEnabled && account) {
+        const zeroTimeToken = zeroConfig?.time || zeroConfig?.hour || ALERT_ZERO_DEFAULT_TIME;
+        const zeroMinutes = timeStringToMinutes(zeroTimeToken) ?? timeStringToMinutes(ALERT_ZERO_DEFAULT_TIME);
+        const spendToday = Number(account?.spendTodayUsd);
+        const runningCampaigns = Number(account?.runningCampaigns);
+
+        if (
+          zeroMinutes !== null &&
+          localMinutes >= zeroMinutes &&
+          Number.isFinite(spendToday) &&
+          spendToday === 0 &&
+          Number.isFinite(runningCampaigns) &&
+          runningCampaigns > 0
+        ) {
+          const zeroState = state.zeroSpend || {};
+          if (zeroState.date !== localDateIso) {
+            const lines = [
+              '⚠️ <b>Нулевой расход</b>',
+              `<b>${escapeHtml(project.name)}</b> — до ${zeroTimeToken} не зафиксирован spend.`,
+              `Активных кампаний: <b>${runningCampaigns}</b>`,
+              'Возможные причины: отклонения, исчерпан лимит, пауза или проблемы с оплатой.',
+              'Проверьте Ads Manager и оплату, чтобы возобновить показ объявлений.',
+            ];
+
+            await this.sendProjectAlert({
+              project,
+              baseCallbackId,
+              text: lines.join('\n'),
+              extraRows: [[chatButton]],
+              adminTargets,
+              kind: 'zero_spend',
+            });
+
+            state.zeroSpend = {
+              date: localDateIso,
+              notifiedAt: new Date().toISOString(),
+              checkTime: zeroMinutes,
+            };
+            stateChanged = true;
+          }
+        }
+      }
+
+      const billingConfig = alerts.billing;
+      const billingEnabled = Boolean(billingConfig?.enabled ?? billingConfig);
+      if (billingEnabled && account) {
+        const billingTimes = normalizeTimeList(billingConfig?.times || billingConfig?.hours, ALERT_BILLING_DEFAULT_TIMES);
+        const shouldCheckBilling = billingTimes.some((time) => {
+          const minutes = timeStringToMinutes(time);
+          return minutes !== null && localMinutes >= minutes;
+        });
+
+        if (shouldCheckBilling) {
+          const signals = collectBillingSignals(account);
+          const hasIssues =
+            signals.issues.length > 0 || (Number.isFinite(signals.debtUsd) && Number(signals.debtUsd) > 0);
+
+          if (hasIssues) {
+            const billingState = state.billing || {};
+            if (billingState.date !== localDateIso || billingState.fingerprint !== signals.fingerprint) {
+              const lines = [
+                '💳 <b>Проблемы с оплатой</b>',
+                `<b>${escapeHtml(project.name)}</b> — требуется внимание.`,
+              ];
+              if (signals.issues.length > 0) {
+                lines.push(`Причины: ${escapeHtml(signals.issues.join(' • '))}`);
+              }
+              if (Number.isFinite(signals.debtUsd) && signals.debtUsd !== 0) {
+                lines.push(`Долг: <b>${formatUsd(signals.debtUsd, { digitsBelowOne: 2, digitsAboveOne: 2 })}</b>`);
+              }
+              if (signals.cardLast4) {
+                lines.push(`Карта: 💳 ****${escapeHtml(String(signals.cardLast4))}`);
+              }
+              lines.push('Оплатите счёт или смените метод платежа, затем отметьте оплату в карточке проекта.');
+
+              await this.sendProjectAlert({
+                project,
+                baseCallbackId,
+                text: lines.join('\n'),
+                extraRows: [[chatButton], [{ text: '💳 Отметить оплату', callback_data: `${base}:payment` }]],
+                adminTargets,
+                kind: 'billing',
+              });
+
+              state.billing = {
+                date: localDateIso,
+                fingerprint: signals.fingerprint,
+                notifiedAt: new Date().toISOString(),
+              };
+              stateChanged = true;
+            }
+          }
+        }
+      }
+
+      const anomaliesEnabled = Boolean(alerts.anomalies?.enabled ?? alerts.anomalies);
+      const creativesEnabled = Boolean(alerts.creatives?.enabled ?? alerts.creatives);
+      const kpi = extractProjectKpi(rawProject);
+      const kpiTarget = Number.isFinite(kpi?.cpa)
+        ? kpi.cpa
+        : Number.isFinite(kpi?.cpl)
+        ? kpi.cpl
+        : null;
+      const anomalyCutoff = timeStringToMinutes(alerts.anomalies?.time || '11:00') ?? timeStringToMinutes('11:00');
+
+      if (
+        anomaliesEnabled &&
+        account &&
+        this.metaService &&
+        (anomalyCutoff === null || localMinutes >= anomalyCutoff)
+      ) {
+        const anomalyState = state.anomalies || {};
+        if (anomalyState.lastCheckedDate !== localDateIso) {
+          try {
+            const series = await ensureCampaignSeries();
+            const anomalies = detectCampaignAnomalies(series, { kpiTarget });
+
+            anomalyState.lastCheckedDate = localDateIso;
+            if (anomalies.length > 0) {
+              const fingerprint = anomalies
+                .slice(0, 5)
+                .map((item) => `${item.id}:${item.reasons.join(',')}`)
+                .join('|');
+
+              if (anomalyState.fingerprint !== fingerprint || anomalyState.notifiedDate !== localDateIso) {
+                const top = anomalies.slice(0, 3);
+                const lines = [
+                  '📉 <b>Аномалии в кампаниях</b>',
+                  `<b>${escapeHtml(project.name)}</b> — обнаружены резкие изменения.`,
+                ];
+
+                for (const item of top) {
+                  const reason = item.reasons.slice(0, 2).join('; ');
+                  const cpaText = Number.isFinite(item.latestCpa)
+                    ? formatUsd(item.latestCpa, { digitsBelowOne: 2, digitsAboveOne: 0 })
+                    : '—';
+                  lines.push(`• <b>${escapeHtml(item.name)}</b> — ${escapeHtml(reason)} (CPA ${cpaText})`);
+                }
+                if (anomalies.length > top.length) {
+                  lines.push(`…ещё ${anomalies.length - top.length} кампаний`);
+                }
+                lines.push(
+                  'Рекомендации: пересмотрите аудитории, обновите креативы, скорректируйте бюджет лучших/худших кампаний.',
+                );
+
+                await this.sendProjectAlert({
+                  project,
+                  baseCallbackId,
+                  text: lines.join('\n'),
+                  extraRows: [[chatButton], [{ text: '📈 Сводный отчёт', callback_data: `${base}:digest` }]],
+                  adminTargets,
+                  kind: 'anomaly',
+                });
+
+                anomalyState.fingerprint = fingerprint;
+                anomalyState.notifiedDate = localDateIso;
+              }
+            }
+
+            state.anomalies = anomalyState;
+            stateChanged = true;
+          } catch (error) {
+            console.error('Anomaly detection failed', projectKey, error);
+          }
+        }
+      }
+
+      if (
+        creativesEnabled &&
+        account &&
+        this.metaService &&
+        Number.isFinite(kpiTarget) &&
+        (anomalyCutoff === null || localMinutes >= anomalyCutoff)
+      ) {
+        const creativeState = state.creatives || {};
+        if (creativeState.lastCheckedDate !== localDateIso) {
+          try {
+            const series = await ensureCampaignSeries();
+            const fatigued = detectCreativeFatigue(series, { kpiTarget });
+
+            creativeState.lastCheckedDate = localDateIso;
+            if (fatigued.length > 0) {
+              const fingerprint = fatigued
+                .slice(0, 5)
+                .map((item) => `${item.id}:${item.cpa?.toFixed?.(2) ?? ''}`)
+                .join('|');
+
+              if (creativeState.fingerprint !== fingerprint || creativeState.notifiedDate !== localDateIso) {
+                const top = fatigued.slice(0, 3);
+                const lines = [
+                  '🧩 <b>Усталость креативов</b>',
+                  `Цель CPA: ${formatUsd(kpiTarget, { digitsBelowOne: 2, digitsAboveOne: 0 })}`,
+                ];
+
+                for (const item of top) {
+                  lines.push(
+                    `• <b>${escapeHtml(item.name)}</b> — CPA ${formatUsd(item.cpa, {
+                      digitsBelowOne: 2,
+                      digitsAboveOne: 0,
+                    })}, CTR ${formatPercentage(item.ctr, { digits: 1 })}, freq ${item.frequency.toFixed(1)}`,
+                  );
+                }
+                if (fatigued.length > top.length) {
+                  lines.push(`…ещё ${fatigued.length - top.length} кампаний требуют ротации.`);
+                }
+                lines.push('Совет: протестируйте новые креативы, обновите заголовки, снизьте частоту показов.');
+
+                await this.sendProjectAlert({
+                  project,
+                  baseCallbackId,
+                  text: lines.join('\n'),
+                  extraRows: [[chatButton], [{ text: '🎯 KPI', callback_data: `${base}:kpi` }]],
+                  adminTargets,
+                  kind: 'creative_fatigue',
+                });
+
+                creativeState.fingerprint = fingerprint;
+                creativeState.notifiedDate = localDateIso;
+              }
+            }
+
+            state.creatives = creativeState;
+            stateChanged = true;
+          } catch (error) {
+            console.error('Creative fatigue detection failed', projectKey, error);
+          }
+        }
+      }
+
+      if (
+        anomaliesEnabled &&
+        this.metaService &&
+        account &&
+        Number.isFinite(kpiTarget) &&
+        (anomalyCutoff === null || localMinutes >= anomalyCutoff)
+      ) {
+        const kpiState = state.kpi || { streak: 0 };
+        if (kpiState.lastCheckedDate !== localDateIso) {
+          try {
+            const report = await this.metaService.fetchAccountReport({
+              project,
+              account,
+              preset: 'yesterday',
+              timezone,
+            });
+
+            const totals = report?.totals || {};
+            const spend = Number.isFinite(totals.spendUsd) ? totals.spendUsd : null;
+            const leads = Number.isFinite(totals.leads) ? totals.leads : null;
+            const actualCpa = Number.isFinite(totals.cpaUsd)
+              ? totals.cpaUsd
+              : safeDivision(totals.spendUsd, totals.leads);
+
+            let streak = Number.isFinite(kpiState.streak) ? Number(kpiState.streak) : 0;
+            let exceeded = false;
+            if (Number.isFinite(actualCpa)) {
+              exceeded = actualCpa > kpiTarget;
+            } else if (Number.isFinite(spend) && spend > 0 && (!Number.isFinite(leads) || leads === 0)) {
+              exceeded = true;
+            }
+
+            if (exceeded) {
+              streak += 1;
+            } else {
+              streak = 0;
+              kpiState.lastNotifiedDate = null;
+            }
+
+            kpiState.streak = streak;
+            kpiState.lastCheckedDate = localDateIso;
+            kpiState.lastValue = Number.isFinite(actualCpa) ? actualCpa : null;
+            kpiState.lastSpend = spend;
+            kpiState.lastLeads = leads;
+            kpiState.updatedAt = new Date().toISOString();
+
+            if (exceeded && streak >= 3 && kpiState.lastNotifiedDate !== localDateIso) {
+              const actualText = Number.isFinite(actualCpa)
+                ? formatUsd(actualCpa, { digitsBelowOne: 2, digitsAboveOne: 0 })
+                : 'нет лидов';
+              const targetText = formatUsd(kpiTarget, { digitsBelowOne: 2, digitsAboveOne: 0 });
+              const spendText = Number.isFinite(spend)
+                ? formatUsd(spend, { digitsBelowOne: 2, digitsAboveOne: 2 })
+                : '—';
+              const leadsText = Number.isFinite(leads) ? formatInteger(leads) : '0';
+
+              const lines = [
+                '⛔ <b>CPA выше KPI третий день</b>',
+                `<b>${escapeHtml(project.name)}</b> — факт ${actualText} при KPI ${targetText}.`,
+                `Серия превышений: <b>${streak}</b> дня подряд. Лидов: ${leadsText} | Spend: ${spendText}.`,
+                'Включить автопаузу проблемных кампаний и пересмотреть KPI?',
+              ];
+
+              await this.sendProjectAlert({
+                project,
+                baseCallbackId,
+                text: lines.join('\n'),
+                extraRows: [
+                  [chatButton],
+                  [
+                    { text: '⏸ Поставить на паузу', callback_data: `${base}:autopause` },
+                    { text: '🎯 KPI', callback_data: `${base}:kpi` },
+                  ],
+                ],
+                adminTargets,
+                kind: 'kpi_overrun',
+              });
+
+              kpiState.lastNotifiedDate = localDateIso;
+            }
+
+            state.kpi = kpiState;
+            stateChanged = true;
+          } catch (error) {
+            console.error('KPI streak evaluation failed', projectKey, error);
+          }
+        }
+      }
+
+      if (stateChanged) {
+        await this.writeAlertState(projectKey, state);
+      }
+    }
+  }
+
   async handleUpdate(update) {
     const message = update?.message || update?.edited_message || update?.channel_post;
     if (message) {
@@ -4167,6 +4931,68 @@ class TelegramBot {
     }
   }
 
+  async sendProjectAlert({ project, baseCallbackId, text, extraRows = [], adminTargets = [], kind }) {
+    if (!text || !project) {
+      return false;
+    }
+
+    const base = `admin:project:${baseCallbackId}`;
+    const replyMarkup = buildAlertKeyboard(base, extraRows);
+    const payloads = [];
+
+    if (project.chatId) {
+      const payload = {
+        chat_id: project.chatId,
+        text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        reply_markup: replyMarkup,
+      };
+      if (project.threadId) {
+        payload.message_thread_id = Number(project.threadId);
+      }
+      payloads.push(payload);
+    }
+
+    const uniqueAdmins = Array.from(new Set((adminTargets || []).map((id) => String(id)))).filter(Boolean);
+    for (const adminId of uniqueAdmins) {
+      if (project.chatId && String(project.chatId) === adminId) {
+        continue;
+      }
+      payloads.push({
+        chat_id: adminId,
+        text,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        reply_markup: replyMarkup,
+      });
+      break;
+    }
+
+    let sent = false;
+    for (const payload of payloads) {
+      try {
+        await this.sendMessageWithFallback(payload);
+        sent = true;
+      } catch (error) {
+        console.error('Alert send failed', payload.chat_id, error);
+      }
+    }
+
+    if (sent) {
+      this.queueLog({
+        kind: 'alert',
+        status: 'sent',
+        alert_kind: kind,
+        project_id: project.id,
+        project_key: project.key,
+        chat_id: project.chatId || null,
+      });
+    }
+
+    return sent;
+  }
+
   getDefaultWebhookUrl() {
     return resolveDefaultWebhookUrl(this.config);
   }
@@ -4297,6 +5123,26 @@ class TelegramBot {
       return false;
     }
     const key = `${REPORT_STATE_PREFIX}${projectKey}`;
+    return this.storage.putJson('DB', key, state);
+  }
+
+  async readAlertState(projectKey) {
+    if (!projectKey) {
+      return {};
+    }
+    const key = `${ALERT_STATE_PREFIX}${projectKey}`;
+    const state = await this.storage.getJson('DB', key);
+    if (!state || typeof state !== 'object') {
+      return {};
+    }
+    return state;
+  }
+
+  async writeAlertState(projectKey, state) {
+    if (!projectKey) {
+      return false;
+    }
+    const key = `${ALERT_STATE_PREFIX}${projectKey}`;
     return this.storage.putJson('DB', key, state);
   }
 
@@ -4763,6 +5609,19 @@ class TelegramBot {
           data,
           chat_id: chatId,
           user_id: userId,
+        });
+        return { handled: true };
+      }
+
+      if (data.startsWith('admin:alert:')) {
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Отмечено.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+          action: 'alert:dismiss',
         });
         return { handled: true };
       }
@@ -5727,11 +6586,19 @@ class WorkerApp {
 
     const bot = this.bot;
     if (bot) {
+      const scheduledNow = event?.scheduledTime ? new Date(event.scheduledTime) : new Date();
       this.executionContext.waitUntil(
         bot
-          .processReportSchedules({ now: event?.scheduledTime ? new Date(event.scheduledTime) : new Date() })
+          .processReportSchedules({ now: scheduledNow })
           .catch((error) => {
             console.error('Scheduled report processing failed', error);
+          }),
+      );
+      this.executionContext.waitUntil(
+        bot
+          .processAlerts({ now: scheduledNow })
+          .catch((error) => {
+            console.error('Scheduled alert processing failed', error);
           }),
       );
     }
