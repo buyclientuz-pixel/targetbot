@@ -73,10 +73,12 @@ const REPORT_INSIGHTS_FIELDS = [
   'impressions',
   'reach',
   'inline_link_clicks',
+  'outbound_clicks',
   'clicks',
   'ctr',
   'frequency',
   'actions',
+  'action_values',
 ];
 
 const AD_INSIGHTS_FIELDS = [
@@ -90,8 +92,48 @@ const AD_INSIGHTS_FIELDS = [
   'ctr',
   'frequency',
   'inline_link_clicks',
+  'outbound_clicks',
   'actions',
+  'action_values',
 ];
+
+function num(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function pickAction(actions, type) {
+  if (!Array.isArray(actions) || !type) {
+    return 0;
+  }
+
+  const entry = actions.find((item) => item?.action_type === type);
+  return num(entry?.value);
+}
+
+function pickActionValue(actionValues, type) {
+  if (!Array.isArray(actionValues) || !type) {
+    return 0;
+  }
+
+  const entry = actionValues.find((item) => item?.action_type === type);
+  return num(entry?.value);
+}
+
+function pickMetricListValue(list) {
+  if (!Array.isArray(list) || !list.length) {
+    return 0;
+  }
+
+  let best = 0;
+  for (const entry of list) {
+    const value = num(entry?.value);
+    if (value > best) {
+      best = value;
+    }
+  }
+  return best;
+}
 
 function sanitizeInsightsFields(fields = []) {
   const blacklist = new Set(['landing_page_views']);
@@ -1299,6 +1341,54 @@ async function graphGet(path, { token, params = {} } = {}) {
   }
 
   return fetchJsonWithTimeout(url.toString(), { method: 'GET' }, META_TIMEOUT_MS);
+}
+
+function normalizeFieldsList(value) {
+  if (Array.isArray(value)) {
+    return sanitizeInsightsFields(value);
+  }
+
+  if (typeof value === 'string') {
+    const parts = value
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    return sanitizeInsightsFields(parts);
+  }
+
+  return [];
+}
+
+async function graphGetInsights(path, { token, params = {} } = {}) {
+  const fieldList = normalizeFieldsList(params.fields);
+
+  if (!fieldList.length) {
+    return graphGet(path, { token, params });
+  }
+
+  const attempt = async (fields) => {
+    const nextParams = { ...params, fields: fields.join(',') };
+    return graphGet(path, { token, params: nextParams });
+  };
+
+  try {
+    return await attempt(fieldList);
+  } catch (error) {
+    const message = String(error?.message ?? '');
+    const match =
+      message.match(/([a-z0-9\._]+)\s+is not valid for fields param/i) ||
+      message.match(/field\s+([a-z0-9\._]+)\s+is not valid/i);
+
+    if (match) {
+      const badField = match[1];
+      const filtered = fieldList.filter((field) => field !== badField);
+      if (filtered.length && filtered.length !== fieldList.length) {
+        return attempt(filtered);
+      }
+    }
+
+    throw error;
+  }
 }
 
 async function graphPost(path, { token, params = {}, body = {} } = {}) {
@@ -3379,19 +3469,23 @@ async function indexProjectsByAccount(env, { limit = 500 } = {}) {
 }
 
 function extractGenericResults(actions = []) {
-  const value = extractActionCount(actions, DEFAULT_REPORT_METRIC.actions);
-  if (value > 0) {
-    return value;
-  }
-
   if (!Array.isArray(actions)) {
     return 0;
   }
 
-  return actions.reduce((acc, entry) => {
-    const numeric = Number(entry?.value);
-    return Number.isFinite(numeric) ? acc + numeric : acc;
-  }, 0);
+  let total = 0;
+  for (const type of DEFAULT_REPORT_METRIC.actions) {
+    const value = pickAction(actions, type);
+    if (value > 0) {
+      total += value;
+    }
+  }
+
+  if (total > 0) {
+    return total;
+  }
+
+  return actions.reduce((acc, entry) => acc + num(entry?.value), 0);
 }
 
 async function fetchAccountInsightsRange(env, accountId, token, range) {
@@ -3417,7 +3511,7 @@ async function fetchAccountInsightsRange(env, accountId, token, range) {
   }
 
   try {
-    const payload = await graphGet(actId, { token, params });
+    const payload = await graphGetInsights(actId, { token, params });
     const row = Array.isArray(payload?.data) && payload.data.length ? payload.data[0] : null;
     if (!row) return null;
     const spend = Number(row.spend ?? 0);
@@ -3458,7 +3552,7 @@ async function fetchAccountBestCampaignCpa(env, accountId, token, range) {
   }
 
   try {
-    const payload = await graphGet(actId, { token, params });
+    const payload = await graphGetInsights(actId, { token, params });
     let best = null;
     for (const row of payload?.data ?? []) {
       const spend = Number(row.spend ?? 0);
@@ -3652,10 +3746,10 @@ async function fetchCampaignPerformance(env, project, campaignId, token, timezon
     try {
       const params = {
         time_range: JSON.stringify({ since: range.since, until: range.until }),
-        fields: 'spend,actions,impressions,clicks,ctr',
+        fields: 'spend,actions,impressions,clicks,ctr,inline_link_clicks,outbound_clicks',
         limit: '1',
       };
-      const payload = await graphGet(`${campaignId}/insights`, { token, params });
+      const payload = await graphGetInsights(`${campaignId}/insights`, { token, params });
       const row = Array.isArray(payload?.data) && payload.data.length ? payload.data[0] : null;
       if (!row) return [key, null];
       const spend = Number(row.spend ?? 0);
@@ -3682,10 +3776,10 @@ async function fetchCampaignPerformance(env, project, campaignId, token, timezon
       try {
         const params = {
           date_preset: 'lifetime',
-          fields: 'spend,actions,impressions,clicks,ctr',
+          fields: 'spend,actions,impressions,clicks,ctr,inline_link_clicks,outbound_clicks',
           limit: '1',
         };
-        const payload = await graphGet(`${campaignId}/insights`, { token, params });
+        const payload = await graphGetInsights(`${campaignId}/insights`, { token, params });
         const row = Array.isArray(payload?.data) && payload.data.length ? payload.data[0] : null;
         if (!row) return ['lifetime', null];
         const spend = Number(row.spend ?? 0);
@@ -3737,10 +3831,13 @@ async function fetchAdsForCampaign(env, campaignId, token, range) {
     const insightsParams = {
       level: 'ad',
       time_range: JSON.stringify({ since: range.since, until: range.until }),
-      fields: 'ad_id,spend,actions,impressions,clicks,ctr',
+      fields: 'ad_id,spend,actions,impressions,clicks,ctr,inline_link_clicks,outbound_clicks',
       limit: '200',
     };
-    const insightsPayload = await graphGet(`${campaignId}/insights`, { token, params: insightsParams });
+    const insightsPayload = await graphGetInsights(`${campaignId}/insights`, {
+      token,
+      params: insightsParams,
+    });
     const insightMap = new Map();
     for (const row of insightsPayload?.data ?? []) {
       const spend = Number(row.spend ?? 0);
@@ -3826,6 +3923,14 @@ async function renderAccountsPage(env, uid, profile, accounts = [], options = {}
 
       const headlineSpendValue = snapshot.billing?.spend ?? snapshot.today?.spend ?? 0;
       const headlineSpend = formatCurrency(headlineSpendValue, currency);
+      let spendContext = '';
+      if (snapshot.billing?.since) {
+        spendContext = 'с момента оплаты подписки';
+      } else if (snapshot.today && Number(snapshot.today.spend) > 0) {
+        spendContext = 'сегодня';
+      }
+      const spendSummaryRaw = spendContext ? `${headlineSpend} (${spendContext})` : headlineSpend;
+      const spendSummary = escapeHtml(spendSummaryRaw);
 
       const cpaCandidates = [
         snapshot.bestCampaign?.cpa,
@@ -3842,16 +3947,16 @@ async function renderAccountsPage(env, uid, profile, accounts = [], options = {}
       const avgCpaLabel = Number.isFinite(avgCpaBase) ? formatCpa(avgCpaBase, currency) : '—';
 
       const summary = [
-        `${escapeHtml(account.name)} — ${headlineSpend}`,
-        `Мин. CPA: ${minCpaLabel}`,
-        `Сред. CPA: ${avgCpaLabel}`,
+        `${escapeHtml(account.name)} — ${spendSummary}`,
+        `CPA min: ${minCpaLabel}`,
+        `CPA avg: ${avgCpaLabel}`,
         status.label,
         `${score.emoji} ${score.label}`,
       ].join(' · ');
 
-      lines.push(`• <b>${summary}</b>`);
+      lines.push(`• ${summary}`);
       if (snapshot.billing?.since) {
-        lines.push(`  с оплаты от ${escapeHtml(formatDateLabel(snapshot.billing.since))}`);
+        lines.push(`  с момента оплаты от ${escapeHtml(formatDateLabel(snapshot.billing.since))}`);
       }
       if (status.detail) {
         lines.push(`  ${escapeHtml(status.detail)}`);
@@ -4341,26 +4446,19 @@ function getMetricByShortCode(shortCode = '') {
 }
 
 function extractActionCount(actions = [], actionTypes = []) {
-  if (!Array.isArray(actions) || !actions.length) {
+  if (!Array.isArray(actionTypes) || !actionTypes.length) {
     return 0;
   }
 
-  const lookup = new Map();
-  for (const entry of actions) {
-    if (!entry || typeof entry !== 'object') continue;
-    const type = entry.action_type;
-    const value = Number(entry.value);
-    if (!type || !Number.isFinite(value)) continue;
-    lookup.set(type, value);
-  }
-
+  let best = 0;
   for (const type of actionTypes) {
-    if (lookup.has(type)) {
-      return Number(lookup.get(type)) || 0;
+    const value = pickAction(actions, type);
+    if (value > best) {
+      best = value;
     }
   }
 
-  return 0;
+  return best;
 }
 
 function formatNumber(value) {
@@ -4553,7 +4651,7 @@ async function fetchCampaignInsights(env, project, token, range) {
   for (let page = 0; page < REPORT_MAX_PAGES; page += 1) {
     const payload = nextUrl
       ? await fetchJsonWithTimeout(nextUrl, { method: 'GET' }, META_TIMEOUT_MS)
-      : await graphGet(`${actId}/insights`, { token, params });
+      : await graphGetInsights(`${actId}/insights`, { token, params });
 
     if (Array.isArray(payload?.data)) {
       items.push(...payload.data);
@@ -4638,7 +4736,7 @@ async function fetchAdInsights(env, project, token, range) {
   for (let page = 0; page < REPORT_MAX_PAGES; page += 1) {
     const payload = nextUrl
       ? await fetchJsonWithTimeout(nextUrl, { method: 'GET' }, META_TIMEOUT_MS)
-      : await graphGet(`${actId}/insights`, { token, params });
+      : await graphGetInsights(`${actId}/insights`, { token, params });
 
     if (Array.isArray(payload?.data)) {
       items.push(...payload.data);
@@ -5010,28 +5108,53 @@ function computeMetricResults(item, metricConfig) {
   switch (metricConfig.short) {
     case 'traffic': {
       const fromActions = extractActionCount(actions, metricConfig.actions ?? []);
-      const inlineClicks = Number(item?.inline_link_clicks) || 0;
-      const landingViews = Number(item?.landing_page_views) || 0;
-      const clicks = Number(item?.clicks) || 0;
-      const value = Math.max(fromActions, inlineClicks, landingViews, clicks);
+      const landingViews = pickAction(actions, 'landing_page_view');
+      const inlineActions = pickAction(actions, 'inline_link_click');
+      const linkClicks = pickAction(actions, 'link_click');
+      const viewContent = pickAction(actions, 'view_content');
+      const inlineClicks = num(item?.inline_link_clicks);
+      const clicks = num(item?.clicks);
+      const outbound = pickMetricListValue(item?.outbound_clicks);
+      const value = Math.max(
+        fromActions,
+        landingViews,
+        inlineActions,
+        linkClicks,
+        viewContent,
+        outbound,
+        inlineClicks,
+        clicks,
+      );
       return { value, source: 'traffic' };
     }
     case 'engagement': {
       const fromActions = extractActionCount(actions, metricConfig.actions ?? []);
-      const clicks = Number(item?.clicks) || 0;
-      const value = Math.max(fromActions, clicks);
+      const postEngagement = pickAction(actions, 'post_engagement');
+      const clicks = num(item?.clicks);
+      const value = Math.max(fromActions, postEngagement, clicks);
       return { value, source: 'engagement' };
     }
     case 'reach': {
-      const reach = Number(item?.reach) || 0;
-      const impressions = Number(item?.impressions) || 0;
+      const reach = num(item?.reach);
+      const impressions = num(item?.impressions);
       const fromActions = extractActionCount(actions, metricConfig.actions ?? []);
       const value = reach || impressions || fromActions;
       return { value, source: reach ? 'reach' : impressions ? 'impressions' : 'actions' };
     }
     default: {
       const value = extractActionCount(actions, metricConfig.actions ?? []);
-      return { value, source: 'actions' };
+      let amount = 0;
+      if (metricConfig.short === 'conv') {
+        amount =
+          pickActionValue(item?.action_values, 'purchase') ||
+          pickActionValue(item?.action_values, 'offsite_conversion.fb_pixel_purchase') ||
+          0;
+      }
+      const result = { value, source: 'actions' };
+      if (amount > 0) {
+        result.amount = amount;
+      }
+      return result;
     }
   }
 }
