@@ -5209,7 +5209,11 @@ class TelegramBot {
         return;
       }
 
-      const panel = await this.buildAdminPanelPayload();
+      const panel = await this.buildAdminPanelPayload({
+        adminId: context.userId,
+        chatId: context.chatId,
+        threadId: context.threadId,
+      });
       await context.reply(panel.text, { reply_markup: panel.reply_markup });
     });
 
@@ -6547,7 +6551,7 @@ class TelegramBot {
     if (!touched) {
       await this.sendReply(
         message,
-        'Укажите поля вида <code>account=act_123</code>, <code>chat=-100123:5</code>, <code>code=project</code>. Для сохранения отправьте <code>save</code>.',
+        'Выберите рекламный кабинет и чат с помощью кнопок ниже. При необходимости можно отправить пары вида <code>account=act_123</code>, <code>chat=-100123:5</code>, <code>code=project</code>.',
       );
       return { handled: true };
     }
@@ -6565,13 +6569,11 @@ class TelegramBot {
       case 'account_forbidden':
         return 'У вас нет доступа к этому рекламному аккаунту. Обратитесь к администратору или выберите другой аккаунт.';
       case 'account_conflict':
-        return 'За этим рекламным аккаунтом уже закреплён проект. Используйте <code>reuse=yes</code> или <code>project=код</code>, чтобы обновить запись.';
+        return 'За этим рекламным аккаунтом уже закреплён проект. Нажмите «🔁 Обновить проект», чтобы использовать его повторно, или выберите другой аккаунт.';
       case 'chat_required':
         return 'Укажите чат проекта: <code>chat=-100123456789:5</code>.';
       case 'chat_invalid':
         return 'Чат должен быть числовым ID или ссылкой. Пример: <code>chat=-100123456789:5</code>.';
-      case 'thread_required':
-        return 'Укажите topic ID в форуме: <code>thread=5</code>.';
       case 'thread_invalid':
         return 'Topic ID должен быть числом. Пример: <code>thread=12</code>.';
       case 'code_invalid':
@@ -6581,7 +6583,7 @@ class TelegramBot {
       case 'project_unknown':
         return 'Проект с указанным кодом не найден в реестре. Проверьте значение <code>project=</code>.';
       case 'project_confirm_required':
-        return 'Найден существующий проект. Подтвердите обновление через <code>reuse=yes</code> или укажите <code>project=код</code>.';
+        return 'Найден существующий проект. Подтвердите обновление кнопкой «🔁 Обновить проект» или выберите другой кабинет.';
       case 'preset_unknown':
         return 'Пресет не найден. Посмотрите список пресетов в черновике или обновите переменную окружения PROJECT_CHAT_PRESETS.';
       case 'storage_failed':
@@ -6593,34 +6595,51 @@ class TelegramBot {
 
   renderProjectConnectDraft(session) {
     const draft = session.draft || {};
-    const accountChoices = this.getProjectConnectAccountChoices(session, { includeSelected: true });
-    const chatChoices = this.getProjectConnectChatChoices(session, { includeSelected: true });
-    const lines = [
-      '<b>Черновик проекта</b>',
-      'Используйте кнопки ниже, чтобы выбрать рекламный аккаунт и чат, либо укажите значения вручную.',
-      `Аккаунт: ${draft.adAccountId ? `<code>${escapeHtml(draft.adAccountId)}</code>` : '—'}`,
-      `Чат: ${draft.chatId ? `<code>${escapeHtml(draft.chatId)}</code>` : '—'}${
-        draft.threadId ? ` / <code>${escapeHtml(draft.threadId)}</code>` : ''
-      }`,
-      `Код: ${draft.code ? `<code>${escapeHtml(draft.code)}</code>` : '—'}`,
-      `Название: ${draft.name ? escapeHtml(draft.name) : '—'}`,
-      `Таймзона: ${escapeHtml(draft.timezone || this.config.defaultTimezone || 'не задана')}`,
-      '',
-      'Заполните недостающие поля и отправьте <code>save</code>, чтобы сохранить проект. Для отмены используйте /cancel.',
-    ];
+    const account = draft.adAccountId ? this.findProjectConnectAccount(session, draft.adAccountId) : null;
+    const accountText = draft.adAccountId
+      ? `${escapeHtml(account?.name || 'Без названия')} — <code>${escapeHtml(String(draft.adAccountId))}</code>${
+          account?.currency ? ` (${escapeHtml(account.currency)})` : ''
+        }`
+      : 'не выбран';
 
-    if (session.selectedChatPreset) {
-      lines.splice(3, 0, `Пресет чата: <code>${escapeHtml(session.selectedChatPreset)}</code>`);
-    }
+    const chatTitle = draft.chatTitle ? ` — ${escapeHtml(draft.chatTitle)}` : '';
+    const chatThread = draft.threadId ? ` / <code>${escapeHtml(String(draft.threadId))}</code>` : '';
+    const chatText = draft.chatId
+      ? `<code>${escapeHtml(String(draft.chatId))}</code>${chatThread}${chatTitle}`
+      : 'не выбран';
+
+    const codeText = draft.code ? `<code>${escapeHtml(draft.code)}</code>` : 'создадим автоматически';
+    const nameText = draft.name ? escapeHtml(draft.name) : account?.name ? escapeHtml(account.name) : 'будет подставлено из аккаунта';
+    const timezone = draft.timezone || this.config.defaultTimezone || 'UTC';
+
+    const lines = [
+      '<b>Выбор проекта</b>',
+      `Рекламный кабинет: ${accountText}`,
+      `Чат: ${chatText}`,
+      `Код: ${codeText}`,
+      `Название: ${nameText}`,
+      `Таймзона: ${escapeHtml(timezone)}`,
+    ];
 
     if (draft.portalToken) {
       const previewToken = draft.portalToken.length > 4
         ? `••••${escapeHtml(draft.portalToken.slice(-4))}`
         : escapeHtml(draft.portalToken);
-      lines.splice(6, 0, `Портал: <code>${previewToken}</code>`);
+      lines.push(`Портал: <code>${previewToken}</code>`);
     }
 
-    const timezone = draft.timezone || this.config.defaultTimezone || 'UTC';
+    if (session.pendingExisting) {
+      lines.push(
+        '',
+        `⚠️ Кабинет уже подключён к проекту <code>${escapeHtml(session.pendingExisting.code || 'без кода')}</code>${
+          session.pendingExisting.name ? ` (${escapeHtml(session.pendingExisting.name)})` : ''
+        }.`,
+        'Нажмите «🔁 Обновить проект», чтобы переиспользовать запись.',
+      );
+    } else if (session.mode === 'update' && session.projectKey) {
+      lines.push('', 'Режим: обновление проекта. Изменения перезапишут текущие данные.');
+    }
+
     if (session.kpiSuggestion) {
       lines.push('', '<b>Предложенные KPI</b>', ...formatKpiLines(session.kpiSuggestion));
     }
@@ -6629,71 +6648,8 @@ class TelegramBot {
       lines.push('', '<b>Предложенное расписание</b>', ...formatScheduleLines(session.scheduleSuggestion, { timezone }));
     }
 
-    if (session.pendingExisting) {
-      lines.push(
-        '',
-        `⚠️ Найден проект <code>${escapeHtml(session.pendingExisting.code || 'без кода')}</code> ${
-          session.pendingExisting.name ? `(${escapeHtml(session.pendingExisting.name)})` : ''
-        }.`,
-        'Отправьте <code>reuse=yes</code> или <code>project=код</code>, чтобы обновить существующую запись, либо укажите другой аккаунт.',
-      );
-    } else if (session.mode === 'update' && session.projectKey) {
-      lines.push('', 'Режим: обновление существующего проекта. Изменения перезапишут текущие данные.');
-    }
-
-    const availableAccounts = accountChoices.filter((choice) => choice.available);
-    if (availableAccounts.length > 0) {
-      lines.push('', '<b>Доступные аккаунты</b>');
-      const preview = availableAccounts.slice(0, 6);
-      for (const choice of preview) {
-        const account = choice.account;
-        const mark = choice.selected ? '✅' : '•';
-        lines.push(
-          `${mark} <code>act_${escapeHtml(choice.key)}</code> — ${escapeHtml(account.name || 'без названия')} (${escapeHtml(
-            account.currency || 'USD',
-          )})`,
-        );
-      }
-      if (availableAccounts.length > preview.length) {
-        lines.push(`… и ещё ${availableAccounts.length - preview.length}`);
-      }
-    } else if (accountChoices.length === 0) {
-      lines.push('', 'Нет свободных рекламных аккаунтов. Обновите Meta или завершите текущие проекты.');
-    }
-
-    const availableChats = chatChoices.filter((choice) => choice.available);
-    if (availableChats.length > 0) {
-      lines.push('', '<b>Свободные чаты</b>');
-      const preview = availableChats.slice(0, 6);
-      for (const choice of preview) {
-        const chat = choice.chat;
-        const chatLabel = chat.threadId
-          ? `${escapeHtml(chat.chatId)}/${escapeHtml(chat.threadId)}`
-          : escapeHtml(chat.chatId);
-        const title = chat.label ? ` — ${escapeHtml(chat.label)}` : '';
-        const mark = choice.selected ? '✅' : '•';
-        lines.push(`${mark} <code>${chatLabel}</code>${title}`);
-      }
-      if (availableChats.length > preview.length) {
-        lines.push(`… и ещё ${availableChats.length - preview.length}`);
-      }
-    } else if (chatChoices.length === 0) {
-      lines.push('', 'Свободных зарегистрированных чатов нет. Добавьте бота в нужную группу и выполните /register.');
-    }
-
-    if (Array.isArray(session.chatPresets) && session.chatPresets.length > 0) {
-      lines.push('', '<b>Доступные пресеты чатов</b>');
-      const preview = session.chatPresets.slice(0, 6);
-      for (const preset of preview) {
-        const chatLabel = preset.threadId
-          ? `${escapeHtml(preset.chatId)}/${escapeHtml(preset.threadId)}`
-          : escapeHtml(preset.chatId);
-        const title = preset.label ? ` — ${escapeHtml(preset.label)}` : '';
-        lines.push(`• <code>${escapeHtml(preset.key)}</code> → <code>${chatLabel}</code>${title}`);
-      }
-      if (session.chatPresets.length > preview.length) {
-        lines.push(`… и ещё ${session.chatPresets.length - preview.length}`);
-      }
+    if (!draft.chatId) {
+      lines.push('', 'Если нужного чата нет, запустите /register в теме нужной группы.');
     }
 
     return lines.join('\n');
@@ -6727,21 +6683,21 @@ class TelegramBot {
 
     const counts = [];
     if (freeAccounts > 0) {
-      counts.push(`аккаунтов — ${freeAccounts}`);
+      counts.push(`кабинетов: ${freeAccounts}`);
     }
     if (freeChats > 0) {
-      counts.push(`чатов — ${freeChats}`);
+      counts.push(`чатов: ${freeChats}`);
     }
 
     const lines = [
       '<b>Подключение проекта</b>',
-      'Бот подтянул рекламные аккаунты Meta и зарегистрированные чаты. Выберите элементы кнопками ниже или заполните форму вручную (<code>account=…</code>, <code>chat=…</code>).',
+      'Выберите рекламный кабинет и чат кнопками ниже, затем нажмите «Готово».',
     ];
 
     if (counts.length > 0) {
-      lines.push(`Свободно: ${counts.join(', ')}.`);
+      lines.push(`Доступно сейчас — ${counts.join(', ')}.`);
     } else {
-      lines.push('Свободных аккаунтов или чатов нет — обновите Meta или зарегистрируйте чат через /register.');
+      lines.push('Свободных кабинетов или чатов пока нет — обновите Meta или зарегистрируйте чат через /register.');
     }
 
     lines.push('', this.renderProjectConnectDraft(session));
@@ -6845,10 +6801,18 @@ class TelegramBot {
       }
     }
 
+    if (session.pendingExisting) {
+      keyboard.push([
+        { text: '🔁 Обновить проект', callback_data: 'admin:project_connect:reuse' },
+      ]);
+    }
+
     keyboard.push([
-      { text: '♻️ Обновить', callback_data: 'admin:project_connect:refresh' },
+      { text: '♻️ Обновить списки', callback_data: 'admin:project_connect:refresh' },
       { text: '🛑 Отмена', callback_data: 'admin:project_connect:cancel' },
     ]);
+
+    keyboard.push([{ text: '✅ Готово', callback_data: 'admin:project_connect:save' }]);
 
     if (keyboard.length === 0) {
       return undefined;
@@ -6972,10 +6936,6 @@ class TelegramBot {
     if (!draft.chatId) {
       return { ok: false, error: 'chat_required' };
     }
-    if (!draft.threadId) {
-      return { ok: false, error: 'thread_required' };
-    }
-
     const slugSource = draft.code || draft.name || draft.adAccountId;
     const slug = normalizeProjectIdForCallback(slugSource || '');
     if (!slug) {
@@ -8305,7 +8265,7 @@ class TelegramBot {
     return this.storage.putJson('DB', key, state);
   }
 
-  async buildAdminPanelPayload({ forceMetaRefresh = false } = {}) {
+  async buildAdminPanelPayload({ forceMetaRefresh = false, adminId = null, chatId = null, threadId = null } = {}) {
     const metaPromise = this.metaService
       ? forceMetaRefresh
         ? this.metaService.refreshOverview()
@@ -8315,11 +8275,10 @@ class TelegramBot {
           })
       : this.storage.readMetaStatus();
 
-    const [metaResult, chatKeys, projectKeys, recentLogs, webhookStatus] = await Promise.all([
+    const [metaResult, chatKeys, projectKeys, webhookStatus] = await Promise.all([
       metaPromise,
       this.storage.listKeys('DB', CHAT_KEY_PREFIX, 100),
       this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 100),
-      this.storage.readTelegramLog(5),
       this.ensureWebhookActive({ autoRegister: true }),
     ]);
 
@@ -8371,20 +8330,20 @@ class TelegramBot {
       );
     }
 
-    if (recentLogs.length > 0) {
-      summary.push('', '<b>Последние события Telegram</b>');
-      const preview = recentLogs
-        .slice(Math.max(recentLogs.length - 3, 0))
-        .reverse()
-        .map((entry) => formatLogLine(entry, { timezone: this.config.defaultTimezone, limit: 80 }));
-      summary.push(...preview);
+    let authButton = { text: '🔐 Авторизоваться в Facebook', callback_data: 'admin:fb:auth' };
+    if (adminId) {
+      const session = await this.createMetaOAuthSession({
+        adminId,
+        chatId,
+        threadId,
+      });
+      if (session?.link) {
+        authButton = { text: '🔐 Авторизоваться в Facebook', url: session.link };
+      }
     }
 
     const inlineKeyboard = [
-      [
-        { text: '🔐 Авторизоваться в Facebook', callback_data: 'admin:fb:auth' },
-        { text: '➕ Подключить проект', callback_data: 'admin:project:connect' },
-      ],
+      [authButton, { text: '➕ Подключить проект', callback_data: 'admin:project:connect' }],
       [
         { text: '📁 Проекты', callback_data: 'admin:projects' },
         { text: '🔄 Обновиться', callback_data: 'admin:refresh' },
@@ -8681,6 +8640,40 @@ class TelegramBot {
             });
             break;
           }
+          case 'reuse': {
+            if (!session.pendingExisting) {
+              answerText = 'Проект для обновления не найден.';
+              showAlert = true;
+              break;
+            }
+
+            const pendingCode = session.pendingExisting.code || session.pendingExistingKey || '';
+            let existing = pendingCode ? this.findExistingProjectByCode(session, pendingCode) : null;
+            if (!existing && session.draft?.adAccountId) {
+              existing = this.findExistingProjectByAccount(session, session.draft.adAccountId);
+            }
+
+            if (!existing) {
+              answerText = 'Не удалось найти проект. Обновите списки и попробуйте ещё раз.';
+              showAlert = true;
+              break;
+            }
+
+            this.applyExistingProjectToDraft(session, existing, { keepPortalToken: true });
+            shouldUpdate = true;
+            answerText = existing.record?.name
+              ? `Проект «${existing.record.name}» готов к обновлению.`
+              : 'Будет обновлена существующая запись.';
+            this.queueLog({
+              kind: 'admin_session',
+              status: 'updated',
+              session_kind: 'project_connect',
+              user_id: userId,
+              action: 'project_connect_reuse',
+              project_key: existing.key,
+            });
+            break;
+          }
           case 'page': {
             const target = parts[1] || '';
             const direction = parts[2] || '';
@@ -8744,6 +8737,105 @@ class TelegramBot {
               action: 'project_connect_refresh',
             });
             break;
+          }
+          case 'save': {
+            this.refreshProjectConnectSuggestions(session);
+            const result = await this.finishProjectConnectSession(session);
+            if (!result.ok) {
+              const messageText = this.describeProjectConnectError(result.error, result.detail);
+              answerText = messageText.replace(/<[^>]+>/g, '');
+              showAlert = true;
+              break;
+            }
+
+            await this.clearAdminSession(userId);
+
+            const record = result.record;
+            const accountId = record.meta_account_id || record.ad_account_id || session.draft?.adAccountId || '';
+            const chatInfo = record.chat || {};
+            const threadId = chatInfo.thread_id || chatInfo.threadId || '';
+            const lines = [
+              result.action === 'updated' ? '<b>Проект обновлён</b>' : '<b>Проект подключён</b>',
+              `Код: <code>${escapeHtml(record.code)}</code>`,
+            ];
+            if (accountId) {
+              lines.push(`Аккаунт: <code>act_${escapeHtml(String(accountId))}</code>`);
+            }
+            if (chatInfo.id) {
+              lines.push(
+                `Чат: <code>${escapeHtml(chatInfo.id)}</code>${
+                  threadId ? ` / <code>${escapeHtml(String(threadId))}</code>` : ''
+                }`,
+              );
+            }
+            lines.push(
+              result.action === 'updated'
+                ? 'Данные проекта обновлены. Проверьте карточку в админ-панели.'
+                : 'Проект готов. Настройте KPI и отчёты в карточке проекта.',
+            );
+
+            const successMarkup = {
+              inline_keyboard: [[{ text: '⬅️ К админке', callback_data: 'admin:panel' }]],
+            };
+
+            if (message?.chat?.id && message?.message_id) {
+              try {
+                await this.telegram.editMessageText({
+                  chat_id: message.chat.id,
+                  message_id: message.message_id,
+                  text: lines.join('\n'),
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: true,
+                  reply_markup: successMarkup,
+                });
+              } catch (error) {
+                console.warn('Failed to edit project connect success message', error);
+                await this.sendMessageWithFallback(
+                  {
+                    chat_id: chatId,
+                    text: lines.join('\n'),
+                    parse_mode: 'HTML',
+                    disable_web_page_preview: true,
+                    reply_markup: successMarkup,
+                  },
+                  message,
+                );
+              }
+            } else if (chatId) {
+              await this.sendMessageWithFallback(
+                {
+                  chat_id: chatId,
+                  text: lines.join('\n'),
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: true,
+                  reply_markup: successMarkup,
+                },
+                message,
+              );
+            }
+
+            await this.notifyProjectCreated(record, {
+              initiator: userId,
+              sourceChatId: chatId,
+              action: result.action,
+              previous: result.previous || null,
+            });
+
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: result.action === 'updated' ? 'Проект обновлён.' : 'Проект подключён.',
+            });
+
+            this.queueLog({
+              kind: 'admin_session',
+              status: 'saved',
+              session_kind: 'project_connect',
+              user_id: userId,
+              action: result.action === 'updated' ? 'project_connect_update' : 'project_connect_create',
+              project_key: record.key || null,
+            });
+
+            return { handled: true };
           }
           case 'cancel': {
             await this.clearAdminSession(userId);
@@ -9056,7 +9148,11 @@ class TelegramBot {
         }
 
         if (message?.message_id && message?.chat?.id) {
-          const panel = await this.buildAdminPanelPayload();
+          const panel = await this.buildAdminPanelPayload({
+            adminId: userId,
+            chatId: message?.chat?.id ?? chatId,
+            threadId: message?.message_thread_id ?? null,
+          });
           await this.telegram.editMessageText({
             chat_id: message.chat.id,
             message_id: message.message_id,
@@ -9089,7 +9185,12 @@ class TelegramBot {
           return { handled: false, reason: 'message_missing' };
         }
 
-        const panel = await this.buildAdminPanelPayload({ forceMetaRefresh: true });
+        const panel = await this.buildAdminPanelPayload({
+          forceMetaRefresh: true,
+          adminId: userId,
+          chatId: message?.chat?.id ?? chatId,
+          threadId: message?.message_thread_id ?? null,
+        });
         await this.telegram.editMessageText({
           chat_id: message.chat.id,
           message_id: message.message_id,
@@ -9120,7 +9221,11 @@ class TelegramBot {
           return { handled: false, reason: 'chat_missing' };
         }
 
-        const panel = await this.buildAdminPanelPayload();
+        const panel = await this.buildAdminPanelPayload({
+          adminId: userId,
+          chatId,
+          threadId: message?.message_thread_id ?? null,
+        });
         await this.sendMessageWithFallback(
           {
             chat_id: chatId,
