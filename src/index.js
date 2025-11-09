@@ -25,6 +25,15 @@ const META_TOKEN_KEY = 'meta:token';
 const META_DEFAULT_GRAPH_VERSION = 'v18.0';
 const META_OVERVIEW_MAX_AGE_MS = 2 * 60 * 1000;
 const ADMIN_PROJECT_PREVIEW_LIMIT = 6;
+const REPORT_STATE_PREFIX = 'report:state:';
+const REPORT_DEFAULT_TIME = '10:00';
+const REPORT_TOLERANCE_MINUTES = 7;
+const REPORT_PRESET_MAP = {
+  today: 'today',
+  yesterday: 'yesterday',
+  week: 'last_7d',
+  month: 'this_month',
+};
 
 function resolveDefaultWebhookUrl(config, { origin = '' } = {}) {
   if (config?.telegramWebhookUrl) {
@@ -431,6 +440,84 @@ function normalizeTimeToken(token) {
   return null;
 }
 
+function timeStringToMinutes(value) {
+  const normalized = normalizeTimeToken(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const [hoursRaw, minutesRaw] = normalized.split(':');
+  const hours = Number.parseInt(hoursRaw, 10);
+  const minutes = Number.parseInt(minutesRaw, 10);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return null;
+  }
+
+  return hours * 60 + minutes;
+}
+
+function formatDateIsoInTimeZone(date, timezone) {
+  const target = parseDateInput(date) || new Date();
+  const options = { timeZone: timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' };
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', options).formatToParts(target);
+    const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${lookup.year}-${lookup.month}-${lookup.day}`;
+  } catch (error) {
+    console.warn('Failed to format date in timezone', timezone, error);
+    return target.toISOString().slice(0, 10);
+  }
+}
+
+function resolveTimezoneSnapshot(date, timezone) {
+  const target = parseDateInput(date) || new Date();
+  const options = {
+    timeZone: timezone || 'UTC',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour12: false,
+  };
+
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', options).formatToParts(target);
+    const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    const hour = Number.parseInt(lookup.hour ?? '0', 10);
+    const minute = Number.parseInt(lookup.minute ?? '0', 10);
+    const weekdayToken = String(lookup.weekday ?? '').slice(0, 3).toLowerCase();
+    const weekdayMap = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+
+    return {
+      year: lookup.year,
+      month: lookup.month,
+      day: lookup.day,
+      hour,
+      minute,
+      minutes: hour * 60 + minute,
+      weekday: weekdayMap[weekdayToken] ?? null,
+      dateIso: `${lookup.year}-${lookup.month}-${lookup.day}`,
+      timezone: options.timeZone,
+    };
+  } catch (error) {
+    console.warn('Failed to resolve timezone snapshot', timezone, error);
+    return {
+      year: String(target.getUTCFullYear()),
+      month: String(target.getUTCMonth() + 1).padStart(2, '0'),
+      day: String(target.getUTCDate()).padStart(2, '0'),
+      hour: target.getUTCHours(),
+      minute: target.getUTCMinutes(),
+      minutes: target.getUTCHours() * 60 + target.getUTCMinutes(),
+      weekday: target.getUTCDay(),
+      dateIso: target.toISOString().slice(0, 10),
+      timezone: 'UTC',
+    };
+  }
+}
+
 function normalizePeriodToken(token) {
   if (!token) {
     return null;
@@ -834,6 +921,23 @@ function normalizeCampaignSummary(campaign) {
   };
 }
 
+function normalizeInsightEntry(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  const id = entry.campaign_id || entry.campaignId || entry.id || '';
+  const name = entry.campaign_name || entry.campaignName || entry.name || `Campaign ${id}`;
+  const effectiveStatus = entry.campaign_effective_status || entry.effective_status || entry.status;
+
+  return normalizeCampaignSummary({
+    id,
+    name,
+    effective_status: effectiveStatus,
+    insights: { data: [entry] },
+  });
+}
+
 function formatInteger(value) {
   if (!Number.isFinite(value)) {
     return '—';
@@ -965,6 +1069,37 @@ function extractScheduleSettings(rawProject) {
   };
 }
 
+function extractReportCampaignFilter(rawProject) {
+  if (!rawProject || typeof rawProject !== 'object') {
+    return [];
+  }
+
+  const reporting = rawProject.reporting || rawProject.settings?.reporting || rawProject.config?.reporting || {};
+  const campaigns = reporting.campaigns || reporting.selected || reporting.include || reporting.targets || null;
+
+  if (Array.isArray(campaigns)) {
+    return campaigns.map((item) => String(item));
+  }
+
+  if (campaigns && typeof campaigns === 'object') {
+    if (Array.isArray(campaigns.selected)) {
+      return campaigns.selected.map((item) => String(item));
+    }
+    if (Array.isArray(campaigns.include)) {
+      return campaigns.include.map((item) => String(item));
+    }
+    if (Array.isArray(campaigns.ids)) {
+      return campaigns.ids.map((item) => String(item));
+    }
+  }
+
+  if (Array.isArray(reporting.campaign_ids)) {
+    return reporting.campaign_ids.map((item) => String(item));
+  }
+
+  return [];
+}
+
 function formatScheduleLines(schedule, { timezone } = {}) {
   if (!schedule) {
     return ['Расписание ещё не настроено. Нажмите «⚙️ Настройки», чтобы задать время отчётов.'];
@@ -1002,6 +1137,29 @@ function formatScheduleLines(schedule, { timezone } = {}) {
   }
 
   return lines;
+}
+
+function shouldRunScheduleToday(schedule, weekday) {
+  if (weekday === null || weekday === undefined) {
+    return true;
+  }
+
+  const weekend = weekday === 0 || weekday === 6;
+  if (schedule?.quietWeekends && weekend) {
+    return false;
+  }
+
+  const cadence = String(schedule?.cadence || '').toLowerCase();
+  if (cadence === 'weekdays') {
+    return weekday >= 1 && weekday <= 5;
+  }
+  if (cadence === 'weekends') {
+    return weekend;
+  }
+  if (cadence === 'weekly') {
+    return weekday === 1; // Monday
+  }
+  return true;
 }
 
 function extractAlertSettings(rawProject) {
@@ -1210,6 +1368,85 @@ function formatReportPresetLabel(preset) {
   }
 }
 
+function resolveReportRange(preset, { since, until, timezone } = {}) {
+  const normalized = String(preset || '').toLowerCase();
+  const datePreset = REPORT_PRESET_MAP[normalized] || null;
+  const range = { preset: normalized || null, timezone: timezone || null };
+
+  if (datePreset) {
+    range.datePreset = datePreset;
+    range.label = formatReportPresetLabel(normalized);
+    return range;
+  }
+
+  if (since && until) {
+    range.since = formatDateIsoInTimeZone(since, timezone);
+    range.until = formatDateIsoInTimeZone(until, timezone);
+    range.label = `${formatDateLabel(range.since, { timezone })} — ${formatDateLabel(range.until, {
+      timezone,
+    })}`.replace(/\s+—\s+$/, '');
+    return range;
+  }
+
+  return range;
+}
+
+function parseCustomDateRangeInput(text, { timezone } = {}) {
+  if (!text) {
+    return { errors: ['Укажите даты в формате YYYY-MM-DD YYYY-MM-DD.'], range: null };
+  }
+
+  const tokens = String(text)
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  if (tokens.length < 2) {
+    return { errors: ['Нужно указать две даты: начало и конец периода.'], range: null };
+  }
+
+  const normalize = (token) => {
+    if (!token) return null;
+    const cleaned = token.replace(/[.,]/g, '-');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+      return cleaned;
+    }
+    if (/^\d{2}-\d{2}-\d{4}$/.test(cleaned)) {
+      const [day, month, year] = cleaned.split('-');
+      return `${year}-${month}-${day}`;
+    }
+    return null;
+  };
+
+  const sinceRaw = normalize(tokens[0]);
+  const untilRaw = normalize(tokens[1]);
+  const errors = [];
+
+  if (!sinceRaw || !parseDateInput(sinceRaw)) {
+    errors.push('Не удалось распознать дату начала. Формат: YYYY-MM-DD.');
+  }
+  if (!untilRaw || !parseDateInput(untilRaw)) {
+    errors.push('Не удалось распознать дату окончания. Формат: YYYY-MM-DD.');
+  }
+
+  if (errors.length > 0) {
+    return { errors, range: null };
+  }
+
+  const sinceIso = formatDateIsoInTimeZone(sinceRaw, timezone);
+  const untilIso = formatDateIsoInTimeZone(untilRaw, timezone);
+  if (sinceIso > untilIso) {
+    errors.push('Дата начала не может быть позже даты окончания.');
+    return { errors, range: null };
+  }
+
+  const range = resolveReportRange(null, { since: sinceIso, until: untilIso, timezone });
+  range.label = `${formatDateLabel(sinceIso, { timezone })} — ${formatDateLabel(untilIso, { timezone })}`;
+  range.since = sinceIso;
+  range.until = untilIso;
+  return { errors, range };
+}
+
 function buildReportKpiLine(kpi, { totalSpend, totalLeads, totalDailyBudget }) {
   if (!kpi) {
     return null;
@@ -1244,19 +1481,23 @@ function buildReportKpiLine(kpi, { totalSpend, totalLeads, totalDailyBudget }) {
   return `KPI: ${parts.join(' | ')}`;
 }
 
-function buildProjectReportPreview({ project, account, rawProject, preset }) {
+function buildProjectReportPreview({ project, account, rawProject, preset, report }) {
   const lines = [];
   const codeLine = project?.code ? `#${project.code}` : project?.id ? `#${project.id}` : null;
   if (codeLine) {
     lines.push(escapeHtml(codeLine));
   }
 
-  const periodLabel = formatReportPresetLabel(preset);
+  const periodLabel = report?.range?.label || formatReportPresetLabel(preset);
   lines.push(`<b>Отчёт</b> (${escapeHtml(periodLabel)})`);
 
-  const campaigns = Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [];
-  let totalSpend = 0;
-  let totalLeads = 0;
+  const campaigns = Array.isArray(report?.campaigns)
+    ? report.campaigns
+    : Array.isArray(account?.campaignSummaries)
+    ? account.campaignSummaries
+    : [];
+  let totalSpendComputed = 0;
+  let totalLeadsComputed = 0;
 
   if (campaigns.length === 0) {
     lines.push('• Данных по кампаниям пока нет.');
@@ -1265,10 +1506,10 @@ function buildProjectReportPreview({ project, account, rawProject, preset }) {
       const spend = Number.isFinite(campaign.spendUsd) ? campaign.spendUsd : null;
       const leads = Number.isFinite(campaign.leads) ? campaign.leads : null;
       if (Number.isFinite(spend)) {
-        totalSpend += spend;
+        totalSpendComputed += spend;
       }
       if (Number.isFinite(leads)) {
-        totalLeads += leads;
+        totalLeadsComputed += leads;
       }
 
       const spendText = Number.isFinite(spend)
@@ -1283,7 +1524,14 @@ function buildProjectReportPreview({ project, account, rawProject, preset }) {
     }
   }
 
-  const totalCpl = Number.isFinite(totalSpend) && Number.isFinite(totalLeads) && totalLeads > 0 ? totalSpend / totalLeads : null;
+  const totalSpend = Number.isFinite(report?.totals?.spendUsd) ? report.totals.spendUsd : totalSpendComputed;
+  const totalLeads = Number.isFinite(report?.totals?.leads) ? report.totals.leads : totalLeadsComputed;
+  const totalCpl = Number.isFinite(report?.totals?.cpaUsd)
+    ? report.totals.cpaUsd
+    : Number.isFinite(totalSpend) && Number.isFinite(totalLeads) && totalLeads > 0
+    ? totalSpend / totalLeads
+    : null;
+
   const totalSpendText = Number.isFinite(totalSpend)
     ? formatUsd(totalSpend, { digitsBelowOne: 2, digitsAboveOne: 2 })
     : '—';
@@ -1303,6 +1551,17 @@ function buildProjectReportPreview({ project, account, rawProject, preset }) {
 
   if (kpiLine) {
     lines.push(kpiLine);
+  }
+
+  if (Number.isFinite(report?.totals?.reach) || Number.isFinite(report?.totals?.impressions)) {
+    const reachText = Number.isFinite(report?.totals?.reach) ? formatInteger(report.totals.reach) : '—';
+    const impressionsText = Number.isFinite(report?.totals?.impressions)
+      ? formatInteger(report.totals.impressions)
+      : '—';
+    const clicksText = Number.isFinite(report?.totals?.clicks)
+      ? formatInteger(report.totals.clicks)
+      : '—';
+    lines.push(`Охват: ${reachText} | Показы: ${impressionsText} | Клики: ${clicksText}`);
   }
 
   return { text: lines.join('\n'), campaigns };
@@ -2478,6 +2737,130 @@ class MetaService {
     return account;
   }
 
+  async fetchAccountReport({ project, account, preset, range, since, until, timezone, campaignIds, limit = 40 } = {}) {
+    const targetRange = range || resolveReportRange(preset, { since, until, timezone });
+    const accountCandidate =
+      account?.id ||
+      (account?.accountId ? `act_${account.accountId}` : null) ||
+      (project?.adAccountId ? `act_${String(project.adAccountId).replace(/^act_/, '')}` : null) ||
+      null;
+
+    if (!accountCandidate) {
+      throw new Error('У проекта не указан рекламный аккаунт.');
+    }
+
+    const accountId = String(accountCandidate).startsWith('act_')
+      ? String(accountCandidate)
+      : `act_${String(accountCandidate)}`;
+
+    const token = await this.resolveAccessToken();
+    if (!token) {
+      throw new Error('Meta токен не задан.');
+    }
+
+    const client = new MetaClient({
+      accessToken: token,
+      version: this.config?.metaGraphVersion || META_DEFAULT_GRAPH_VERSION,
+      fetcher: this.fetcher,
+    });
+
+    const params = {
+      level: 'campaign',
+      time_increment: 'all_days',
+      sort: '-spend',
+      limit: String(Math.max(1, Math.min(Number(limit) || 40, 100))),
+      fields:
+        'campaign_id,campaign_name,spend,actions,action_values,cost_per_action_type,reach,impressions,frequency,inline_link_clicks,clicks,date_start,date_stop',
+    };
+
+    if (targetRange?.datePreset) {
+      params.date_preset = targetRange.datePreset;
+    } else if (targetRange?.since && targetRange?.until) {
+      params.time_range = JSON.stringify({ since: targetRange.since, until: targetRange.until });
+    }
+
+    if (Array.isArray(campaignIds) && campaignIds.length > 0) {
+      params.filtering = JSON.stringify([
+        { field: 'campaign.id', operator: 'IN', value: campaignIds.map((value) => String(value)) },
+      ]);
+    }
+
+    const response = await client.request(`/${accountId}/insights`, { searchParams: params });
+    const entries = Array.isArray(response?.data) ? response.data : [];
+
+    const campaigns = [];
+    let totalSpend = 0;
+    let totalLeads = 0;
+    let totalReach = 0;
+    let totalImpressions = 0;
+    let totalClicks = 0;
+    let sinceDetected = null;
+    let untilDetected = null;
+
+    for (const entry of entries) {
+      const summary = normalizeInsightEntry(entry);
+      if (!summary) {
+        continue;
+      }
+
+      campaigns.push(summary);
+
+      if (Number.isFinite(summary.spendUsd)) {
+        totalSpend += summary.spendUsd;
+      }
+      if (Number.isFinite(summary.leads)) {
+        totalLeads += summary.leads;
+      }
+      if (Number.isFinite(summary.reach)) {
+        totalReach += summary.reach;
+      }
+      if (Number.isFinite(summary.impressions)) {
+        totalImpressions += summary.impressions;
+      }
+      if (Number.isFinite(summary.clicks)) {
+        totalClicks += summary.clicks;
+      }
+
+      if (!sinceDetected && entry?.date_start) {
+        sinceDetected = entry.date_start;
+      }
+      if (entry?.date_stop) {
+        untilDetected = entry.date_stop;
+      }
+    }
+
+    campaigns.sort((a, b) => (b.spendUsd ?? 0) - (a.spendUsd ?? 0));
+
+    const totals = {
+      spendUsd: campaigns.length > 0 ? totalSpend : null,
+      leads: campaigns.length > 0 ? totalLeads : null,
+      cpaUsd: totalLeads > 0 ? totalSpend / totalLeads : null,
+      reach: totalReach > 0 ? totalReach : null,
+      impressions: totalImpressions > 0 ? totalImpressions : null,
+      clicks: totalClicks > 0 ? totalClicks : null,
+    };
+
+    const rangeInfo = { ...targetRange };
+    if (!rangeInfo.since && sinceDetected) {
+      rangeInfo.since = formatDateIsoInTimeZone(sinceDetected, timezone || targetRange?.timezone);
+    }
+    if (!rangeInfo.until && untilDetected) {
+      rangeInfo.until = formatDateIsoInTimeZone(untilDetected, timezone || targetRange?.timezone);
+    }
+    if (!rangeInfo.label && (rangeInfo.since || rangeInfo.until)) {
+      const sinceLabel = rangeInfo.since ? formatDateLabel(rangeInfo.since, { timezone }) : '';
+      const untilLabel = rangeInfo.until ? formatDateLabel(rangeInfo.until, { timezone }) : '';
+      rangeInfo.label = sinceLabel && untilLabel ? `${sinceLabel} — ${untilLabel}` : sinceLabel || untilLabel || '';
+    }
+
+    return {
+      campaigns,
+      totals,
+      range: rangeInfo,
+      currency: account?.currency || project?.metrics?.currency || project?.currency || null,
+    };
+  }
+
   transformAdAccount(raw, { now } = {}) {
     if (!raw || typeof raw !== 'object') {
       return null;
@@ -2977,6 +3360,10 @@ class TelegramBot {
       return this.handleScheduleSessionInput({ session, message, text: trimmed });
     }
 
+    if (session.kind === 'report_custom') {
+      return this.handleReportCustomSessionInput({ session, message, text: trimmed });
+    }
+
     return { handled: false };
   }
 
@@ -3118,6 +3505,108 @@ class TelegramBot {
       session_kind: session.kind,
       user_id: userId,
       project_key: projectKey,
+    });
+
+    return { handled: true };
+  }
+
+  async handleReportCustomSessionInput({ session, message, text }) {
+    const userId = session.userId;
+    const timezone = this.config.defaultTimezone;
+    const parseResult = parseCustomDateRangeInput(text, { timezone });
+    if (parseResult.errors.length > 0 || !parseResult.range) {
+      await this.sendReply(
+        message,
+        [
+          '<b>Ошибка диапазона</b>',
+          ...parseResult.errors.map((line) => `• ${escapeHtml(line)}`),
+          '',
+          'Повторите ввод или используйте /cancel.',
+        ].join('\n'),
+      );
+      this.queueLog({
+        kind: 'admin_session',
+        status: 'error',
+        session_kind: session.kind,
+        user_id: userId,
+        project_key: session.projectKey,
+        error: 'parse_custom_range',
+      });
+      return { handled: true };
+    }
+
+    const callbackId = session.projectCallbackId || session.projectId || session.projectName || '';
+    const context = await this.resolveProjectContext(callbackId);
+    if (!context.project) {
+      await this.sendReply(
+        message,
+        'Не удалось найти проект для формирования отчёта. Попробуйте открыть карточку проекта заново.',
+      );
+      await this.clearAdminSession(userId);
+      return { handled: true };
+    }
+
+    const scheduleSettings = extractScheduleSettings(context.rawProject);
+    const effectiveTimezone = parseResult.range.timezone || scheduleSettings?.timezone || this.config.defaultTimezone;
+    const campaignFilter = extractReportCampaignFilter(context.rawProject);
+
+    let reportData = null;
+    if (this.metaService) {
+      try {
+        reportData = await this.metaService.fetchAccountReport({
+          project: context.project,
+          account: context.account,
+          range: { ...parseResult.range, timezone: effectiveTimezone },
+          timezone: effectiveTimezone,
+          campaignIds: campaignFilter,
+        });
+      } catch (error) {
+        await this.sendReply(
+          message,
+          ['⚠️ Не удалось запросить данные Meta:', escapeHtml(error?.message || String(error))].join('\n'),
+        );
+        this.queueLog({
+          kind: 'admin_session',
+          status: 'error',
+          session_kind: session.kind,
+          user_id: userId,
+          project_key: session.projectKey,
+          error: 'meta_fetch_failed',
+        });
+        return { handled: true };
+      }
+    }
+
+    const preview = buildProjectReportPreview({
+      project: context.project,
+      account: context.account,
+      rawProject: context.rawProject,
+      preset: parseResult.range.preset || 'custom',
+      report: reportData,
+    });
+
+    let bodyText = preview.text;
+    if (!this.metaService) {
+      bodyText = `${bodyText}\n⚠️ Meta сервис недоступен — показаны данные панели.`;
+    } else if (!reportData) {
+      bodyText = `${bodyText}\n⚠️ Не удалось получить выгрузку Meta.`;
+    }
+
+    const base = session.base || `admin:project:${session.projectCallbackId || ''}`;
+
+    await this.sendReply(message, bodyText, {
+      reply_markup: buildProjectReportKeyboard(base),
+    });
+
+    await this.clearAdminSession(userId);
+
+    this.queueLog({
+      kind: 'admin_session',
+      status: 'saved',
+      session_kind: session.kind,
+      user_id: userId,
+      project_key: session.projectKey,
+      range: reportData?.range || parseResult.range,
     });
 
     return { handled: true };
@@ -3295,6 +3784,194 @@ class TelegramBot {
       } catch (error) {
         console.error('Ping test send error', error);
         break;
+      }
+    }
+  }
+
+  async processReportSchedules({ now = new Date() } = {}) {
+    const projectKeys = await this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 200);
+    if (projectKeys.length === 0) {
+      return;
+    }
+
+    let metaStatus = null;
+    if (this.metaService) {
+      try {
+        const metaResult = await this.metaService.ensureOverview({
+          backgroundRefresh: true,
+          executionContext: this.executionContext,
+        });
+        metaStatus = metaResult?.status ?? metaResult ?? null;
+      } catch (error) {
+        console.error('Scheduled ensureOverview failed', error);
+        metaStatus = await this.storage.readMetaStatus();
+      }
+    } else {
+      metaStatus = await this.storage.readMetaStatus();
+    }
+
+    const accounts = Array.isArray(metaStatus?.facebook?.adAccounts)
+      ? metaStatus.facebook.adAccounts
+      : [];
+    const accountMap = new Map();
+    for (const account of accounts) {
+      const accountId = String(account?.accountId ?? account?.id ?? '').replace(/^act_/, '');
+      if (accountId) {
+        accountMap.set(accountId, account);
+      }
+    }
+
+    const adminTargets = Array.from(this.config.adminIds);
+    const adminRecipient = adminTargets.length > 0 ? adminTargets[0] : null;
+
+    for (const projectKey of projectKeys) {
+      let rawProject = null;
+      try {
+        rawProject = (await this.storage.getJson('DB', projectKey)) || {};
+      } catch (error) {
+        console.warn('Failed to read project for schedule', projectKey, error);
+        continue;
+      }
+
+      const project = normalizeProjectRecord(projectKey, rawProject);
+      const schedule = extractScheduleSettings(rawProject);
+      if (!schedule) {
+        continue;
+      }
+
+      const timezone = schedule.timezone || this.config.defaultTimezone || 'UTC';
+      const snapshot = resolveTimezoneSnapshot(now, timezone);
+      if (!shouldRunScheduleToday(schedule, snapshot.weekday)) {
+        continue;
+      }
+
+      const times = Array.isArray(schedule.times) && schedule.times.length > 0 ? schedule.times : [REPORT_DEFAULT_TIME];
+      const periods = Array.isArray(schedule.periods) && schedule.periods.length > 0 ? schedule.periods : ['today'];
+
+      const state = await this.readReportState(projectKey);
+      let stateChanged = false;
+
+      const accountId = project?.adAccountId ? String(project.adAccountId).replace(/^act_/, '') : null;
+      const account = accountId ? accountMap.get(accountId) || accountMap.get(project.adAccountId) || null : null;
+      const campaignFilter = extractReportCampaignFilter(rawProject);
+      const baseCallbackId = normalizeProjectIdForCallback(project.id || project.code || project.name || projectKey);
+
+      for (const timeToken of times) {
+        const normalizedTime = normalizeTimeToken(timeToken);
+        const timeMinutes = timeStringToMinutes(normalizedTime);
+        if (timeMinutes === null) {
+          continue;
+        }
+
+        const diff = Math.abs(snapshot.minutes - timeMinutes);
+        if (diff > REPORT_TOLERANCE_MINUTES) {
+          continue;
+        }
+
+        for (const period of periods) {
+          const slotId = `${normalizedTime}|${period}`;
+          const slotState = state.slots?.[slotId] || {};
+          if (slotState.date === snapshot.dateIso) {
+            continue;
+          }
+
+          let reportData = null;
+          if (this.metaService) {
+            try {
+              reportData = await this.metaService.fetchAccountReport({
+                project,
+                account,
+                preset: period,
+                timezone,
+                campaignIds: campaignFilter,
+              });
+            } catch (error) {
+              console.error('Scheduled report fetch failed', project.id || projectKey, error);
+              this.queueLog({
+                kind: 'report',
+                status: 'error',
+                project_id: project.id,
+                project_key: projectKey,
+                error: error?.message || String(error),
+                action: `schedule:${period}`,
+              });
+              continue;
+            }
+          }
+
+          const preview = buildProjectReportPreview({
+            project,
+            account,
+            rawProject,
+            preset: period,
+            report: reportData,
+          });
+
+          let text = preview.text;
+          if (!this.metaService) {
+            text = `${text}\n⚠️ Meta сервис недоступен — показаны данные панели.`;
+          } else if (!reportData) {
+            text = `${text}\n⚠️ Не удалось получить выгрузку Meta.`;
+          }
+
+          const targets = [];
+          if (project.chatId) {
+            const payload = {
+              chat_id: project.chatId,
+              text,
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+            };
+            if (project.threadId) {
+              payload.message_thread_id = Number(project.threadId);
+            }
+            targets.push({ payload, kind: 'project' });
+          }
+
+          if (adminRecipient) {
+            targets.push({
+              kind: 'admin',
+              payload: {
+                chat_id: adminRecipient,
+                text,
+                parse_mode: 'HTML',
+                disable_web_page_preview: true,
+                reply_markup: buildProjectReportKeyboard(`admin:project:${baseCallbackId}`),
+              },
+            });
+          }
+
+          let sent = false;
+          for (const target of targets) {
+            try {
+              await this.sendMessageWithFallback(target.payload);
+              sent = true;
+            } catch (error) {
+              console.error('Scheduled report send failed', target.payload.chat_id, error);
+            }
+          }
+
+          if (sent) {
+            state.slots[slotId] = {
+              date: snapshot.dateIso,
+              sent_at: new Date().toISOString(),
+              preset: period,
+            };
+            stateChanged = true;
+            this.queueLog({
+              kind: 'report',
+              status: 'sent',
+              project_id: project.id,
+              project_key: projectKey,
+              chat_id: project.chatId || null,
+              action: `schedule:${period}`,
+            });
+          }
+        }
+      }
+
+      if (stateChanged) {
+        await this.writeReportState(projectKey, state);
       }
     }
   }
@@ -3598,6 +4275,29 @@ class TelegramBot {
         .appendTelegramLog(record)
         .catch((error) => console.error('Failed to append telegram log', error)),
     );
+  }
+
+  async readReportState(projectKey) {
+    if (!projectKey) {
+      return { slots: {} };
+    }
+    const key = `${REPORT_STATE_PREFIX}${projectKey}`;
+    const state = await this.storage.getJson('DB', key);
+    if (!state || typeof state !== 'object') {
+      return { slots: {} };
+    }
+    if (!state.slots || typeof state.slots !== 'object') {
+      state.slots = {};
+    }
+    return state;
+  }
+
+  async writeReportState(projectKey, state) {
+    if (!projectKey) {
+      return false;
+    }
+    const key = `${REPORT_STATE_PREFIX}${projectKey}`;
+    return this.storage.putJson('DB', key, state);
   }
 
   async buildAdminPanelPayload({ forceMetaRefresh = false } = {}) {
@@ -4146,6 +4846,15 @@ class TelegramBot {
           }
 
           if (subAction === 'custom') {
+            const session = await this.startAdminSession({
+              userId,
+              chatId,
+              threadId: message?.message_thread_id ?? null,
+              project: context.project,
+              kind: 'report_custom',
+              base,
+            });
+
             await this.sendMessageWithFallback(
               {
                 chat_id: chatId,
@@ -4164,21 +4873,83 @@ class TelegramBot {
               callback_query_id: id,
               text: 'Жду диапазон дат в следующем сообщении.',
             });
+            this.queueLog({
+              kind: 'callback',
+              status: 'ok',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: 'report:custom:start',
+              session: session ? { kind: session.kind, project_key: session.projectKey } : null,
+            });
             return { handled: true };
           }
 
           const preset = subAction || 'today';
+          const scheduleSettings = extractScheduleSettings(context.rawProject);
+          const timezone = scheduleSettings?.timezone || this.config.defaultTimezone;
+          const campaignFilter = extractReportCampaignFilter(context.rawProject);
+
+          let reportData = null;
+          if (this.metaService) {
+            try {
+              reportData = await this.metaService.fetchAccountReport({
+                project: context.project,
+                account: context.account,
+                preset,
+                timezone,
+                campaignIds: campaignFilter,
+              });
+            } catch (error) {
+              const errorMessage = error?.message || 'Не удалось получить данные Meta.';
+              await this.sendMessageWithFallback(
+                {
+                  chat_id: chatId,
+                  text: ['<b>Ошибка при формировании отчёта</b>', escapeHtml(errorMessage)].join('\n'),
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: true,
+                },
+                message,
+              );
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Не удалось получить данные Meta.',
+                show_alert: true,
+              });
+              this.queueLog({
+                kind: 'callback',
+                status: 'error',
+                data,
+                chat_id: chatId,
+                user_id: userId,
+                project_id: context.project.id,
+                action: `report:${preset}`,
+                error: errorMessage,
+              });
+              return { handled: true };
+            }
+          }
+
           const preview = buildProjectReportPreview({
             project: context.project,
             account: context.account,
             rawProject: context.rawProject,
             preset,
+            report: reportData,
           });
+
+          let bodyText = preview.text;
+          if (!this.metaService) {
+            bodyText = `${bodyText}\n⚠️ Прямая выгрузка Meta недоступна — показаны сохранённые данные.`;
+          } else if (!reportData) {
+            bodyText = `${bodyText}\n⚠️ Не удалось получить свежий отчёт — показаны данные панели.`;
+          }
 
           await this.sendMessageWithFallback(
             {
               chat_id: chatId,
-              text: preview.text,
+              text: bodyText,
               parse_mode: 'HTML',
               disable_web_page_preview: true,
               reply_markup: buildProjectReportKeyboard(base),
@@ -4195,6 +4966,7 @@ class TelegramBot {
             user_id: userId,
             project_id: context.project.id,
             action: `report:${preset}`,
+            range: reportData?.range || null,
           });
 
           return { handled: true };
@@ -4951,6 +5723,17 @@ class WorkerApp {
   async handleScheduled(event) {
     if (!this.executionContext) {
       return;
+    }
+
+    const bot = this.bot;
+    if (bot) {
+      this.executionContext.waitUntil(
+        bot
+          .processReportSchedules({ now: event?.scheduledTime ? new Date(event.scheduledTime) : new Date() })
+          .catch((error) => {
+            console.error('Scheduled report processing failed', error);
+          }),
+      );
     }
 
     if (this.config.botToken && this.telegramClient?.isUsable) {
