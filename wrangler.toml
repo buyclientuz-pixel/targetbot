@@ -17,19 +17,19 @@ head_sampling_rate = 1
 
 [[kv_namespaces]]
 binding = "REPORTS_NAMESPACE"
-id = "c55f82210ade457c93aff4fe2ba8b007"
+id = "0132cf582ce247d4b806a2be748e34c6"
 
 [[kv_namespaces]]
 binding = "LOGS_NAMESPACE"
-id = "c55f82210ade457c93aff4fe2ba8b007"
+id = "0132cf582ce247d4b806a2be748e34c6"
 
 [[kv_namespaces]]
 binding = "BILLING_NAMESPACE"
-id = "c55f82210ade457c93aff4fe2ba8b007"
+id = "0132cf582ce247d4b806a2be748e34c6"
 
 [[kv_namespaces]]
 binding = "DB"
-id = "c55f82210ade457c93aff4fe2ba8b007"
+id = "0132cf582ce247d4b806a2be748e34c6"
 
 [triggers]
 crons = ["*/5 * * * *"]
