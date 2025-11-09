@@ -4422,7 +4422,6 @@ class MetaService {
       'default_payment_method{last4,display_string}',
       'funding_source_details{display_string}',
       'business_name',
-      'adspaymentcycle{threshold_amount,payment_method_last4}',
     ].join(',');
 
     return this.collectPaginated(client, '/me/adaccounts', { limit: '50', fields });
@@ -4477,6 +4476,49 @@ class MetaService {
     }
 
     const updated = { ...account };
+
+    if (!updated.paymentCycle) {
+      try {
+        const paymentCycle = await this.fetchAdPaymentCycle(client, account.id);
+        if (paymentCycle) {
+          updated.paymentCycle = paymentCycle;
+        }
+      } catch (error) {
+        console.warn('Failed to load payment cycle', account.id, error);
+      }
+    }
+
+    if (updated.paymentCycle) {
+      const cycle = updated.paymentCycle;
+      const last4Candidate =
+        cycle.payment_method_last4 ||
+        cycle.paymentMethodLast4 ||
+        extractLast4Digits(cycle.display_string) ||
+        extractLast4Digits(cycle.payment_method);
+      if (last4Candidate) {
+        updated.defaultPaymentMethodLast4 = String(last4Candidate).slice(-4);
+      }
+
+      const billingCandidate =
+        cycle.next_payment_date ||
+        cycle.next_payment_due_date ||
+        cycle.due_date ||
+        updated.billingNextAt;
+      if (billingCandidate) {
+        const billingIso = parseDateInput(billingCandidate)?.toISOString?.() || String(billingCandidate);
+        const countdown = formatDaysUntil(billingIso, { now });
+        updated.billingNextAt = billingIso;
+        updated.billingDueInDays = countdown.value;
+        updated.billingDueLabel = countdown.label;
+      }
+
+      const threshold = parseMetaCurrency(
+        cycle.threshold_amount || cycle.thresholdAmount || cycle.threshold || cycle.billing_threshold,
+      );
+      if (Number.isFinite(threshold)) {
+        updated.paymentThresholdUsd = threshold;
+      }
+    }
 
     try {
       const insights = await client.request(`/${account.id}/insights`, {
@@ -4555,6 +4597,40 @@ class MetaService {
     }
 
     return account;
+  }
+
+  async fetchAdPaymentCycle(client, accountId) {
+    if (!client || !accountId) {
+      return null;
+    }
+
+    const rawId = String(accountId);
+    const normalized = rawId.startsWith('act_') ? rawId : `act_${rawId.replace(/^act_/, '')}`;
+
+    try {
+      const response = await client.request(`/${normalized}/adspaymentcycle`, {
+        searchParams: {
+          fields:
+            'threshold_amount,payment_method_last4,next_payment_due_date,next_payment_date,due_date,last_payment_amount',
+        },
+      });
+
+      const candidate = Array.isArray(response?.data) ? response.data[0] : response;
+      if (!candidate || typeof candidate !== 'object') {
+        return null;
+      }
+
+      return candidate;
+    } catch (error) {
+      const code = Number(error?.code);
+      if (code === 100 || code === 200 || code === 10 || code === 803) {
+        console.warn('Ad payment cycle unavailable', accountId, error?.message || error);
+        return null;
+      }
+
+      console.warn('Failed to fetch ad payment cycle', accountId, error);
+      return null;
+    }
   }
 
   async fetchAccountReport({ project, account, preset, range, since, until, timezone, campaignIds, limit = 40 } = {}) {
@@ -4825,7 +4901,7 @@ class MetaService {
 
     const defaultPayment = raw.default_payment_method || raw.defaultPaymentMethod || {};
     const fundingDetails = raw.funding_source_details || raw.fundingSourceDetails || {};
-    const paymentCycle = raw.adspaymentcycle || raw.adsPaymentCycle || {};
+    const paymentCycle = raw.paymentCycle || raw.adspaymentcycle || raw.adsPaymentCycle || {};
     const last4 =
       defaultPayment.last4 ||
       extractLast4Digits(defaultPayment.display_string) ||
@@ -4867,6 +4943,10 @@ class MetaService {
       billingNextAt: billingIso,
       billingDueInDays: billingCountdown.value,
       billingDueLabel: billingCountdown.label,
+      paymentThresholdUsd: parseMetaCurrency(
+        paymentCycle.threshold_amount || paymentCycle.thresholdAmount || paymentCycle.threshold,
+      ),
+      paymentCycle: paymentCycle && Object.keys(paymentCycle).length > 0 ? paymentCycle : null,
       requiresAttention:
         paymentIssues.length > 0 ||
           Boolean(debtUsd && debtUsd > 0) ||
