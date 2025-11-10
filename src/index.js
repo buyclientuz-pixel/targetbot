@@ -134,19 +134,56 @@ function formatUsd(value, { digitsBelowOne = 2, digitsAboveOne = 2 } = {}) {
   return `${formatted}$`;
 }
 
-function formatCpaRange(minValue, maxValue) {
-  const min = Number(minValue);
-  const max = Number(maxValue);
-  const hasMin = Number.isFinite(min) && min > 0;
-  const hasMax = Number.isFinite(max) && max > 0;
+function formatCpaRange(minValue, maxValue, campaigns = []) {
+  const register = (value, target) => {
+    const amount = Number(value);
+    if (Number.isFinite(amount) && amount > 0) {
+      target.push(amount);
+    }
+  };
 
-  if (!hasMin && !hasMax) {
+  const candidates = [];
+  register(minValue, candidates);
+  register(maxValue, candidates);
+
+  if (Array.isArray(campaigns)) {
+    for (const campaign of campaigns) {
+      if (!campaign) continue;
+      register(campaign.cpaUsd, candidates);
+      register(campaign.cpa, candidates);
+      register(campaign.costPerResultUsd, candidates);
+      register(campaign.cost_per_result_usd, candidates);
+      register(campaign.cost_per_lead_usd, candidates);
+      register(campaign.cost_per_action, candidates);
+      register(campaign.cost_per_lead, candidates);
+      register(campaign.cost_per_purchase, candidates);
+      register(campaign.costPerLeadUsd, candidates);
+      register(campaign.costPerPurchaseUsd, candidates);
+      if (Array.isArray(campaign.cost_per_action_type)) {
+        for (const action of campaign.cost_per_action_type) {
+          if (!action) continue;
+          register(action.value, candidates);
+        }
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
     return '';
   }
 
-  const minText = hasMin ? formatUsd(min, { digitsBelowOne: 2, digitsAboveOne: 0 }) : '—';
-  const maxText = hasMax ? formatUsd(max, { digitsBelowOne: 2, digitsAboveOne: 0 }) : '—';
+  const min = Math.min(...candidates);
+  const max = Math.max(...candidates);
+  if (!Number.isFinite(min) || min <= 0) {
+    return '';
+  }
 
+  const minText = formatUsd(min, { digitsBelowOne: 2, digitsAboveOne: 0 });
+  if (!Number.isFinite(max) || max <= 0 || Math.abs(max - min) < 0.01) {
+    return minText;
+  }
+
+  const maxText = formatUsd(max, { digitsBelowOne: 2, digitsAboveOne: 0 });
   return `${minText} / ${maxText}`;
 }
 
@@ -1468,9 +1505,44 @@ const LEAD_ACTION_HINTS = [
   'leadgen',
   'lead_form',
   'lead_event',
+  'leadgen.other',
+  'leadgen_qualified_lead',
   'onsite_conversion.lead',
   'onsite_conversion.lead_grouped',
   'offsite_conversion.fb_pixel_lead',
+  'onsite_conversion.submit_application',
+];
+const MESSAGE_ACTION_HINTS = [
+  'onsite_conversion.messaging_first_reply',
+  'messaging_first_reply',
+  'omni_message_first_reply',
+  'messaging_conversation_started_7d',
+  'onsite_conversion.messaging_conversation_started_7d',
+];
+const CONVERSION_ACTION_HINTS = [
+  'purchase',
+  'omni_purchase',
+  'onsite_conversion.purchase',
+  'onsite_conversion.purchase_roas',
+  'offsite_conversion.fb_pixel_purchase',
+  'offsite_conversion.fb_pixel_purchase_value',
+  'subscribe',
+  'omni_subscribe',
+  'initiate_checkout',
+  'omni_initiated_checkout',
+  'add_to_cart',
+  'omni_add_to_cart',
+  'add_payment_info',
+  'omni_add_payment_info',
+  'start_trial',
+  'order',
+  'complete_registration',
+  'schedule',
+  'submit_application',
+  'contact',
+  'view_content',
+  'search',
+  ...MESSAGE_ACTION_HINTS,
 ];
 
 function actionMatches(type, hints = LEAD_ACTION_HINTS) {
@@ -1483,21 +1555,102 @@ function actionMatches(type, hints = LEAD_ACTION_HINTS) {
 }
 
 function sumActionMetric(actions, hints = LEAD_ACTION_HINTS) {
+  return sumActionMetricDetailed(actions, hints).total;
+}
+
+function sumActionMetricDetailed(actions, hints = LEAD_ACTION_HINTS) {
   if (!Array.isArray(actions)) {
-    return 0;
+    return { total: 0, matched: 0 };
   }
 
   let total = 0;
+  let matched = 0;
   for (const action of actions) {
     const type = action?.action_type ?? action?.actionType ?? action?.event_type;
     if (!actionMatches(type, hints)) {
       continue;
     }
 
+    matched += 1;
+
     const value = Number(action?.value ?? action?.count ?? action?.amount);
     if (Number.isFinite(value)) {
       total += value;
     }
+  }
+
+  return { total, matched };
+}
+
+function extractActionTotal(entry, { hints, fallbackFields = [] } = {}) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  let total = 0;
+  let evidence = false;
+
+  const { total: actionsTotal, matched: actionMatchesCount } = sumActionMetricDetailed(
+    entry.actions,
+    hints,
+  );
+  if (actionMatchesCount > 0) {
+    evidence = true;
+    total = Math.max(total, actionsTotal);
+  }
+
+  if (Array.isArray(entry?.action_values) && hints === CONVERSION_ACTION_HINTS) {
+    const { total: valueTotal, matched: valueMatches } = sumActionMetricDetailed(
+      entry.action_values,
+      hints,
+    );
+    if (valueMatches > 0) {
+      evidence = true;
+      total = Math.max(total, valueTotal);
+    }
+  }
+
+  for (const field of fallbackFields) {
+    const value = Number(entry?.[field]);
+    if (Number.isFinite(value)) {
+      evidence = true;
+      total = Math.max(total, value);
+    }
+  }
+
+  const fallbackType =
+    entry?.result_type ||
+    entry?.resultType ||
+    entry?.action_type ||
+    entry?.actionType ||
+    entry?.optimization_goal ||
+    entry?.optimizationGoal ||
+    entry?.objective ||
+    entry?.objective_type ||
+    entry?.objectiveType ||
+    '';
+
+  const resultCandidates = [
+    { value: entry?.results, type: entry?.result_type },
+    { value: entry?.result, type: entry?.result_type },
+    { value: entry?.total_actions, type: entry?.action_type },
+    { value: entry?.total_results, type: entry?.action_type },
+  ];
+
+  for (const candidate of resultCandidates) {
+    const numeric = Number(candidate.value);
+    if (!Number.isFinite(numeric)) {
+      continue;
+    }
+    const type = candidate.type || fallbackType;
+    if (!type || actionMatches(type, hints)) {
+      evidence = true;
+      total = Math.max(total, numeric);
+    }
+  }
+
+  if (!evidence) {
+    return null;
   }
 
   return total;
@@ -1536,7 +1689,9 @@ function normalizeCampaignSummary(campaign) {
   let spendTotal = 0;
   let spendFound = false;
   let leadsTotal = 0;
+  let leadsFound = false;
   let conversionsTotal = 0;
+  let conversionsFound = false;
   let lastEntry = null;
 
   for (const entry of insightEntries) {
@@ -1550,8 +1705,47 @@ function normalizeCampaignSummary(campaign) {
       spendFound = true;
     }
 
-    leadsTotal += sumActionMetric(entry.actions, LEAD_ACTION_HINTS);
-    conversionsTotal += sumActionMetric(entry.action_values, LEAD_ACTION_HINTS);
+    const entryLeads = extractActionTotal(entry, {
+      hints: LEAD_ACTION_HINTS,
+      fallbackFields: [
+        'leads',
+        'lead',
+        'total_leads',
+        'total_lead',
+        'unique_leads',
+        'unique_lead',
+        'estimated_leads',
+        'estimated_lead',
+      ],
+    });
+    if (entryLeads !== null) {
+      leadsTotal += entryLeads;
+      leadsFound = true;
+    }
+
+    const entryConversions = extractActionTotal(entry, {
+      hints: CONVERSION_ACTION_HINTS,
+      fallbackFields: [
+        'conversions',
+        'conversion',
+        'total_conversions',
+        'total_conversion',
+        'purchases',
+        'purchase',
+        'total_purchases',
+        'total_purchase',
+        'orders',
+        'total_orders',
+        'subscribe',
+        'subscriptions',
+        'start_trial',
+        'completed_registration',
+      ],
+    });
+    if (entryConversions !== null) {
+      conversionsTotal += entryConversions;
+      conversionsFound = true;
+    }
     lastEntry = entry;
   }
 
@@ -1560,8 +1754,8 @@ function normalizeCampaignSummary(campaign) {
   }
 
   const spendUsd = spendFound ? spendTotal : null;
-  const leads = leadsTotal > 0 ? leadsTotal : null;
-  const conversions = conversionsTotal > 0 ? conversionsTotal : null;
+  const leads = leadsFound ? leadsTotal : null;
+  const conversions = conversionsFound ? conversionsTotal : null;
 
   const costFromEntry = lastEntry ? extractCostPerAction(lastEntry.cost_per_action_type, LEAD_ACTION_HINTS) : null;
   const calculatedCpa = Number.isFinite(spendUsd) && Number.isFinite(leads) && leads > 0 ? spendUsd / leads : null;
@@ -2719,11 +2913,26 @@ function buildCampaignLines(campaigns, { limit = 6 } = {}) {
   const lines = [];
   const display = campaigns.slice(0, limit);
   for (const campaign of display) {
-    const spendText = Number.isFinite(campaign.spendUsd)
-      ? formatUsd(campaign.spendUsd, { digitsBelowOne: 2, digitsAboveOne: 2 })
+    const spendValue = Number.isFinite(Number(campaign?.spendUsd))
+      ? Number(campaign.spendUsd)
+      : Number.isFinite(Number(campaign?.spend_usd))
+      ? Number(campaign.spend_usd)
+      : Number.isFinite(Number(campaign?.spend))
+      ? Number(campaign.spend)
+      : null;
+    const spendText = spendValue !== null
+      ? formatUsd(spendValue, { digitsBelowOne: 2, digitsAboveOne: 2 })
       : '—';
-    const statusVisual = mapCampaignStatusVisual(campaign.status || campaign.effective_status || '');
-    const metrics = describeCampaignPrimaryMetrics(campaign, { objective: campaign.objective });
+    const statusVisual = mapCampaignStatusVisual(
+      campaign.status || campaign.effective_status || campaign.statusLabel || campaign.status_label || '',
+    );
+    const metrics = describeCampaignPrimaryMetrics(
+      {
+        ...campaign,
+        spendUsd: Number.isFinite(spendValue) ? spendValue : campaign.spendUsd,
+      },
+      { objective: campaign.objective || campaign.optimization_goal || campaign.optimizationGoal },
+    );
     const metricParts = [];
     if (metrics.label) {
       metricParts.push(`${metrics.label}: ${metrics.valueText}`);
@@ -2735,10 +2944,8 @@ function buildCampaignLines(campaigns, { limit = 6 } = {}) {
       metricParts.push(...metrics.extraParts);
     }
     const metricLine = metricParts.length > 0 ? metricParts.join(' | ') : '—';
-    lines.push(
-      `${statusVisual.icon} <b>${escapeHtml(campaign.name)}</b> — ${spendText}`,
-      metricLine,
-    );
+    const title = campaign.name || campaign.campaign_name || campaign.campaignName || 'Кампания';
+    lines.push(`${statusVisual.icon} <b>${escapeHtml(title)}</b> — ${spendText}`, metricLine);
     lines.push('');
   }
 
@@ -2828,13 +3035,63 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
   lines.push('', portalLine);
 
   lines.push('', '<b>Актуальные кампании</b>');
-  const campaigns = Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [];
+  const campaignMap = new Map();
+  const registerCampaigns = (source) => {
+    if (!Array.isArray(source)) {
+      return;
+    }
+    for (const entry of source) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+      const rawId =
+        entry.id || entry.campaign_id || entry.campaignId || entry.account_campaign_id || entry.accountCampaignId || '';
+      const normalizedId = rawId ? String(rawId).replace(/^cmp_/, '') : '';
+      const fallbackKey = entry.name ? `name:${entry.name}` : null;
+      const key = normalizedId || fallbackKey;
+      if (!key) {
+        continue;
+      }
+      const normalizedEntry = {};
+      for (const [field, value] of Object.entries(entry)) {
+        if (value !== undefined && value !== null) {
+          normalizedEntry[field] = value;
+        }
+      }
+      const existing = campaignMap.get(key) || {};
+      campaignMap.set(key, { ...existing, ...normalizedEntry });
+    }
+  };
+
+  registerCampaigns(account?.campaignSummaries);
+  registerCampaigns(project?.metrics?.campaigns);
+  registerCampaigns(project?.campaigns);
+  registerCampaigns(rawProject?.metrics?.campaigns);
+  registerCampaigns(rawProject?.report?.campaigns);
+  registerCampaigns(rawProject?.campaignSummaries);
+
+  const campaigns = Array.from(campaignMap.values()).sort((a, b) => {
+    const spendA = Number.isFinite(Number(a?.spendUsd))
+      ? Number(a.spendUsd)
+      : Number.isFinite(Number(a?.spend_usd))
+      ? Number(a.spend_usd)
+      : Number.isFinite(Number(a?.spend))
+      ? Number(a.spend)
+      : 0;
+    const spendB = Number.isFinite(Number(b?.spendUsd))
+      ? Number(b.spendUsd)
+      : Number.isFinite(Number(b?.spend_usd))
+      ? Number(b.spend_usd)
+      : Number.isFinite(Number(b?.spend))
+      ? Number(b.spend)
+      : 0;
+    return spendB - spendA;
+  });
+
   lines.push(...buildCampaignLines(campaigns));
 
-  const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd);
-  if (cpaRange) {
-    lines.push(`CPA (7д): ${cpaRange}`);
-  }
+  const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd, campaigns);
+  lines.push(`CPA (7д): ${cpaRange || 'данных нет'}`);
 
   const kpi = extractProjectKpi(rawProject);
   lines.push('', '<b>KPI</b>', ...formatKpiLines(kpi));
@@ -3020,13 +3277,18 @@ function describeCampaignPrimaryMetrics(campaign, { objective } = {}) {
   ];
 
   let chosen = null;
+  let matchedByObjective = false;
   if (normalizedObjective) {
-    chosen = scenarios.find((scenario) =>
+    const match = scenarios.find((scenario) =>
       scenario.matches.some((needle) => normalizedObjective.includes(needle))
     );
+    if (match) {
+      matchedByObjective = true;
+      chosen = match;
+    }
   }
 
-  if (!chosen || (chosen.value === null && chosen.cost === null)) {
+  if (!chosen || (!matchedByObjective && chosen.value === null && chosen.cost === null)) {
     const candidateWithValue = scenarios.find((scenario) => Number.isFinite(scenario.value));
     if (candidateWithValue) {
       chosen = candidateWithValue;
@@ -3200,15 +3462,21 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   if (kpiLine) {
     summaryLines.push(kpiLine);
   }
-  if (Number.isFinite(report?.totals?.reach) || Number.isFinite(report?.totals?.impressions)) {
-    const reachText = Number.isFinite(report?.totals?.reach) ? formatInteger(report.totals.reach) : '—';
-    const impressionsText = Number.isFinite(report?.totals?.impressions)
-      ? formatInteger(report.totals.impressions)
-      : '—';
-    const clicksText = Number.isFinite(report?.totals?.clicks)
-      ? formatInteger(report.totals.clicks)
-      : '—';
-    summaryLines.push(`Охват: ${reachText} | Показы: ${impressionsText} | Клики: ${clicksText}`);
+  const summaryParts = [];
+  if (Number.isFinite(report?.totals?.reach)) {
+    summaryParts.push(`Охват: ${formatInteger(report.totals.reach)}`);
+  }
+  if (Number.isFinite(report?.totals?.impressions)) {
+    summaryParts.push(`Показы: ${formatInteger(report.totals.impressions)}`);
+  }
+  if (totalMetrics.label) {
+    summaryParts.push(`${totalMetrics.label}: ${totalMetrics.valueText}`);
+  }
+  if (totalMetrics.costLabel) {
+    summaryParts.push(`${totalMetrics.costLabel}: ${totalCostText}`);
+  }
+  if (summaryParts.length > 0) {
+    summaryLines.push(summaryParts.join(' | '));
   }
 
   if (summaryLines.length > 0) {
@@ -3336,17 +3604,12 @@ function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
 
   keyboard.push([
     { text: '💳 Оплата', callback_data: `${base}:payment` },
-    { text: '⏸ Пауза отчётов', callback_data: `${base}:autopause` },
-    { text: '🔕 Тихий режим', callback_data: `${base}:quiet` },
-  ]);
-
-  keyboard.push([
     { text: '📈 Отчёты', callback_data: `${base}:reports` },
     { text: '🎯 KPI', callback_data: `${base}:kpi` },
-    { text: '🚨 Алерты', callback_data: `${base}:alerts` },
   ]);
 
   keyboard.push([
+    { text: '🚨 Алерты', callback_data: `${base}:alerts` },
     { text: '🔄 Обновить', callback_data: `${base}:refresh` },
     { text: '⬅️ В админку', callback_data: 'admin:panel' },
   ]);
@@ -3575,7 +3838,7 @@ function buildMetaAdAccountLines(account) {
   const running = account.runningCampaigns ?? account.campaignsRunning ?? account.activeCampaigns;
   const cpaMin = account.cpaMinUsd ?? account.cpaMin ?? account.cpa_min_usd ?? account.cpa_min;
   const cpaMax = account.cpaMaxUsd ?? account.cpaMax ?? account.cpa_max_usd ?? account.cpa_max;
-  const cpaRange = formatCpaRange(cpaMin, cpaMax);
+  const cpaRange = formatCpaRange(cpaMin, cpaMax, account?.campaignSummaries);
   if (Number.isFinite(Number(running)) || cpaRange) {
     const runningText = Number.isFinite(Number(running)) ? `<b>${Number(running)}</b>` : '<b>0</b>';
     const cpaText = cpaRange ? ` (CPA: ${cpaRange})` : '';
@@ -3726,7 +3989,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
     const campaignsRunning = Number.isFinite(Number(account?.runningCampaigns))
       ? Number(account.runningCampaigns)
       : null;
-    const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd);
+    const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd, account?.campaignSummaries);
 
     const displayName = record.name || account?.name || record.id;
     const headerParts = [
@@ -4040,6 +4303,96 @@ function resolveCampaignKeyMetric(campaign, { fallbackObjective } = {}) {
   return { label: 'Лиды', value: Number.isFinite(leads) ? leads : null };
 }
 
+function inferObjectiveFromCampaigns(campaigns, { campaignIndex, defaultObjective } = {}) {
+  const counts = new Map();
+  const register = (value, weight = 1) => {
+    if (!value || !Number.isFinite(weight) || weight <= 0) {
+      return;
+    }
+    const normalized = String(value).trim().toUpperCase();
+    if (!normalized) {
+      return;
+    }
+    counts.set(normalized, (counts.get(normalized) || 0) + weight);
+  };
+
+  const normalizedDefault = typeof defaultObjective === 'string' ? defaultObjective.trim().toUpperCase() : '';
+  if (normalizedDefault) {
+    register(normalizedDefault, 0.5);
+  }
+
+  if (Array.isArray(campaigns)) {
+    for (const campaign of campaigns) {
+      if (!campaign || typeof campaign !== 'object') {
+        continue;
+      }
+
+      const spend = Number(campaign?.spendUsd ?? campaign?.spend_usd ?? campaign?.spend);
+      const weight = Number.isFinite(spend) && spend > 0 ? spend : 1;
+      const registerCandidate = (raw, factor = 1) => {
+        if (!raw) {
+          return;
+        }
+        register(raw, weight * factor);
+      };
+
+      registerCandidate(campaign.objective, 1);
+      registerCandidate(campaign.objective_type, 1);
+      registerCandidate(campaign.objectiveType, 1);
+      registerCandidate(campaign.optimization_goal, 0.8);
+      registerCandidate(campaign.optimizationGoal, 0.8);
+      registerCandidate(campaign.result_type, 0.5);
+      registerCandidate(campaign.resultType, 0.5);
+
+      const rawId = String(campaign.id || '').trim();
+      if (rawId && campaignIndex instanceof Map) {
+        const lookupId = rawId.replace(/^cmp_/, '');
+        const indexEntry = campaignIndex.get(rawId) || campaignIndex.get(lookupId) || null;
+        if (indexEntry) {
+          registerCandidate(indexEntry.objective, 1);
+          registerCandidate(indexEntry.objective_type, 1);
+          registerCandidate(indexEntry.objectiveType, 1);
+          registerCandidate(indexEntry.optimization_goal, 0.8);
+          registerCandidate(indexEntry.optimizationGoal, 0.8);
+        }
+      }
+
+      if (Number.isFinite(campaign?.leads)) {
+        register('LEAD', Math.max(weight * 0.6, 1));
+      }
+      if (Number.isFinite(campaign?.conversions)) {
+        register('CONVERSIONS', Math.max(weight * 0.6, 1));
+      }
+      if (
+        Number.isFinite(campaign?.clicks) &&
+        !Number.isFinite(campaign?.leads) &&
+        !Number.isFinite(campaign?.conversions)
+      ) {
+        register('TRAFFIC', weight * 0.4);
+      }
+      if (
+        Number.isFinite(campaign?.reach) &&
+        !Number.isFinite(campaign?.clicks) &&
+        !Number.isFinite(campaign?.leads)
+      ) {
+        register('AWARENESS', weight * 0.3);
+      }
+    }
+  }
+
+  if (counts.size === 0) {
+    return normalizedDefault;
+  }
+
+  const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  const best = sorted[0];
+  if (!best) {
+    return normalizedDefault;
+  }
+
+  return best[0];
+}
+
 function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objectiveHint, campaignIndex }) {
   const payload = {
     id: period.id,
@@ -4063,6 +4416,13 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     return payload;
   }
 
+  const campaigns = Array.isArray(report.campaigns) ? report.campaigns : [];
+  const inferredObjective = inferObjectiveFromCampaigns(campaigns, {
+    campaignIndex,
+    defaultObjective: objectiveHint,
+  });
+  const objectiveForTotals = inferredObjective || objectiveHint;
+
   const totals = report.totals || {};
   const spendValue = Number.isFinite(totals.spendUsd) ? totals.spendUsd : null;
   const leadsValue = Number.isFinite(totals.leads) ? totals.leads : null;
@@ -4082,7 +4442,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
       impressions: Number.isFinite(totals.impressions) ? totals.impressions : null,
       reach: Number.isFinite(totals.reach) ? totals.reach : null,
     },
-    { objective: objectiveHint },
+    { objective: objectiveForTotals },
   );
 
   payload.metrics = [
@@ -4127,7 +4487,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     },
     {
       id: 'reach',
-      label: 'Reach',
+      label: 'Охват',
       value: Number.isFinite(totals.reach) ? totals.reach : null,
       text: formatInteger(totals.reach),
     },
@@ -4164,25 +4524,38 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     });
   }
 
-  const campaigns = Array.isArray(report.campaigns) ? report.campaigns : [];
+  payload.objective = objectiveForTotals || null;
   payload.campaigns = campaigns.map((campaign) => {
     const rawId = String(campaign?.id || '');
     const lookupId = rawId.replace(/^cmp_/, '');
     const indexEntry = campaignIndex.get(rawId) || campaignIndex.get(lookupId) || null;
     const statusSource = campaign?.status || indexEntry?.status || indexEntry?.statusLabel || '';
     const statusVisual = mapCampaignStatusVisual(statusSource);
-    const fallbackObjective = campaign?.objective || indexEntry?.objective || indexEntry?.objective_type || objectiveHint;
+    const fallbackObjective =
+      campaign?.objective ||
+      campaign?.objectiveType ||
+      campaign?.objective_type ||
+      campaign?.optimization_goal ||
+      campaign?.optimizationGoal ||
+      indexEntry?.objective ||
+      indexEntry?.objectiveType ||
+      indexEntry?.objective_type ||
+      indexEntry?.optimization_goal ||
+      indexEntry?.optimizationGoal ||
+      objectiveForTotals ||
+      objectiveHint;
     const spend = Number.isFinite(campaign?.spendUsd) ? Number(campaign.spendUsd) : null;
     const spendText = spend !== null ? formatUsd(spend, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—';
     const metrics = describeCampaignPrimaryMetrics(campaign, { objective: fallbackObjective });
     const keyMetricValue = Number.isFinite(metrics.value) ? metrics.value : null;
     const keyMetricText = metrics.valueText || '—';
-    const derivedCpa = Number.isFinite(metrics.cost) ? metrics.cost : Number(campaign?.cpaUsd);
-    const cpa = Number.isFinite(derivedCpa)
-      ? derivedCpa
+    const costLabel = metrics.costLabel || (metrics.label === 'Клики' ? 'CPC' : 'CPA');
+    const derivedCost = Number.isFinite(metrics.cost) ? metrics.cost : Number(campaign?.cpaUsd);
+    const costValue = Number.isFinite(derivedCost)
+      ? derivedCost
       : safeDivision(campaign?.spendUsd, keyMetricValue || campaign?.leads);
-    const cpaText = Number.isFinite(cpa)
-      ? formatUsd(cpa, { digitsBelowOne: 2, digitsAboveOne: 2 })
+    const costText = Number.isFinite(costValue)
+      ? formatUsd(costValue, { digitsBelowOne: 2, digitsAboveOne: 2 })
       : '—';
     const cpc = safeDivision(campaign?.spendUsd, campaign?.clicks);
     const cpcText = Number.isFinite(cpc)
@@ -4212,8 +4585,11 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
       keyMetricValue,
       spendText,
       spendValue: spend !== null ? spend : 0,
-      cpaText,
-      cpaValue: Number.isFinite(cpa) ? Number(cpa) : null,
+      costLabel,
+      costText,
+      costValue: Number.isFinite(costValue) ? Number(costValue) : null,
+      cpaText: costText,
+      cpaValue: Number.isFinite(costValue) ? Number(costValue) : null,
       cpcText,
       cpcValue: Number.isFinite(cpc) ? Number(cpc) : null,
       ctrText,
@@ -4295,7 +4671,7 @@ function renderClientPortalPage({
   projectCode = '',
 }) {
   const projectName = escapeHtml(project?.name || 'Проект');
-  const projectCodeTag = project?.code ? `<span class="project-code">#${escapeHtml(project.code)}</span>` : '';
+  const projectCodeTag = project?.code ? `<span class="project-code">${escapeHtml(project.code)}</span>` : '';
   const currencyCode = currency || account?.currency || project?.metrics?.currency || 'USD';
   const snapshot = resolveTimezoneSnapshot(generatedAt, timezone);
   const updatedLabel = snapshot
@@ -4325,6 +4701,20 @@ function renderClientPortalPage({
     account?.card_last4 ||
     account?.default_card_last4 ||
     '';
+  const paymentIssuesText = Array.isArray(account?.paymentIssues)
+    ? account.paymentIssues.filter(Boolean).join(' • ')
+    : '';
+  const paymentTags = [];
+  if (debtText) {
+    paymentTags.push(`<span class="status-tag status-tag--warning">Долг ${escapeHtml(debtText)}</span>`);
+  }
+  if (cardLast4) {
+    paymentTags.push(`<span class="status-tag">Карта ****${escapeHtml(String(cardLast4))}</span>`);
+  }
+  const paymentTagMarkup = paymentTags.length > 0 ? `<div class="status-tags">${paymentTags.join('')}</div>` : '';
+  const statusToneClass =
+    statusEmoji === '🔴' ? 'status-value--alert' : statusEmoji === '🟡' ? 'status-value--warn' : 'status-value--ok';
+  const timezoneLabel = snapshot?.timezone || timezone || '';
 
   const kpiMeta = resolvePortalKpiMeta(kpi);
   const insightsList = Array.isArray(insights) ? insights.filter(Boolean) : [];
@@ -4363,6 +4753,21 @@ function renderClientPortalPage({
     account,
     kpi,
   });
+  const defaultPeriodPayload = dataset?.periods?.[dataset.defaultPeriod] || {};
+  const resolveMetric = (id) => {
+    if (!defaultPeriodPayload || !Array.isArray(defaultPeriodPayload.metrics)) {
+      return null;
+    }
+    return defaultPeriodPayload.metrics.find((metric) => metric && metric.id === id) || null;
+  };
+  const defaultSpendMetric = resolveMetric('spend') || {};
+  const defaultKeyMetric = resolveMetric('key_metric') || {};
+  const defaultCostMetric = resolveMetric('kpi') || { label: kpiMeta.label };
+  const defaultSpendText = defaultSpendMetric.text || '—';
+  const defaultKeyLabel = defaultKeyMetric.label || 'Цель';
+  const defaultKeyValue = defaultKeyMetric.text || '—';
+  const defaultCostLabel = defaultCostMetric.label || kpiMeta.label || 'Стоимость цели';
+  const defaultCostValue = defaultCostMetric.text || '—';
   const datasetJson = escapeHtml(JSON.stringify(dataset));
   const periodOrder = ['today', 'yesterday', 'week', 'month', 'year'];
   const periodTabs = periodOrder
@@ -4418,7 +4823,7 @@ function renderClientPortalPage({
       .cards {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        gap: 16px;
+        gap: 18px;
         margin-bottom: 32px;
       }
       .card {
@@ -4427,11 +4832,11 @@ function renderClientPortalPage({
         padding: 18px 20px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 12px;
       }
       .card-head {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         justify-content: space-between;
         gap: 12px;
         font-size: 0.9rem;
@@ -4440,44 +4845,111 @@ function renderClientPortalPage({
       }
       .card-title {
         text-transform: uppercase;
+        letter-spacing: 0.08em;
       }
-      .payment-top {
-        align-items: center;
-      }
-      .card-updated,
-      .payment-updated {
-        font-size: 0.75rem;
-        opacity: 0.75;
-      }
-      .payment-body {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 16px;
-        flex-wrap: wrap;
-      }
-      .payment-amount {
-        font-size: 1.4rem;
-        font-weight: 600;
-      }
-      .payment-status {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 0.95rem;
-        color: #c7cad1;
-      }
-      .payment-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 16px;
-        font-size: 0.85rem;
-        color: #c7cad1;
-      }
-      .payment-meta span {
+      .badge {
         display: inline-flex;
         align-items: center;
         gap: 6px;
+        border-radius: 999px;
+        padding: 4px 12px;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 0.75rem;
+        color: #c7cad1;
+        letter-spacing: 0.02em;
+      }
+      .kpi-card {
+        gap: 18px;
+      }
+      .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+      }
+      .kpi-metric {
+        background: rgba(255, 255, 255, 0.06);
+        border-radius: 14px;
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .kpi-metric-label {
+        font-size: 0.75rem;
+        color: #9ba0a9;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .kpi-metric-value {
+        font-size: 1.3rem;
+        font-weight: 600;
+      }
+      .kpi-target {
+        margin: 0;
+        font-size: 0.85rem;
+        color: #9ba0a9;
+      }
+      .status-card {
+        gap: 16px;
+      }
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
+      }
+      .status-item {
+        background: rgba(255, 255, 255, 0.06);
+        border-radius: 14px;
+        padding: 14px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-height: 100%;
+      }
+      .status-title {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #9ba0a9;
+      }
+      .status-value {
+        font-size: 1.15rem;
+        font-weight: 600;
+      }
+      .status-value--ok {
+        color: #8be4a2;
+      }
+      .status-value--warn {
+        color: #ffd27f;
+      }
+      .status-value--alert {
+        color: #ff9aa2;
+      }
+      .status-meta {
+        font-size: 0.85rem;
+        color: #c7cad1;
+      }
+      .status-meta--alert {
+        color: #ffb3be;
+      }
+      .status-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .status-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border-radius: 999px;
+        padding: 4px 10px;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 0.78rem;
+        letter-spacing: 0.03em;
+      }
+      .status-tag--warning {
+        background: rgba(255, 99, 132, 0.18);
+        color: #ffb3be;
       }
       .summary {
         margin-bottom: 36px;
@@ -4525,6 +4997,10 @@ function renderClientPortalPage({
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
         gap: 12px;
+      }
+      .metrics-empty {
+        color: #8f9299;
+        font-size: 0.95rem;
       }
       .metric-card {
         background: rgba(255, 255, 255, 0.04);
@@ -4734,19 +5210,62 @@ function renderClientPortalPage({
         ${projectCodeTag}
       </header>
       <section class="cards">
-        <div class="card payment-card">
-          <div class="card-head payment-top">
-            <span class="card-title">Следующая оплата</span>
-            <span class="payment-updated">Данные обновлены ${escapeHtml(updatedLabel)}</span>
+        <div class="card kpi-card">
+          <div class="card-head">
+            <span class="card-title">Главные показатели</span>
+            <span class="badge" id="updated-at">Обновлено ${escapeHtml(updatedLabel)}</span>
           </div>
-          <div class="payment-body">
-            <div class="payment-amount">${billingText}</div>
-            <div class="payment-status">${statusEmoji} ${escapeHtml(accountStatusLabel || '—')}</div>
+          <div class="kpi-grid">
+            <div class="kpi-metric">
+              <span class="kpi-metric-label">Расход</span>
+              <span class="kpi-metric-value" id="overview-spend">${escapeHtml(defaultSpendText)}</span>
+            </div>
+            <div class="kpi-metric">
+              <span class="kpi-metric-label" id="overview-key-label" data-default-label="${escapeHtml(defaultKeyLabel)}">${escapeHtml(defaultKeyLabel)}</span>
+              <span class="kpi-metric-value" id="overview-key-value">${escapeHtml(defaultKeyValue)}</span>
+            </div>
+            <div class="kpi-metric">
+              <span class="kpi-metric-label" id="overview-cost-label" data-default-label="${escapeHtml(defaultCostLabel)}">${escapeHtml(defaultCostLabel)}</span>
+              <span class="kpi-metric-value" id="overview-cost-value">${escapeHtml(defaultCostValue)}</span>
+            </div>
           </div>
-          <div class="payment-meta">
-            ${billingCountdown.label && billingCountdown.label !== '—' ? `<span>До оплаты: ${escapeHtml(billingCountdown.label)}</span>` : ''}
-            ${debtText ? `<span>Долг: <b>${debtText}</b></span>` : ''}
-            ${cardLast4 ? `<span>Карта: ****${escapeHtml(String(cardLast4))}</span>` : ''}
+          ${
+            Number.isFinite(kpiMeta.target)
+              ? `<p class="kpi-target">Цель KPI: ${escapeHtml(
+                  formatUsd(kpiMeta.target, { digitsBelowOne: 2, digitsAboveOne: 2 }),
+                )}</p>`
+              : ''
+          }
+        </div>
+        <div class="card status-card">
+          <div class="card-head">
+            <span class="card-title">Оплата и статус</span>
+          </div>
+          <div class="status-grid">
+            <div class="status-item">
+              <span class="status-title">Статус Meta</span>
+              <span class="status-value ${statusToneClass}">${statusEmoji} ${escapeHtml(accountStatusLabel || '—')}</span>
+              ${
+                billingCountdown.label && billingCountdown.label !== '—'
+                  ? `<span class="status-meta">До оплаты: ${escapeHtml(billingCountdown.label)}</span>`
+                  : ''
+              }
+              ${
+                paymentIssuesText
+                  ? `<span class="status-meta status-meta--alert">${escapeHtml(paymentIssuesText)}</span>`
+                  : ''
+              }
+            </div>
+            <div class="status-item">
+              <span class="status-title">Следующая оплата</span>
+              <span class="status-value">${billingText}</span>
+              ${paymentTagMarkup}
+            </div>
+            <div class="status-item">
+              <span class="status-title">Обновлено</span>
+              <span class="status-value" id="updated-at">${escapeHtml(updatedLabel)}</span>
+              ${timezoneLabel ? `<span class="status-meta">Часовой пояс: ${escapeHtml(timezoneLabel)}</span>` : ''}
+            </div>
           </div>
         </div>
       </section>
@@ -4767,7 +5286,7 @@ function renderClientPortalPage({
           <div class="campaign-sorts">
             <button class="sort-button active" data-sort="spend" data-label="Потрачено">🔽 Потрачено</button>
             <button class="sort-button" data-sort="leads" data-label="Лиды">🔽 Лиды</button>
-            <button class="sort-button" data-sort="cpa" data-label="CPA">🔽 CPA</button>
+            <button class="sort-button" data-sort="cpa" data-label="Стоимость цели">🔽 Стоимость цели</button>
           </div>
         </div>
         <div class="campaign-list" id="campaign-list"></div>
@@ -4815,6 +5334,16 @@ function renderClientPortalPage({
         const periodError = document.getElementById('period-error');
         const campaignList = document.getElementById('campaign-list');
         const campaignEmpty = document.getElementById('campaign-empty');
+        const overviewSpend = document.getElementById('overview-spend');
+        const overviewKeyLabel = document.getElementById('overview-key-label');
+        const overviewKeyValue = document.getElementById('overview-key-value');
+        const overviewCostLabel = document.getElementById('overview-cost-label');
+        const overviewCostValue = document.getElementById('overview-cost-value');
+        const overviewDefaults = {
+          keyLabel: overviewKeyLabel ? overviewKeyLabel.dataset.defaultLabel || 'Цель' : 'Цель',
+          costLabel: overviewCostLabel ? overviewCostLabel.dataset.defaultLabel || 'Стоимость цели' : 'Стоимость цели',
+        };
+        const overviewMetricIds = new Set(['spend', 'key_metric', 'kpi']);
         const sortLabels = new Map(sortButtons.map((btn) => [btn.dataset.sort, btn.dataset.label || btn.textContent.trim()]));
 
         const escapeText = (value) =>
@@ -4849,8 +5378,40 @@ function renderClientPortalPage({
           });
         };
 
+        const updateOverview = (period) => {
+          const metrics = Array.isArray(period?.metrics) ? period.metrics : [];
+          const findMetric = (id) => metrics.find((item) => item && item.id === id) || null;
+          const spend = findMetric('spend');
+          const key = findMetric('key_metric');
+          const cost = findMetric('kpi');
+          if (overviewSpend) {
+            overviewSpend.textContent = spend?.text || '—';
+          }
+          if (overviewKeyLabel) {
+            overviewKeyLabel.textContent = key?.label || overviewDefaults.keyLabel;
+          }
+          if (overviewKeyValue) {
+            overviewKeyValue.textContent = key?.text || '—';
+          }
+          if (overviewCostLabel) {
+            overviewCostLabel.textContent = cost?.label || overviewDefaults.costLabel;
+          }
+          if (overviewCostValue) {
+            overviewCostValue.textContent = cost?.text || '—';
+          }
+        };
+
         const renderMetrics = (period) => {
-          const metrics = Array.isArray(period.metrics) ? period.metrics : [];
+          if (!metricsGrid) {
+            return;
+          }
+          const metrics = Array.isArray(period.metrics)
+            ? period.metrics.filter((metric) => metric && !overviewMetricIds.has(metric.id))
+            : [];
+          if (metrics.length === 0) {
+            metricsGrid.innerHTML = '<div class="metrics-empty">Нет дополнительных показателей для выбранного периода.</div>';
+            return;
+          }
           metricsGrid.innerHTML = metrics
             .map((metric) => {
               return (
@@ -4875,7 +5436,12 @@ function renderClientPortalPage({
           } else if (state.filter === 'completed') {
             filtered = campaigns.filter((item) => item.statusCategory === 'completed');
           }
-          const valueKey = state.sortKey === 'leads' ? 'keyMetricValue' : state.sortKey + 'Value';
+          const valueKey =
+            state.sortKey === 'leads'
+              ? 'keyMetricValue'
+              : state.sortKey === 'cpa'
+              ? 'costValue'
+              : state.sortKey + 'Value';
           const dir = state.sortDir === 'asc' ? 1 : -1;
           filtered.sort((a, b) => {
             const aValue = Number.isFinite(a[valueKey]) ? Number(a[valueKey]) : -Infinity;
@@ -4916,8 +5482,10 @@ function renderClientPortalPage({
                 '<span>Потрачено: ' +
                 escapeText(item.spendText || '—') +
                 '</span>' +
-                '<span>CPA: ' +
-                escapeText(item.cpaText || '—') +
+                '<span>' +
+                escapeText(item.costLabel || 'CPA') +
+                ': ' +
+                escapeText(item.costText || item.cpaText || '—') +
                 '</span>' +
                 '<span>CPC: ' +
                 escapeText(item.cpcText || '—') +
@@ -4941,6 +5509,7 @@ function renderClientPortalPage({
           setActive(periodButtons, periodId, 'period');
           setActive(filterButtons, state.filter, 'filter');
           updateSortButtons();
+          updateOverview(period);
           periodRange.textContent = period.rangeLabel || '';
           if (period.error) {
             periodError.textContent = '⚠ ' + period.error;
@@ -12521,7 +13090,7 @@ class TelegramBot {
             ? formatUsd(account.spendTodayUsd, { digitsBelowOne: 2, digitsAboveOne: 2 })
             : '—';
           const leadsToday = Number.isFinite(account.leadsToday) ? formatInteger(account.leadsToday) : '—';
-          const cpaRange = formatCpaRange(account.cpaMinUsd, account.cpaMaxUsd);
+          const cpaRange = formatCpaRange(account.cpaMinUsd, account.cpaMaxUsd, account.campaignSummaries);
           const campaignsRunning = Number.isFinite(account.runningCampaigns)
             ? formatInteger(account.runningCampaigns)
             : '—';
