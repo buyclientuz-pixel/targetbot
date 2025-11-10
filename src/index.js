@@ -5783,7 +5783,7 @@ function renderClientPortalPage({
           accountManagerUrl: data.accountManagerUrl || '',
           generatedAt: data.generatedAt ? new Date(data.generatedAt) : null,
         };
-        const buildFetchKey = (periodId, includeArchived) => `${periodId}:${includeArchived ? '1' : '0'}`;
+        const buildFetchKey = (periodId, includeArchived) => String(periodId) + ':' + (includeArchived ? '1' : '0');
         Object.keys(state.periods || {}).forEach((key) => {
           if (state.periods[key] && typeof state.periods[key] === 'object') {
             state.periods[key].includeArchived = false;
