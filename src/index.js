@@ -3209,8 +3209,8 @@ function renderClientPortalPage({
   const currencyLabel = escapeHtml(currency || account?.currency || project?.metrics?.currency || 'USD');
   const snapshot = resolveTimezoneSnapshot(generatedAt, timezone);
   const updatedLabel = snapshot
-    ? `${snapshot.day}.${snapshot.month}.${snapshot.year} ${String(snapshot.hour).padStart(2, '0')}:${String(snapshot.minute).padStart(2, '0')} (${escapeHtml(snapshot.timezone)})`
-    : escapeHtml(new Date(generatedAt).toISOString());
+    ? `${snapshot.day}.${snapshot.month}.${snapshot.year} ${String(snapshot.hour).padStart(2, '0')}:${String(snapshot.minute).padStart(2, '0')} (${snapshot.timezone})`
+    : new Date(generatedAt).toISOString();
 
   const billingSource =
     project?.billingNextAt ||
@@ -3364,7 +3364,7 @@ function renderClientPortalPage({
       : '<p class="muted">Кампании ещё не накопили статистику.</p>';
 
   const managerButton = managerLink
-    ? `<a class="primary-button" href="${escapeHtml(managerLink)}" target="_blank" rel="noopener noreferrer">Написать менеджеру</a>`
+    ? `<a class="primary-button" href="${escapeHtml(managerLink)}" target="_blank" rel="noopener noreferrer">Написать в чат</a>`
     : '<span class="primary-button disabled" aria-disabled="true">Ссылка на чат не настроена</span>';
 
   return `<!DOCTYPE html>
@@ -3424,8 +3424,7 @@ function renderClientPortalPage({
       }
       .card label {
         font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
+        letter-spacing: 0.04em;
         color: #8f9299;
       }
       .card strong {
@@ -3639,16 +3638,8 @@ function renderClientPortalPage({
       </header>
       <section class="cards">
         <div class="card">
-          <label>Следующая оплата</label>
+          <label>Следующая оплата | Данные обновлены ${escapeHtml(updatedLabel)}</label>
           <strong>${billingText}</strong>
-        </div>
-        <div class="card">
-          <label>Обновлено</label>
-          <strong>${updatedLabel}</strong>
-        </div>
-        <div class="card">
-          <label>Валюта отчётов</label>
-          <strong>${currencyLabel}</strong>
         </div>
       </section>
       <section>
