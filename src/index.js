@@ -6091,15 +6091,33 @@ function buildR2CanonicalQuery(url) {
   return entries.map((entry) => `${entry[0]}=${entry[1]}`).join('&');
 }
 
-function canonicalizeHeaders(headers) {
+function canonicalizeHeaders(headers, extras = []) {
   const pairs = [];
-  headers.forEach((value, key) => {
+  const append = (key, value) => {
     if (value === undefined || value === null) {
       return;
     }
     const trimmed = String(value).trim().replace(/\s+/g, ' ');
-    pairs.push([key.toLowerCase(), trimmed]);
+    if (!key) {
+      return;
+    }
+    pairs.push([String(key).toLowerCase(), trimmed]);
+  };
+
+  headers.forEach((value, key) => {
+    append(key, value);
   });
+
+  if (Array.isArray(extras)) {
+    for (const entry of extras) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+      const [key, value] = entry;
+      append(key, value);
+    }
+  }
+
   pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   const canonical = pairs.map(([key, value]) => `${key}:${value}\n`).join('');
   const signed = pairs.map(([key]) => key).join(';');
@@ -6205,12 +6223,11 @@ class HttpR2Bucket {
     const payload = typeof body === 'string' ? body : '';
     const { url, canonicalUri } = this.buildUrl(key, params);
     const headerBag = new Headers(headers);
-    headerBag.set('host', url.host);
     const payloadHash = payload ? await sha256Hex(payload) : R2_FALLBACK_EMPTY_HASH;
     headerBag.set('x-amz-content-sha256', payloadHash);
     const { amzDate, dateStamp } = formatAmzDate();
     headerBag.set('x-amz-date', amzDate);
-    const { canonical, signed } = canonicalizeHeaders(headerBag);
+    const { canonical, signed } = canonicalizeHeaders(headerBag, [['host', url.host]]);
     const canonicalQuery = buildR2CanonicalQuery(url);
     const canonicalRequest = [
       method.toUpperCase(),
