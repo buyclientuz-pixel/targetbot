@@ -11794,15 +11794,43 @@ class WorkerApp {
       return htmlResponse('<h1>Проект не найден</h1><p>Ссылка устарела или проект ещё не подключён.</p>', { status: 404 });
     }
 
-    const tokens = extractPortalTokens(context.rawProject);
-    if (this.config.portalAccessToken) {
-      tokens.add(this.config.portalAccessToken);
-    }
-    if (this.config.metaManageToken) {
-      tokens.add(this.config.metaManageToken);
+    const portalTokens = new Set();
+    const registerToken = (value) => {
+      if (!value) {
+        return;
+      }
+      const token = String(value).trim();
+      if (token) {
+        portalTokens.add(token);
+      }
+    };
+
+    const rawTokens = extractPortalTokens(context.rawProject);
+    for (const token of rawTokens) {
+      registerToken(token);
     }
 
-    if (tokens.size === 0) {
+    if (context.project && typeof context.project === 'object') {
+      if (Array.isArray(context.project.portalTokens)) {
+        for (const token of context.project.portalTokens) {
+          registerToken(token);
+        }
+      }
+      registerToken(context.project.portalToken);
+      if (context.project.portal && typeof context.project.portal === 'object') {
+        registerToken(context.project.portal.token);
+        registerToken(context.project.portal.secret);
+      }
+    }
+
+    if (this.config.portalAccessToken) {
+      registerToken(this.config.portalAccessToken);
+    }
+    if (this.config.metaManageToken) {
+      registerToken(this.config.metaManageToken);
+    }
+
+    if (portalTokens.size === 0) {
       return htmlResponse(
         '<h1>Доступ ограничен</h1><p>Для проекта ещё не настроен токен клиентского портала.</p>',
         { status: 403 },
@@ -11812,7 +11840,7 @@ class WorkerApp {
     const projectIdentifier = context.project.code || context.project.id || projectCode;
     const signatureOk = await portalSignatureMatches(signature, {
       code: projectIdentifier,
-      tokens,
+      tokens: portalTokens,
     });
 
     if (!signatureOk) {
