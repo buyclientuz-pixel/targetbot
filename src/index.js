@@ -2870,6 +2870,83 @@ function buildReportKpiLine(kpi, { totalSpend, totalLeads, totalDailyBudget }) {
   return `KPI: ${parts.join(' | ')}`;
 }
 
+function describeCampaignPrimaryMetrics(campaign, { objective } = {}) {
+  const spend = Number.isFinite(campaign?.spendUsd) ? campaign.spendUsd : null;
+  const leads = Number.isFinite(campaign?.leads) ? campaign.leads : null;
+  const conversions = Number.isFinite(campaign?.conversions) ? campaign.conversions : null;
+  const clicks = Number.isFinite(campaign?.clicks) ? campaign.clicks : null;
+  const impressions = Number.isFinite(campaign?.impressions) ? campaign.impressions : null;
+  const reach = Number.isFinite(campaign?.reach) ? campaign.reach : null;
+  const cpaFromCampaign = Number.isFinite(campaign?.cpaUsd) ? campaign.cpaUsd : null;
+  const normalizedObjective = String(objective || '').toUpperCase();
+
+  const computeCost = (count, { multiplier = 1 } = {}) => {
+    if (!Number.isFinite(spend) || !Number.isFinite(count) || count <= 0) {
+      return null;
+    }
+    return (spend / count) * multiplier;
+  };
+
+  const costForLeads = Number.isFinite(leads) && leads > 0 ? cpaFromCampaign ?? computeCost(leads) : null;
+  const costForConversions = Number.isFinite(conversions) && conversions > 0 ? cpaFromCampaign ?? computeCost(conversions) : null;
+  const costPerClick = computeCost(clicks);
+  const costPerThousandImpressions = computeCost(impressions, { multiplier: 1000 });
+  const costPerThousandReach = computeCost(reach, { multiplier: 1000 });
+
+  const scenarios = [
+    { matches: ['LEAD'], label: 'Лиды', costLabel: 'CPL', value: leads, cost: costForLeads },
+    {
+      matches: ['CONVERSION', 'OUTCOME', 'SALE', 'SALES', 'PURCHASE'],
+      label: 'Конверсии',
+      costLabel: 'CPA',
+      value: conversions,
+      cost: costForConversions,
+    },
+    { matches: ['MESSAGE'], label: 'Диалоги', costLabel: 'CPD', value: conversions, cost: costForConversions },
+    { matches: ['TRAFFIC', 'CLICK'], label: 'Клики', costLabel: 'CPC', value: clicks, cost: costPerClick },
+    { matches: ['AWARENESS', 'REACH', 'BRAND'], label: 'Охват', costLabel: 'CPM', value: reach, cost: costPerThousandReach },
+  ];
+
+  let chosen = null;
+  if (normalizedObjective) {
+    chosen = scenarios.find((scenario) =>
+      scenario.matches.some((needle) => normalizedObjective.includes(needle)) && scenario.value !== null,
+    );
+  }
+
+  if (!chosen) {
+    chosen = scenarios.find((scenario) => Number.isFinite(scenario.value));
+  }
+
+  if (!chosen) {
+    const fallbacks = [
+      { label: 'Лиды', costLabel: 'CPL', value: leads, cost: costForLeads },
+      { label: 'Конверсии', costLabel: 'CPA', value: conversions, cost: costForConversions },
+      { label: 'Клики', costLabel: 'CPC', value: clicks, cost: costPerClick },
+      { label: 'Показы', costLabel: 'CPM', value: impressions, cost: costPerThousandImpressions },
+      { label: 'Охват', costLabel: 'CPM', value: reach, cost: costPerThousandReach },
+    ];
+    chosen = fallbacks.find((scenario) => Number.isFinite(scenario.value)) || fallbacks[0];
+  }
+
+  const label = chosen?.label || 'Показатели';
+  const costLabel = chosen?.costLabel || '';
+  const valueText = Number.isFinite(chosen?.value) ? formatInteger(chosen.value) : '—';
+  const costText = Number.isFinite(chosen?.cost)
+    ? formatUsd(chosen.cost, { digitsBelowOne: 2, digitsAboveOne: 0 })
+    : '—';
+
+  const extraParts = [];
+  if (Number.isFinite(campaign?.ctr)) {
+    extraParts.push(`CTR: ${formatPercentage(campaign.ctr, { digits: 1 })}`);
+  }
+  if (Number.isFinite(campaign?.frequency)) {
+    extraParts.push(`Частота: ${formatFloat(campaign.frequency, { digits: 1 })}`);
+  }
+
+  return { label, valueText, costLabel, costText, extraParts };
+}
+
 function buildProjectReportPreview({ project, account, rawProject, preset, report }) {
   const lines = [];
   const range = report?.range || resolveReportRange(preset, { timezone: report?.range?.timezone });
@@ -2888,16 +2965,36 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   }
 
   const headerLine = periodLabel
-    ? `<b>Отчёт ${escapeHtml(titleLabel)}</b> (${escapeHtml(periodLabel)})`
-    : `<b>Отчёт ${escapeHtml(titleLabel)}</b>`;
+    ? `📆 <b>Отчёт ${escapeHtml(titleLabel)}</b> (${escapeHtml(periodLabel)})`
+    : `📆 <b>Отчёт ${escapeHtml(titleLabel)}</b>`;
 
   lines.push(headerLine);
+  lines.push('');
 
   const campaigns = Array.isArray(report?.campaigns)
     ? report.campaigns
     : Array.isArray(account?.campaignSummaries)
     ? account.campaignSummaries
     : [];
+  const kpi = extractProjectKpi(rawProject);
+  const objectiveCandidates = [
+    kpi?.objective,
+    rawProject?.kpi?.objective,
+    rawProject?.settings?.kpi?.objective,
+    rawProject?.reporting?.kpi?.objective,
+    rawProject?.metrics?.objective,
+    project?.metrics?.objective,
+    project?.objective,
+    account?.primaryObjective,
+    account?.objective,
+  ];
+  let projectObjective = '';
+  for (const candidate of objectiveCandidates) {
+    if (typeof candidate === 'string' && candidate) {
+      projectObjective = candidate;
+      break;
+    }
+  }
   let totalSpendComputed = 0;
   let totalLeadsComputed = 0;
 
@@ -2917,13 +3014,26 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
       const spendText = Number.isFinite(spend)
         ? formatUsd(spend, { digitsBelowOne: 2, digitsAboveOne: 2 })
         : '—';
-      const leadsText = Number.isFinite(leads) ? formatInteger(leads) : '—';
-      const cpl = Number.isFinite(spend) && Number.isFinite(leads) && leads > 0 ? spend / leads : null;
-      const cplText = Number.isFinite(cpl)
-        ? formatUsd(cpl, { digitsBelowOne: 2, digitsAboveOne: 0 })
-        : '—';
-      lines.push(`• <b>${escapeHtml(campaign.name)}</b>`);
-      lines.push(`— ${spendText} | Лиды: ${leadsText} | CPL: ${cplText}`);
+      const metrics = describeCampaignPrimaryMetrics(campaign, { objective: projectObjective });
+      const metricParts = [];
+      if (metrics.label) {
+        metricParts.push(`${metrics.label}: ${metrics.valueText}`);
+      }
+      if (metrics.costLabel) {
+        metricParts.push(`${metrics.costLabel}: ${metrics.costText}`);
+      }
+      if (metrics.extraParts && metrics.extraParts.length > 0) {
+        metricParts.push(...metrics.extraParts);
+      }
+      if (metricParts.length === 0) {
+        metricParts.push('—');
+      }
+      lines.push(`• <b>${escapeHtml(campaign.name)}</b> - ${spendText}`);
+      lines.push(metricParts.join(' | '));
+      lines.push('');
+    }
+    while (lines.length > 0 && lines[lines.length - 1] === '') {
+      lines.pop();
     }
   }
 
@@ -2943,19 +3053,16 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
     ? formatUsd(totalCpl, { digitsBelowOne: 2, digitsAboveOne: 0 })
     : '—';
 
-  lines.push(`ИТОГО: ${totalSpendText} | Лиды: ${totalLeadsText} | CPL: ${totalCplText}`);
-
-  const kpi = extractProjectKpi(rawProject);
   const kpiLine = buildReportKpiLine(kpi, {
     totalSpend,
     totalLeads,
     totalDailyBudget: Number.isFinite(account?.spendTodayUsd) ? account.spendTodayUsd : totalSpend,
   });
 
+  const summaryLines = [];
   if (kpiLine) {
-    lines.push(kpiLine);
+    summaryLines.push(kpiLine);
   }
-
   if (Number.isFinite(report?.totals?.reach) || Number.isFinite(report?.totals?.impressions)) {
     const reachText = Number.isFinite(report?.totals?.reach) ? formatInteger(report.totals.reach) : '—';
     const impressionsText = Number.isFinite(report?.totals?.impressions)
@@ -2964,8 +3071,20 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
     const clicksText = Number.isFinite(report?.totals?.clicks)
       ? formatInteger(report.totals.clicks)
       : '—';
-    lines.push(`Охват: ${reachText} | Показы: ${impressionsText} | Клики: ${clicksText}`);
+    summaryLines.push(`Охват: ${reachText} | Показы: ${impressionsText} | Клики: ${clicksText}`);
   }
+
+  if (summaryLines.length > 0) {
+    if (lines[lines.length - 1] !== '') {
+      lines.push('');
+    }
+    lines.push(...summaryLines);
+  }
+
+  if (lines[lines.length - 1] !== '') {
+    lines.push('');
+  }
+  lines.push(`🧾 ИТОГО: ${totalSpendText} | Лиды: ${totalLeadsText} | CPL: ${totalCplText}`);
 
   return {
     text: lines.join('\n'),
@@ -8009,6 +8128,48 @@ class TelegramBot {
       } else {
         delete record.portal;
       }
+    }
+
+    if (!isUpdate) {
+      let portalToken = draft.portalToken || record.portal?.token || '';
+      if (!portalToken) {
+        portalToken = generatePortalToken({});
+      }
+
+      const signature = portalToken
+        ? await buildPortalSignature({ code: record.code || slug, token: portalToken })
+        : '';
+
+      record.portal = {
+        ...(record.portal || {}),
+        token: portalToken,
+        enabled: true,
+        updated_at: nowIso,
+        created_at: record.portal?.created_at || nowIso,
+      };
+      delete record.portal.disabled;
+      delete record.portal.disabled_at;
+      if (signature) {
+        record.portal.signature = signature;
+      }
+
+      record.portal_tokens = [portalToken];
+      record.portal_signatures = signature ? [signature] : [];
+
+      record.tokens = { ...(record.tokens || {}) };
+      record.tokens.portal = portalToken;
+      if (signature) {
+        record.tokens.portal_signature = signature;
+      }
+
+      record.client = { ...(record.client || {}) };
+      record.client.billing = { ...(record.client.billing || {}) };
+      if (!record.client.billing.status || record.client.billing.status === 'declined') {
+        record.client.billing.status = 'active';
+      }
+      record.client.billing.portal_disabled = false;
+      record.client.billing.portalDisabled = false;
+      record.client.billing.declined_at = null;
     }
 
     if (scheduleToStore) {
