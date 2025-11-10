@@ -2884,9 +2884,13 @@ function renderAdminDashboard({
   const facebook = status.facebook && typeof status.facebook === 'object' ? status.facebook : {};
   const connected = Boolean(facebook.connected);
   const connectionEmoji = connected ? '🟢' : '🔴';
-  const accountLabel = facebook.accountName || (connected ? 'Подключено' : 'Нет данных');
   lines.push('', '<b>Facebook</b>');
-  lines.push(`Статус: ${connectionEmoji} ${escapeHtml(accountLabel)}`);
+  lines.push(`Статус: ${connectionEmoji} ${connected ? 'Подключено' : 'Нет данных'}`);
+  if (connected && facebook.accountName) {
+    lines.push(`Аккаунт: <b>${escapeHtml(facebook.accountName)}</b>`);
+  } else if (!connected && facebook.accountName) {
+    lines.push(`Последний статус: ${escapeHtml(facebook.accountName)}`);
+  }
   if (facebook.accountId) {
     lines.push(`ID: <code>${escapeHtml(facebook.accountId)}</code>`);
   }
@@ -2926,7 +2930,7 @@ function renderAdminDashboard({
   if (placeholderCount > 0 && placeholdersShown > 0) {
     lines.push(
       '',
-      `Без проекта: ${placeholdersShown} из ${placeholderCount} аккаунтов Meta. Используйте «Подключить проект».`,
+      `Без проекта: ${placeholdersShown} из ${placeholderCount} аккаунтов Meta. Откройте раздел «Новые РК».`,
     );
   }
 
@@ -8461,12 +8465,13 @@ class TelegramBot {
       timezone: this.config.defaultTimezone,
     });
     const projectSummaries = projectSummaryResult.items;
+    const visibleProjectSummaries = projectSummaries.filter((item) => !item?.placeholder);
     const placeholderCount = projectSummaryResult.placeholderCount || 0;
     const placeholdersShown = projectSummaryResult.placeholdersShown || 0;
 
     const dashboard = renderAdminDashboard({
       metaStatus,
-      projectSummaries,
+      projectSummaries: visibleProjectSummaries,
       webhook: webhookStatus,
       totals: { projects: projectKeys.length, chats: chatKeys.length },
       timezone: this.config.defaultTimezone,
@@ -8510,12 +8515,7 @@ class TelegramBot {
       ],
     ];
 
-    const hasPortal = projectSummaries.some(
-      (item) => !item.placeholder && Array.isArray(item.portalTokens) && item.portalTokens.length > 0,
-    );
-    if (hasPortal) {
-      inlineKeyboard.push([{ text: '🌐 Портал', callback_data: 'admin:portal' }]);
-    }
+    inlineKeyboard.push([{ text: '🌐 Портал', callback_data: 'admin:portal' }]);
 
     inlineKeyboard.push([
       { text: '🔄 Обновиться', callback_data: 'admin:refresh' },
@@ -8528,7 +8528,7 @@ class TelegramBot {
       text: summary.join('\n'),
       reply_markup: replyMarkup,
       placeholders: projectSummaryResult.placeholders || [],
-      projectSummaries,
+      projectSummaries: visibleProjectSummaries,
     };
   }
 
