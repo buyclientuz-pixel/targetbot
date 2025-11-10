@@ -4752,6 +4752,57 @@ function renderClientPortalPage({
     ? `<a class="primary-button" href="${escapeHtml(managerLink)}" target="_blank" rel="noopener noreferrer">Написать в чат</a>`
     : '<span class="primary-button disabled" aria-disabled="true">Ссылка на чат не настроена</span>';
 
+  const normalizedAccountKey = normalizeAccountKey(
+    account?.accountId || account?.id || account?.account_id || project?.adAccountId,
+  );
+  const accountIdDisplay = normalizedAccountKey ? `act_${normalizedAccountKey}` : '';
+  let accountTitle = account?.name || account?.accountName || '';
+  if (!accountTitle && accountIdDisplay) {
+    accountTitle = accountIdDisplay;
+  }
+  if (!accountTitle) {
+    accountTitle = project?.name || 'Рекламный аккаунт';
+  }
+  const accountBusiness = account?.businessName || account?.business_name || account?.business?.name || '';
+  const accountTimezoneRaw = account?.timezoneName || account?.timezone_name || account?.timezone || '';
+  const accountCurrency = account?.currency || currencyCode || '';
+  const accountBadge = accountCurrency ? `<span class="badge">${escapeHtml(accountCurrency)}</span>` : '';
+  const accountMetaItems = [];
+  if (accountIdDisplay) {
+    accountMetaItems.push(
+      `<div class="account-meta-item"><span class="account-meta-label">ID</span><code>${escapeHtml(accountIdDisplay)}</code></div>`,
+    );
+  }
+  if (accountBusiness) {
+    accountMetaItems.push(
+      `<div class="account-meta-item"><span class="account-meta-label">Бизнес</span><span>${escapeHtml(accountBusiness)}</span></div>`,
+    );
+  }
+  if (accountTimezoneRaw) {
+    accountMetaItems.push(
+      `<div class="account-meta-item"><span class="account-meta-label">Часовой пояс</span><span>${escapeHtml(accountTimezoneRaw)}</span></div>`,
+    );
+  }
+  const accountMetaMarkup = accountMetaItems.length > 0 ? `<div class="account-meta">${accountMetaItems.join('')}</div>` : '';
+  const accountManagerLink = normalizedAccountKey
+    ? `https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${encodeURIComponent(normalizedAccountKey)}`
+    : '';
+  const accountActionsMarkup = accountManagerLink
+    ? `<div class="account-actions"><a class="secondary-button" href="${escapeHtml(accountManagerLink)}" target="_blank" rel="noopener noreferrer">Открыть Ads Manager</a></div>`
+    : '';
+  const hasAccountDetails = Boolean(accountIdDisplay || account?.name || accountBusiness || accountActionsMarkup);
+  const accountCardMarkup = hasAccountDetails
+    ? `<div class="card account-card">
+        <div class="card-head">
+          <span class="card-title">Рекламный аккаунт</span>
+          ${accountBadge}
+        </div>
+        <div class="account-name">${escapeHtml(accountTitle)}</div>
+        ${accountMetaMarkup}
+        ${accountActionsMarkup}
+      </div>`
+    : '';
+
   const dataset = buildPortalDataset({
     projectCode: projectCode || project?.code || project?.id || '',
     signature,
@@ -4958,6 +5009,61 @@ function renderClientPortalPage({
       .status-tag--warning {
         background: rgba(255, 99, 132, 0.18);
         color: #ffb3be;
+      }
+      .account-card {
+        gap: 14px;
+      }
+      .account-name {
+        font-size: 1.2rem;
+        font-weight: 600;
+      }
+      .account-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        color: #c7cad1;
+        font-size: 0.9rem;
+      }
+      .account-meta-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .account-meta-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #9ba0a9;
+      }
+      .account-meta-item code {
+        background: rgba(255, 255, 255, 0.08);
+        padding: 2px 8px;
+        border-radius: 8px;
+        font-size: 0.85rem;
+      }
+      .account-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .secondary-button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 18px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(255, 255, 255, 0.05);
+        color: inherit;
+        text-decoration: none;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        transition: background 0.2s ease, border-color 0.2s ease;
+      }
+      .secondary-button:hover {
+        background: rgba(255, 255, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.24);
       }
       .summary {
         margin-bottom: 36px;
@@ -5276,6 +5382,7 @@ function renderClientPortalPage({
             </div>
           </div>
         </div>
+        ${accountCardMarkup}
       </section>
       <section class="summary">
         <h2 class="section-title">Показатели</h2>
