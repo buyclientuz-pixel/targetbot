@@ -2756,11 +2756,14 @@ function buildCampaignLines(campaigns, { limit = 6 } = {}) {
 function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
   const lines = [];
   const title = project?.name || account?.name || project?.id || 'Проект';
-  const subtitle = project?.code ? `#${project.code}` : project?.id ? `ID: ${project.id}` : '';
+  const projectCode = project?.code ? String(project.code) : '';
+  const projectId = !projectCode && project?.id ? String(project.id) : '';
 
   lines.push(`<b>${escapeHtml(title)}</b>`);
-  if (subtitle) {
-    lines.push(escapeHtml(subtitle));
+  if (projectCode) {
+    lines.push(`Код: <code>${escapeHtml(projectCode)}</code>`);
+  } else if (projectId) {
+    lines.push(`ID: <code>${escapeHtml(projectId)}</code>`);
   }
 
   if (project?.chatTitle) {
@@ -2818,13 +2821,11 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
   const billingLines = formatClientBillingLines(project?.clientBilling, { timezone });
   lines.push(...billingLines);
 
-  lines.push('', '<b>Портал</b>');
   const portalEmoji = project?.portalEnabled ? '🟢' : '🔴';
-  if (project?.portalEnabled && project?.portalTokens?.length) {
-    lines.push(`${portalEmoji} Активен — ссылка готова к отправке клиенту.`);
-  } else {
-    lines.push(`${portalEmoji} Отключён. Нажмите «🌐 Портал», чтобы выпустить ссылку.`);
-  }
+  const portalLine = project?.portalEnabled
+    ? `${portalEmoji} Портал активен — ссылка доступна в меню.`
+    : `${portalEmoji} Портал отключён. Откройте «🌐 Портал», чтобы включить доступ.`;
+  lines.push('', portalLine);
 
   lines.push('', '<b>Актуальные кампании</b>');
   const campaigns = Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [];
@@ -3021,12 +3022,15 @@ function describeCampaignPrimaryMetrics(campaign, { objective } = {}) {
   let chosen = null;
   if (normalizedObjective) {
     chosen = scenarios.find((scenario) =>
-      scenario.matches.some((needle) => normalizedObjective.includes(needle)) && scenario.value !== null,
+      scenario.matches.some((needle) => normalizedObjective.includes(needle))
     );
   }
 
-  if (!chosen) {
-    chosen = scenarios.find((scenario) => Number.isFinite(scenario.value));
+  if (!chosen || (chosen.value === null && chosen.cost === null)) {
+    const candidateWithValue = scenarios.find((scenario) => Number.isFinite(scenario.value));
+    if (candidateWithValue) {
+      chosen = candidateWithValue;
+    }
   }
 
   if (!chosen) {
@@ -3324,20 +3328,10 @@ function buildDigestPreview({ sections = [], timezone }) {
 
 function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
   const keyboard = [];
-  const portalButton = portalUrl
-    ? { text: '🌐 Портал', url: portalUrl }
-    : { text: '🌐 Портал', callback_data: `${base}:portal` };
-
   keyboard.push([
     chatUrl ? { text: '💬 Чат-группа', url: chatUrl } : { text: '💬 Чат-группа', callback_data: `${base}:chat` },
-    portalButton,
+    { text: '🌐 Портал', callback_data: `${base}:portal` },
     { text: '📊 Аналитика', callback_data: `${base}:analytics` },
-  ]);
-
-  keyboard.push([
-    { text: '📈 Отчёт', callback_data: `${base}:reports` },
-    { text: '🎯 KPI', callback_data: `${base}:kpi` },
-    { text: '🚨 Алерты', callback_data: `${base}:alerts` },
   ]);
 
   keyboard.push([
@@ -3347,7 +3341,12 @@ function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
   ]);
 
   keyboard.push([
-    { text: '⚙️ Портал', callback_data: `${base}:portal` },
+    { text: '📈 Отчёты', callback_data: `${base}:reports` },
+    { text: '🎯 KPI', callback_data: `${base}:kpi` },
+    { text: '🚨 Алерты', callback_data: `${base}:alerts` },
+  ]);
+
+  keyboard.push([
     { text: '🔄 Обновить', callback_data: `${base}:refresh` },
     { text: '⬅️ В админку', callback_data: 'admin:panel' },
   ]);
@@ -4442,22 +4441,40 @@ function renderClientPortalPage({
       .card-title {
         text-transform: uppercase;
       }
-      .card-updated {
+      .payment-top {
+        align-items: center;
+      }
+      .card-updated,
+      .payment-updated {
         font-size: 0.75rem;
         opacity: 0.75;
       }
-      .card-value {
-        font-size: 1.35rem;
+      .payment-body {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .payment-amount {
+        font-size: 1.4rem;
         font-weight: 600;
       }
-      .card-meta {
+      .payment-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.95rem;
+        color: #c7cad1;
+      }
+      .payment-meta {
         display: flex;
         flex-wrap: wrap;
         gap: 8px 16px;
         font-size: 0.85rem;
         color: #c7cad1;
       }
-      .card-meta span {
+      .payment-meta span {
         display: inline-flex;
         align-items: center;
         gap: 6px;
@@ -4718,13 +4735,15 @@ function renderClientPortalPage({
       </header>
       <section class="cards">
         <div class="card payment-card">
-          <div class="card-head">
+          <div class="card-head payment-top">
             <span class="card-title">Следующая оплата</span>
-            <span class="card-updated">Обновлено ${escapeHtml(updatedLabel)}</span>
+            <span class="payment-updated">Данные обновлены ${escapeHtml(updatedLabel)}</span>
           </div>
-          <div class="card-value">${billingText}</div>
-          <div class="card-meta">
-            <span>${statusEmoji} ${escapeHtml(accountStatusLabel || '—')}</span>
+          <div class="payment-body">
+            <div class="payment-amount">${billingText}</div>
+            <div class="payment-status">${statusEmoji} ${escapeHtml(accountStatusLabel || '—')}</div>
+          </div>
+          <div class="payment-meta">
             ${billingCountdown.label && billingCountdown.label !== '—' ? `<span>До оплаты: ${escapeHtml(billingCountdown.label)}</span>` : ''}
             ${debtText ? `<span>Долг: <b>${debtText}</b></span>` : ''}
             ${cardLast4 ? `<span>Карта: ****${escapeHtml(String(cardLast4))}</span>` : ''}
@@ -6189,6 +6208,8 @@ class MetaService {
       const spendToday = Number(account.spendTodayUsd ?? account.spend_today_usd);
       const cpaMin = Number(account.cpaMinUsd ?? account.cpa_min_usd ?? account.cpaMin);
       const cpaMax = Number(account.cpaMaxUsd ?? account.cpa_max_usd ?? account.cpaMax);
+      const normalizedMin = Number.isFinite(cpaMin) && cpaMin > 0 ? cpaMin : null;
+      const normalizedMax = Number.isFinite(cpaMax) && cpaMax > 0 ? cpaMax : null;
       const runningCampaigns = Number(account.runningCampaigns ?? account.activeCampaigns ?? account.campaignsRunning);
 
       return {
@@ -6213,8 +6234,8 @@ class MetaService {
           account.default_card_last4 ||
           null,
         runningCampaigns: Number.isFinite(runningCampaigns) ? runningCampaigns : null,
-        cpaMinUsd: Number.isFinite(cpaMin) ? cpaMin : null,
-        cpaMaxUsd: Number.isFinite(cpaMax) ? cpaMax : null,
+        cpaMinUsd: normalizedMin,
+        cpaMaxUsd: normalizedMax,
         signal: determineAccountSignal(account, { daysUntilDue: countdown }),
         updatedAt: updatedAt || facebook.updatedAt || facebook.updated_at || new Date().toISOString(),
       };
@@ -6446,12 +6467,14 @@ class MetaService {
         }
       }
 
-      const cpaMin = cpaSamples.length ? Math.min(...cpaSamples) : null;
-      const cpaMax = cpaSamples.length ? Math.max(...cpaSamples) : null;
+      const cpaMinSample = cpaSamples.length ? Math.min(...cpaSamples) : null;
+      const cpaMaxSample = cpaSamples.length ? Math.max(...cpaSamples) : null;
+      const cpaMin = Number.isFinite(cpaMinSample) && cpaMinSample > 0 ? cpaMinSample : null;
+      const cpaMax = Number.isFinite(cpaMaxSample) && cpaMaxSample > 0 ? cpaMaxSample : null;
 
       account.runningCampaigns = activeCount;
-      account.cpaMinUsd = Number.isFinite(cpaMin) ? cpaMin : null;
-      account.cpaMaxUsd = Number.isFinite(cpaMax) ? cpaMax : null;
+      account.cpaMinUsd = cpaMin;
+      account.cpaMaxUsd = cpaMax;
       account.campaignSummaries = summaries.sort((a, b) => (b.spendUsd ?? 0) - (a.spendUsd ?? 0));
     } catch (error) {
       console.warn('Failed to load campaign stats', accountId, error);
@@ -7517,8 +7540,10 @@ class TelegramBot {
             const currency = account?.currency || '';
             const spendToday = Number(account?.spendTodayUsd ?? account?.spend_today_usd);
             const runningCampaigns = Number(account?.runningCampaigns ?? account?.activeCampaigns);
-            const cpaMin = Number(account?.cpaMinUsd ?? account?.cpa_min_usd ?? account?.cpaMin);
-            const cpaMax = Number(account?.cpaMaxUsd ?? account?.cpa_max_usd ?? account?.cpaMax);
+            const cpaMinRaw = Number(account?.cpaMinUsd ?? account?.cpa_min_usd ?? account?.cpaMin);
+            const cpaMaxRaw = Number(account?.cpaMaxUsd ?? account?.cpa_max_usd ?? account?.cpaMax);
+            const cpaMin = Number.isFinite(cpaMinRaw) && cpaMinRaw > 0 ? cpaMinRaw : null;
+            const cpaMax = Number.isFinite(cpaMaxRaw) && cpaMaxRaw > 0 ? cpaMaxRaw : null;
 
             return {
               id,
@@ -7532,8 +7557,8 @@ class TelegramBot {
                 : null,
               spendTodayUsd: Number.isFinite(spendToday) ? spendToday : null,
               runningCampaigns: Number.isFinite(runningCampaigns) ? runningCampaigns : null,
-              cpaMinUsd: Number.isFinite(cpaMin) ? cpaMin : null,
-              cpaMaxUsd: Number.isFinite(cpaMax) ? cpaMax : null,
+              cpaMinUsd: cpaMin,
+              cpaMaxUsd: cpaMax,
               campaignSummaries: Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [],
             };
           })
@@ -12503,27 +12528,26 @@ class TelegramBot {
 
           const lines = [
             '<b>Аналитика</b>',
-            `Расход сегодня: ${spendToday}`,
-            `Лиды сегодня: ${leadsToday}`,
-            cpaRange ? `CPA (7д): ${cpaRange}` : null,
-            `Активных кампаний: ${campaignsRunning}`,
+            '📊 Показатели за сегодня:',
+            `• Расход: ${spendToday}`,
+            `• Лиды: ${leadsToday}`,
+            cpaRange ? `• CPA (7д): ${cpaRange}` : null,
+            `• Активных кампаний: ${campaignsRunning}`,
             '',
-            'Используйте кнопки ниже, чтобы открыть отчёты или вернуться в проект.',
+            'Выберите действие: посмотреть отчёт, настроить KPI или алерты.',
           ].filter(Boolean);
 
           const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
-          const keyboard = {
-            inline_keyboard: [
-              [
-                { text: '📈 Отчёт', callback_data: `${base}:reports` },
-                { text: '🎯 KPI', callback_data: `${base}:kpi` },
-                { text: '⬅️ К проекту', callback_data: `${base}:open` },
-              ],
-            ],
-          };
+          const keyboard = { inline_keyboard: [] };
           if (portalUrl) {
-            keyboard.inline_keyboard[0].splice(2, 0, { text: '🌐 Портал', url: portalUrl });
+            keyboard.inline_keyboard.push([{ text: '🌐 Открыть портал', url: portalUrl }]);
           }
+          keyboard.inline_keyboard.push([
+            { text: '📈 Отчёт', callback_data: `${base}:reports` },
+            { text: '🎯 KPI', callback_data: `${base}:kpi` },
+            { text: '🚨 Алерты', callback_data: `${base}:alerts` },
+          ]);
+          keyboard.inline_keyboard.push([{ text: '⬅️ К проекту', callback_data: `${base}:open` }]);
 
           await this.renderAdminMessage(message, { chatId, text: lines.join('\n'), reply_markup: keyboard });
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Показатели обновлены.' });
@@ -14560,8 +14584,10 @@ class WorkerApp {
       null;
 
     const debt = Number(account?.debtUsd ?? account?.debt_usd ?? account?.balance);
-    const cpaMin = Number(account?.cpaMinUsd ?? account?.cpa_min_usd ?? account?.cpaMin);
-    const cpaMax = Number(account?.cpaMaxUsd ?? account?.cpa_max_usd ?? account?.cpaMax);
+    const cpaMinRaw = Number(account?.cpaMinUsd ?? account?.cpa_min_usd ?? account?.cpaMin);
+    const cpaMaxRaw = Number(account?.cpaMaxUsd ?? account?.cpa_max_usd ?? account?.cpaMax);
+    const cpaMin = Number.isFinite(cpaMinRaw) && cpaMinRaw > 0 ? cpaMinRaw : null;
+    const cpaMax = Number.isFinite(cpaMaxRaw) && cpaMaxRaw > 0 ? cpaMaxRaw : null;
     const runningCampaigns = Number(account?.runningCampaigns ?? account?.campaignsRunning ?? account?.activeCampaigns);
 
     diagnostics.status = account?.paymentStatusLabel || account?.statusLabel || account?.status || diagnostics.status || '';
@@ -14580,8 +14606,8 @@ class WorkerApp {
     diagnostics.runningCampaigns = Number.isFinite(runningCampaigns)
       ? runningCampaigns
       : diagnostics.runningCampaigns ?? null;
-    diagnostics.cpaMinUsd = Number.isFinite(cpaMin) ? cpaMin : diagnostics.cpaMinUsd ?? null;
-    diagnostics.cpaMaxUsd = Number.isFinite(cpaMax) ? cpaMax : diagnostics.cpaMaxUsd ?? null;
+    diagnostics.cpaMinUsd = cpaMin ?? diagnostics.cpaMinUsd ?? null;
+    diagnostics.cpaMaxUsd = cpaMax ?? diagnostics.cpaMaxUsd ?? null;
     diagnostics.signal = determineAccountSignal(account, { daysUntilDue: countdown });
     diagnostics.updated_at = updatedAt || new Date().toISOString();
 
