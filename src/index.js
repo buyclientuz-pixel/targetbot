@@ -134,19 +134,45 @@ function formatUsd(value, { digitsBelowOne = 2, digitsAboveOne = 2 } = {}) {
   return `${formatted}$`;
 }
 
-function formatCpaRange(minValue, maxValue) {
-  const min = Number(minValue);
-  const max = Number(maxValue);
-  const hasMin = Number.isFinite(min) && min > 0;
-  const hasMax = Number.isFinite(max) && max > 0;
+function formatCpaRange(minValue, maxValue, campaigns = []) {
+  const register = (value, target) => {
+    const amount = Number(value);
+    if (Number.isFinite(amount) && amount > 0) {
+      target.push(amount);
+    }
+  };
 
-  if (!hasMin && !hasMax) {
+  const candidates = [];
+  register(minValue, candidates);
+  register(maxValue, candidates);
+
+  if (Array.isArray(campaigns)) {
+    for (const campaign of campaigns) {
+      if (!campaign) continue;
+      register(campaign.cpaUsd, candidates);
+      register(campaign.costPerResultUsd, candidates);
+      register(campaign.cost_per_result_usd, candidates);
+      register(campaign.cost_per_lead_usd, candidates);
+      register(campaign.cost_per_action, candidates);
+    }
+  }
+
+  if (candidates.length === 0) {
     return '';
   }
 
-  const minText = hasMin ? formatUsd(min, { digitsBelowOne: 2, digitsAboveOne: 0 }) : '—';
-  const maxText = hasMax ? formatUsd(max, { digitsBelowOne: 2, digitsAboveOne: 0 }) : '—';
+  const min = Math.min(...candidates);
+  const max = Math.max(...candidates);
+  if (!Number.isFinite(min) || min <= 0) {
+    return '';
+  }
 
+  const minText = formatUsd(min, { digitsBelowOne: 2, digitsAboveOne: 0 });
+  if (!Number.isFinite(max) || max <= 0 || Math.abs(max - min) < 0.01) {
+    return minText;
+  }
+
+  const maxText = formatUsd(max, { digitsBelowOne: 2, digitsAboveOne: 0 });
   return `${minText} / ${maxText}`;
 }
 
@@ -2831,7 +2857,7 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
   const campaigns = Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [];
   lines.push(...buildCampaignLines(campaigns));
 
-  const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd);
+  const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd, campaigns);
   if (cpaRange) {
     lines.push(`CPA (7д): ${cpaRange}`);
   }
@@ -3020,13 +3046,18 @@ function describeCampaignPrimaryMetrics(campaign, { objective } = {}) {
   ];
 
   let chosen = null;
+  let matchedByObjective = false;
   if (normalizedObjective) {
-    chosen = scenarios.find((scenario) =>
+    const match = scenarios.find((scenario) =>
       scenario.matches.some((needle) => normalizedObjective.includes(needle))
     );
+    if (match) {
+      matchedByObjective = true;
+      chosen = match;
+    }
   }
 
-  if (!chosen || (chosen.value === null && chosen.cost === null)) {
+  if (!chosen || (!matchedByObjective && chosen.value === null && chosen.cost === null)) {
     const candidateWithValue = scenarios.find((scenario) => Number.isFinite(scenario.value));
     if (candidateWithValue) {
       chosen = candidateWithValue;
@@ -3575,7 +3606,7 @@ function buildMetaAdAccountLines(account) {
   const running = account.runningCampaigns ?? account.campaignsRunning ?? account.activeCampaigns;
   const cpaMin = account.cpaMinUsd ?? account.cpaMin ?? account.cpa_min_usd ?? account.cpa_min;
   const cpaMax = account.cpaMaxUsd ?? account.cpaMax ?? account.cpa_max_usd ?? account.cpa_max;
-  const cpaRange = formatCpaRange(cpaMin, cpaMax);
+  const cpaRange = formatCpaRange(cpaMin, cpaMax, account?.campaignSummaries);
   if (Number.isFinite(Number(running)) || cpaRange) {
     const runningText = Number.isFinite(Number(running)) ? `<b>${Number(running)}</b>` : '<b>0</b>';
     const cpaText = cpaRange ? ` (CPA: ${cpaRange})` : '';
@@ -3726,7 +3757,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
     const campaignsRunning = Number.isFinite(Number(account?.runningCampaigns))
       ? Number(account.runningCampaigns)
       : null;
-    const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd);
+    const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd, account?.campaignSummaries);
 
     const displayName = record.name || account?.name || record.id;
     const headerParts = [
@@ -4295,7 +4326,7 @@ function renderClientPortalPage({
   projectCode = '',
 }) {
   const projectName = escapeHtml(project?.name || 'Проект');
-  const projectCodeTag = project?.code ? `<span class="project-code">#${escapeHtml(project.code)}</span>` : '';
+  const projectCodeTag = project?.code ? `<span class="project-code">${escapeHtml(project.code)}</span>` : '';
   const currencyCode = currency || account?.currency || project?.metrics?.currency || 'USD';
   const snapshot = resolveTimezoneSnapshot(generatedAt, timezone);
   const updatedLabel = snapshot
@@ -4363,6 +4394,21 @@ function renderClientPortalPage({
     account,
     kpi,
   });
+  const defaultPeriodPayload = dataset?.periods?.[dataset.defaultPeriod] || {};
+  const resolveMetric = (id) => {
+    if (!defaultPeriodPayload || !Array.isArray(defaultPeriodPayload.metrics)) {
+      return null;
+    }
+    return defaultPeriodPayload.metrics.find((metric) => metric && metric.id === id) || null;
+  };
+  const defaultSpendMetric = resolveMetric('spend') || {};
+  const defaultKeyMetric = resolveMetric('key_metric') || {};
+  const defaultCostMetric = resolveMetric('kpi') || { label: kpiMeta.label };
+  const defaultSpendText = defaultSpendMetric.text || '—';
+  const defaultKeyLabel = defaultKeyMetric.label || 'Цель';
+  const defaultKeyValue = defaultKeyMetric.text || '—';
+  const defaultCostLabel = defaultCostMetric.label || kpiMeta.label || 'Стоимость цели';
+  const defaultCostValue = defaultCostMetric.text || '—';
   const datasetJson = escapeHtml(JSON.stringify(dataset));
   const periodOrder = ['today', 'yesterday', 'week', 'month', 'year'];
   const periodTabs = periodOrder
@@ -4418,7 +4464,7 @@ function renderClientPortalPage({
       .cards {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        gap: 16px;
+        gap: 18px;
         margin-bottom: 32px;
       }
       .card {
@@ -4427,11 +4473,11 @@ function renderClientPortalPage({
         padding: 18px 20px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 12px;
       }
       .card-head {
         display: flex;
-        align-items: baseline;
+        align-items: center;
         justify-content: space-between;
         gap: 12px;
         font-size: 0.9rem;
@@ -4440,44 +4486,97 @@ function renderClientPortalPage({
       }
       .card-title {
         text-transform: uppercase;
+        letter-spacing: 0.08em;
       }
-      .payment-top {
+      .badge {
+        display: inline-flex;
         align-items: center;
-      }
-      .card-updated,
-      .payment-updated {
+        gap: 6px;
+        border-radius: 999px;
+        padding: 4px 12px;
+        background: rgba(255, 255, 255, 0.08);
         font-size: 0.75rem;
-        opacity: 0.75;
+        color: #c7cad1;
+        letter-spacing: 0.02em;
+      }
+      .kpi-card {
+        gap: 18px;
+      }
+      .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+      }
+      .kpi-metric {
+        background: rgba(255, 255, 255, 0.06);
+        border-radius: 14px;
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .kpi-metric-label {
+        font-size: 0.75rem;
+        color: #9ba0a9;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .kpi-metric-value {
+        font-size: 1.3rem;
+        font-weight: 600;
+      }
+      .kpi-target {
+        margin: 0;
+        font-size: 0.85rem;
+        color: #9ba0a9;
+      }
+      .payment-card {
+        gap: 20px;
+      }
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border-radius: 999px;
+        padding: 6px 12px;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 0.85rem;
+        color: #f5f6f8;
       }
       .payment-body {
         display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 16px;
-        flex-wrap: wrap;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .payment-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #9ba0a9;
       }
       .payment-amount {
         font-size: 1.4rem;
         font-weight: 600;
       }
-      .payment-status {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 0.95rem;
-        color: #c7cad1;
-      }
       .payment-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 16px;
-        font-size: 0.85rem;
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 6px;
+        font-size: 0.9rem;
         color: #c7cad1;
       }
-      .payment-meta span {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
+      .payment-meta li {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .payment-meta .meta-label {
+        color: #9ba0a9;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.75rem;
       }
       .summary {
         margin-bottom: 36px;
@@ -4525,6 +4624,10 @@ function renderClientPortalPage({
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
         gap: 12px;
+      }
+      .metrics-empty {
+        color: #8f9299;
+        font-size: 0.95rem;
       }
       .metric-card {
         background: rgba(255, 255, 255, 0.04);
@@ -4734,20 +4837,59 @@ function renderClientPortalPage({
         ${projectCodeTag}
       </header>
       <section class="cards">
+        <div class="card kpi-card">
+          <div class="card-head">
+            <span class="card-title">Главные показатели</span>
+            <span class="badge" id="updated-at">Обновлено ${escapeHtml(updatedLabel)}</span>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi-metric">
+              <span class="kpi-metric-label">Расход</span>
+              <span class="kpi-metric-value" id="overview-spend">${escapeHtml(defaultSpendText)}</span>
+            </div>
+            <div class="kpi-metric">
+              <span class="kpi-metric-label" id="overview-key-label" data-default-label="${escapeHtml(defaultKeyLabel)}">${escapeHtml(defaultKeyLabel)}</span>
+              <span class="kpi-metric-value" id="overview-key-value">${escapeHtml(defaultKeyValue)}</span>
+            </div>
+            <div class="kpi-metric">
+              <span class="kpi-metric-label" id="overview-cost-label" data-default-label="${escapeHtml(defaultCostLabel)}">${escapeHtml(defaultCostLabel)}</span>
+              <span class="kpi-metric-value" id="overview-cost-value">${escapeHtml(defaultCostValue)}</span>
+            </div>
+          </div>
+          ${
+            Number.isFinite(kpiMeta.target)
+              ? `<p class="kpi-target">Цель KPI: ${escapeHtml(
+                  formatUsd(kpiMeta.target, { digitsBelowOne: 2, digitsAboveOne: 2 }),
+                )}</p>`
+              : ''
+          }
+        </div>
         <div class="card payment-card">
-          <div class="card-head payment-top">
-            <span class="card-title">Следующая оплата</span>
-            <span class="payment-updated">Данные обновлены ${escapeHtml(updatedLabel)}</span>
+          <div class="card-head">
+            <span class="card-title">Оплата Meta</span>
+            <span class="status-chip">${statusEmoji} ${escapeHtml(accountStatusLabel || '—')}</span>
           </div>
           <div class="payment-body">
-            <div class="payment-amount">${billingText}</div>
-            <div class="payment-status">${statusEmoji} ${escapeHtml(accountStatusLabel || '—')}</div>
+            <span class="payment-label">Следующая дата</span>
+            <span class="payment-amount">${billingText}</span>
           </div>
-          <div class="payment-meta">
-            ${billingCountdown.label && billingCountdown.label !== '—' ? `<span>До оплаты: ${escapeHtml(billingCountdown.label)}</span>` : ''}
-            ${debtText ? `<span>Долг: <b>${debtText}</b></span>` : ''}
-            ${cardLast4 ? `<span>Карта: ****${escapeHtml(String(cardLast4))}</span>` : ''}
-          </div>
+          <ul class="payment-meta">
+            ${
+              billingCountdown.label && billingCountdown.label !== '—'
+                ? `<li><span class="meta-label">До оплаты</span><span>${escapeHtml(billingCountdown.label)}</span></li>`
+                : ''
+            }
+            ${
+              debtText
+                ? `<li><span class="meta-label">Долг</span><span><b>${escapeHtml(debtText)}</b></span></li>`
+                : ''
+            }
+            ${
+              cardLast4
+                ? `<li><span class="meta-label">Карта</span><span>****${escapeHtml(String(cardLast4))}</span></li>`
+                : ''
+            }
+          </ul>
         </div>
       </section>
       <section class="summary">
@@ -4815,6 +4957,16 @@ function renderClientPortalPage({
         const periodError = document.getElementById('period-error');
         const campaignList = document.getElementById('campaign-list');
         const campaignEmpty = document.getElementById('campaign-empty');
+        const overviewSpend = document.getElementById('overview-spend');
+        const overviewKeyLabel = document.getElementById('overview-key-label');
+        const overviewKeyValue = document.getElementById('overview-key-value');
+        const overviewCostLabel = document.getElementById('overview-cost-label');
+        const overviewCostValue = document.getElementById('overview-cost-value');
+        const overviewDefaults = {
+          keyLabel: overviewKeyLabel ? overviewKeyLabel.dataset.defaultLabel || 'Цель' : 'Цель',
+          costLabel: overviewCostLabel ? overviewCostLabel.dataset.defaultLabel || 'Стоимость цели' : 'Стоимость цели',
+        };
+        const overviewMetricIds = new Set(['spend', 'key_metric', 'kpi']);
         const sortLabels = new Map(sortButtons.map((btn) => [btn.dataset.sort, btn.dataset.label || btn.textContent.trim()]));
 
         const escapeText = (value) =>
@@ -4849,8 +5001,40 @@ function renderClientPortalPage({
           });
         };
 
+        const updateOverview = (period) => {
+          const metrics = Array.isArray(period?.metrics) ? period.metrics : [];
+          const findMetric = (id) => metrics.find((item) => item && item.id === id) || null;
+          const spend = findMetric('spend');
+          const key = findMetric('key_metric');
+          const cost = findMetric('kpi');
+          if (overviewSpend) {
+            overviewSpend.textContent = spend?.text || '—';
+          }
+          if (overviewKeyLabel) {
+            overviewKeyLabel.textContent = key?.label || overviewDefaults.keyLabel;
+          }
+          if (overviewKeyValue) {
+            overviewKeyValue.textContent = key?.text || '—';
+          }
+          if (overviewCostLabel) {
+            overviewCostLabel.textContent = cost?.label || overviewDefaults.costLabel;
+          }
+          if (overviewCostValue) {
+            overviewCostValue.textContent = cost?.text || '—';
+          }
+        };
+
         const renderMetrics = (period) => {
-          const metrics = Array.isArray(period.metrics) ? period.metrics : [];
+          if (!metricsGrid) {
+            return;
+          }
+          const metrics = Array.isArray(period.metrics)
+            ? period.metrics.filter((metric) => metric && !overviewMetricIds.has(metric.id))
+            : [];
+          if (metrics.length === 0) {
+            metricsGrid.innerHTML = '<div class="metrics-empty">Нет дополнительных показателей для выбранного периода.</div>';
+            return;
+          }
           metricsGrid.innerHTML = metrics
             .map((metric) => {
               return (
@@ -4941,6 +5125,7 @@ function renderClientPortalPage({
           setActive(periodButtons, periodId, 'period');
           setActive(filterButtons, state.filter, 'filter');
           updateSortButtons();
+          updateOverview(period);
           periodRange.textContent = period.rangeLabel || '';
           if (period.error) {
             periodError.textContent = '⚠ ' + period.error;
@@ -12521,7 +12706,7 @@ class TelegramBot {
             ? formatUsd(account.spendTodayUsd, { digitsBelowOne: 2, digitsAboveOne: 2 })
             : '—';
           const leadsToday = Number.isFinite(account.leadsToday) ? formatInteger(account.leadsToday) : '—';
-          const cpaRange = formatCpaRange(account.cpaMinUsd, account.cpaMaxUsd);
+          const cpaRange = formatCpaRange(account.cpaMinUsd, account.cpaMaxUsd, account.campaignSummaries);
           const campaignsRunning = Number.isFinite(account.runningCampaigns)
             ? formatInteger(account.runningCampaigns)
             : '—';
