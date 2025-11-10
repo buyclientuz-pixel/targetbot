@@ -48,6 +48,7 @@ const REPORT_PRESET_MAP = {
 };
 const ALERT_STATE_PREFIX = 'alert:state:';
 const ALERT_ZERO_DEFAULT_TIME = '12:00';
+const ALERT_ZERO_TIME_OPTIONS = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00'];
 const ALERT_BILLING_DEFAULT_TIMES = ['10:00', '14:00', '18:00'];
 const ALERT_FREQUENCY_THRESHOLD = 3.5;
 const ALERT_CTR_THRESHOLD = 0.5;
@@ -2262,7 +2263,7 @@ function formatAlertLines(alerts, { account, campaigns }) {
   }
 
   if (lines.length === 0) {
-    lines.push('Алерты пока не настроены. Нажмите «⚙️ Настройки», чтобы активировать уведомления.');
+    lines.push('🔕 Все алерты выключены. Нажмите кнопки ниже, чтобы активировать уведомления.');
   }
 
   const campaignFatigue = Array.isArray(campaigns)
@@ -2299,6 +2300,80 @@ function formatAlertLines(alerts, { account, campaigns }) {
   }
 
   return lines;
+}
+
+function buildAlertSettingsKeyboard(base, alerts = {}) {
+  const zeroSpendActive = Boolean(alerts?.zeroSpend?.enabled ?? alerts?.zeroSpend);
+  const billingActive = Boolean(alerts?.billing?.enabled ?? alerts?.billing);
+  const anomaliesActive = Boolean(alerts?.anomalies?.enabled ?? alerts?.anomalies);
+  const creativesActive = Boolean(alerts?.creatives?.enabled ?? alerts?.creatives);
+
+  const zeroTime = normalizeTimeToken(alerts?.zeroSpend?.time || alerts?.zeroSpend?.hour || ALERT_ZERO_DEFAULT_TIME);
+  const billingTimesRaw = Array.isArray(alerts?.billing?.times)
+    ? alerts.billing.times
+    : Array.isArray(alerts?.billing?.hours)
+    ? alerts.billing.hours
+    : ALERT_BILLING_DEFAULT_TIMES;
+  const billingTimes = Array.from(
+    new Set(
+      (billingTimesRaw || [])
+        .map((time) => normalizeTimeToken(time))
+        .filter(Boolean)
+        .concat(billingActive ? ALERT_BILLING_DEFAULT_TIMES : []),
+    ),
+  ).sort();
+
+  const keyboard = [
+    [
+      { text: `${zeroSpendActive ? '✅' : '⚪️'} Нулевой расход`, callback_data: `${base}:alerts:toggle:zero` },
+      { text: `${billingActive ? '✅' : '⚪️'} Биллинг`, callback_data: `${base}:alerts:toggle:billing` },
+    ],
+    [
+      { text: `${anomaliesActive ? '✅' : '⚪️'} Аномалии`, callback_data: `${base}:alerts:toggle:anomalies` },
+      { text: `${creativesActive ? '✅' : '⚪️'} Креативы`, callback_data: `${base}:alerts:toggle:creatives` },
+    ],
+  ];
+
+  if (zeroSpendActive) {
+    const options = ALERT_ZERO_TIME_OPTIONS.map((time) => normalizeTimeToken(time)).filter(Boolean);
+    let zeroRow = [];
+    for (const time of options) {
+      zeroRow.push({
+        text: `${time === zeroTime ? '• ' : ''}${time}`,
+        callback_data: `${base}:alerts:zero:time:${time.replace(':', '.')}`,
+      });
+      if (zeroRow.length === 3) {
+        keyboard.push(zeroRow);
+        zeroRow = [];
+      }
+    }
+    if (zeroRow.length > 0) {
+      keyboard.push(zeroRow);
+    }
+  }
+
+  if (billingActive) {
+    let row = [];
+    const selectedSet = new Set((billingTimesRaw || []).map((time) => normalizeTimeToken(time)).filter(Boolean));
+    for (const time of billingTimes) {
+      row.push({
+        text: `${selectedSet.has(time) ? '✅' : '⚪️'} ${time}`,
+        callback_data: `${base}:alerts:billing:time:${time.replace(':', '.')}`,
+      });
+      if (row.length === 3) {
+        keyboard.push(row);
+        row = [];
+      }
+    }
+    if (row.length > 0) {
+      keyboard.push(row);
+    }
+    keyboard.push([{ text: '♻️ Сбросить часы', callback_data: `${base}:alerts:billing:reset` }]);
+  }
+
+  keyboard.push([{ text: '⬅️ К проекту', callback_data: `${base}:open` }]);
+
+  return { inline_keyboard: keyboard };
 }
 
 function normalizeTimeList(values, fallback = []) {
@@ -2831,7 +2906,13 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
     lines.push(`Охват: ${reachText} | Показы: ${impressionsText} | Клики: ${clicksText}`);
   }
 
-  return { text: lines.join('\n'), campaigns };
+  return {
+    text: lines.join('\n'),
+    campaigns,
+    range,
+    label: baseLabel,
+    preset,
+  };
 }
 
 function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
@@ -2867,7 +2948,10 @@ function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
   return { inline_keyboard: keyboard };
 }
 
-function buildProjectReportKeyboard(base, { portalUrl } = {}) {
+function buildProjectReportKeyboard(
+  base,
+  { portalUrl, canSendToChat = false, canSendToAdmin = false, hasPreview = false } = {},
+) {
   const rows = [
     [
       { text: 'Сегодня', callback_data: `${base}:report:today` },
@@ -2879,15 +2963,28 @@ function buildProjectReportKeyboard(base, { portalUrl } = {}) {
       { text: 'Диапазон', callback_data: `${base}:report:custom` },
       { text: 'CSV', callback_data: `${base}:report:csv` },
     ],
-    [
-      { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
-      { text: '⬅️ К проекту', callback_data: `${base}:open` },
-    ],
   ];
 
-  if (portalUrl) {
-    rows[1].push({ text: '🌐 Портал', url: portalUrl });
+  if (hasPreview && (canSendToChat || canSendToAdmin || portalUrl)) {
+    const sendRow = [];
+    if (canSendToChat) {
+      sendRow.push({ text: '📤 В чат клиента', callback_data: `${base}:report:send:chat` });
+    }
+    if (canSendToAdmin) {
+      sendRow.push({ text: '📨 В мой чат', callback_data: `${base}:report:send:admin` });
+    }
+    if (portalUrl) {
+      sendRow.push({ text: '🌐 Портал', url: portalUrl });
+    }
+    rows.push(sendRow);
+  } else if (portalUrl) {
+    rows.push([{ text: '🌐 Портал', url: portalUrl }]);
   }
+
+  rows.push([
+    { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
+    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+  ]);
 
   return { inline_keyboard: rows };
 }
@@ -9045,6 +9142,32 @@ class TelegramBot {
     return this.storage.putJson('DB', key, state);
   }
 
+  async saveReportPreview(projectKey, preview, { merge = false } = {}) {
+    if (!projectKey || !preview) {
+      return null;
+    }
+
+    const state = await this.readReportState(projectKey);
+    const base = merge && state.latest && typeof state.latest === 'object' ? state.latest : {};
+    const savedAt = merge && base.saved_at ? base.saved_at : new Date().toISOString();
+    state.latest = {
+      ...base,
+      ...preview,
+      saved_at: savedAt,
+    };
+    await this.writeReportState(projectKey, state);
+    return state.latest;
+  }
+
+  async loadReportPreview(projectKey) {
+    if (!projectKey) {
+      return null;
+    }
+
+    const state = await this.readReportState(projectKey);
+    return state.latest || null;
+  }
+
   async readAlertState(projectKey) {
     if (!projectKey) {
       return {};
@@ -10396,15 +10519,35 @@ class TelegramBot {
 
         if (action === 'reports') {
           const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
-          const lines = [
-            '<b>Отчёты проекта</b>',
-            'Выберите период ниже — бот подготовит цифры и кнопки для отправки клиенту.',
-          ];
+          const projectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(context.project.id || context.project.code || projectId)}`;
+          const previewState = await this.loadReportPreview(projectKey);
+          const lines = ['<b>Отчёты проекта</b>'];
+
+          if (previewState?.label) {
+            const label = escapeHtml(previewState.label);
+            const timestamp = previewState.saved_at
+              ? formatTimestamp(previewState.saved_at, this.config.defaultTimezone)
+              : null;
+            lines.push(`Последний отчёт: ${label}${timestamp ? ` • ${escapeHtml(timestamp)}` : ''}`);
+          }
+
+          lines.push('Выберите период ниже — бот подготовит цифры и кнопки для отправки клиенту.');
+
+          const hasPreview = Boolean(previewState?.adminText || previewState?.clientText || previewState?.text);
+          const canSendToChat = hasPreview && Boolean(context.project.chatId);
+          const replyMarkup = buildProjectReportKeyboard(base, {
+            portalUrl,
+            hasPreview,
+            canSendToChat,
+            canSendToAdmin: hasPreview,
+          });
 
           await this.renderAdminMessage(message, {
             chatId,
             text: lines.join('\n'),
-            reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
+            reply_markup: replyMarkup,
           });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Выберите период отчёта.' });
@@ -10412,12 +10555,113 @@ class TelegramBot {
         }
 
         if (action === 'report') {
+          const projectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(context.project.id || context.project.code || projectId)}`;
+
           if (subAction === 'csv') {
             await this.telegram.answerCallbackQuery({
               callback_query_id: id,
               text: 'Экспорт CSV появится после подключения хранилища.',
               show_alert: true,
             });
+            return { handled: true };
+          }
+
+          if (subAction === 'send') {
+            const target = extraAction || 'chat';
+            const previewState = await this.loadReportPreview(projectKey);
+            if (!previewState || !previewState.adminText?.length && !previewState.clientText?.length && !previewState.text?.length) {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Нет готового отчёта для отправки. Сначала сформируйте отчёт.',
+                show_alert: true,
+              });
+              return { handled: true };
+            }
+
+            const portalUrl = previewState.portalUrl
+              ? previewState.portalUrl
+              : await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
+            const clientText = previewState.clientText || previewState.text || previewState.adminText;
+            const adminText = previewState.adminText || previewState.clientText || previewState.text;
+
+            if (target === 'chat') {
+              if (!context.project.chatId) {
+                await this.telegram.answerCallbackQuery({
+                  callback_query_id: id,
+                  text: 'У проекта не указан чат клиента.',
+                  show_alert: true,
+                });
+                return { handled: true };
+              }
+
+              const payload = {
+                chat_id: context.project.chatId,
+                text: clientText,
+                parse_mode: 'HTML',
+                disable_web_page_preview: false,
+              };
+              if (context.project.threadId) {
+                payload.message_thread_id = Number(context.project.threadId);
+              }
+              if (portalUrl) {
+                payload.reply_markup = { inline_keyboard: [[{ text: '🌐 Портал', url: portalUrl }]] };
+              }
+
+              await this.sendMessageWithFallback(payload, message);
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Отправлено в чат клиента.' });
+
+              const nowIso = new Date().toISOString();
+              await this.saveReportPreview(projectKey, {
+                ...previewState,
+                portalUrl,
+                last_sent: { target: 'chat', at: nowIso, by: userId },
+              }, { merge: true });
+
+              const replyMarkup = buildProjectReportKeyboard(base, {
+                portalUrl,
+                hasPreview: true,
+                canSendToChat: true,
+                canSendToAdmin: true,
+              });
+              await this.renderAdminMessage(message, { chatId, text: adminText, reply_markup: replyMarkup });
+              return { handled: true };
+            }
+
+            const destinationId = callback?.from?.id ? String(callback.from.id) : null;
+            if (!destinationId) {
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Не удалось определить получателя.' });
+              return { handled: true };
+            }
+
+            const payload = {
+              chat_id: destinationId,
+              text: adminText,
+              parse_mode: 'HTML',
+              disable_web_page_preview: true,
+            };
+            if (portalUrl) {
+              payload.reply_markup = { inline_keyboard: [[{ text: '🌐 Портал', url: portalUrl }]] };
+            }
+
+            await this.sendMessageWithFallback(payload, message);
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Отчёт отправлен в личные сообщения.' });
+
+            const nowIso = new Date().toISOString();
+            await this.saveReportPreview(projectKey, {
+              ...previewState,
+              portalUrl,
+              last_sent: { target: 'admin', at: nowIso, by: userId },
+            }, { merge: true });
+
+            const replyMarkup = buildProjectReportKeyboard(base, {
+              portalUrl,
+              hasPreview: true,
+              canSendToChat: Boolean(context.project.chatId),
+              canSendToAdmin: true,
+            });
+            await this.renderAdminMessage(message, { chatId, text: adminText, reply_markup: replyMarkup });
             return { handled: true };
           }
 
@@ -10513,10 +10757,30 @@ class TelegramBot {
             bodyText = `${bodyText}\n⚠️ Не удалось получить свежий отчёт — показаны данные панели.`;
           }
 
+          const nowIso = new Date().toISOString();
+          await this.saveReportPreview(projectKey, {
+            adminText: bodyText,
+            clientText: preview.text,
+            text: preview.text,
+            preset,
+            range: preview.range || null,
+            label: preview.label || formatReportPresetLabel(preset),
+            portalUrl,
+            generated_at: nowIso,
+            generated_by: userId,
+          });
+
+          const replyMarkup = buildProjectReportKeyboard(base, {
+            portalUrl,
+            hasPreview: true,
+            canSendToChat: Boolean(context.project.chatId),
+            canSendToAdmin: true,
+          });
+
           await this.renderAdminMessage(message, {
             chatId,
             text: bodyText,
-            reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
+            reply_markup: replyMarkup,
           });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Отчёт подготовлен.' });
@@ -10792,21 +11056,177 @@ class TelegramBot {
         }
 
         if (action === 'alerts') {
-          const alerts = extractAlertSettings(context.rawProject);
-          const body = ['<b>Алерты</b>', ...formatAlertLines(alerts, { account: context.account, campaigns: context.account?.campaignSummaries })];
-          await this.renderAdminMessage(message, {
-            chatId,
-            text: body.join('\n'),
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: '⚙️ Настройки', callback_data: `${base}:settings` },
-                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                ],
-              ],
-            },
-          });
+          const projectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(context.project.id || context.project.code || projectId)}`;
 
+          const renderAlertsPanel = async () => {
+            const alerts = extractAlertSettings(context.rawProject) || {};
+            const body = [
+              '<b>Алерты</b>',
+              ...formatAlertLines(alerts, { account: context.account, campaigns: context.account?.campaignSummaries }),
+              '',
+              'Используйте кнопки ниже, чтобы включать уведомления и настраивать время.',
+            ];
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: body.join('\n'),
+              reply_markup: buildAlertSettingsKeyboard(base, alerts),
+            });
+          };
+
+          const updateAlertsRecord = async (mutator) => {
+            let stored = null;
+            try {
+              stored = await this.storage.getJson('DB', projectKey);
+            } catch (error) {
+              console.warn('Failed to read project before alert update', projectKey, error);
+            }
+            if (!stored || typeof stored !== 'object') {
+              stored = {};
+            }
+            if (!stored.alerts || typeof stored.alerts !== 'object') {
+              stored.alerts = {};
+            }
+
+            mutator(stored.alerts);
+
+            stored.settings = stored.settings || {};
+            stored.settings.alerts = { ...stored.alerts };
+            stored.config = stored.config || {};
+            stored.config.alerts = { ...stored.alerts };
+
+            stored.updated_at = new Date().toISOString();
+            if (userId) {
+              stored.updated_by = userId;
+            }
+
+            await this.storage.putJson('DB', projectKey, stored);
+            context = await this.resolveProjectContext(projectId, { forceMetaRefresh: false });
+          };
+
+          if (subAction === 'toggle') {
+            const target = extraAction || '';
+            await updateAlertsRecord((alerts) => {
+              if (target === 'zero') {
+                const current = alerts.zeroSpend && typeof alerts.zeroSpend === 'object' ? alerts.zeroSpend : {};
+                const enabled = Boolean(current.enabled ?? alerts.zeroSpend ?? alerts.zero_spend);
+                const next = !enabled;
+                const time = normalizeTimeToken(current.time || current.hour || ALERT_ZERO_DEFAULT_TIME) || ALERT_ZERO_DEFAULT_TIME;
+                alerts.zeroSpend = { ...current, enabled: next, time };
+                alerts.zero_spend = alerts.zeroSpend;
+              } else if (target === 'billing') {
+                const current = alerts.billing && typeof alerts.billing === 'object' ? alerts.billing : {};
+                const enabled = Boolean(current.enabled ?? alerts.billing ?? alerts.payment);
+                const times = Array.isArray(current.times)
+                  ? current.times
+                  : Array.isArray(current.hours)
+                  ? current.hours
+                  : ALERT_BILLING_DEFAULT_TIMES;
+                const normalizedTimes = (times || ALERT_BILLING_DEFAULT_TIMES)
+                  .map((time) => normalizeTimeToken(time))
+                  .filter(Boolean);
+                const uniqueTimes = Array.from(new Set(normalizedTimes));
+                alerts.billing = {
+                  ...current,
+                  enabled: !enabled,
+                  times: uniqueTimes.length > 0 ? uniqueTimes : ALERT_BILLING_DEFAULT_TIMES,
+                };
+                alerts.payment = alerts.billing;
+              } else if (target === 'anomalies') {
+                const current = alerts.anomalies && typeof alerts.anomalies === 'object' ? alerts.anomalies : {};
+                const enabled = Boolean(current.enabled ?? alerts.anomalies);
+                alerts.anomalies = { ...current, enabled: !enabled };
+              } else if (target === 'creatives') {
+                const current = alerts.creatives && typeof alerts.creatives === 'object' ? alerts.creatives : {};
+                const enabled = Boolean(current.enabled ?? alerts.creatives ?? alerts.creative_fatigue);
+                alerts.creatives = { ...current, enabled: !enabled };
+                alerts.creative_fatigue = alerts.creatives;
+              }
+            });
+
+            await renderAlertsPanel();
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Настройки обновлены.' });
+            return { handled: true };
+          }
+
+          if (subAction === 'zero' && extraAction === 'time') {
+            const encoded = extraParam || '';
+            const decoded = normalizeTimeToken(encoded);
+            if (!decoded) {
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Не удалось распознать время.' });
+              return { handled: true };
+            }
+
+            await updateAlertsRecord((alerts) => {
+              const current = alerts.zeroSpend && typeof alerts.zeroSpend === 'object' ? alerts.zeroSpend : {};
+              alerts.zeroSpend = {
+                ...current,
+                enabled: current.enabled !== false,
+                time: decoded,
+              };
+              alerts.zero_spend = alerts.zeroSpend;
+            });
+
+            await renderAlertsPanel();
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: `Напоминание в ${decoded}.` });
+            return { handled: true };
+          }
+
+          if (subAction === 'billing') {
+            if (extraAction === 'time') {
+              const encoded = extraParam || '';
+              const decoded = normalizeTimeToken(encoded);
+              if (!decoded) {
+                await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Не удалось распознать время.' });
+                return { handled: true };
+              }
+
+              await updateAlertsRecord((alerts) => {
+                const current = alerts.billing && typeof alerts.billing === 'object' ? alerts.billing : {};
+                const currentTimes = Array.isArray(current.times)
+                  ? current.times.map((time) => normalizeTimeToken(time)).filter(Boolean)
+                  : Array.isArray(current.hours)
+                  ? current.hours.map((time) => normalizeTimeToken(time)).filter(Boolean)
+                  : ALERT_BILLING_DEFAULT_TIMES;
+                const set = new Set(currentTimes);
+                if (set.has(decoded)) {
+                  set.delete(decoded);
+                } else {
+                  set.add(decoded);
+                }
+                const nextTimes = Array.from(set).sort();
+                alerts.billing = {
+                  ...current,
+                  enabled: current.enabled !== false,
+                  times: nextTimes.length > 0 ? nextTimes : ALERT_BILLING_DEFAULT_TIMES,
+                };
+                alerts.payment = alerts.billing;
+              });
+
+              await renderAlertsPanel();
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Часы проверки обновлены.' });
+              return { handled: true };
+            }
+
+            if (extraAction === 'reset') {
+              await updateAlertsRecord((alerts) => {
+                const current = alerts.billing && typeof alerts.billing === 'object' ? alerts.billing : {};
+                alerts.billing = {
+                  ...current,
+                  enabled: current.enabled !== false,
+                  times: ALERT_BILLING_DEFAULT_TIMES,
+                };
+                alerts.payment = alerts.billing;
+              });
+
+              await renderAlertsPanel();
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Часы проверки сброшены.' });
+              return { handled: true };
+            }
+          }
+
+          await renderAlertsPanel();
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Алерты показаны.' });
           return { handled: true };
         }
