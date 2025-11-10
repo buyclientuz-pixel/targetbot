@@ -4223,6 +4223,9 @@ function resolvePortalKpiMeta(kpi) {
 
 function mapCampaignStatusVisual(status) {
   const normalized = String(status || '').toUpperCase();
+  if (!normalized) {
+    return { icon: '⚪', category: 'completed', label: 'Неактивна' };
+  }
   if (normalized === 'ACTIVE') {
     return { icon: '🟢', category: 'active', label: 'Активна' };
   }
@@ -4234,7 +4237,6 @@ function mapCampaignStatusVisual(status) {
     'STOP',
     'OFF',
     'DISAPPROVED',
-    'WITH_ISSUES',
     'COMPLETED',
     'ENDED',
     'DISABLED',
@@ -4242,12 +4244,18 @@ function mapCampaignStatusVisual(status) {
   if (completedHints.some((hint) => normalized.includes(hint))) {
     return { icon: '⚪', category: 'completed', label: 'Отключена' };
   }
-  const pendingHints = ['PENDING', 'PROCESS', 'REVIEW', 'SCHEDULE', 'IN_PROGRESS'];
+  const activeHints = ['ACTIVE', 'RUNNING', 'DELIVERING', 'DELIVERY'];
+  if (activeHints.some((hint) => normalized.includes(hint))) {
+    const degraded = /ISSUE|LIMITED|RESTRICT|PROBLEM|ERROR|WARNING/.test(normalized);
+    return {
+      icon: degraded ? '🟠' : '🟢',
+      category: 'active',
+      label: degraded ? 'Активна (с ограничениями)' : 'Активна',
+    };
+  }
+  const pendingHints = ['PENDING', 'PROCESS', 'REVIEW', 'SCHEDULE', 'IN_PROGRESS', 'LEARNING'];
   if (pendingHints.some((hint) => normalized.includes(hint))) {
     return { icon: '🟡', category: 'pending', label: 'На модерации' };
-  }
-  if (!normalized) {
-    return { icon: '⚪', category: 'completed', label: 'Неактивна' };
   }
   return { icon: '🟡', category: 'pending', label: normalized };
 }
@@ -5998,13 +6006,292 @@ function parseAdminIds(rawValue) {
   return ids;
 }
 
+const R2_BUCKET_CACHE = new WeakMap();
+const R2_FALLBACK_EMPTY_HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+const R2_SIGNATURE_ALGORITHM = 'AWS4-HMAC-SHA256';
+const R2_SIGNATURE_SERVICE = 's3';
+const R2_SIGNATURE_REGION = 'auto';
+const R2_TEXT_ENCODER = new TextEncoder();
+
 function getR2Bucket(env) {
   if (!env) return null;
+  if (R2_BUCKET_CACHE.has(env)) {
+    return R2_BUCKET_CACHE.get(env);
+  }
+
   const bucket = env.R2;
   if (bucket && typeof bucket.get === 'function' && typeof bucket.put === 'function') {
+    R2_BUCKET_CACHE.set(env, bucket);
     return bucket;
   }
-  return null;
+
+  const fallback = createHttpR2BucketFromEnv(env);
+  R2_BUCKET_CACHE.set(env, fallback);
+  return fallback;
+}
+
+function createHttpR2BucketFromEnv(env) {
+  if (!env || typeof globalThis.fetch !== 'function' || !globalThis.crypto || !globalThis.crypto.subtle) {
+    return null;
+  }
+
+  const accessKeyId = (env.R2_ACCESS_KEY_ID || env.CF_R2_ACCESS_KEY_ID || '').trim();
+  const secretAccessKey = (env.R2_SECRET_ACCESS_KEY || env.CF_R2_SECRET_ACCESS_KEY || '').trim();
+  const bucketName = (env.R2_BUCKET_NAME || env.R2_BUCKET || '').trim();
+  const accountId = (env.R2_ACCOUNT_ID || '').trim();
+  let endpoint = (env.R2_ENDPOINT || '').trim();
+
+  if (!accessKeyId || !secretAccessKey || !bucketName) {
+    return null;
+  }
+
+  if (!endpoint) {
+    if (!accountId) {
+      return null;
+    }
+    endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
+  } else if (!/^https?:\/\//i.test(endpoint)) {
+    endpoint = `https://${endpoint}`;
+  }
+
+  let baseUrl;
+  try {
+    baseUrl = new URL(endpoint);
+  } catch (error) {
+    console.warn('Failed to parse R2 endpoint', endpoint, error);
+    return null;
+  }
+
+  const fetcher = typeof env.fetch === 'function' ? env.fetch.bind(env) : globalThis.fetch;
+
+  return new HttpR2Bucket({
+    baseUrl,
+    bucketName,
+    accessKeyId,
+    secretAccessKey,
+    fetcher,
+  });
+}
+
+function encodeR2PathSegment(segment = '') {
+  return encodeURIComponent(segment).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+function buildR2CanonicalQuery(url) {
+  const entries = [];
+  url.searchParams.forEach((value, key) => {
+    entries.push([encodeR2PathSegment(key), encodeR2PathSegment(value)]);
+  });
+  entries.sort((a, b) => {
+    if (a[0] === b[0]) {
+      return a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0;
+    }
+    return a[0] < b[0] ? -1 : 1;
+  });
+  return entries.map((entry) => `${entry[0]}=${entry[1]}`).join('&');
+}
+
+function canonicalizeHeaders(headers) {
+  const pairs = [];
+  headers.forEach((value, key) => {
+    if (value === undefined || value === null) {
+      return;
+    }
+    const trimmed = String(value).trim().replace(/\s+/g, ' ');
+    pairs.push([key.toLowerCase(), trimmed]);
+  });
+  pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const canonical = pairs.map(([key, value]) => `${key}:${value}\n`).join('');
+  const signed = pairs.map(([key]) => key).join(';');
+  return { canonical, signed };
+}
+
+function formatAmzDate(date = new Date()) {
+  const pad = (value, size = 2) => String(value).padStart(size, '0');
+  const year = date.getUTCFullYear();
+  const month = pad(date.getUTCMonth() + 1);
+  const day = pad(date.getUTCDate());
+  const hour = pad(date.getUTCHours());
+  const minute = pad(date.getUTCMinutes());
+  const second = pad(date.getUTCSeconds());
+  return {
+    amzDate: `${year}${month}${day}T${hour}${minute}${second}Z`,
+    dateStamp: `${year}${month}${day}`,
+  };
+}
+
+async function hmacSha256(key, data) {
+  const rawKey = typeof key === 'string' ? R2_TEXT_ENCODER.encode(key) : key;
+  const message = typeof data === 'string' ? R2_TEXT_ENCODER.encode(data) : data;
+  const cryptoKey = await crypto.subtle.importKey('raw', rawKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const signature = await crypto.subtle.sign('HMAC', cryptoKey, message);
+  return new Uint8Array(signature);
+}
+
+function toHex(buffer) {
+  return Array.from(buffer)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function deriveSigningKey(secret, dateStamp) {
+  const kDate = await hmacSha256(`AWS4${secret}`, dateStamp);
+  const kRegion = await hmacSha256(kDate, R2_SIGNATURE_REGION);
+  const kService = await hmacSha256(kRegion, R2_SIGNATURE_SERVICE);
+  return hmacSha256(kService, 'aws4_request');
+}
+
+function decodeR2Xml(value = '') {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+class HttpR2Object {
+  constructor(response) {
+    this._response = response;
+  }
+
+  async text() {
+    return this._response.text();
+  }
+}
+
+class HttpR2Bucket {
+  constructor({ baseUrl, bucketName, accessKeyId, secretAccessKey, fetcher }) {
+    this.baseUrl = baseUrl;
+    this.bucketName = bucketName;
+    this.accessKeyId = accessKeyId;
+    this.secretAccessKey = secretAccessKey;
+    this.fetcher = typeof fetcher === 'function' ? fetcher : globalThis.fetch;
+    this.basePath = `${baseUrl.pathname.replace(/\/+$, '')}/${bucketName}`;
+    this.signingKeyCache = null;
+  }
+
+  async ensureSigningKey(dateStamp) {
+    if (this.signingKeyCache && this.signingKeyCache.date === dateStamp) {
+      return this.signingKeyCache.key;
+    }
+    const key = await deriveSigningKey(this.secretAccessKey, dateStamp);
+    this.signingKeyCache = { date: dateStamp, key };
+    return key;
+  }
+
+  buildUrl(key, params) {
+    const url = new URL(this.baseUrl.toString());
+    const encodedKey = key
+      ? key
+          .split('/')
+          .map((segment) => encodeR2PathSegment(segment))
+          .join('/')
+      : '';
+    const pathSuffix = encodedKey ? `/${encodedKey}` : '';
+    url.pathname = `${this.basePath}${pathSuffix}`;
+    if (params) {
+      for (const [name, value] of Object.entries(params)) {
+        if (value === undefined || value === null) {
+          continue;
+        }
+        url.searchParams.set(name, String(value));
+      }
+    }
+    return { url, canonicalUri: url.pathname };
+  }
+
+  async signedRequest(method, key, { body = '', headers = {}, params } = {}) {
+    const payload = typeof body === 'string' ? body : '';
+    const { url, canonicalUri } = this.buildUrl(key, params);
+    const headerBag = new Headers(headers);
+    headerBag.set('host', url.host);
+    const payloadHash = payload ? await sha256Hex(payload) : R2_FALLBACK_EMPTY_HASH;
+    headerBag.set('x-amz-content-sha256', payloadHash);
+    const { amzDate, dateStamp } = formatAmzDate();
+    headerBag.set('x-amz-date', amzDate);
+    const { canonical, signed } = canonicalizeHeaders(headerBag);
+    const canonicalQuery = buildR2CanonicalQuery(url);
+    const canonicalRequest = [
+      method.toUpperCase(),
+      canonicalUri,
+      canonicalQuery,
+      canonical,
+      signed,
+      payloadHash,
+    ].join('\n');
+    const hashedRequest = await sha256Hex(canonicalRequest);
+    const credentialScope = `${dateStamp}/${R2_SIGNATURE_REGION}/${R2_SIGNATURE_SERVICE}/aws4_request`;
+    const stringToSign = [R2_SIGNATURE_ALGORITHM, amzDate, credentialScope, hashedRequest].join('\n');
+    const signingKey = await this.ensureSigningKey(dateStamp);
+    const signature = await hmacSha256(signingKey, stringToSign);
+    headerBag.set(
+      'Authorization',
+      `${R2_SIGNATURE_ALGORITHM} Credential=${this.accessKeyId}/${credentialScope}, SignedHeaders=${signed}, Signature=${toHex(
+        signature,
+      )}`,
+    );
+
+    const init = {
+      method,
+      headers: headerBag,
+    };
+    if (payload && method !== 'GET' && method !== 'HEAD') {
+      init.body = payload;
+    }
+    return this.fetcher(url.toString(), init);
+  }
+
+  async get(key) {
+    const response = await this.signedRequest('GET', key);
+    if (response.status === 404) {
+      return null;
+    }
+    if (!response.ok) {
+      throw new Error(`R2 HTTP GET failed: ${response.status}`);
+    }
+    return new HttpR2Object(response);
+  }
+
+  async put(key, value, { httpMetadata = {} } = {}) {
+    const headers = {};
+    if (httpMetadata.contentType) {
+      headers['content-type'] = httpMetadata.contentType;
+    }
+    const response = await this.signedRequest('PUT', key, { body: String(value ?? ''), headers });
+    if (!response.ok) {
+      throw new Error(`R2 HTTP PUT failed: ${response.status}`);
+    }
+    return true;
+  }
+
+  async delete(key) {
+    const response = await this.signedRequest('DELETE', key);
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`R2 HTTP DELETE failed: ${response.status}`);
+    }
+    return true;
+  }
+
+  async list({ prefix = '', limit = 1000 } = {}) {
+    const params = {
+      'list-type': '2',
+      prefix,
+      'max-keys': Math.max(1, Math.min(Number(limit) || 1000, 1000)),
+    };
+    const response = await this.signedRequest('GET', '', { params });
+    if (!response.ok) {
+      throw new Error(`R2 HTTP LIST failed: ${response.status}`);
+    }
+    const text = await response.text();
+    const objects = [];
+    const keyRegex = /<Key>([^<]+)<\/Key>/g;
+    let match;
+    while ((match = keyRegex.exec(text))) {
+      objects.push({ key: decodeR2Xml(match[1]) });
+    }
+    return { objects };
+  }
 }
 
 function encodeR2Segment(segment) {
