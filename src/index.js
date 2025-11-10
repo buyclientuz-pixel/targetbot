@@ -3284,7 +3284,7 @@ function describeCampaignPrimaryMetrics(campaign, { objective } = {}) {
     { matches: ['LEAD'], label: 'Лиды', costLabel: 'CPL', value: leads, cost: costForLeads },
     {
       matches: ['CONVERSION', 'OUTCOME', 'SALE', 'SALES', 'PURCHASE'],
-      label: 'Конверсии',
+      label: 'Покупки',
       costLabel: 'CPA',
       value: conversions,
       cost: costForConversions,
@@ -3316,7 +3316,7 @@ function describeCampaignPrimaryMetrics(campaign, { objective } = {}) {
   if (!chosen) {
     const fallbacks = [
       { label: 'Лиды', costLabel: 'CPL', value: leads, cost: costForLeads },
-      { label: 'Конверсии', costLabel: 'CPA', value: conversions, cost: costForConversions },
+      { label: 'Покупки', costLabel: 'CPA', value: conversions, cost: costForConversions },
       { label: 'Клики', costLabel: 'CPC', value: clicks, cost: costPerClick },
       { label: 'Показы', costLabel: 'CPM', value: impressions, cost: costPerThousandImpressions },
       { label: 'Охват', costLabel: 'CPM', value: reach, cost: costPerThousandReach },
@@ -4242,7 +4242,7 @@ function resolvePortalKpiMeta(kpi) {
 function mapCampaignStatusVisual(status) {
   const normalized = String(status || '').toUpperCase();
   if (!normalized) {
-    return { icon: '⚪', category: 'completed', label: 'Неактивна' };
+    return { icon: '⚪️', category: 'completed', label: 'Остановлена' };
   }
   if (normalized === 'ACTIVE') {
     return { icon: '🟢', category: 'active', label: 'Активна' };
@@ -4260,16 +4260,11 @@ function mapCampaignStatusVisual(status) {
     'DISABLED',
   ];
   if (completedHints.some((hint) => normalized.includes(hint))) {
-    return { icon: '⚪', category: 'completed', label: 'Отключена' };
+    return { icon: '⚪️', category: 'completed', label: 'Остановлена' };
   }
   const activeHints = ['ACTIVE', 'RUNNING', 'DELIVERING', 'DELIVERY'];
   if (activeHints.some((hint) => normalized.includes(hint))) {
-    const degraded = /ISSUE|LIMITED|RESTRICT|PROBLEM|ERROR|WARNING/.test(normalized);
-    return {
-      icon: degraded ? '🟠' : '🟢',
-      category: 'active',
-      label: degraded ? 'Активна (с ограничениями)' : 'Активна',
-    };
+    return { icon: '🟢', category: 'active', label: 'Активна' };
   }
   const pendingHints = ['PENDING', 'PROCESS', 'REVIEW', 'SCHEDULE', 'IN_PROGRESS', 'LEARNING'];
   if (pendingHints.some((hint) => normalized.includes(hint))) {
@@ -4471,10 +4466,14 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     { objective: objectiveForTotals },
   );
 
+  const frequencyValue = Number.isFinite(totals.frequency)
+    ? totals.frequency
+    : safeDivision(totals.impressions, totals.reach);
+
   payload.metrics = [
     {
       id: 'spend',
-      label: `Расход (${currency || 'USD'})`,
+      label: 'Потрачено',
       value: spendValue,
       text: spendValue !== null ? formatUsd(spendValue, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—',
     },
@@ -4499,56 +4498,76 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
           ? formatUsd(cpaValue, { digitsBelowOne: 2, digitsAboveOne: 2 })
           : '—',
     },
-    {
-      id: 'cpc',
-      label: 'CPC',
-      value: Number.isFinite(cpcValue) ? cpcValue : null,
-      text: Number.isFinite(cpcValue) ? formatUsd(cpcValue, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—',
-    },
-    {
-      id: 'ctr',
-      label: 'CTR',
-      value: Number.isFinite(ctrValue) ? ctrValue : null,
-      text: Number.isFinite(ctrValue) ? `${formatFloat(ctrValue, { digits: 1 })}%` : '—',
-    },
-    {
-      id: 'reach',
-      label: 'Охват',
-      value: Number.isFinite(totals.reach) ? totals.reach : null,
-      text: formatInteger(totals.reach),
-    },
-    {
-      id: 'impressions',
-      label: 'Показы',
-      value: Number.isFinite(totals.impressions) ? totals.impressions : null,
-      text: formatInteger(totals.impressions),
-    },
-    {
-      id: 'clicks',
-      label: 'Клики',
-      value: Number.isFinite(totals.clicks) ? totals.clicks : null,
-      text: formatInteger(totals.clicks),
-    },
   ];
 
-  if (aggregateMetrics.label !== 'Лиды' && Number.isFinite(leadsValue)) {
-    payload.metrics.splice(3, 0, {
-      id: 'leads',
-      label: 'Лиды',
-      value: leadsValue,
-      text: formatInteger(leadsValue),
-    });
+  const detailMetrics = [];
+
+  if (Number.isFinite(leadsValue)) {
+    detailMetrics.push({ id: 'leads', label: 'Лиды', value: leadsValue, text: formatInteger(leadsValue) });
   }
 
-  if (aggregateMetrics.label !== 'Конверсии' && Number.isFinite(conversionsValue)) {
-    const insertIndex = aggregateMetrics.label !== 'Лиды' && Number.isFinite(leadsValue) ? 4 : 3;
-    payload.metrics.splice(insertIndex, 0, {
+  if (Number.isFinite(conversionsValue)) {
+    detailMetrics.push({
       id: 'conversions',
-      label: 'Конверсии',
+      label: 'Покупки',
       value: conversionsValue,
       text: formatInteger(conversionsValue),
     });
   }
+
+  if (Number.isFinite(totals.clicks)) {
+    detailMetrics.push({ id: 'clicks', label: 'Клики', value: totals.clicks, text: formatInteger(totals.clicks) });
+  }
+
+  if (Number.isFinite(totals.impressions)) {
+    detailMetrics.push({
+      id: 'impressions',
+      label: 'Показы',
+      value: totals.impressions,
+      text: formatInteger(totals.impressions),
+    });
+  }
+
+  if (Number.isFinite(frequencyValue) && frequencyValue > 0) {
+    detailMetrics.push({
+      id: 'frequency',
+      label: 'Частота',
+      value: frequencyValue,
+      text: formatFloat(frequencyValue, { digits: 1 }),
+    });
+  }
+
+  detailMetrics.push({
+    id: 'cpa',
+    label: 'CPA',
+    value: Number.isFinite(aggregateMetrics.cost)
+      ? aggregateMetrics.cost
+      : Number.isFinite(cpaValue)
+      ? cpaValue
+      : null,
+    text:
+      Number.isFinite(aggregateMetrics.cost)
+        ? aggregateMetrics.costText
+        : Number.isFinite(cpaValue)
+        ? formatUsd(cpaValue, { digitsBelowOne: 2, digitsAboveOne: 2 })
+        : '—',
+  });
+
+  detailMetrics.push({
+    id: 'cpc',
+    label: 'CPC',
+    value: Number.isFinite(cpcValue) ? cpcValue : null,
+    text: Number.isFinite(cpcValue) ? formatUsd(cpcValue, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—',
+  });
+
+  detailMetrics.push({
+    id: 'ctr',
+    label: 'CTR',
+    value: Number.isFinite(ctrValue) ? ctrValue : null,
+    text: Number.isFinite(ctrValue) ? `${formatFloat(ctrValue, { digits: 1 })}%` : '—',
+  });
+
+  payload.metrics.push(...detailMetrics);
 
   payload.objective = objectiveForTotals || null;
   payload.campaigns = campaigns.map((campaign) => {
@@ -4591,6 +4610,13 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
       ? Number(campaign.ctr)
       : safeDivision(campaign?.clicks, campaign?.impressions) * 100;
     const ctrText = Number.isFinite(ctr) ? `${formatFloat(ctr, { digits: 1 })}%` : '—';
+    const leadsValueRaw = Number.isFinite(campaign?.leads) ? Number(campaign.leads) : null;
+    const conversionsValueRaw = Number.isFinite(campaign?.conversions) ? Number(campaign.conversions) : null;
+    const clicksValueRaw = Number.isFinite(campaign?.clicks) ? Number(campaign.clicks) : null;
+    const impressionsValueRaw = Number.isFinite(campaign?.impressions) ? Number(campaign.impressions) : null;
+    const frequencyValueRaw = Number.isFinite(campaign?.frequency)
+      ? Number(campaign.frequency)
+      : safeDivision(campaign?.impressions, campaign?.reach);
     const lastActivitySource =
       campaign?.dateStop ||
       campaign?.dateStart ||
@@ -4599,6 +4625,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
       indexEntry?.dateStart ||
       null;
     const lastActivity = lastActivitySource ? formatDateLabel(lastActivitySource, { timezone }) : '';
+    const lastActivityIso = lastActivitySource ? formatDateIsoInTimeZone(lastActivitySource, timezone) : null;
 
     return {
       id: rawId || lookupId || '',
@@ -4606,6 +4633,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
       statusIcon: statusVisual.icon,
       statusCategory: statusVisual.category,
       statusLabel: statusVisual.label,
+      statusTone: statusVisual.category,
       keyMetricLabel: metrics.label || 'Показатели',
       keyMetricText,
       keyMetricValue,
@@ -4620,8 +4648,14 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
       cpcValue: Number.isFinite(cpc) ? Number(cpc) : null,
       ctrText,
       ctrValue: Number.isFinite(ctr) ? Number(ctr) : null,
+      leadsValue: leadsValueRaw,
+      conversionsValue: conversionsValueRaw,
+      clicksValue: clicksValueRaw,
+      impressionsValue: impressionsValueRaw,
+      frequencyValue: Number.isFinite(frequencyValueRaw) ? frequencyValueRaw : null,
       objective: fallbackObjective || '',
       lastActivity,
+      lastActivityDate: lastActivityIso,
       extraParts: Array.isArray(metrics.extraParts) ? metrics.extraParts : [],
     };
   });
@@ -4629,7 +4663,18 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
   return payload;
 }
 
-function buildPortalDataset({ projectCode, signature, timezone, currency, periods, account, kpi }) {
+function buildPortalDataset({
+  projectCode,
+  signature,
+  timezone,
+  currency,
+  periods,
+  account,
+  kpi,
+  project,
+  managerLink = '',
+  generatedAt = null,
+}) {
   const campaignIndex = new Map();
   if (Array.isArray(account?.campaignSummaries)) {
     for (const entry of account.campaignSummaries) {
@@ -4647,6 +4692,13 @@ function buildPortalDataset({ projectCode, signature, timezone, currency, period
 
   const kpiMeta = resolvePortalKpiMeta(kpi);
   const objectiveHint = kpi?.objective || account?.objective || '';
+  const normalizedAccountKey = normalizeAccountKey(
+    account?.accountId || account?.id || account?.account_id || project?.adAccountId,
+  );
+  const accountId = normalizedAccountKey ? `act_${normalizedAccountKey}` : '';
+  const accountManagerUrl = normalizedAccountKey
+    ? `https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${encodeURIComponent(normalizedAccountKey)}`
+    : '';
 
   const dataset = {};
   let defaultPeriod = null;
@@ -4679,6 +4731,11 @@ function buildPortalDataset({ projectCode, signature, timezone, currency, period
     currency,
     defaultPeriod,
     periods: dataset,
+    accountId,
+    accountManagerUrl,
+    managerLink: managerLink || '',
+    chatUrl: managerLink || '',
+    generatedAt: generatedAt ? new Date(generatedAt).toISOString() : new Date().toISOString(),
   };
 }
 
@@ -4829,6 +4886,9 @@ function renderClientPortalPage({
     periods,
     account,
     kpi,
+    project,
+    managerLink,
+    generatedAt,
   });
   const defaultPeriodPayload = dataset?.periods?.[dataset.defaultPeriod] || {};
   const resolveMetric = (id) => {
@@ -5160,7 +5220,7 @@ function renderClientPortalPage({
         gap: 12px;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 16px;
+        margin-bottom: 12px;
       }
       .campaign-filters,
       .campaign-sorts {
@@ -5177,50 +5237,252 @@ function renderClientPortalPage({
         color: inherit;
         font-weight: 500;
         cursor: pointer;
-        transition: background 0.2s ease;
+        transition: background 0.2s ease, transform 0.15s ease;
       }
       .filter-button.active,
       .sort-button.active {
-        background: rgba(74, 155, 255, 0.3);
+        background: rgba(74, 155, 255, 0.35);
       }
       .filter-button:hover,
       .sort-button:hover {
-        background: rgba(74, 155, 255, 0.2);
+        background: rgba(74, 155, 255, 0.22);
+        transform: translateY(-1px);
       }
-      .campaign-row {
-        background: rgba(255, 255, 255, 0.04);
-        border-radius: 16px;
-        padding: 14px 16px;
-        margin-bottom: 10px;
-        transition: background 0.2s ease;
+      .campaign-archived-toggle {
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 999px;
+        color: #d6d8de;
+        padding: 8px 18px;
+        font-size: 0.85rem;
+        cursor: pointer;
+        transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+        margin-bottom: 18px;
       }
-      .campaign-row:hover {
-        background: rgba(255, 255, 255, 0.07);
+      .campaign-archived-toggle:hover {
+        background: rgba(74, 155, 255, 0.18);
+        border-color: rgba(74, 155, 255, 0.4);
+        transform: translateY(-1px);
       }
-      .campaign-line {
+      .campaign-list {
         display: flex;
-        align-items: center;
-        gap: 8px;
-        font-weight: 600;
-        margin-bottom: 6px;
+        flex-direction: column;
+        gap: 12px;
       }
-      .campaign-status {
-        font-size: 1.1rem;
+      .campaign-card {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 18px;
+        padding: 16px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
       }
-      .campaign-metrics {
+      .campaign-card:hover,
+      .campaign-card:focus {
+        transform: translateY(-2px);
+        background: rgba(255, 255, 255, 0.08);
+        box-shadow: 0 18px 32px rgba(0, 0, 0, 0.22);
+        outline: none;
+      }
+      .campaign-card__line {
         display: flex;
         flex-wrap: wrap;
-        gap: 12px;
-        color: #c7cad1;
-        font-size: 0.9rem;
+        align-items: center;
+        gap: 10px;
+        font-weight: 600;
       }
-      .campaign-metrics span {
-        display: inline-block;
+      .campaign-card__status {
+        font-size: 1.2rem;
+      }
+      .campaign-card__status[data-tone='active'] {
+        color: #6de28c;
+      }
+      .campaign-card__status[data-tone='pending'] {
+        color: #ffd27f;
+      }
+      .campaign-card__status[data-tone='completed'] {
+        color: #d6d8de;
+      }
+      .campaign-card__name {
+        font-size: 1.05rem;
+      }
+      .campaign-card__metric {
+        font-size: 0.95rem;
+        color: #c7cad1;
+      }
+      .campaign-card__meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        font-size: 0.85rem;
+        color: #9ba0a9;
+      }
+      .campaign-card__cta {
+        margin-left: auto;
+        font-weight: 600;
+        color: #4a9bff;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .campaign-card__cta::after {
+        content: '→';
+      }
+      .campaign-card__cta:hover {
+        text-decoration: underline;
       }
       .campaign-empty {
         color: #8f9299;
         font-size: 0.95rem;
         margin-top: 8px;
+      }
+      .campaign-modal {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(10, 14, 22, 0.78);
+        backdrop-filter: blur(10px);
+        z-index: 1000;
+      }
+      .campaign-modal[hidden] {
+        display: none;
+      }
+      .campaign-modal__dialog {
+        position: relative;
+        width: min(760px, 100%);
+        max-height: 90vh;
+        overflow: auto;
+        background: #10131a;
+        border-radius: 22px;
+        padding: 26px 30px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+      }
+      .campaign-modal__close {
+        position: absolute;
+        top: 18px;
+        right: 20px;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        border: none;
+        background: rgba(255, 255, 255, 0.12);
+        color: #f5f6f8;
+        font-size: 1.2rem;
+        cursor: pointer;
+        transition: background 0.2s ease, transform 0.15s ease;
+      }
+      .campaign-modal__close:hover {
+        background: rgba(255, 255, 255, 0.18);
+        transform: translateY(-1px);
+      }
+      .campaign-modal__header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .campaign-modal__status {
+        font-size: 1.4rem;
+      }
+      .campaign-modal__title {
+        font-size: 1.3rem;
+        font-weight: 600;
+      }
+      .campaign-modal__summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .campaign-modal__summary-card {
+        flex: 1 1 calc(33.333% - 12px);
+        min-width: 150px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 14px;
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .campaign-modal__summary-card span {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #9ba0a9;
+      }
+      .campaign-modal__summary-card strong {
+        font-size: 1.1rem;
+        font-weight: 600;
+      }
+      .campaign-modal__chart {
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 18px;
+        padding: 16px 18px;
+      }
+      .campaign-modal__chart svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+      .campaign-modal__legend {
+        display: flex;
+        gap: 12px;
+        margin-top: 8px;
+        font-size: 0.85rem;
+        color: #c7cad1;
+      }
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .legend-item::before {
+        content: '';
+        width: 12px;
+        height: 12px;
+        border-radius: 6px;
+        display: inline-block;
+      }
+      .legend-item--spend::before {
+        background: #4a9bff;
+      }
+      .legend-item--leads::before {
+        background: #8be4a2;
+      }
+      .campaign-modal__table table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .campaign-modal__table th,
+      .campaign-modal__table td {
+        padding: 10px 12px;
+        text-align: left;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        font-size: 0.9rem;
+      }
+      .campaign-modal__table th {
+        color: #9ba0a9;
+        font-weight: 600;
+      }
+      .campaign-modal__actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .campaign-modal__loading {
+        font-size: 0.95rem;
+        color: #c7cad1;
+      }
+      .secondary-button.disabled {
+        opacity: 0.5;
+        pointer-events: none;
       }
       .insights-list {
         list-style: none;
@@ -5329,8 +5591,14 @@ function renderClientPortalPage({
           flex-direction: column;
           align-items: flex-start;
         }
-        .campaign-metrics {
+        .campaign-card__line {
           flex-direction: column;
+          align-items: flex-start;
+          gap: 6px;
+        }
+        .campaign-modal__summary-card {
+          flex: 1 1 calc(50% - 12px);
+          min-width: 140px;
         }
       }
     </style>
@@ -5412,9 +5680,9 @@ function renderClientPortalPage({
       <section class="campaigns">
         <div class="campaign-toolbar">
           <div class="campaign-filters">
-            <button class="filter-button active" data-filter="active">🟢 Активные</button>
-            <button class="filter-button" data-filter="completed">⚪ Завершённые</button>
-            <button class="filter-button" data-filter="all">⚫ Все</button>
+            <button class="filter-button active" data-filter="all">Все кампании</button>
+            <button class="filter-button" data-filter="active">Активные</button>
+            <button class="filter-button" data-filter="recent">Последние 7 дней</button>
           </div>
           <div class="campaign-sorts">
             <button class="sort-button active" data-sort="spend" data-label="Потрачено">🔽 Потрачено</button>
@@ -5422,8 +5690,46 @@ function renderClientPortalPage({
             <button class="sort-button" data-sort="cpa" data-label="Стоимость цели">🔽 Стоимость цели</button>
           </div>
         </div>
+        <button class="campaign-archived-toggle" id="campaign-archived-toggle" type="button">
+          Показать все кампании (вкл. архивные)
+        </button>
         <div class="campaign-list" id="campaign-list"></div>
-        <div class="campaign-empty" id="campaign-empty" hidden>Нет активных кампаний за выбранный период.</div>
+        <div class="campaign-empty" id="campaign-empty" hidden>Нет кампаний по выбранному фильтру.</div>
+        <div class="campaign-modal" id="campaign-modal" hidden>
+          <div class="campaign-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="campaign-modal-title">
+            <button class="campaign-modal__close" id="campaign-modal-close" type="button" aria-label="Закрыть">×</button>
+            <div class="campaign-modal__header">
+              <span class="campaign-modal__status" id="campaign-modal-status"></span>
+              <h3 class="campaign-modal__title" id="campaign-modal-title">Кампания</h3>
+            </div>
+            <div class="campaign-modal__summary" id="campaign-modal-summary"></div>
+            <div class="campaign-modal__chart">
+              <svg id="campaign-modal-chart" viewBox="0 0 600 260" role="img" aria-label="График трат и лидов"></svg>
+              <div class="campaign-modal__legend">
+                <span class="legend-item legend-item--spend">Потрачено</span>
+                <span class="legend-item legend-item--leads">Лиды</span>
+              </div>
+            </div>
+            <div class="campaign-modal__table">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">День</th>
+                    <th scope="col">Потрачено</th>
+                    <th scope="col">Лиды</th>
+                    <th scope="col">CPA</th>
+                    <th scope="col">CTR</th>
+                  </tr>
+                </thead>
+                <tbody id="campaign-modal-table"></tbody>
+              </table>
+            </div>
+            <div class="campaign-modal__actions">
+              <a class="secondary-button" id="campaign-modal-ads" target="_blank" rel="noopener noreferrer">Открыть в Facebook Ads</a>
+              <a class="secondary-button" id="campaign-modal-chat" target="_blank" rel="noopener noreferrer">Перейти в чат проекта</a>
+            </div>
+          </div>
+        </div>
       </section>
       <section>
         <h2 class="section-title">Краткие выводы</h2>
@@ -5453,15 +5759,28 @@ function renderClientPortalPage({
           periods: data.periods || {},
           defaultPeriod: data.defaultPeriod || 'today',
           selectedPeriod: null,
-          filter: 'active',
+          filter: 'all',
           sortKey: 'spend',
           sortDir: 'desc',
+          includeArchived: false,
           fetching: new Set(),
+          campaignDetails: new Map(),
+          managerLink: data.managerLink || data.chatUrl || '',
+          accountId: data.accountId || '',
+          accountManagerUrl: data.accountManagerUrl || '',
+          generatedAt: data.generatedAt ? new Date(data.generatedAt) : null,
         };
+        const buildFetchKey = (periodId, includeArchived) => `${periodId}:${includeArchived ? '1' : '0'}`;
+        Object.keys(state.periods || {}).forEach((key) => {
+          if (state.periods[key] && typeof state.periods[key] === 'object') {
+            state.periods[key].includeArchived = false;
+          }
+        });
 
         const periodButtons = Array.from(document.querySelectorAll('[data-period]'));
         const filterButtons = Array.from(document.querySelectorAll('[data-filter]'));
         const sortButtons = Array.from(document.querySelectorAll('[data-sort]'));
+        const archivedToggle = document.getElementById('campaign-archived-toggle');
         const metricsGrid = document.getElementById('metrics-grid');
         const periodRange = document.getElementById('period-range');
         const periodError = document.getElementById('period-error');
@@ -5472,18 +5791,37 @@ function renderClientPortalPage({
         const overviewKeyValue = document.getElementById('overview-key-value');
         const overviewCostLabel = document.getElementById('overview-cost-label');
         const overviewCostValue = document.getElementById('overview-cost-value');
+        const campaignModal = document.getElementById('campaign-modal');
+        const campaignModalClose = document.getElementById('campaign-modal-close');
+        const campaignModalStatus = document.getElementById('campaign-modal-status');
+        const campaignModalTitle = document.getElementById('campaign-modal-title');
+        const campaignModalSummary = document.getElementById('campaign-modal-summary');
+        const campaignModalChart = document.getElementById('campaign-modal-chart');
+        const campaignModalTable = document.getElementById('campaign-modal-table');
+        const campaignModalAds = document.getElementById('campaign-modal-ads');
+        const campaignModalChat = document.getElementById('campaign-modal-chat');
+
         const overviewDefaults = {
           keyLabel: overviewKeyLabel ? overviewKeyLabel.dataset.defaultLabel || 'Цель' : 'Цель',
           costLabel: overviewCostLabel ? overviewCostLabel.dataset.defaultLabel || 'Стоимость цели' : 'Стоимость цели',
         };
         const overviewMetricIds = new Set(['spend', 'key_metric', 'kpi']);
         const sortLabels = new Map(sortButtons.map((btn) => [btn.dataset.sort, btn.dataset.label || btn.textContent.trim()]));
+        const modalState = { open: false, campaignId: null };
 
         const escapeText = (value) =>
           String(value ?? '').replace(
             /[&<>"']/g,
             (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]),
           );
+
+        const formatInteger = (value) => {
+          const num = Number(value);
+          if (!Number.isFinite(num)) {
+            return '—';
+          }
+          return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(Math.round(num));
+        };
 
         const setActive = (buttons, target, attr) => {
           buttons.forEach((btn) => {
@@ -5546,8 +5884,8 @@ function renderClientPortalPage({
             return;
           }
           metricsGrid.innerHTML = metrics
-            .map((metric) => {
-              return (
+            .map(
+              (metric) =>
                 '<div class="metric-card">' +
                 '<span class="metric-label">' +
                 escapeText(metric.label || '') +
@@ -5555,19 +5893,46 @@ function renderClientPortalPage({
                 '<strong>' +
                 escapeText(metric.text || '—') +
                 '</strong>' +
-                '</div>'
-              );
-            })
+                '</div>',
+            )
             .join('');
         };
 
+        const withinRecent = (item) => {
+          if (!item) {
+            return false;
+          }
+          if (item.lastActivityDate) {
+            const basis = state.generatedAt ? state.generatedAt.getTime() : Date.now();
+            const activityTime = Date.parse(item.lastActivityDate);
+            if (!Number.isNaN(activityTime)) {
+              const diffDays = (basis - activityTime) / (1000 * 60 * 60 * 24);
+              return diffDays <= 7 && diffDays >= -0.5;
+            }
+          }
+          const spend = Number(item.spendValue);
+          return Number.isFinite(spend) && spend > 0;
+        };
+
+        const applyArchivedToggleLabel = () => {
+          if (!archivedToggle) {
+            return;
+          }
+          archivedToggle.textContent = state.includeArchived
+            ? 'Скрыть архивные кампании'
+            : 'Показать все кампании (вкл. архивные)';
+        };
+
         const renderCampaigns = (period) => {
-          const campaigns = Array.isArray(period.campaigns) ? period.campaigns.slice() : [];
+          if (!campaignList || !campaignEmpty) {
+            return;
+          }
+          const campaigns = Array.isArray(period?.campaigns) ? period.campaigns.slice() : [];
           let filtered = campaigns;
           if (state.filter === 'active') {
-            filtered = campaigns.filter((item) => item.statusCategory === 'active');
-          } else if (state.filter === 'completed') {
-            filtered = campaigns.filter((item) => item.statusCategory === 'completed');
+            filtered = campaigns.filter((item) => item?.statusCategory === 'active');
+          } else if (state.filter === 'recent') {
+            filtered = campaigns.filter((item) => withinRecent(item));
           }
           const valueKey =
             state.sortKey === 'leads'
@@ -5577,10 +5942,10 @@ function renderClientPortalPage({
               : state.sortKey + 'Value';
           const dir = state.sortDir === 'asc' ? 1 : -1;
           filtered.sort((a, b) => {
-            const aValue = Number.isFinite(a[valueKey]) ? Number(a[valueKey]) : -Infinity;
-            const bValue = Number.isFinite(b[valueKey]) ? Number(b[valueKey]) : -Infinity;
+            const aValue = Number.isFinite(a?.[valueKey]) ? Number(a[valueKey]) : -Infinity;
+            const bValue = Number.isFinite(b?.[valueKey]) ? Number(b[valueKey]) : -Infinity;
             if (aValue === bValue) {
-              return a.name.localeCompare(b.name);
+              return (a?.name || '').localeCompare(b?.name || '');
             }
             return aValue > bValue ? dir : -dir;
           });
@@ -5594,55 +5959,336 @@ function renderClientPortalPage({
           campaignEmpty.setAttribute('hidden', 'hidden');
           campaignList.innerHTML = filtered
             .map((item) => {
+              const keyLabel = item.keyMetricLabel || 'Лиды';
+              const keyText = item.keyMetricText
+                ? String(item.keyMetricText)
+                : Number.isFinite(item.keyMetricValue)
+                ? formatInteger(item.keyMetricValue)
+                : '—';
+              const spendText = item.spendText || '—';
+              const costLabel = item.costLabel || (keyLabel === 'Клики' ? 'CPC' : 'CPA');
+              const costText = item.costText || '—';
+              const ctrText = item.ctrText || '—';
+              const lastActivity = item.lastActivity || '—';
               return (
-                '<div class="campaign-row" data-status="' +
+                '<article class="campaign-card" data-status="' +
                 escapeText(item.statusCategory || '') +
+                '" data-campaign-id="' +
+                escapeText(item.id || '') +
+                '" tabindex="0" role="button" aria-pressed="false">' +
+                '<div class="campaign-card__line">' +
+                '<span class="campaign-card__status" data-tone="' +
+                escapeText(item.statusTone || '') +
+                '" title="' +
+                escapeText(item.statusLabel || '') +
                 '">' +
-                '<div class="campaign-line">' +
-                '<span class="campaign-status">' +
-                escapeText(item.statusIcon || '⚪') +
+                escapeText(item.statusIcon || '⚪️') +
                 '</span>' +
-                '<span class="campaign-name">' +
+                '<span class="campaign-card__name">«' +
                 escapeText(item.name || '') +
+                '»</span>' +
+                '<span class="campaign-card__metric">' +
+                escapeText(keyLabel) +
+                ': ' +
+                escapeText(keyText) +
+                '</span>' +
+                '<span class="campaign-card__metric">Потрачено: ' +
+                escapeText(spendText) +
+                '</span>' +
+                '<span class="campaign-card__metric">' +
+                escapeText(costLabel || 'CPA') +
+                ': ' +
+                escapeText(costText) +
+                '</span>' +
+                '<span class="campaign-card__metric">CTR: ' +
+                escapeText(ctrText) +
                 '</span>' +
                 '</div>' +
-                '<div class="campaign-metrics">' +
-                '<span>' +
-                escapeText(item.keyMetricLabel || '') +
-                ': ' +
-                escapeText(item.keyMetricText || '—') +
+                '<div class="campaign-card__meta">' +
+                '<span>Последняя активность: ' +
+                escapeText(lastActivity) +
                 '</span>' +
-                '<span>Потрачено: ' +
-                escapeText(item.spendText || '—') +
-                '</span>' +
-                '<span>' +
-                escapeText(item.costLabel || 'CPA') +
-                ': ' +
-                escapeText(item.costText || item.cpaText || '—') +
-                '</span>' +
-                '<span>CPC: ' +
-                escapeText(item.cpcText || '—') +
-                '</span>' +
-                '<span>CTR: ' +
-                escapeText(item.ctrText || '—') +
-                '</span>' +
+                '<span class="campaign-card__cta">Подробнее</span>' +
                 '</div>' +
-                '</div>'
+                '</article>'
               );
             })
             .join('');
         };
 
+        const drawChart = (points) => {
+          if (!campaignModalChart) {
+            return;
+          }
+          if (!Array.isArray(points) || points.length === 0) {
+            campaignModalChart.innerHTML =
+              '<text x="24" y="120" fill="rgba(255,255,255,0.55)" font-size="14">Нет данных для отображения.</text>';
+            return;
+          }
+          const width = 600;
+          const height = 220;
+          const paddingLeft = 50;
+          const paddingRight = 20;
+          const paddingTop = 24;
+          const paddingBottom = 40;
+          campaignModalChart.setAttribute('viewBox', `0 0 ${width} ${height}`);
+          const maxSpend = Math.max(...points.map((point) => Number(point.spend) || 0));
+          const maxLeads = Math.max(...points.map((point) => Number(point.leads) || 0));
+          const maxValue = Math.max(maxSpend, maxLeads, 1);
+          const toX = (index) => {
+            if (points.length === 1) {
+              return paddingLeft + (width - paddingLeft - paddingRight) / 2;
+            }
+            return paddingLeft + (index / (points.length - 1)) * (width - paddingLeft - paddingRight);
+          };
+          const toY = (value) => {
+            const safe = value > 0 ? value : 0;
+            const range = height - paddingTop - paddingBottom;
+            return height - paddingBottom - (safe / maxValue) * range;
+          };
+          const spendPath = points
+            .map((point, index) => `${index === 0 ? 'M' : 'L'}${toX(index)} ${toY(Number(point.spend) || 0)}`)
+            .join(' ');
+          const leadsPath = points
+            .map((point, index) => `${index === 0 ? 'M' : 'L'}${toX(index)} ${toY(Number(point.leads) || 0)}`)
+            .join(' ');
+          const tickCount = 4;
+          const grid = Array.from({ length: tickCount + 1 }, (_, index) => {
+            const ratio = index / tickCount;
+            const y = paddingTop + (1 - ratio) * (height - paddingTop - paddingBottom);
+            const value = ratio * maxValue;
+            const label = new Intl.NumberFormat('ru-RU', {
+              maximumFractionDigits: value < 10 ? 1 : 0,
+            }).format(value);
+            return (
+              '<g>' +
+              `<line x1="${paddingLeft}" y1="${y}" x2="${width - paddingRight}" y2="${y}" stroke="rgba(255,255,255,0.06)" />` +
+              `<text x="${paddingLeft - 12}" y="${y + 4}" text-anchor="end" fill="rgba(255,255,255,0.45)" font-size="11">${escapeText(label)}</text>` +
+              '</g>'
+            );
+          }).join('');
+          const xLabels = points
+            .map(
+              (point, index) =>
+                `<text x="${toX(index)}" y="${height - paddingBottom + 18}" text-anchor="middle" fill="rgba(255,255,255,0.55)" font-size="11">${escapeText(
+                  point.label || '',
+                )}</text>`,
+            )
+            .join('');
+          const spendDots = points
+            .map(
+              (point, index) =>
+                `<circle cx="${toX(index)}" cy="${toY(Number(point.spend) || 0)}" r="3.5" fill="#4a9bff" />`,
+            )
+            .join('');
+          const leadsDots = points
+            .map(
+              (point, index) =>
+                `<circle cx="${toX(index)}" cy="${toY(Number(point.leads) || 0)}" r="3.5" fill="#8be4a2" />`,
+            )
+            .join('');
+          campaignModalChart.innerHTML =
+            `<rect width="${width}" height="${height}" fill="transparent"></rect>` +
+            `<line x1="${paddingLeft}" y1="${paddingTop}" x2="${paddingLeft}" y2="${height - paddingBottom}" stroke="rgba(255,255,255,0.1)" />` +
+            `<line x1="${paddingLeft}" y1="${height - paddingBottom}" x2="${width - paddingRight}" y2="${height - paddingBottom}" stroke="rgba(255,255,255,0.1)" />` +
+            grid +
+            `<path d="${spendPath}" fill="none" stroke="#4a9bff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />` +
+            `<path d="${leadsPath}" fill="none" stroke="#8be4a2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />` +
+            spendDots +
+            leadsDots +
+            xLabels;
+        };
+
+        const showModalLoading = (item) => {
+          if (!campaignModal || !campaignModalSummary || !campaignModalTable) {
+            return;
+          }
+          modalState.open = true;
+          campaignModal.removeAttribute('hidden');
+          campaignModalStatus.textContent = item?.statusIcon ? `${item.statusIcon}` : '⌛';
+          if (item?.statusLabel) {
+            campaignModalStatus.setAttribute('title', item.statusLabel);
+          } else {
+            campaignModalStatus.removeAttribute('title');
+          }
+          campaignModalTitle.textContent = item?.name || 'Кампания';
+          campaignModalSummary.innerHTML = '<p class="campaign-modal__loading">Загрузка данных…</p>';
+          campaignModalChart.innerHTML = '';
+          campaignModalTable.innerHTML = '';
+          if (campaignModalAds) {
+            campaignModalAds.classList.add('disabled');
+            campaignModalAds.removeAttribute('href');
+          }
+          if (campaignModalChat) {
+            if (state.managerLink) {
+              campaignModalChat.classList.remove('disabled');
+              campaignModalChat.href = state.managerLink;
+            } else {
+              campaignModalChat.classList.add('disabled');
+              campaignModalChat.removeAttribute('href');
+            }
+          }
+        };
+
+        const renderModal = (detail, item) => {
+          if (!campaignModal || !detail || !detail.ok) {
+            campaignModalSummary.innerHTML =
+              '<p class="campaign-modal__loading">Не удалось загрузить данные кампании.</p>';
+            campaignModalTable.innerHTML = '';
+            return;
+          }
+          const summaryMetrics = [
+            { label: 'Потрачено', value: detail.totals?.spendText || '—' },
+            { label: 'Лиды', value: detail.totals?.leadsText || '—' },
+            { label: 'Покупки', value: detail.totals?.purchasesText || '—' },
+            { label: 'Клики', value: detail.totals?.clicksText || '—' },
+            { label: 'Показы', value: detail.totals?.impressionsText || '—' },
+            { label: 'Частота', value: detail.totals?.frequencyText || '—' },
+            { label: 'CPA', value: detail.totals?.cpaText || '—' },
+            { label: 'CPC', value: detail.totals?.cpcText || '—' },
+            { label: 'CTR', value: detail.totals?.ctrText || '—' },
+          ];
+          campaignModalSummary.innerHTML = summaryMetrics
+            .map(
+              (metric) =>
+                `<div class="campaign-modal__summary-card"><span>${escapeText(metric.label)}</span><strong>${escapeText(
+                  metric.value || '—',
+                )}</strong></div>`,
+            )
+            .join('');
+          if (detail.campaign) {
+            campaignModalStatus.textContent = detail.campaign.statusIcon || '🟢';
+            if (detail.campaign.statusLabel) {
+              campaignModalStatus.setAttribute('title', detail.campaign.statusLabel);
+            } else {
+              campaignModalStatus.removeAttribute('title');
+            }
+            campaignModalTitle.textContent = detail.campaign.name || item?.name || 'Кампания';
+          }
+          if (Array.isArray(detail.table) && detail.table.length > 0) {
+            campaignModalTable.innerHTML = detail.table
+              .map(
+                (row) =>
+                  '<tr>' +
+                  `<td>${escapeText(row.label || '')}</td>` +
+                  `<td>${escapeText(row.spendText || '—')}</td>` +
+                  `<td>${escapeText(row.leadsText || '—')}</td>` +
+                  `<td>${escapeText(row.cpaText || '—')}</td>` +
+                  `<td>${escapeText(row.ctrText || '—')}</td>` +
+                  '</tr>',
+              )
+              .join('');
+          } else {
+            campaignModalTable.innerHTML =
+              '<tr><td colspan="5" style="text-align:center; color: rgba(255,255,255,0.55); padding: 16px 0;">Нет данных для таблицы.</td></tr>';
+          }
+          drawChart(detail.chart || []);
+          if (campaignModalAds) {
+            if (detail.adsManagerUrl) {
+              campaignModalAds.classList.remove('disabled');
+              campaignModalAds.href = detail.adsManagerUrl;
+            } else if (state.accountManagerUrl) {
+              campaignModalAds.classList.remove('disabled');
+              campaignModalAds.href = state.accountManagerUrl;
+            } else {
+              campaignModalAds.classList.add('disabled');
+              campaignModalAds.removeAttribute('href');
+            }
+          }
+          if (campaignModalChat) {
+            if (state.managerLink) {
+              campaignModalChat.classList.remove('disabled');
+              campaignModalChat.href = state.managerLink;
+            } else {
+              campaignModalChat.classList.add('disabled');
+              campaignModalChat.removeAttribute('href');
+            }
+          }
+          if (campaignModalClose) {
+            campaignModalClose.focus({ preventScroll: true });
+          }
+        };
+
+        const closeModal = () => {
+          if (!campaignModal) {
+            return;
+          }
+          modalState.open = false;
+          modalState.campaignId = null;
+          campaignModal.setAttribute('hidden', 'hidden');
+        };
+
+        const fetchCampaignDetail = async (campaignId) => {
+          const params = new URLSearchParams({
+            code: state.projectCode,
+            sig: state.signature,
+            campaign: campaignId,
+          });
+          if (state.includeArchived) {
+            params.set('include_archived', '1');
+          }
+          const response = await fetch('/api/meta/campaign?' + params.toString());
+          if (!response.ok) {
+            throw new Error('http_error');
+          }
+          return response.json();
+        };
+
+        const openCampaignCard = (card) => {
+          if (!card) {
+            return;
+          }
+          const campaignId = card.dataset.campaignId || '';
+          if (!campaignId) {
+            return;
+          }
+          modalState.campaignId = campaignId;
+          const period = state.periods[state.selectedPeriod] || {};
+          const listItem = Array.isArray(period.campaigns)
+            ? period.campaigns.find((item) => String(item.id) === campaignId)
+            : null;
+          showModalLoading(listItem);
+          const cacheKey = `${campaignId}:${state.includeArchived ? '1' : '0'}`;
+          if (state.campaignDetails.has(cacheKey)) {
+            const cached = state.campaignDetails.get(cacheKey);
+            renderModal(cached, listItem);
+            return;
+          }
+          fetchCampaignDetail(campaignId)
+            .then((detail) => {
+              if (detail?.ok) {
+                state.campaignDetails.set(cacheKey, detail);
+              }
+              if (modalState.campaignId === campaignId) {
+                renderModal(detail, listItem);
+              }
+            })
+            .catch((error) => {
+              console.warn('Failed to load campaign detail', campaignId, error);
+              if (modalState.campaignId === campaignId) {
+                campaignModalSummary.innerHTML =
+                  '<p class="campaign-modal__loading">Не удалось загрузить данные кампании.</p>';
+                campaignModalTable.innerHTML = '';
+              }
+            });
+        };
+
         const render = () => {
           const periodId = state.selectedPeriod || state.defaultPeriod;
           const period = state.periods[periodId];
-          if (!period) {
-            return;
-          }
+          const fetchKey = buildFetchKey(periodId, state.includeArchived);
           setActive(periodButtons, periodId, 'period');
           setActive(filterButtons, state.filter, 'filter');
           updateSortButtons();
-          updateOverview(period);
+          applyArchivedToggleLabel();
+          if (!period || Boolean(period.includeArchived) !== state.includeArchived) {
+            if (!state.fetching.has(fetchKey)) {
+              fetchPeriod(periodId, { force: true });
+            }
+          }
+          if (!period) {
+            return;
+          }
           periodRange.textContent = period.rangeLabel || '';
           if (period.error) {
             periodError.textContent = '⚠ ' + period.error;
@@ -5651,32 +6297,43 @@ function renderClientPortalPage({
             periodError.setAttribute('hidden', 'hidden');
             periodError.textContent = '';
           }
+          updateOverview(period);
           renderMetrics(period);
           renderCampaigns(period);
         };
 
         const fetchPeriod = (periodId, { force = false } = {}) => {
-          if (!state.projectCode || !state.signature) {
+          if (!state.projectCode || !state.signature || !periodId) {
             return;
           }
+          const fetchKey = buildFetchKey(periodId, state.includeArchived);
           const existing = state.periods[periodId];
-          if (!force && existing && !existing.error && existing.fresh) {
+          if (
+            !force &&
+            existing &&
+            !existing.error &&
+            existing.fresh &&
+            Boolean(existing.includeArchived) === state.includeArchived
+          ) {
             return;
           }
-          if (state.fetching.has(periodId)) {
+          if (state.fetching.has(fetchKey)) {
             return;
           }
-          state.fetching.add(periodId);
+          state.fetching.add(fetchKey);
           const params = new URLSearchParams({
             code: state.projectCode,
             period: periodId,
             sig: state.signature,
           });
+          if (state.includeArchived) {
+            params.set('include_archived', '1');
+          }
           fetch('/api/meta/status?' + params.toString())
             .then((response) => (response.ok ? response.json() : Promise.reject(new Error('http_error'))))
             .then((body) => {
               if (body && body.ok && body.period) {
-                state.periods[periodId] = { ...body.period, fresh: true };
+                state.periods[periodId] = { ...body.period, fresh: true, includeArchived: state.includeArchived };
                 if (state.selectedPeriod === periodId) {
                   render();
                 }
@@ -5686,7 +6343,7 @@ function renderClientPortalPage({
               console.warn('Failed to refresh period', periodId, error);
             })
             .finally(() => {
-              state.fetching.delete(periodId);
+              state.fetching.delete(fetchKey);
             });
         };
 
@@ -5705,7 +6362,7 @@ function renderClientPortalPage({
         filterButtons.forEach((btn) => {
           btn.addEventListener('click', () => {
             const value = btn.dataset.filter;
-            if (!value) {
+            if (!value || state.filter === value) {
               return;
             }
             state.filter = value;
@@ -5729,9 +6386,58 @@ function renderClientPortalPage({
           });
         });
 
+        if (archivedToggle) {
+          archivedToggle.addEventListener('click', () => {
+            state.includeArchived = !state.includeArchived;
+            state.campaignDetails.clear();
+            render();
+            fetchPeriod(state.selectedPeriod, { force: true });
+          });
+        }
+
+        if (campaignList) {
+          campaignList.addEventListener('click', (event) => {
+            const card = event.target.closest('.campaign-card');
+            if (!card) {
+              return;
+            }
+            openCampaignCard(card);
+          });
+          campaignList.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') {
+              return;
+            }
+            const card = event.target.closest('.campaign-card');
+            if (!card) {
+              return;
+            }
+            event.preventDefault();
+            openCampaignCard(card);
+          });
+        }
+
+        if (campaignModal) {
+          campaignModal.addEventListener('click', (event) => {
+            if (event.target === campaignModal) {
+              closeModal();
+            }
+          });
+        }
+        if (campaignModalClose) {
+          campaignModalClose.addEventListener('click', () => {
+            closeModal();
+          });
+        }
+        document.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape' && modalState.open) {
+            closeModal();
+          }
+        });
+
         state.selectedPeriod = state.defaultPeriod;
         render();
         fetchPeriod(state.selectedPeriod);
+
       })();
     </script>
   </body>
@@ -7515,7 +8221,18 @@ class MetaService {
     }
   }
 
-  async fetchAccountReport({ project, account, preset, range, since, until, timezone, campaignIds, limit = 40 } = {}) {
+  async fetchAccountReport({
+    project,
+    account,
+    preset,
+    range,
+    since,
+    until,
+    timezone,
+    campaignIds,
+    limit = 40,
+    includeArchived = false,
+  } = {}) {
     const targetRange = range || resolveReportRange(preset, { since, until, timezone });
     const accountCandidate =
       account?.id ||
@@ -7549,6 +8266,10 @@ class MetaService {
       fields:
         'campaign_id,campaign_name,spend,actions,action_values,cost_per_action_type,reach,impressions,frequency,inline_link_clicks,clicks,date_start,date_stop',
     };
+
+    const activeStatuses = ['ACTIVE', 'PAUSED', 'INACTIVE', 'WITH_ISSUES'];
+    const extendedStatuses = [...activeStatuses, 'ARCHIVED', 'DELETED'];
+    params.effective_status = JSON.stringify(includeArchived ? extendedStatuses : activeStatuses);
 
     if (targetRange?.datePreset) {
       params.date_preset = targetRange.datePreset;
@@ -7686,6 +8407,8 @@ class MetaService {
     timezone,
     now = new Date(),
     limit = 80,
+    campaignIds,
+    includeArchived = false,
   } = {}) {
     const accountCandidate =
       account?.id ||
@@ -7722,6 +8445,16 @@ class MetaService {
         'campaign_id,campaign_name,spend,actions,action_values,cost_per_action_type,reach,impressions,frequency,inline_link_clicks,clicks,date_start,date_stop',
       date_preset: `last_${normalizedDays}d`,
     };
+
+    const activeStatuses = ['ACTIVE', 'PAUSED', 'INACTIVE', 'WITH_ISSUES'];
+    const extendedStatuses = [...activeStatuses, 'ARCHIVED', 'DELETED'];
+    params.effective_status = JSON.stringify(includeArchived ? extendedStatuses : activeStatuses);
+
+    if (Array.isArray(campaignIds) && campaignIds.length > 0) {
+      params.filtering = JSON.stringify([
+        { field: 'campaign.id', operator: 'IN', value: campaignIds.map((value) => String(value)) },
+      ]);
+    }
 
     const response = await client.request(`/${accountId}/insights`, { searchParams: params });
     const entries = Array.isArray(response?.data) ? response.data : [];
@@ -15150,6 +15883,10 @@ class WorkerApp {
       return this.handleMetaStatusApi(url);
     }
 
+    if (normalizedPath === '/api/meta/campaign') {
+      return this.handleMetaCampaignApi(url);
+    }
+
     if (normalizedPath === '/fb_auth') {
       return this.handleFacebookAuth(url);
     }
@@ -15396,6 +16133,7 @@ class WorkerApp {
     }
 
     const refreshRequested = /^(1|true|yes|on)$/i.test(url.searchParams.get('refresh') || '');
+    const includeArchived = /^(1|true|yes|on)$/i.test(url.searchParams.get('include_archived') || '');
     const context = await this.resolveProjectContext(projectCode, {
       forceMetaRefresh: refreshRequested,
     });
@@ -15455,6 +16193,7 @@ class WorkerApp {
         preset: definition.preset,
         timezone,
         campaignIds: campaignFilter,
+        includeArchived,
       });
       if (!currency && report?.currency) {
         currency = report.currency;
@@ -15472,6 +16211,9 @@ class WorkerApp {
       },
     ];
 
+    const managerLink =
+      context.project?.chatUrl || buildTelegramTopicUrl(context.project?.chatId, context.project?.threadId);
+
     const dataset = buildPortalDataset({
       projectCode: projectIdentifier,
       signature,
@@ -15480,6 +16222,9 @@ class WorkerApp {
       periods,
       account: context.account,
       kpi,
+      project: context.project,
+      managerLink,
+      generatedAt: new Date(),
     });
 
     const periodPayload = dataset.periods[definition.id] ? { ...dataset.periods[definition.id], fresh: true } : null;
@@ -15492,6 +16237,278 @@ class WorkerApp {
       },
       timezone,
       period: periodPayload,
+    });
+  }
+
+  async handleMetaCampaignApi(url) {
+    const method = this.request.method;
+    if (method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
+          'Access-Control-Allow-Headers': 'content-type,accept',
+          'Access-Control-Max-Age': '600',
+        },
+      });
+    }
+
+    const wantsHead = method === 'HEAD';
+    if (method !== 'GET' && method !== 'HEAD') {
+      const response = jsonResponse(
+        { ok: false, error: 'method_not_allowed' },
+        {
+          status: 405,
+          headers: {
+            Allow: 'GET,HEAD,OPTIONS',
+            'Access-Control-Allow-Origin': '*',
+          },
+        },
+      );
+      if (wantsHead) {
+        const headers = new Headers(response.headers);
+        return new Response(null, { status: response.status, headers });
+      }
+      return response;
+    }
+
+    const respond = (body, { status = 200, headers = {} } = {}) => {
+      const response = jsonResponse(body, {
+        status,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+          ...headers,
+        },
+      });
+      if (wantsHead) {
+        const headHeaders = new Headers(response.headers);
+        return new Response(null, { status: response.status, headers: headHeaders });
+      }
+      return response;
+    };
+
+    const projectCode = safeDecode(
+      pickFirstFilled(url.searchParams.get('code'), url.searchParams.get('project'), ''),
+    );
+    if (!projectCode) {
+      return respond({ ok: false, error: 'project_required' }, { status: 400 });
+    }
+
+    const signature = pickFirstFilled(
+      url.searchParams.get('sig'),
+      url.searchParams.get('signature'),
+      url.searchParams.get('token'),
+      url.searchParams.get('key'),
+    );
+
+    if (!signature) {
+      return respond({ ok: false, error: 'signature_required' }, { status: 401 });
+    }
+
+    const campaignIdRaw = safeDecode(url.searchParams.get('campaign') || url.searchParams.get('id') || '');
+    if (!campaignIdRaw) {
+      return respond({ ok: false, error: 'campaign_required' }, { status: 400 });
+    }
+
+    const includeArchived = /^(1|true|yes|on)$/i.test(url.searchParams.get('include_archived') || '');
+    const context = await this.resolveProjectContext(projectCode, {});
+
+    if (!context?.project) {
+      return respond({ ok: false, error: 'project_not_found' }, { status: 404 });
+    }
+
+    const portalTokens = collectPortalTokens({
+      rawProject: context.rawProject,
+      project: context.project,
+      config: this.config,
+    });
+
+    if (portalTokens.size === 0) {
+      return respond({ ok: false, error: 'portal_disabled' }, { status: 403 });
+    }
+
+    const projectIdentifier = context.project.code || context.project.id || projectCode;
+    const signatureOk = await portalSignatureMatches(signature, {
+      code: projectIdentifier,
+      tokens: portalTokens,
+    });
+
+    if (!signatureOk) {
+      return respond({ ok: false, error: 'forbidden' }, { status: 403 });
+    }
+
+    const normalizedCampaignId = String(campaignIdRaw).replace(/^cmp_/, '');
+    const timezone =
+      extractScheduleSettings(context.rawProject)?.timezone ||
+      this.config.defaultTimezone ||
+      DEFAULT_TIMEZONE_FALLBACK;
+
+    let series = [];
+    try {
+      series = await this.metaService.fetchCampaignTimeseries({
+        project: context.project,
+        account: context.account,
+        timezone,
+        days: 7,
+        campaignIds: [normalizedCampaignId],
+        includeArchived,
+      });
+    } catch (error) {
+      console.warn('Failed to load campaign timeseries', normalizedCampaignId, error);
+      return respond({ ok: false, error: 'timeseries_unavailable' }, { status: 502 });
+    }
+
+    const targetSeries = series.find((item) => {
+      const id = String(item?.id || '').replace(/^cmp_/, '');
+      return id === normalizedCampaignId;
+    });
+
+    if (!targetSeries) {
+      return respond({ ok: false, error: 'campaign_not_found' }, { status: 404 });
+    }
+
+    const entries = Array.isArray(targetSeries.entries) ? targetSeries.entries.slice(-7) : [];
+    if (entries.length === 0) {
+      return respond({
+        ok: true,
+        campaign: {
+          id: normalizedCampaignId,
+          rawId: targetSeries.id,
+          name: targetSeries.name || `Campaign ${normalizedCampaignId}`,
+          statusIcon: '⚪️',
+          statusLabel: 'Данные отсутствуют',
+          statusCategory: 'completed',
+        },
+        chart: [],
+        table: [],
+        totals: {
+          spendText: '—',
+          leadsText: '—',
+          purchasesText: '—',
+          clicksText: '—',
+          impressionsText: '—',
+          frequencyText: '—',
+          cpaText: '—',
+          cpcText: '—',
+          ctrText: '—',
+        },
+      });
+    }
+
+    const latestEntry = targetSeries.latest || entries[entries.length - 1] || null;
+    const statusVisual = mapCampaignStatusVisual(latestEntry?.status);
+
+    let totalSpend = 0;
+    let totalLeads = 0;
+    let totalConversions = 0;
+    let totalClicks = 0;
+    let totalImpressions = 0;
+
+    const chartPoints = [];
+    const tableRows = [];
+
+    for (const entry of entries) {
+      const spendValue = Number.isFinite(entry?.spendUsd) ? Number(entry.spendUsd) : null;
+      const leadsValue = Number.isFinite(entry?.leads) ? Number(entry.leads) : null;
+      const conversionsValue = Number.isFinite(entry?.conversions) ? Number(entry.conversions) : null;
+      const clicksValue = Number.isFinite(entry?.clicks) ? Number(entry.clicks) : null;
+      const impressionsValue = Number.isFinite(entry?.impressions) ? Number(entry.impressions) : null;
+      const ctrValue = Number.isFinite(entry?.ctr)
+        ? Number(entry.ctr)
+        : safeDivision(clicksValue, impressionsValue) * 100;
+      const dateToken = entry?.dateStart || entry?.dateStop || null;
+      const dateLabel = formatDateShort(dateToken, { timezone }) || formatDateLabel(dateToken, { timezone }) || '—';
+
+      if (Number.isFinite(spendValue)) {
+        totalSpend += spendValue;
+      }
+      if (Number.isFinite(leadsValue)) {
+        totalLeads += leadsValue;
+      }
+      if (Number.isFinite(conversionsValue)) {
+        totalConversions += conversionsValue;
+      }
+      if (Number.isFinite(clicksValue)) {
+        totalClicks += clicksValue;
+      }
+      if (Number.isFinite(impressionsValue)) {
+        totalImpressions += impressionsValue;
+      }
+
+      chartPoints.push({
+        date: dateToken,
+        label: dateLabel,
+        spend: Number.isFinite(spendValue) ? spendValue : 0,
+        leads: Number.isFinite(leadsValue) ? leadsValue : 0,
+      });
+
+      const cpaValue = safeDivision(spendValue, leadsValue);
+      tableRows.push({
+        date: dateToken,
+        label: dateLabel,
+        spendText: Number.isFinite(spendValue)
+          ? formatUsd(spendValue, { digitsBelowOne: 2, digitsAboveOne: 2 })
+          : '—',
+        leadsText: Number.isFinite(leadsValue) ? formatInteger(leadsValue) : '—',
+        cpaText: Number.isFinite(cpaValue)
+          ? formatUsd(cpaValue, { digitsBelowOne: 2, digitsAboveOne: 2 })
+          : '—',
+        ctrText: Number.isFinite(ctrValue) ? `${formatFloat(ctrValue, { digits: 1 })}%` : '—',
+      });
+    }
+
+    const cpaTotal = safeDivision(totalSpend, totalLeads);
+    const cpcTotal = safeDivision(totalSpend, totalClicks);
+    const ctrTotal = safeDivision(totalClicks, totalImpressions) * 100;
+    const frequencyTotal = Number.isFinite(latestEntry?.frequency)
+      ? Number(latestEntry.frequency)
+      : safeDivision(totalImpressions, Number(latestEntry?.reach));
+
+    const totals = {
+      spendText: Number.isFinite(totalSpend)
+        ? formatUsd(totalSpend, { digitsBelowOne: 2, digitsAboveOne: 2 })
+        : '—',
+      leadsText: Number.isFinite(totalLeads) ? formatInteger(totalLeads) : '—',
+      purchasesText: Number.isFinite(totalConversions) ? formatInteger(totalConversions) : '—',
+      clicksText: Number.isFinite(totalClicks) ? formatInteger(totalClicks) : '—',
+      impressionsText: Number.isFinite(totalImpressions) ? formatInteger(totalImpressions) : '—',
+      frequencyText: Number.isFinite(frequencyTotal)
+        ? formatFloat(frequencyTotal, { digits: 1 })
+        : '—',
+      cpaText: Number.isFinite(cpaTotal)
+        ? formatUsd(cpaTotal, { digitsBelowOne: 2, digitsAboveOne: 2 })
+        : '—',
+      cpcText: Number.isFinite(cpcTotal)
+        ? formatUsd(cpcTotal, { digitsBelowOne: 2, digitsAboveOne: 2 })
+        : '—',
+      ctrText: Number.isFinite(ctrTotal) ? `${formatFloat(ctrTotal, { digits: 1 })}%` : '—',
+    };
+
+    const normalizedAccountKey = normalizeAccountKey(
+      context.account?.accountId || context.account?.id || context.project?.adAccountId,
+    );
+    const adsManagerUrl = normalizedAccountKey
+      ? `https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${encodeURIComponent(
+          normalizedAccountKey,
+        )}&selected_campaign_ids=${encodeURIComponent(normalizedCampaignId)}`
+      : '';
+
+    return respond({
+      ok: true,
+      campaign: {
+        id: normalizedCampaignId,
+        rawId: targetSeries.id,
+        name: targetSeries.name || `Campaign ${normalizedCampaignId}`,
+        statusIcon: statusVisual.icon,
+        statusLabel: statusVisual.label,
+        statusCategory: statusVisual.category,
+      },
+      chart: chartPoints,
+      table: tableRows,
+      totals,
+      adsManagerUrl,
     });
   }
 
