@@ -20,6 +20,7 @@ Workflow `.github/workflows/deploy.yml` запускается при пуше �
 - `FB_APP_ID`, `FB_APP_SECRET`, `FB_LONG_TOKEN`, `META_LONG_TOKEN`.
 - `META_MANAGE_TOKEN`, `PORTAL_TOKEN`, `GS_WEBHOOK`.
 - `PROJECT_MANAGER_IDS`, `PROJECT_ACCOUNT_ACCESS`, `PROJECT_CHAT_PRESETS`.
+- `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_ENDPOINT`, `R2_ACCOUNT_ID`.
 
 > Можно добавлять дополнительные переменные без модификации workflow: достаточно указать их в `secrets` и в списке `SECRET_DEFINITIONS` внутри `scripts/sync-secrets.mjs`.
 
@@ -33,6 +34,11 @@ export BOT_TOKEN="..."
 export FB_APP_ID="..."
 export FB_APP_SECRET="..."
 export META_LONG_TOKEN="..."
+export R2_ACCESS_KEY_ID="..."
+export R2_SECRET_ACCESS_KEY="..."
+export R2_BUCKET_NAME="botbucket"
+export R2_ENDPOINT="https://<account>.r2.cloudflarestorage.com"
+export R2_ACCOUNT_ID="..."
 
 # Отправляем секреты в Cloudflare Workers (production)
 npm run sync:secrets -- --env production

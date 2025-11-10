@@ -16,20 +16,13 @@ enabled = false
 head_sampling_rate = 1
 
 [[kv_namespaces]]
-binding = "REPORTS_NAMESPACE"
-id = "0132cf582ce247d4b806a2be748e34c6"
-
-[[kv_namespaces]]
-binding = "LOGS_NAMESPACE"
-id = "0132cf582ce247d4b806a2be748e34c6"
-
-[[kv_namespaces]]
-binding = "BILLING_NAMESPACE"
-id = "0132cf582ce247d4b806a2be748e34c6"
-
-[[kv_namespaces]]
 binding = "DB"
 id = "0132cf582ce247d4b806a2be748e34c6"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "botbucket"
+preview_bucket_name = "botbucket"
 
 [triggers]
 crons = ["*/5 * * * *"]

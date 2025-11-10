@@ -16,6 +16,11 @@ const SECRET_DEFINITIONS = [
   { key: 'PROJECT_MANAGER_IDS', aliases: ['PROJECT_MANAGER_IDS', 'PROJECT_MANAGERS'], required: false },
   { key: 'PROJECT_ACCOUNT_ACCESS', aliases: ['PROJECT_ACCOUNT_ACCESS', 'PROJECT_ACCOUNT_ALLOWLIST'], required: false },
   { key: 'PROJECT_CHAT_PRESETS', aliases: ['PROJECT_CHAT_PRESETS', 'PROJECT_CHAT_TEMPLATES', 'CHAT_PRESETS'], required: false },
+  { key: 'R2_ACCESS_KEY_ID', aliases: ['R2_ACCESS_KEY_ID'], required: true },
+  { key: 'R2_SECRET_ACCESS_KEY', aliases: ['R2_SECRET_ACCESS_KEY'], required: true },
+  { key: 'R2_BUCKET_NAME', aliases: ['R2_BUCKET_NAME'], required: true },
+  { key: 'R2_ENDPOINT', aliases: ['R2_ENDPOINT'], required: true },
+  { key: 'R2_ACCOUNT_ID', aliases: ['R2_ACCOUNT_ID'], required: true },
 ];
 
 function parseArgs(argv) {

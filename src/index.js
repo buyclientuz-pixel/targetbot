@@ -22,7 +22,8 @@ const CHAT_KEY_PREFIX = 'chat:';
 const PROJECT_KEY_PREFIX = 'project:';
 const ADMIN_SESSION_KEY_PREFIX = 'admin:session:';
 const META_STATUS_KEY = 'meta:status';
-const META_TOKEN_KEY = 'meta:token';
+const META_TOKEN_KEY = 'meta:auth';
+const META_TOKEN_FALLBACK_KEY = 'meta:token';
 const META_ACCOUNT_SNAPSHOT_KEY = 'meta:accounts';
 const META_OAUTH_STATE_PREFIX = 'meta:oauth:state:';
 const META_OAUTH_SESSION_PREFIX = 'meta:oauth:session:';
@@ -36,7 +37,7 @@ const META_OAUTH_DEFAULT_SCOPES = [
   'pages_show_list',
 ];
 const META_DEFAULT_GRAPH_VERSION = 'v18.0';
-const META_OVERVIEW_MAX_AGE_MS = 2 * 60 * 1000;
+const META_OVERVIEW_MAX_AGE_MS = 30 * 60 * 1000;
 const ADMIN_PROJECT_PREVIEW_LIMIT = 6;
 const REPORT_STATE_PREFIX = 'report:state:';
 const REPORT_DEFAULT_TIME = '10:00';
@@ -5260,6 +5261,82 @@ function parseAdminIds(rawValue) {
   return ids;
 }
 
+function getR2Bucket(env) {
+  if (!env) return null;
+  const bucket = env.R2;
+  if (bucket && typeof bucket.get === 'function' && typeof bucket.put === 'function') {
+    return bucket;
+  }
+  return null;
+}
+
+function encodeR2Segment(segment) {
+  return encodeURIComponent(String(segment ?? ''));
+}
+
+function decodeR2Segment(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch (error) {
+    console.warn('Failed to decode R2 segment', segment, error);
+    return segment;
+  }
+}
+
+function buildR2PrimaryKey(bindingName, key) {
+  const safeBinding = encodeR2Segment(bindingName || 'db');
+  const safeKey = encodeR2Segment(key || '');
+  return `data/${safeBinding}/${safeKey}.json`;
+}
+
+function buildR2Prefix(bindingName, prefix = '') {
+  const safeBinding = encodeR2Segment(bindingName || 'db');
+  const safePrefix = encodeR2Segment(prefix || '');
+  return `data/${safeBinding}/${safePrefix}`;
+}
+
+function extractR2Key(bindingName, objectKey) {
+  const base = `data/${encodeR2Segment(bindingName || 'db')}/`;
+  if (!objectKey || !objectKey.startsWith(base)) {
+    return null;
+  }
+  const tail = objectKey.slice(base.length);
+  if (!tail.endsWith('.json')) {
+    return null;
+  }
+  const encoded = tail.slice(0, -5);
+  return decodeR2Segment(encoded);
+}
+
+function resolveR2AliasForKey(bindingName, key) {
+  if (bindingName === 'DB' && typeof key === 'string' && key.startsWith(PROJECT_KEY_PREFIX)) {
+    const projectId = key.slice(PROJECT_KEY_PREFIX.length);
+    if (projectId) {
+      const safeProject = encodeR2Segment(projectId);
+      return `reports/${safeProject}.json`;
+    }
+  }
+  return null;
+}
+
+function shouldUseKvOnly(bindingName, key) {
+  if (bindingName !== 'DB') {
+    return false;
+  }
+  if (!key) {
+    return false;
+  }
+
+  return (
+    String(key).startsWith('session:') ||
+    String(key).startsWith(ADMIN_SESSION_KEY_PREFIX) ||
+    String(key).startsWith(META_OAUTH_STATE_PREFIX) ||
+    String(key).startsWith(META_OAUTH_SESSION_PREFIX) ||
+    String(key) === META_TOKEN_KEY ||
+    String(key) === META_TOKEN_FALLBACK_KEY
+  );
+}
+
 function resolveKv(env, name) {
   if (env && typeof name === 'string' && env[name] && typeof env[name].get === 'function') {
     return env[name];
@@ -5274,10 +5351,76 @@ class KvStorage {
   constructor(env) {
     this.env = env;
     this.cache = new Map();
+    this.bucket = getR2Bucket(env);
   }
 
   namespace(name) {
     return resolveKv(this.env, name);
+  }
+
+  async readR2Envelope(bindingName, key) {
+    const bucket = this.bucket;
+    if (!bucket) return null;
+    const objectKey = buildR2PrimaryKey(bindingName, key);
+    try {
+      const object = await bucket.get(objectKey);
+      if (!object) return null;
+      const text = await object.text();
+      const parsed = safeJsonParse(text);
+      if (parsed && typeof parsed === 'object' && parsed.data !== undefined) {
+        return parsed;
+      }
+      if (parsed && typeof parsed === 'object') {
+        return { updated_at: parsed.updated_at || parsed.updatedAt || null, data: parsed, meta: { binding: bindingName, key } };
+      }
+      return { updated_at: null, data: parsed, meta: { binding: bindingName, key } };
+    } catch (error) {
+      console.warn('R2 get failed', objectKey, error);
+      throw error;
+    }
+  }
+
+  async writeR2Envelope(bindingName, key, value, { meta = {} } = {}) {
+    const bucket = this.bucket;
+    if (!bucket) {
+      throw new Error('R2 bucket unavailable');
+    }
+    const now = new Date().toISOString();
+    const updatedAt =
+      (value && typeof value === 'object' && (value.updatedAt || value.updated_at)) || meta.updated_at || now;
+    const envelope = {
+      updated_at: updatedAt,
+      data: value,
+      meta: { ...meta, binding: bindingName, key, fallback: false, stored_at: now },
+    };
+    const objectKey = buildR2PrimaryKey(bindingName, key);
+    const payload = JSON.stringify(envelope);
+    await bucket.put(objectKey, payload, {
+      httpMetadata: { contentType: 'application/json' },
+    });
+    const alias = resolveR2AliasForKey(bindingName, key);
+    if (alias) {
+      await bucket.put(alias, payload, { httpMetadata: { contentType: 'application/json' } }).catch((error) => {
+        console.warn('Failed to write alias to R2', alias, error);
+      });
+    }
+    return envelope;
+  }
+
+  async deleteR2(bindingName, key) {
+    const bucket = this.bucket;
+    if (!bucket) return false;
+    const objectKey = buildR2PrimaryKey(bindingName, key);
+    await bucket.delete(objectKey).catch((error) => {
+      console.warn('Failed to delete R2 object', objectKey, error);
+    });
+    const alias = resolveR2AliasForKey(bindingName, key);
+    if (alias) {
+      await bucket.delete(alias).catch((error) => {
+        console.warn('Failed to delete R2 alias', alias, error);
+      });
+    }
+    return true;
   }
 
   async getJson(bindingName, key) {
@@ -5285,6 +5428,21 @@ class KvStorage {
     if (this.cache.has(cacheKey)) {
       return this.cache.get(cacheKey);
     }
+
+    const kvOnly = shouldUseKvOnly(bindingName, key);
+    if (!kvOnly && this.bucket) {
+      try {
+        const envelope = await this.readR2Envelope(bindingName, key);
+        if (envelope) {
+          const value = envelope.data;
+          this.cache.set(cacheKey, value);
+          return value;
+        }
+      } catch (error) {
+        console.warn('Falling back to KV after R2 read failure', error);
+      }
+    }
+
     const namespace = this.namespace(bindingName);
     if (!namespace || typeof namespace.get !== 'function') return null;
     const raw = await namespace.get(key);
@@ -5294,24 +5452,88 @@ class KvStorage {
   }
 
   async putJson(bindingName, key, value, options = {}) {
+    const cacheKey = `${bindingName}:${key}`;
+    const kvOnly = shouldUseKvOnly(bindingName, key);
+
+    if (!kvOnly && this.bucket) {
+      try {
+        await this.writeR2Envelope(bindingName, key, value, { meta: options.meta || {} });
+        this.cache.set(cacheKey, value);
+        if (!options.skipKvCleanup) {
+          const namespace = this.namespace(bindingName);
+          if (namespace && typeof namespace.delete === 'function') {
+            await namespace.delete(key).catch(() => {});
+          }
+        }
+        return true;
+      } catch (error) {
+        console.warn('R2 put failed, using KV fallback', error);
+      }
+    }
+
     const namespace = this.namespace(bindingName);
     if (!namespace || typeof namespace.put !== 'function') return false;
-    await namespace.put(key, JSON.stringify(value), options);
-    const cacheKey = `${bindingName}:${key}`;
+    const now = new Date().toISOString();
+    let payload = value;
+    if (!kvOnly && payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      payload = { ...payload, _fallback: true, _fallback_at: now };
+    }
+    await namespace.put(key, JSON.stringify(payload), options);
     this.cache.set(cacheKey, value);
     return true;
   }
 
   async deleteKey(bindingName, key) {
-    const namespace = this.namespace(bindingName);
-    if (!namespace || typeof namespace.delete !== 'function') return false;
-    await namespace.delete(key);
     const cacheKey = `${bindingName}:${key}`;
+    const kvOnly = shouldUseKvOnly(bindingName, key);
+    let deleted = false;
+
+    if (!kvOnly && this.bucket) {
+      try {
+        await this.deleteR2(bindingName, key);
+        deleted = true;
+      } catch (error) {
+        console.warn('Failed to delete key from R2', error);
+      }
+    }
+
+    const namespace = this.namespace(bindingName);
+    if (namespace && typeof namespace.delete === 'function') {
+      try {
+        await namespace.delete(key);
+        deleted = true;
+      } catch (error) {
+        console.warn('Failed to delete key from KV', error);
+      }
+    }
+
     this.cache.delete(cacheKey);
-    return true;
+    return deleted;
   }
 
   async listKeys(bindingName, prefix, limit = 100) {
+    const kvOnly = shouldUseKvOnly(bindingName, prefix || '');
+    if (!kvOnly && this.bucket) {
+      try {
+        const r2Prefix = buildR2Prefix(bindingName, prefix || '');
+        const result = await this.bucket.list({ prefix: r2Prefix, limit });
+        if (result && Array.isArray(result.objects)) {
+          const keys = [];
+          for (const obj of result.objects) {
+            const key = extractR2Key(bindingName, obj.key);
+            if (key) {
+              keys.push(key);
+            }
+          }
+          if (keys.length > 0) {
+            return keys;
+          }
+        }
+      } catch (error) {
+        console.warn('R2 list failed, falling back to KV', error);
+      }
+    }
+
     const namespace = this.namespace(bindingName);
     if (!namespace || typeof namespace.list !== 'function') return [];
     const result = await namespace.list({ prefix, limit });
@@ -5319,15 +5541,68 @@ class KvStorage {
     return result.keys.map((item) => item.name).filter(Boolean);
   }
 
+  async readR2Object(objectKey) {
+    const bucket = this.bucket;
+    if (!bucket) return null;
+    try {
+      const object = await bucket.get(objectKey);
+      if (!object) return null;
+      const text = await object.text();
+      return safeJsonParse(text);
+    } catch (error) {
+      console.warn('Failed to read raw R2 object', objectKey, error);
+      throw error;
+    }
+  }
+
+  async writeR2Object(objectKey, value, { meta = {} } = {}) {
+    const bucket = this.bucket;
+    if (!bucket) {
+      throw new Error('R2 bucket unavailable');
+    }
+    const now = new Date().toISOString();
+    const payload = {
+      updated_at: now,
+      data: value,
+      meta: { ...meta, stored_at: now },
+    };
+    await bucket.put(objectKey, JSON.stringify(payload), {
+      httpMetadata: { contentType: 'application/json' },
+    });
+    return payload;
+  }
+
   async appendTelegramLog(entry, { limit = TELEGRAM_LOG_LIMIT } = {}) {
-    const namespace = this.namespace('LOGS_NAMESPACE') ?? this.namespace('DB');
+    const now = new Date().toISOString();
+    const record = { ts: now, ...entry };
+    const key = 'logs/telegram.json';
+
+    if (this.bucket) {
+      try {
+        const existing = await this.readR2Object(key);
+        let list = [];
+        if (existing && typeof existing === 'object') {
+          if (Array.isArray(existing.data)) {
+            list = existing.data;
+          } else if (Array.isArray(existing)) {
+            list = existing;
+          }
+        }
+        list.push(record);
+        if (list.length > limit) {
+          list = list.slice(list.length - limit);
+        }
+        await this.writeR2Object(key, list, { meta: { kind: 'telegram-log', limit } });
+        return;
+      } catch (error) {
+        console.warn('Failed to append telegram log in R2', error);
+      }
+    }
+
+    const namespace = this.namespace('DB');
     if (!namespace || typeof namespace.get !== 'function' || typeof namespace.put !== 'function') {
       return;
     }
-
-    const now = new Date().toISOString();
-    const record = { ts: now, ...entry };
-
     const raw = await namespace.get(TELEGRAM_LOG_KEY);
     let list = [];
     if (raw) {
@@ -5336,20 +5611,46 @@ class KvStorage {
         list = parsed;
       }
     }
-
     list.push(record);
     if (list.length > limit) {
       list = list.slice(list.length - limit);
     }
-
-    await namespace.put(TELEGRAM_LOG_KEY, JSON.stringify(list));
+    await namespace.put(
+      TELEGRAM_LOG_KEY,
+      JSON.stringify({ _fallback: true, updated_at: now, items: list }),
+    );
   }
 
   async readTelegramLog(limit = 10) {
-    const namespace = this.namespace('LOGS_NAMESPACE') ?? this.namespace('DB');
+    const key = 'logs/telegram.json';
+    if (this.bucket) {
+      try {
+        const existing = await this.readR2Object(key);
+        let list = [];
+        if (existing && typeof existing === 'object') {
+          if (Array.isArray(existing.data)) {
+            list = existing.data;
+          } else if (Array.isArray(existing)) {
+            list = existing;
+          } else if (Array.isArray(existing.items)) {
+            list = existing.items;
+          }
+        }
+        if (list.length > 0) {
+          return list.slice(Math.max(list.length - limit, 0));
+        }
+      } catch (error) {
+        console.warn('Failed to read telegram log from R2', error);
+      }
+    }
+
+    const namespace = this.namespace('DB');
     if (!namespace || typeof namespace.get !== 'function') return [];
     const raw = await namespace.get(TELEGRAM_LOG_KEY);
     const parsed = safeJsonParse(raw);
+    if (Array.isArray(parsed?.items)) {
+      return parsed.items.slice(Math.max(parsed.items.length - limit, 0));
+    }
     if (!Array.isArray(parsed)) return [];
     return parsed.slice(Math.max(parsed.length - limit, 0));
   }
@@ -5371,6 +5672,50 @@ class KvStorage {
       stale: Boolean(snapshot.stale),
       error: snapshot.error || null,
     };
+  }
+
+  async logError(entry = {}) {
+    const now = new Date();
+    const iso = now.toISOString();
+    const day = iso.slice(0, 10) || 'unknown';
+    const record = { ts: iso, ...entry };
+    const key = `logs/${day}.json`;
+
+    if (this.bucket) {
+      try {
+        const existing = await this.readR2Object(key);
+        let list = [];
+        if (existing && typeof existing === 'object') {
+          if (Array.isArray(existing.data)) {
+            list = existing.data;
+          } else if (Array.isArray(existing)) {
+            list = existing;
+          }
+        }
+        list.push(record);
+        if (list.length > 500) {
+          list = list.slice(list.length - 500);
+        }
+        await this.writeR2Object(key, list, { meta: { kind: 'error-log', entries: list.length } });
+        return true;
+      } catch (error) {
+        console.error('Failed to write error log to R2', error);
+      }
+    }
+
+    const namespace = this.namespace('DB');
+    if (!namespace || typeof namespace.put !== 'function') {
+      return false;
+    }
+    const fallback = JSON.stringify({
+      _fallback: true,
+      stored_at: iso,
+      entry: record,
+    });
+    await namespace.put(`log:fallback:${day}:${crypto.randomUUID?.() ?? Date.now()}`, fallback, {
+      expirationTtl: 7 * 24 * 60 * 60,
+    });
+    return true;
   }
 }
 
@@ -5514,20 +5859,22 @@ class MetaService {
 
     const namespace = resolveKv(this.env, 'DB');
     if (namespace && typeof namespace.get === 'function') {
-      try {
-        const raw = await namespace.get(META_TOKEN_KEY);
-        if (typeof raw === 'string' && raw.trim()) {
-          const parsed = safeJsonParse(raw);
-          if (parsed && typeof parsed === 'object') {
-            const token = parsed.token || parsed.access_token || parsed.value;
-            if (typeof token === 'string' && token.trim()) {
-              return token.trim();
+      for (const key of [META_TOKEN_KEY, META_TOKEN_FALLBACK_KEY]) {
+        try {
+          const raw = await namespace.get(key);
+          if (typeof raw === 'string' && raw.trim()) {
+            const parsed = safeJsonParse(raw);
+            if (parsed && typeof parsed === 'object') {
+              const token = parsed.token || parsed.access_token || parsed.value;
+              if (typeof token === 'string' && token.trim()) {
+                return token.trim();
+              }
             }
+            return raw.trim();
           }
-          return raw.trim();
+        } catch (error) {
+          console.warn(`Failed to read meta token from KV (${key})`, error);
         }
-      } catch (error) {
-        console.warn('Failed to read meta token from KV', error);
       }
     }
 
@@ -14338,6 +14685,9 @@ class WorkerApp {
 
     try {
       await this.storage.putJson('DB', META_TOKEN_KEY, payload);
+      if (META_TOKEN_FALLBACK_KEY && META_TOKEN_FALLBACK_KEY !== META_TOKEN_KEY) {
+        await this.storage.deleteKey('DB', META_TOKEN_FALLBACK_KEY).catch(() => {});
+      }
     } catch (error) {
       console.error('Failed to store Meta token', error);
       return htmlResponse(
@@ -14446,6 +14796,14 @@ class WorkerApp {
       stored = await this.storage.getJson('DB', META_TOKEN_KEY);
     } catch (error) {
       console.warn('Failed to read stored Meta token', error);
+    }
+
+    if (!stored && META_TOKEN_FALLBACK_KEY && META_TOKEN_FALLBACK_KEY !== META_TOKEN_KEY) {
+      try {
+        stored = await this.storage.getJson('DB', META_TOKEN_FALLBACK_KEY);
+      } catch (error) {
+        console.warn('Failed to read legacy Meta token', error);
+      }
     }
 
     const refreshDebug = /^(1|true|yes|refresh)$/i.test(url.searchParams.get('refresh') || '');
@@ -14989,6 +15347,22 @@ const worker = {
       return await app.handleFetch();
     } catch (error) {
       console.error('Unhandled fetch error', error);
+      const logPayload = {
+        scope: 'fetch',
+        message: error?.message || String(error),
+        stack: error?.stack || null,
+        url: request?.url || null,
+      };
+      if (app?.storage && typeof app.storage.logError === 'function') {
+        const promise = app.storage.logError(logPayload).catch((logError) => {
+          console.warn('Failed to persist fetch error log', logError);
+        });
+        if (executionContext?.waitUntil) {
+          executionContext.waitUntil(promise);
+        } else {
+          await promise;
+        }
+      }
       return jsonResponse(
         { ok: false, error: error?.message || 'internal_error' },
         { status: 500 },
@@ -14998,7 +15372,29 @@ const worker = {
 
   async scheduled(event, env, executionContext) {
     const app = new WorkerApp(new Request('https://worker.invalid/'), env, executionContext);
-    return app.handleScheduled(event);
+    try {
+      return await app.handleScheduled(event);
+    } catch (error) {
+      console.error('Unhandled scheduled error', error);
+      const logPayload = {
+        scope: 'scheduled',
+        message: error?.message || String(error),
+        stack: error?.stack || null,
+        scheduledTime: event?.scheduledTime || null,
+        cron: event?.cron || null,
+      };
+      if (app?.storage && typeof app.storage.logError === 'function') {
+        const promise = app.storage.logError(logPayload).catch((logError) => {
+          console.warn('Failed to persist scheduled error log', logError);
+        });
+        if (executionContext?.waitUntil) {
+          executionContext.waitUntil(promise);
+        } else {
+          await promise;
+        }
+      }
+      throw error;
+    }
   },
 };
 
