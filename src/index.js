@@ -4083,6 +4083,27 @@ async function portalSignatureMatches(signature, { code, tokens } = {}) {
   return false;
 }
 
+async function buildPortalSignature({ code, token } = {}) {
+  if (!token) {
+    return '';
+  }
+
+  const trimmedToken = String(token).trim();
+  if (!trimmedToken) {
+    return '';
+  }
+
+  const base = typeof code === 'string' ? code.trim() : '';
+  if (base) {
+    const digest = await sha256Hex(`${base}:${trimmedToken}`);
+    if (digest) {
+      return digest;
+    }
+  }
+
+  return trimmedToken;
+}
+
 function createAbort(timeoutMs = TELEGRAM_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -6214,10 +6235,6 @@ class TelegramBot {
       return '';
     }
 
-    if (project.portalEnabled === false) {
-      return '';
-    }
-
     const codeCandidate = project.code || project.id || '';
     const code = typeof codeCandidate === 'string' ? codeCandidate.trim() : String(codeCandidate || '');
     if (!code) {
@@ -6244,16 +6261,22 @@ class TelegramBot {
     if (project.portal && typeof project.portal === 'object') {
       addToken(project.portal.token, tokens);
       addToken(project.portal.secret, tokens);
+      addToken(project.portal.signature, tokens);
     }
+
+    let rawPortalActive = null;
     if (rawProject && typeof rawProject === 'object') {
-      if (!isPortalActive(rawProject)) {
-        return '';
-      }
+      rawPortalActive = isPortalActive(rawProject);
       const rawTokens = extractPortalTokens(rawProject);
       for (const token of rawTokens) {
         addToken(token, tokens);
       }
     }
+
+    if (project.portalEnabled === false && rawPortalActive === false && tokens.size === 0) {
+      return '';
+    }
+
     addToken(this.config.portalAccessToken, tokens);
     addToken(this.config.metaManageToken, tokens);
 
@@ -6261,13 +6284,18 @@ class TelegramBot {
       return '';
     }
 
-    let signature = '';
-    for (const token of tokens) {
-      const hashed = await sha256Hex(`${code}:${token}`);
-      if (hashed) {
-        signature = hashed;
-        break;
-      }
+    const preferredSignature = pickFirstFilled(
+      project?.portal?.signature,
+      rawProject?.portal?.signature,
+      rawProject?.portal_signature,
+      rawProject?.portal_sig,
+      rawProject?.portal_signatures && rawProject.portal_signatures[0],
+    );
+
+    let signature = preferredSignature ? String(preferredSignature).trim() : '';
+    if (!signature) {
+      const { value: firstToken } = tokens.values().next();
+      signature = await buildPortalSignature({ code, token: firstToken });
     }
 
     if (!signature) {
@@ -9810,6 +9838,10 @@ class TelegramBot {
             }
 
             const token = generatePortalToken({});
+            const signature = await buildPortalSignature({
+              code: context.project?.code || context.project?.id || projectId,
+              token,
+            });
             stored.portal.token = token;
             stored.portal.enabled = true;
             stored.portal.updated_at = nowIso;
@@ -9817,7 +9849,19 @@ class TelegramBot {
             stored.portal.disabled = false;
             delete stored.portal.disabled_at;
             delete stored.portal.disabledAt;
+            if (signature) {
+              stored.portal.signature = signature;
+            }
             stored.portal_tokens = [token];
+            stored.portal_signatures = signature ? [signature] : [];
+
+            if (!stored.tokens || typeof stored.tokens !== 'object') {
+              stored.tokens = {};
+            }
+            stored.tokens.portal = token;
+            if (signature) {
+              stored.tokens.portal_signature = signature;
+            }
 
             if (!stored.client || typeof stored.client !== 'object') {
               stored.client = {};
@@ -9875,7 +9919,9 @@ class TelegramBot {
             stored.portal.disabled = true;
             stored.portal.disabled_at = nowIso;
             delete stored.portal.token;
+            delete stored.portal.signature;
             stored.portal_tokens = [];
+            stored.portal_signatures = [];
 
             if (!stored.client || typeof stored.client !== 'object') {
               stored.client = {};
@@ -9887,6 +9933,11 @@ class TelegramBot {
             stored.client.billing.portalDisabled = true;
             stored.client.billing.status = stored.client.billing.status || 'paused';
             stored.client.billing.declined_at = stored.client.billing.declined_at || nowIso;
+
+            if (stored.tokens && typeof stored.tokens === 'object') {
+              delete stored.tokens.portal;
+              delete stored.tokens.portal_signature;
+            }
 
             stored.updated_at = nowIso;
             if (userId) {
@@ -10497,13 +10548,23 @@ class TelegramBot {
               stored.portal.disabled = true;
               stored.portal.disabled_at = stored.updated_at;
               delete stored.portal.token;
+              delete stored.portal.signature;
               stored.portal_tokens = [];
+              stored.portal_signatures = [];
+              if (stored.tokens && typeof stored.tokens === 'object') {
+                delete stored.tokens.portal;
+                delete stored.tokens.portal_signature;
+              }
             } else if (status === 'active') {
               if (!isPortalActive(stored)) {
                 if (!stored.portal || typeof stored.portal !== 'object') {
                   stored.portal = {};
                 }
                 const token = stored.portal.token || generatePortalToken({});
+                const signature = await buildPortalSignature({
+                  code: context.project?.code || context.project?.id || projectId,
+                  token,
+                });
                 stored.portal.token = token;
                 stored.portal.enabled = true;
                 stored.portal.updated_at = stored.updated_at;
@@ -10511,6 +10572,17 @@ class TelegramBot {
                 stored.portal.disabled = false;
                 delete stored.portal.disabled_at;
                 stored.portal_tokens = [token];
+                stored.portal_signatures = signature ? [signature] : [];
+                if (signature) {
+                  stored.portal.signature = signature;
+                }
+                if (!stored.tokens || typeof stored.tokens !== 'object') {
+                  stored.tokens = {};
+                }
+                stored.tokens.portal = token;
+                if (signature) {
+                  stored.tokens.portal_signature = signature;
+                }
               }
             }
 
