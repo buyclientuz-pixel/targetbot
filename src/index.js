@@ -1505,9 +1505,44 @@ const LEAD_ACTION_HINTS = [
   'leadgen',
   'lead_form',
   'lead_event',
+  'leadgen.other',
+  'leadgen_qualified_lead',
   'onsite_conversion.lead',
   'onsite_conversion.lead_grouped',
   'offsite_conversion.fb_pixel_lead',
+  'onsite_conversion.submit_application',
+];
+const MESSAGE_ACTION_HINTS = [
+  'onsite_conversion.messaging_first_reply',
+  'messaging_first_reply',
+  'omni_message_first_reply',
+  'messaging_conversation_started_7d',
+  'onsite_conversion.messaging_conversation_started_7d',
+];
+const CONVERSION_ACTION_HINTS = [
+  'purchase',
+  'omni_purchase',
+  'onsite_conversion.purchase',
+  'onsite_conversion.purchase_roas',
+  'offsite_conversion.fb_pixel_purchase',
+  'offsite_conversion.fb_pixel_purchase_value',
+  'subscribe',
+  'omni_subscribe',
+  'initiate_checkout',
+  'omni_initiated_checkout',
+  'add_to_cart',
+  'omni_add_to_cart',
+  'add_payment_info',
+  'omni_add_payment_info',
+  'start_trial',
+  'order',
+  'complete_registration',
+  'schedule',
+  'submit_application',
+  'contact',
+  'view_content',
+  'search',
+  ...MESSAGE_ACTION_HINTS,
 ];
 
 function actionMatches(type, hints = LEAD_ACTION_HINTS) {
@@ -1520,21 +1555,102 @@ function actionMatches(type, hints = LEAD_ACTION_HINTS) {
 }
 
 function sumActionMetric(actions, hints = LEAD_ACTION_HINTS) {
+  return sumActionMetricDetailed(actions, hints).total;
+}
+
+function sumActionMetricDetailed(actions, hints = LEAD_ACTION_HINTS) {
   if (!Array.isArray(actions)) {
-    return 0;
+    return { total: 0, matched: 0 };
   }
 
   let total = 0;
+  let matched = 0;
   for (const action of actions) {
     const type = action?.action_type ?? action?.actionType ?? action?.event_type;
     if (!actionMatches(type, hints)) {
       continue;
     }
 
+    matched += 1;
+
     const value = Number(action?.value ?? action?.count ?? action?.amount);
     if (Number.isFinite(value)) {
       total += value;
     }
+  }
+
+  return { total, matched };
+}
+
+function extractActionTotal(entry, { hints, fallbackFields = [] } = {}) {
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+
+  let total = 0;
+  let evidence = false;
+
+  const { total: actionsTotal, matched: actionMatchesCount } = sumActionMetricDetailed(
+    entry.actions,
+    hints,
+  );
+  if (actionMatchesCount > 0) {
+    evidence = true;
+    total = Math.max(total, actionsTotal);
+  }
+
+  if (Array.isArray(entry?.action_values) && hints === CONVERSION_ACTION_HINTS) {
+    const { total: valueTotal, matched: valueMatches } = sumActionMetricDetailed(
+      entry.action_values,
+      hints,
+    );
+    if (valueMatches > 0) {
+      evidence = true;
+      total = Math.max(total, valueTotal);
+    }
+  }
+
+  for (const field of fallbackFields) {
+    const value = Number(entry?.[field]);
+    if (Number.isFinite(value)) {
+      evidence = true;
+      total = Math.max(total, value);
+    }
+  }
+
+  const fallbackType =
+    entry?.result_type ||
+    entry?.resultType ||
+    entry?.action_type ||
+    entry?.actionType ||
+    entry?.optimization_goal ||
+    entry?.optimizationGoal ||
+    entry?.objective ||
+    entry?.objective_type ||
+    entry?.objectiveType ||
+    '';
+
+  const resultCandidates = [
+    { value: entry?.results, type: entry?.result_type },
+    { value: entry?.result, type: entry?.result_type },
+    { value: entry?.total_actions, type: entry?.action_type },
+    { value: entry?.total_results, type: entry?.action_type },
+  ];
+
+  for (const candidate of resultCandidates) {
+    const numeric = Number(candidate.value);
+    if (!Number.isFinite(numeric)) {
+      continue;
+    }
+    const type = candidate.type || fallbackType;
+    if (!type || actionMatches(type, hints)) {
+      evidence = true;
+      total = Math.max(total, numeric);
+    }
+  }
+
+  if (!evidence) {
+    return null;
   }
 
   return total;
@@ -1573,7 +1689,9 @@ function normalizeCampaignSummary(campaign) {
   let spendTotal = 0;
   let spendFound = false;
   let leadsTotal = 0;
+  let leadsFound = false;
   let conversionsTotal = 0;
+  let conversionsFound = false;
   let lastEntry = null;
 
   for (const entry of insightEntries) {
@@ -1587,8 +1705,47 @@ function normalizeCampaignSummary(campaign) {
       spendFound = true;
     }
 
-    leadsTotal += sumActionMetric(entry.actions, LEAD_ACTION_HINTS);
-    conversionsTotal += sumActionMetric(entry.action_values, LEAD_ACTION_HINTS);
+    const entryLeads = extractActionTotal(entry, {
+      hints: LEAD_ACTION_HINTS,
+      fallbackFields: [
+        'leads',
+        'lead',
+        'total_leads',
+        'total_lead',
+        'unique_leads',
+        'unique_lead',
+        'estimated_leads',
+        'estimated_lead',
+      ],
+    });
+    if (entryLeads !== null) {
+      leadsTotal += entryLeads;
+      leadsFound = true;
+    }
+
+    const entryConversions = extractActionTotal(entry, {
+      hints: CONVERSION_ACTION_HINTS,
+      fallbackFields: [
+        'conversions',
+        'conversion',
+        'total_conversions',
+        'total_conversion',
+        'purchases',
+        'purchase',
+        'total_purchases',
+        'total_purchase',
+        'orders',
+        'total_orders',
+        'subscribe',
+        'subscriptions',
+        'start_trial',
+        'completed_registration',
+      ],
+    });
+    if (entryConversions !== null) {
+      conversionsTotal += entryConversions;
+      conversionsFound = true;
+    }
     lastEntry = entry;
   }
 
@@ -1597,8 +1754,8 @@ function normalizeCampaignSummary(campaign) {
   }
 
   const spendUsd = spendFound ? spendTotal : null;
-  const leads = leadsTotal > 0 ? leadsTotal : null;
-  const conversions = conversionsTotal > 0 ? conversionsTotal : null;
+  const leads = leadsFound ? leadsTotal : null;
+  const conversions = conversionsFound ? conversionsTotal : null;
 
   const costFromEntry = lastEntry ? extractCostPerAction(lastEntry.cost_per_action_type, LEAD_ACTION_HINTS) : null;
   const calculatedCpa = Number.isFinite(spendUsd) && Number.isFinite(leads) && leads > 0 ? spendUsd / leads : null;
@@ -4146,6 +4303,96 @@ function resolveCampaignKeyMetric(campaign, { fallbackObjective } = {}) {
   return { label: 'Лиды', value: Number.isFinite(leads) ? leads : null };
 }
 
+function inferObjectiveFromCampaigns(campaigns, { campaignIndex, defaultObjective } = {}) {
+  const counts = new Map();
+  const register = (value, weight = 1) => {
+    if (!value || !Number.isFinite(weight) || weight <= 0) {
+      return;
+    }
+    const normalized = String(value).trim().toUpperCase();
+    if (!normalized) {
+      return;
+    }
+    counts.set(normalized, (counts.get(normalized) || 0) + weight);
+  };
+
+  const normalizedDefault = typeof defaultObjective === 'string' ? defaultObjective.trim().toUpperCase() : '';
+  if (normalizedDefault) {
+    register(normalizedDefault, 0.5);
+  }
+
+  if (Array.isArray(campaigns)) {
+    for (const campaign of campaigns) {
+      if (!campaign || typeof campaign !== 'object') {
+        continue;
+      }
+
+      const spend = Number(campaign?.spendUsd ?? campaign?.spend_usd ?? campaign?.spend);
+      const weight = Number.isFinite(spend) && spend > 0 ? spend : 1;
+      const registerCandidate = (raw, factor = 1) => {
+        if (!raw) {
+          return;
+        }
+        register(raw, weight * factor);
+      };
+
+      registerCandidate(campaign.objective, 1);
+      registerCandidate(campaign.objective_type, 1);
+      registerCandidate(campaign.objectiveType, 1);
+      registerCandidate(campaign.optimization_goal, 0.8);
+      registerCandidate(campaign.optimizationGoal, 0.8);
+      registerCandidate(campaign.result_type, 0.5);
+      registerCandidate(campaign.resultType, 0.5);
+
+      const rawId = String(campaign.id || '').trim();
+      if (rawId && campaignIndex instanceof Map) {
+        const lookupId = rawId.replace(/^cmp_/, '');
+        const indexEntry = campaignIndex.get(rawId) || campaignIndex.get(lookupId) || null;
+        if (indexEntry) {
+          registerCandidate(indexEntry.objective, 1);
+          registerCandidate(indexEntry.objective_type, 1);
+          registerCandidate(indexEntry.objectiveType, 1);
+          registerCandidate(indexEntry.optimization_goal, 0.8);
+          registerCandidate(indexEntry.optimizationGoal, 0.8);
+        }
+      }
+
+      if (Number.isFinite(campaign?.leads)) {
+        register('LEAD', Math.max(weight * 0.6, 1));
+      }
+      if (Number.isFinite(campaign?.conversions)) {
+        register('CONVERSIONS', Math.max(weight * 0.6, 1));
+      }
+      if (
+        Number.isFinite(campaign?.clicks) &&
+        !Number.isFinite(campaign?.leads) &&
+        !Number.isFinite(campaign?.conversions)
+      ) {
+        register('TRAFFIC', weight * 0.4);
+      }
+      if (
+        Number.isFinite(campaign?.reach) &&
+        !Number.isFinite(campaign?.clicks) &&
+        !Number.isFinite(campaign?.leads)
+      ) {
+        register('AWARENESS', weight * 0.3);
+      }
+    }
+  }
+
+  if (counts.size === 0) {
+    return normalizedDefault;
+  }
+
+  const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  const best = sorted[0];
+  if (!best) {
+    return normalizedDefault;
+  }
+
+  return best[0];
+}
+
 function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objectiveHint, campaignIndex }) {
   const payload = {
     id: period.id,
@@ -4169,6 +4416,13 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     return payload;
   }
 
+  const campaigns = Array.isArray(report.campaigns) ? report.campaigns : [];
+  const inferredObjective = inferObjectiveFromCampaigns(campaigns, {
+    campaignIndex,
+    defaultObjective: objectiveHint,
+  });
+  const objectiveForTotals = inferredObjective || objectiveHint;
+
   const totals = report.totals || {};
   const spendValue = Number.isFinite(totals.spendUsd) ? totals.spendUsd : null;
   const leadsValue = Number.isFinite(totals.leads) ? totals.leads : null;
@@ -4188,7 +4442,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
       impressions: Number.isFinite(totals.impressions) ? totals.impressions : null,
       reach: Number.isFinite(totals.reach) ? totals.reach : null,
     },
-    { objective: objectiveHint },
+    { objective: objectiveForTotals },
   );
 
   payload.metrics = [
@@ -4270,14 +4524,26 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     });
   }
 
-  const campaigns = Array.isArray(report.campaigns) ? report.campaigns : [];
+  payload.objective = objectiveForTotals || null;
   payload.campaigns = campaigns.map((campaign) => {
     const rawId = String(campaign?.id || '');
     const lookupId = rawId.replace(/^cmp_/, '');
     const indexEntry = campaignIndex.get(rawId) || campaignIndex.get(lookupId) || null;
     const statusSource = campaign?.status || indexEntry?.status || indexEntry?.statusLabel || '';
     const statusVisual = mapCampaignStatusVisual(statusSource);
-    const fallbackObjective = campaign?.objective || indexEntry?.objective || indexEntry?.objective_type || objectiveHint;
+    const fallbackObjective =
+      campaign?.objective ||
+      campaign?.objectiveType ||
+      campaign?.objective_type ||
+      campaign?.optimization_goal ||
+      campaign?.optimizationGoal ||
+      indexEntry?.objective ||
+      indexEntry?.objectiveType ||
+      indexEntry?.objective_type ||
+      indexEntry?.optimization_goal ||
+      indexEntry?.optimizationGoal ||
+      objectiveForTotals ||
+      objectiveHint;
     const spend = Number.isFinite(campaign?.spendUsd) ? Number(campaign.spendUsd) : null;
     const spendText = spend !== null ? formatUsd(spend, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—';
     const metrics = describeCampaignPrimaryMetrics(campaign, { objective: fallbackObjective });
