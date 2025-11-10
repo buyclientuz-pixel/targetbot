@@ -154,12 +154,17 @@
    В workflow пробрасываются все `R2_*` секреты, поэтому при корректно заданных значениях синхронизация не будет пропускать R2.
 3. В логах появятся сообщения `✅ Synced secret <KEY>` для каждого отправленного ключа; отсутствие значения отмечается строкой `⚠️ Пропуск`.
 4. Детальный процесс описан в `docs/deployment.md` (пошаговый гайд по деплою и ротации секретов).
+5. Для прогонки сборки через `wrangler versions upload` используйте workflow **Upload Worker Version** (раздел **Actions** →
+   *Upload Worker Version* → **Run workflow**). Он запускает `npm run versions:upload -- --env production` и проверяет, что
+   бандл успешно собирается в выбранном окружении Cloudflare.
 
 ### Продуктивный воркер в Cloudflare вручную
 1. Выполните `npx wrangler secret put BOT_TOKEN` и вставьте токен из @BotFather.
 2. Аналогично можно добавить `ADMIN_IDS`, `DEFAULT_TZ` и другие приватные значения (`wrangler secret put <KEY>`).
-3. Либо откройте Cloudflare Dashboard → Workers & Pages → нужный воркер → **Settings** → **Variables** → **Add variable/secret**.
-4. После обновления секретов перезапустите деплой: `npm run deploy` или GitHub Actions.
+3. Чтобы проверить сборку воркера без промоута версии, запустите `npm run versions:upload -- --env production` — команда
+   создаст новую версию через Wrangler без активации. Из GitHub Actions доступен эквивалентный workflow **Upload Worker Version**.
+4. Либо откройте Cloudflare Dashboard → Workers & Pages → нужный воркер → **Settings** → **Variables** → **Add variable/secret**.
+5. После обновления секретов перезапустите деплой: `npm run deploy` или GitHub Actions.
 
 ### Проверка
 1. Запустите `npm run check:config -- --ping-telegram` — скрипт найдёт токен и проверит `getMe`.
