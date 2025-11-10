@@ -114,6 +114,25 @@ function formatCpaRange(minValue, maxValue) {
   return `${minText} / ${maxText}`;
 }
 
+function generatePortalToken({ size = 24 } = {}) {
+  const length = Number.isFinite(size) && size > 0 ? Math.min(size, 64) : 24;
+  if (globalThis.crypto && typeof globalThis.crypto.getRandomValues === 'function') {
+    const buffer = new Uint8Array(length);
+    globalThis.crypto.getRandomValues(buffer);
+    return Array.from(buffer)
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  let token = '';
+  for (let i = 0; i < length; i += 1) {
+    token += Math.floor(Math.random() * 16)
+      .toString(16)
+      .toUpperCase();
+  }
+  return token;
+}
+
 function parseDateInput(value) {
   if (!value) {
     return null;
@@ -1596,6 +1615,25 @@ function formatDateLabel(value, { timezone } = {}) {
   }
 }
 
+function formatDateShort(value, { timezone } = {}) {
+  const date = parseDateInput(value);
+  if (!date) {
+    return '';
+  }
+
+  const options = { day: '2-digit', month: '2-digit', year: 'numeric' };
+  if (timezone) {
+    options.timeZone = timezone;
+  }
+
+  try {
+    return new Intl.DateTimeFormat('ru-RU', options).format(date);
+  } catch (error) {
+    console.warn('Failed to format short date', value, error);
+    return date.toISOString().slice(0, 10);
+  }
+}
+
 function extractProjectKpi(rawProject) {
   if (!rawProject || typeof rawProject !== 'object') {
     return null;
@@ -1773,6 +1811,116 @@ function extractPortalTokens(rawProject) {
   }
 
   return tokens;
+}
+
+function isPortalActive(rawProject) {
+  if (!rawProject || typeof rawProject !== 'object') {
+    return false;
+  }
+
+  if (rawProject.portal && typeof rawProject.portal === 'object') {
+    if (rawProject.portal.enabled === false || rawProject.portal.disabled === true) {
+      return false;
+    }
+    if (rawProject.portal.disabled_at || rawProject.portal.disabledAt) {
+      return false;
+    }
+  }
+
+  const billing = rawProject.client?.billing || rawProject.client_billing || {};
+  if (billing && typeof billing === 'object') {
+    const status = billing.status || billing.state || billing.mode || '';
+    if (typeof status === 'string' && status.toLowerCase() === 'declined') {
+      return false;
+    }
+    if (billing.portal_disabled === true || billing.portalDisabled === true) {
+      return false;
+    }
+  }
+
+  return extractPortalTokens(rawProject).size > 0;
+}
+
+function extractClientBilling(rawProject) {
+  const source =
+    (rawProject && typeof rawProject === 'object' &&
+      (rawProject.client?.billing || rawProject.client_billing || rawProject.billing?.client)) ||
+    {};
+
+  const lastPaymentAt =
+    source.last_payment_at ||
+    source.lastPaymentAt ||
+    source.paid_at ||
+    source.paidAt ||
+    rawProject?.client_last_payment_at ||
+    rawProject?.clientLastPaymentAt ||
+    null;
+
+  const nextPaymentAt =
+    source.next_payment_at ||
+    source.nextPaymentAt ||
+    source.next_due_at ||
+    source.nextDueAt ||
+    source.due_at ||
+    source.dueAt ||
+    null;
+
+  const status = source.status || source.state || source.mode || null;
+  const paused = Boolean(source.paused || source.suspended || source.on_hold);
+  const declinedAt = source.declined_at || source.declinedAt || null;
+  const note = source.note || source.message || null;
+
+  return {
+    lastPaymentAt,
+    nextPaymentAt,
+    status,
+    paused,
+    declinedAt,
+    note,
+  };
+}
+
+function formatClientBillingLines(billing, { timezone } = {}) {
+  if (!billing) {
+    return ['Оплата клиента ещё не отслеживается.'];
+  }
+
+  const lines = [];
+  const status = typeof billing.status === 'string' ? billing.status.toLowerCase() : '';
+  const emoji = status === 'declined' ? '🔴' : status === 'active' || status === 'paid' ? '🟢' : '🟡';
+  const statusLabel =
+    status === 'declined'
+      ? 'Отключено'
+      : status === 'active' || status === 'paid'
+      ? 'Активно'
+      : status
+      ? status.toUpperCase()
+      : 'Требует отметки';
+
+  lines.push(`Статус: ${emoji} ${escapeHtml(statusLabel)}`);
+
+  if (billing.lastPaymentAt) {
+    const label = formatDateLabel(billing.lastPaymentAt, { timezone }) || billing.lastPaymentAt;
+    lines.push(`Последняя оплата: ${escapeHtml(label)}`);
+  } else {
+    lines.push('Последняя оплата: —');
+  }
+
+  if (billing.nextPaymentAt) {
+    const label = formatDateLabel(billing.nextPaymentAt, { timezone }) || billing.nextPaymentAt;
+    lines.push(`Следующий контроль: ${escapeHtml(label)}`);
+  }
+
+  if (billing.declinedAt) {
+    const label = formatDateLabel(billing.declinedAt, { timezone }) || billing.declinedAt;
+    lines.push(`Отключено: ${escapeHtml(label)}`);
+  }
+
+  if (billing.note) {
+    lines.push(`Комментарий: ${escapeHtml(billing.note)}`);
+  }
+
+  return lines;
 }
 
 function formatScheduleLines(schedule, { timezone } = {}) {
@@ -2140,6 +2288,11 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
     lines.push(`Чат: ${escapeHtml(project.chatTitle)}`);
   }
 
+  lines.push(
+    '',
+    'Действия: 💬 Чат-Группа | 🌐 Портал | 📊 Аналитика | 💳 Оплата | ⏸ Пауза отчётов | 🔕 Тихий режим',
+  );
+
   lines.push('', '<b>Статус Meta</b>');
   const billingCountdown = formatDaysUntil(account?.billingNextAt || project?.billingNextAt);
   const statusEmoji = determineAccountSignal(account, { daysUntilDue: billingCountdown });
@@ -2185,6 +2338,19 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
     null;
   if (last4) {
     lines.push(`Карта по умолчанию: 💳 ****${escapeHtml(String(last4))}`);
+  }
+
+  lines.push('', '<b>Оплата клиента</b>');
+  const billingLines = formatClientBillingLines(project?.clientBilling, { timezone });
+  lines.push(...billingLines);
+
+  lines.push('', '<b>Портал</b>');
+  const portalEmoji = project?.portalEnabled ? '🟢' : '🔴';
+  lines.push(`${portalEmoji} ${project?.portalEnabled ? 'Активен' : 'Отключён'}`);
+  if (!project?.portalEnabled) {
+    lines.push('Нажмите «🌐 Портал», чтобы создать ссылку для клиента.');
+  } else if (!project?.portalTokens || project.portalTokens.length === 0) {
+    lines.push('Токен не найден — перегенерируйте портал.');
   }
 
   lines.push('', '<b>Актуальные кампании</b>');
@@ -2338,13 +2504,19 @@ function buildReportKpiLine(kpi, { totalSpend, totalLeads, totalDailyBudget }) {
 
 function buildProjectReportPreview({ project, account, rawProject, preset, report }) {
   const lines = [];
-  const codeLine = project?.code ? `#${project.code}` : project?.id ? `#${project.id}` : null;
-  if (codeLine) {
-    lines.push(escapeHtml(codeLine));
+  const range = report?.range || resolveReportRange(preset, { timezone: report?.range?.timezone });
+  const baseLabel = report?.range?.label || formatReportPresetLabel(preset);
+  const sinceLabel = range?.since ? formatDateShort(range.since, { timezone: range?.timezone }) : null;
+  const untilLabel = range?.until ? formatDateShort(range.until, { timezone: range?.timezone }) : sinceLabel;
+
+  let headerLabel = baseLabel;
+  if (sinceLabel && untilLabel) {
+    headerLabel = `${baseLabel} — ${sinceLabel}${sinceLabel !== untilLabel ? ` / ${untilLabel}` : ''}`;
+  } else if (sinceLabel) {
+    headerLabel = `${baseLabel} — ${sinceLabel}`;
   }
 
-  const periodLabel = report?.range?.label || formatReportPresetLabel(preset);
-  lines.push(`<b>Отчёт</b> (${escapeHtml(periodLabel)})`);
+  lines.push(`<b>Отчёт</b> (${escapeHtml(headerLabel)})`);
 
   const campaigns = Array.isArray(report?.campaigns)
     ? report.campaigns
@@ -2422,34 +2594,28 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   return { text: lines.join('\n'), campaigns };
 }
 
-function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
+function buildProjectDetailKeyboard(base, { chatUrl } = {}) {
   const keyboard = [];
   keyboard.push([
-    { text: '📊 Сегодня', callback_data: `${base}:report:today` },
-    { text: '📅 Вчера', callback_data: `${base}:report:yesterday` },
-    { text: '🗓 7 дней', callback_data: `${base}:report:week` },
+    chatUrl ? { text: '💬 Чат-группа', url: chatUrl } : { text: '💬 Чат-группа', callback_data: `${base}:chat` },
+    { text: '🌐 Портал', callback_data: `${base}:portal` },
+    { text: '📊 Аналитика', callback_data: `${base}:analytics` },
   ]);
-  const reportRow = [
-    { text: '📆 Месяц', callback_data: `${base}:report:month` },
-    { text: '📍 Диапазон', callback_data: `${base}:report:custom` },
-    { text: '📄 CSV', callback_data: `${base}:report:csv` },
-  ];
-  if (portalUrl) {
-    reportRow.push({ text: '🌐 Портал', url: portalUrl });
-  }
-  keyboard.push(reportRow);
+
   keyboard.push([
-    { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
+    { text: '📈 Отчёт', callback_data: `${base}:reports` },
     { text: '🎯 KPI', callback_data: `${base}:kpi` },
-    { text: '⏸ Автопауза', callback_data: `${base}:autopause` },
+    { text: '🚨 Алерты', callback_data: `${base}:alerts` },
   ]);
+
   keyboard.push([
-    { text: '⚙️ Настройки', callback_data: `${base}:settings` },
     { text: '💳 Оплата', callback_data: `${base}:payment` },
-    chatUrl ? { text: '💬 Чат', url: chatUrl } : { text: '💬 Чат', callback_data: `${base}:chat` },
+    { text: '⏸ Пауза отчётов', callback_data: `${base}:autopause` },
+    { text: '🔕 Тихий режим', callback_data: `${base}:quiet` },
   ]);
+
   keyboard.push([
-    { text: '🔁 Обновить', callback_data: `${base}:refresh` },
+    { text: '🔄 Обновить', callback_data: `${base}:refresh` },
     { text: '⬅️ В админку', callback_data: 'admin:panel' },
   ]);
 
@@ -2478,6 +2644,28 @@ function buildProjectReportKeyboard(base, { portalUrl } = {}) {
     rows[1].push({ text: '🌐 Портал', url: portalUrl });
   }
 
+  return { inline_keyboard: rows };
+}
+
+function buildPaymentCalendarKeyboard(base, { timezone } = {}) {
+  const rows = [];
+  const today = new Date();
+
+  for (let offset = 0; offset < 6; offset += 2) {
+    const row = [];
+    for (let inner = 0; inner < 2; inner += 1) {
+      const daysOffset = offset + inner;
+      const date = new Date(today.getTime());
+      date.setDate(today.getDate() - daysOffset);
+      const iso = formatDateIsoInTimeZone(date, timezone).slice(0, 10);
+      const label = formatDateShort(date, { timezone }) || iso;
+      const prefix = daysOffset === 0 ? 'Сегодня — ' : daysOffset === 1 ? 'Вчера — ' : '';
+      row.push({ text: `${prefix}${label}`, callback_data: `${base}:payment:set:${iso}` });
+    }
+    rows.push(row);
+  }
+
+  rows.push([{ text: '⬅️ Назад', callback_data: `${base}:payment` }]);
   return { inline_keyboard: rows };
 }
 
@@ -2662,6 +2850,8 @@ function normalizeProjectRecord(key, raw = {}) {
     null;
   const chatUrl = chat.url || raw.chat_url || raw.telegram_chat_url || buildTelegramTopicUrl(chatId, threadId);
   const portalTokens = Array.from(extractPortalTokens(raw));
+  const portalEnabled = isPortalActive(raw);
+  const clientBilling = extractClientBilling(raw);
 
   return {
     id: projectId,
@@ -2675,6 +2865,7 @@ function normalizeProjectRecord(key, raw = {}) {
     chatTitle: chat.title || chat.chat_title || raw.chat_title || '',
     chatUrl,
     portalTokens,
+    portalEnabled,
     billingNextAt:
       billing.next_payment_at ||
       billing.next_payment_due_at ||
@@ -2687,6 +2878,7 @@ function normalizeProjectRecord(key, raw = {}) {
       currency: metrics.currency || raw.currency || null,
     },
     statusNote: raw.status_note || raw.status || '',
+    clientBilling,
   };
 }
 
@@ -6031,6 +6223,10 @@ class TelegramBot {
       return '';
     }
 
+    if (project.portalEnabled === false) {
+      return '';
+    }
+
     const codeCandidate = project.code || project.id || '';
     const code = typeof codeCandidate === 'string' ? codeCandidate.trim() : String(codeCandidate || '');
     if (!code) {
@@ -6059,6 +6255,9 @@ class TelegramBot {
       addToken(project.portal.secret, tokens);
     }
     if (rawProject && typeof rawProject === 'object') {
+      if (!isPortalActive(rawProject)) {
+        return '';
+      }
       const rawTokens = extractPortalTokens(rawProject);
       for (const token of rawTokens) {
         addToken(token, tokens);
@@ -8515,8 +8714,6 @@ class TelegramBot {
       ],
     ];
 
-    inlineKeyboard.push([{ text: '🌐 Портал', callback_data: 'admin:portal' }]);
-
     inlineKeyboard.push([
       { text: '🔄 Обновиться', callback_data: 'admin:refresh' },
       { text: '🔁 Вебхук', callback_data: 'admin:webhook:refresh' },
@@ -9345,68 +9542,6 @@ class TelegramBot {
         return { handled: true };
       }
 
-      if (data === 'admin:portal') {
-        if (!chatId) {
-          await this.telegram.answerCallbackQuery({
-            callback_query_id: id,
-            text: 'Не удалось определить чат.',
-            show_alert: true,
-          });
-          return { handled: false, reason: 'chat_missing' };
-        }
-
-        const projectKeys = await this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 50);
-        const projects = [];
-        for (const key of projectKeys) {
-          try {
-            const raw = await this.storage.getJson('DB', key);
-            const record = normalizeProjectRecord(key, raw);
-            projects.push({ record, raw });
-          } catch (error) {
-            console.warn('Failed to load project for portal list', key, error);
-          }
-        }
-
-        const buttons = [];
-        for (const { record, raw } of projects) {
-          if (!record) continue;
-          const portalUrl = await this.buildProjectPortalLink(record, { rawProject: raw });
-          if (!portalUrl) continue;
-          const label = truncateLabel(record.name || record.code || record.id || 'Проект', 32);
-          buttons.push({ text: label, url: portalUrl });
-        }
-
-        const keyboard = [];
-        if (buttons.length > 0) {
-          keyboard.push(...chunkArray(buttons, 1));
-        }
-        keyboard.push([{ text: '⬅️ К админке', callback_data: 'admin:panel' }]);
-
-        const lines = [];
-        lines.push('<b>Клиентские порталы</b>');
-        if (buttons.length === 0) {
-          lines.push('Для проектов пока не настроены токены портала.');
-        } else {
-          lines.push('Выберите проект, чтобы открыть портал.');
-        }
-
-        await this.renderAdminMessage(message, {
-          chatId,
-          text: lines.join('\n'),
-          reply_markup: { inline_keyboard: keyboard },
-        });
-
-        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Порталы готовы.' });
-        this.queueLog({
-          kind: 'callback',
-          status: 'ok',
-          data,
-          chat_id: chatId,
-          user_id: userId,
-        });
-        return { handled: true };
-      }
-
       if (data === 'admin:webhook:refresh') {
         const result = await this.refreshWebhook({ dropPending: true });
         if (!result.ok) {
@@ -9571,6 +9706,7 @@ class TelegramBot {
         const projectId = parts[2] || '';
         const action = parts[3] || 'open';
         const subAction = parts[4] || '';
+        const extraAction = parts[5] || '';
         const base = `admin:project:${projectId}`;
 
         if (!chatId) {
@@ -9582,7 +9718,7 @@ class TelegramBot {
           return { handled: false, reason: 'chat_missing' };
         }
 
-        const context = await this.resolveProjectContext(projectId, {
+        let context = await this.resolveProjectContext(projectId, {
           forceMetaRefresh: action === 'refresh',
         });
 
@@ -9602,10 +9738,8 @@ class TelegramBot {
             rawProject: context.rawProject,
             timezone: this.config.defaultTimezone,
           });
-          const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
           const replyMarkup = buildProjectDetailKeyboard(base, {
             chatUrl: context.project.chatUrl,
-            portalUrl,
           });
 
           await this.renderAdminMessage(message, {
@@ -9628,6 +9762,187 @@ class TelegramBot {
             project_id: context.project.id,
           });
 
+          return { handled: true };
+        }
+
+        if (action === 'portal') {
+          const projectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(
+              context.project.id || context.project.code || projectId,
+            )}`;
+
+          const renderPortalPanel = async () => {
+            const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
+            const hasPortal = Boolean(portalUrl);
+            const body = ['<b>Клиентский портал</b>'];
+            if (hasPortal) {
+              body.push('Статус: 🟢 Активен', 'Поделитесь ссылкой с клиентом или отключите доступ при необходимости.');
+            } else {
+              body.push('Статус: 🔴 Отключён', 'Нажмите «Создать портал», чтобы сгенерировать ссылку для клиента.');
+            }
+
+            const rows = [];
+            if (hasPortal) {
+              rows.push([{ text: '🌐 Перейти в портал', url: portalUrl }]);
+              rows.push([
+                { text: '♻️ Перегенерировать', callback_data: `${base}:portal:refresh` },
+                { text: '🚫 Отключить', callback_data: `${base}:portal:disable` },
+              ]);
+            } else {
+              rows.push([{ text: '✨ Создать портал', callback_data: `${base}:portal:create` }]);
+            }
+            rows.push([{ text: '⬅️ К проекту', callback_data: `${base}:open` }]);
+
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: body.join('\n'),
+              reply_markup: { inline_keyboard: rows },
+            });
+          };
+
+          const nowIso = new Date().toISOString();
+
+          if (['create', 'refresh'].includes(subAction)) {
+            let stored = null;
+            try {
+              stored = await this.storage.getJson('DB', projectKey);
+            } catch (error) {
+              console.warn('Failed to read project before portal update', projectKey, error);
+            }
+            if (!stored || typeof stored !== 'object') {
+              stored = {};
+            }
+
+            if (!stored.portal || typeof stored.portal !== 'object') {
+              stored.portal = {};
+            }
+
+            const token = generatePortalToken({});
+            stored.portal.token = token;
+            stored.portal.enabled = true;
+            stored.portal.updated_at = nowIso;
+            stored.portal.created_at = stored.portal.created_at || nowIso;
+            stored.portal.disabled = false;
+            delete stored.portal.disabled_at;
+            delete stored.portal.disabledAt;
+            stored.portal_tokens = [token];
+
+            if (!stored.client || typeof stored.client !== 'object') {
+              stored.client = {};
+            }
+            if (!stored.client.billing || typeof stored.client.billing !== 'object') {
+              stored.client.billing = {};
+            }
+            stored.client.billing.status = stored.client.billing.status === 'declined' ? 'active' : stored.client.billing.status || 'active';
+            stored.client.billing.portal_disabled = false;
+            stored.client.billing.portalDisabled = false;
+            stored.client.billing.declined_at = null;
+
+            stored.updated_at = nowIso;
+            if (userId) {
+              stored.updated_by = userId;
+            }
+
+            await this.storage.putJson('DB', projectKey, stored);
+            context = await this.resolveProjectContext(projectId, { forceMetaRefresh: false });
+
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: subAction === 'refresh' ? 'Портал обновлён.' : 'Портал создан.',
+            });
+
+            this.queueLog({
+              kind: 'callback',
+              status: 'ok',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: `portal:${subAction}`,
+            });
+
+            await renderPortalPanel();
+            return { handled: true };
+          }
+
+          if (subAction === 'disable') {
+            let stored = null;
+            try {
+              stored = await this.storage.getJson('DB', projectKey);
+            } catch (error) {
+              console.warn('Failed to read project before portal disable', projectKey, error);
+            }
+            if (!stored || typeof stored !== 'object') {
+              stored = {};
+            }
+
+            if (!stored.portal || typeof stored.portal !== 'object') {
+              stored.portal = {};
+            }
+            stored.portal.enabled = false;
+            stored.portal.disabled = true;
+            stored.portal.disabled_at = nowIso;
+            delete stored.portal.token;
+            stored.portal_tokens = [];
+
+            if (!stored.client || typeof stored.client !== 'object') {
+              stored.client = {};
+            }
+            if (!stored.client.billing || typeof stored.client.billing !== 'object') {
+              stored.client.billing = {};
+            }
+            stored.client.billing.portal_disabled = true;
+            stored.client.billing.portalDisabled = true;
+            stored.client.billing.status = stored.client.billing.status || 'paused';
+            stored.client.billing.declined_at = stored.client.billing.declined_at || nowIso;
+
+            stored.updated_at = nowIso;
+            if (userId) {
+              stored.updated_by = userId;
+            }
+
+            await this.storage.putJson('DB', projectKey, stored);
+            context = await this.resolveProjectContext(projectId, { forceMetaRefresh: false });
+
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: 'Портал отключён.',
+            });
+
+            this.queueLog({
+              kind: 'callback',
+              status: 'ok',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: 'portal:disable',
+            });
+
+            await renderPortalPanel();
+            return { handled: true };
+          }
+
+          await renderPortalPanel();
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Управление порталом.' });
+          return { handled: true };
+        }
+
+        if (action === 'reports') {
+          const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
+          const lines = [
+            '<b>Отчёты проекта</b>',
+            'Выберите период ниже — бот подготовит цифры и кнопки для отправки клиенту.',
+          ];
+
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: lines.join('\n'),
+            reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
+          });
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Выберите период отчёта.' });
           return { handled: true };
         }
 
@@ -9770,6 +10085,46 @@ class TelegramBot {
           return { handled: true };
         }
 
+        if (action === 'analytics') {
+          const account = context.account || {};
+          const spendToday = Number.isFinite(account.spendTodayUsd)
+            ? formatUsd(account.spendTodayUsd, { digitsBelowOne: 2, digitsAboveOne: 2 })
+            : '—';
+          const leadsToday = Number.isFinite(account.leadsToday) ? formatInteger(account.leadsToday) : '—';
+          const cpaRange = formatCpaRange(account.cpaMinUsd, account.cpaMaxUsd);
+          const campaignsRunning = Number.isFinite(account.runningCampaigns)
+            ? formatInteger(account.runningCampaigns)
+            : '—';
+
+          const lines = [
+            '<b>Аналитика</b>',
+            `Расход сегодня: ${spendToday}`,
+            `Лиды сегодня: ${leadsToday}`,
+            cpaRange ? `CPA (7д): ${cpaRange}` : null,
+            `Активных кампаний: ${campaignsRunning}`,
+            '',
+            'Используйте кнопки ниже, чтобы открыть отчёты или вернуться в проект.',
+          ].filter(Boolean);
+
+          const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
+          const keyboard = {
+            inline_keyboard: [
+              [
+                { text: '📈 Отчёт', callback_data: `${base}:reports` },
+                { text: '🎯 KPI', callback_data: `${base}:kpi` },
+                { text: '⬅️ К проекту', callback_data: `${base}:open` },
+              ],
+            ],
+          };
+          if (portalUrl) {
+            keyboard.inline_keyboard[0].splice(2, 0, { text: '🌐 Портал', url: portalUrl });
+          }
+
+          await this.renderAdminMessage(message, { chatId, text: lines.join('\n'), reply_markup: keyboard });
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Показатели обновлены.' });
+          return { handled: true };
+        }
+
         if (action === 'kpi' && subAction === 'edit') {
           const session = await this.startAdminSession({
             userId,
@@ -9843,6 +10198,26 @@ class TelegramBot {
           return { handled: true };
         }
 
+        if (action === 'alerts') {
+          const alerts = extractAlertSettings(context.rawProject);
+          const body = ['<b>Алерты</b>', ...formatAlertLines(alerts, { account: context.account, campaigns: context.account?.campaignSummaries })];
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: body.join('\n'),
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '⚙️ Настройки', callback_data: `${base}:settings` },
+                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                ],
+              ],
+            },
+          });
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Алерты показаны.' });
+          return { handled: true };
+        }
+
         if (action === 'autopause') {
           await this.renderAdminMessage(message, {
             chatId,
@@ -9862,6 +10237,102 @@ class TelegramBot {
           });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Автопауза скоро будет.' });
+          return { handled: true };
+        }
+
+        if (action === 'quiet') {
+          const schedule = extractScheduleSettings(context.rawProject);
+          const quietEnabled = Boolean(schedule?.quietWeekends);
+          const projectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(
+              context.project.id || context.project.code || projectId,
+            )}`;
+
+          if (subAction === 'toggle') {
+            let stored = null;
+            try {
+              stored = await this.storage.getJson('DB', projectKey);
+            } catch (error) {
+              console.warn('Failed to read project before quiet toggle', projectKey, error);
+            }
+            if (!stored || typeof stored !== 'object') {
+              stored = {};
+            }
+
+            const nextQuiet = !quietEnabled;
+
+            stored.schedule = stored.schedule || {};
+            stored.schedule.quietWeekends = nextQuiet;
+            stored.schedule.quiet_weekends = nextQuiet;
+            stored.schedule.mute_weekends = nextQuiet;
+
+            stored.settings = stored.settings || {};
+            stored.settings.schedule = stored.settings.schedule || {};
+            stored.settings.schedule.quietWeekends = nextQuiet;
+            stored.settings.schedule.quiet_weekends = nextQuiet;
+            stored.settings.schedule.mute_weekends = nextQuiet;
+
+            stored.reporting = stored.reporting || {};
+            stored.reporting.schedule = stored.reporting.schedule || {};
+            stored.reporting.schedule.quietWeekends = nextQuiet;
+            stored.reporting.schedule.quiet_weekends = nextQuiet;
+            stored.reporting.schedule.mute_weekends = nextQuiet;
+
+            stored.updated_at = new Date().toISOString();
+            if (userId) {
+              stored.updated_by = userId;
+            }
+
+            await this.storage.putJson('DB', projectKey, stored);
+            context = await this.resolveProjectContext(projectId, { forceMetaRefresh: false });
+
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: nextQuiet ? 'Тихий режим включён.' : 'Тихий режим отключён.',
+            });
+
+            this.queueLog({
+              kind: 'callback',
+              status: 'ok',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: `quiet:${nextQuiet ? 'on' : 'off'}`,
+            });
+          }
+
+          const refreshedSchedule = extractScheduleSettings(context.rawProject);
+          const quietNow = Boolean(refreshedSchedule?.quietWeekends);
+          const lines = [
+            '<b>Тихий режим</b>',
+            quietNow
+              ? '🔕 Выходные без уведомлений активированы.'
+              : '🔔 Отчёты и алерты приходят ежедневно.',
+            '',
+            'Нажмите кнопку, чтобы переключить режим.',
+          ];
+
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: lines.join('\n'),
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: quietNow ? 'Включить уведомления' : 'Отключить на выходные',
+                    callback_data: `${base}:quiet:toggle`,
+                  },
+                ],
+                [{ text: '⬅️ К проекту', callback_data: `${base}:open` }],
+              ],
+            },
+          });
+
+          if (subAction !== 'toggle') {
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Режим отображён.' });
+          }
           return { handled: true };
         }
 
@@ -9952,22 +10423,193 @@ class TelegramBot {
         }
 
         if (action === 'payment') {
-          const lines = [
-            '<b>Оплата Facebook</b>',
-            'Чтобы отметить платёж вручную, отправьте сумму и дату в следующем сообщении.',
-            'Например: <code>Оплатили 120$ 2024-05-12</code>.',
-            'Бот зафиксирует событие в журнале и снимет предупреждение о задолженности.',
-          ];
+          const projectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(
+              context.project.id || context.project.code || projectId,
+            )}`;
+          const timezone =
+            extractScheduleSettings(context.rawProject)?.timezone || this.config.defaultTimezone || 'UTC';
 
-          await this.renderAdminMessage(message, {
-            chatId,
-            text: lines.join('\n'),
-            reply_markup: {
-              inline_keyboard: [[{ text: '⬅️ К проекту', callback_data: `${base}:open` }]],
-            },
-          });
+          const renderPayment = async () => {
+            const billingLines = formatClientBillingLines(context.project.clientBilling, { timezone });
+            const body = [
+              '<b>Оплата проекта</b>',
+              ...billingLines,
+              '',
+              'Отметьте оплату, чтобы портал и алерты работали корректно.',
+            ];
+            const keyboard = {
+              inline_keyboard: [
+                [
+                  { text: 'Оплатил сегодня', callback_data: `${base}:payment:mark:today` },
+                  { text: 'Оплатил вчера', callback_data: `${base}:payment:mark:yesterday` },
+                ],
+                [{ text: '📅 Выбрать дату', callback_data: `${base}:payment:calendar` }],
+                [{ text: '🚫 Отказался оплачивать', callback_data: `${base}:payment:decline` }],
+                [{ text: '⬅️ К проекту', callback_data: `${base}:open` }],
+              ],
+            };
 
-          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Жду информацию об оплате.' });
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: body.join('\n'),
+              reply_markup: keyboard,
+            });
+          };
+
+          const savePayment = async ({ isoDate, status }) => {
+            let stored = null;
+            try {
+              stored = await this.storage.getJson('DB', projectKey);
+            } catch (error) {
+              console.warn('Failed to read project before payment update', projectKey, error);
+            }
+            if (!stored || typeof stored !== 'object') {
+              stored = {};
+            }
+
+            if (!stored.client || typeof stored.client !== 'object') {
+              stored.client = {};
+            }
+            if (!stored.client.billing || typeof stored.client.billing !== 'object') {
+              stored.client.billing = {};
+            }
+
+            if (isoDate) {
+              stored.client.billing.last_payment_at = isoDate;
+            }
+
+            if (status) {
+              stored.client.billing.status = status;
+              if (status === 'declined') {
+                stored.client.billing.declined_at = new Date().toISOString();
+                stored.client.billing.portal_disabled = true;
+                stored.client.billing.portalDisabled = true;
+              } else {
+                stored.client.billing.declined_at = null;
+                stored.client.billing.portal_disabled = false;
+                stored.client.billing.portalDisabled = false;
+              }
+            }
+
+            stored.updated_at = new Date().toISOString();
+            if (userId) {
+              stored.updated_by = userId;
+            }
+
+            if (status === 'declined') {
+              if (!stored.portal || typeof stored.portal !== 'object') {
+                stored.portal = {};
+              }
+              stored.portal.enabled = false;
+              stored.portal.disabled = true;
+              stored.portal.disabled_at = stored.updated_at;
+              delete stored.portal.token;
+              stored.portal_tokens = [];
+            } else if (status === 'active') {
+              if (!isPortalActive(stored)) {
+                if (!stored.portal || typeof stored.portal !== 'object') {
+                  stored.portal = {};
+                }
+                const token = stored.portal.token || generatePortalToken({});
+                stored.portal.token = token;
+                stored.portal.enabled = true;
+                stored.portal.updated_at = stored.updated_at;
+                stored.portal.created_at = stored.portal.created_at || stored.updated_at;
+                stored.portal.disabled = false;
+                delete stored.portal.disabled_at;
+                stored.portal_tokens = [token];
+              }
+            }
+
+            await this.storage.putJson('DB', projectKey, stored);
+            context = await this.resolveProjectContext(projectId, { forceMetaRefresh: false });
+          };
+
+          if (subAction === 'calendar') {
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: '<b>Выберите дату оплаты</b>',
+              reply_markup: buildPaymentCalendarKeyboard(base, { timezone }),
+            });
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Выберите дату.' });
+            return { handled: true };
+          }
+
+          if (subAction === 'mark') {
+            const target = new Date();
+            if (extraAction === 'yesterday') {
+              target.setDate(target.getDate() - 1);
+            }
+            const iso = formatDateIsoInTimeZone(target, timezone).slice(0, 10);
+            await savePayment({ isoDate: iso, status: 'active' });
+            await renderPayment();
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: extraAction === 'yesterday' ? 'Оплата за вчера отмечена.' : 'Оплата за сегодня отмечена.',
+            });
+            this.queueLog({
+              kind: 'callback',
+              status: 'ok',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: `payment:mark:${extraAction || 'today'}`,
+            });
+            return { handled: true };
+          }
+
+          if (subAction === 'set') {
+            const parsed = parseDateInput(extraAction);
+            if (!parsed) {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Дата не распознана. Используйте формат ГГГГ-ММ-ДД.',
+                show_alert: true,
+              });
+              return { handled: false, reason: 'payment_date_invalid' };
+            }
+
+            const iso = formatDateIsoInTimeZone(parsed, timezone).slice(0, 10);
+            await savePayment({ isoDate: iso, status: 'active' });
+            await renderPayment();
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: `Оплата за ${formatDateShort(parsed, { timezone })} сохранена.`,
+            });
+            this.queueLog({
+              kind: 'callback',
+              status: 'ok',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: 'payment:set',
+              note: iso,
+            });
+            return { handled: true };
+          }
+
+          if (subAction === 'decline') {
+            await savePayment({ status: 'declined' });
+            await renderPayment();
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Клиент отмечен как не оплативший.' });
+            this.queueLog({
+              kind: 'callback',
+              status: 'ok',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: 'payment:decline',
+            });
+            return { handled: true };
+          }
+
+          await renderPayment();
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Статус оплаты.' });
           return { handled: true };
         }
 
