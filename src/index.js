@@ -14,6 +14,7 @@ const TEXT_HEADERS = {
 };
 
 const DEFAULT_ADMIN_IDS = ['7623982602', '573424022'];
+const DEFAULT_TIMEZONE_FALLBACK = 'Asia/Tashkent';
 const TELEGRAM_TIMEOUT_MS = 9000;
 const TELEGRAM_LOG_KEY = 'log:telegram';
 const TELEGRAM_LOG_LIMIT = 50;
@@ -45,6 +46,7 @@ const REPORT_PRESET_MAP = {
   yesterday: 'yesterday',
   week: 'last_7d',
   month: 'this_month',
+  year: 'this_year',
 };
 const ALERT_STATE_PREFIX = 'alert:state:';
 const AUTOPAUSE_STATE_PREFIX = 'autopause:state:';
@@ -75,6 +77,7 @@ const SCHEDULE_PERIOD_OPTIONS = [
   { value: 'yesterday', label: 'Вчера' },
   { value: 'week', label: '7 дней' },
   { value: 'month', label: 'Месяц' },
+  { value: 'year', label: 'Год' },
 ];
 const SCHEDULE_TIME_OPTIONS = ['08:00', '09:00', '09:30', '10:00', '12:00', '14:00', '16:00', '18:00', '19:00', '20:00'];
 const SCHEDULE_CADENCE_OPTIONS = [
@@ -816,7 +819,7 @@ function buildDefaultProjectSchedule({ timezone, cadence = 'daily', times, perio
   }
 
   const cadenceValue = normalizeCadenceValue(cadence) || 'daily';
-  const tz = timezone || 'UTC';
+  const tz = timezone || DEFAULT_TIMEZONE_FALLBACK;
 
   return {
     cadence: cadenceValue,
@@ -1102,7 +1105,12 @@ function formatChangePercent(change, { digits = 0 } = {}) {
 
 function formatDateIsoInTimeZone(date, timezone) {
   const target = parseDateInput(date) || new Date();
-  const options = { timeZone: timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' };
+  const options = {
+    timeZone: timezone || DEFAULT_TIMEZONE_FALLBACK,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  };
   try {
     const parts = new Intl.DateTimeFormat('en-CA', options).formatToParts(target);
     const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
@@ -1116,7 +1124,7 @@ function formatDateIsoInTimeZone(date, timezone) {
 function resolveTimezoneSnapshot(date, timezone) {
   const target = parseDateInput(date) || new Date();
   const options = {
-    timeZone: timezone || 'UTC',
+    timeZone: timezone || DEFAULT_TIMEZONE_FALLBACK,
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -1157,7 +1165,7 @@ function resolveTimezoneSnapshot(date, timezone) {
       minutes: target.getUTCHours() * 60 + target.getUTCMinutes(),
       weekday: target.getUTCDay(),
       dateIso: target.toISOString().slice(0, 10),
-      timezone: 'UTC',
+      timezone: DEFAULT_TIMEZONE_FALLBACK,
     };
   }
 }
@@ -1190,6 +1198,10 @@ function normalizePeriodToken(token) {
     '30d': 'month',
     mtd: 'mtd',
     'с начала месяца': 'mtd',
+    year: 'year',
+    год: 'year',
+    'весь период': 'year',
+    'this_year': 'year',
     custom: 'custom',
     произвольно: 'custom',
   };
@@ -1845,6 +1857,56 @@ function extractPortalTokens(rawProject) {
   return tokens;
 }
 
+function collectPortalTokens({ rawProject, project, config } = {}) {
+  const tokens = new Set();
+
+  const register = (value) => {
+    if (!value) {
+      return;
+    }
+    const normalized = String(value).trim();
+    if (normalized) {
+      tokens.add(normalized);
+    }
+  };
+
+  if (rawProject) {
+    for (const token of extractPortalTokens(rawProject)) {
+      register(token);
+    }
+  }
+
+  if (project && typeof project === 'object') {
+    if (Array.isArray(project.portalTokens)) {
+      for (const token of project.portalTokens) {
+        register(token);
+      }
+    }
+    register(project.portalToken);
+    if (project.portal && typeof project.portal === 'object') {
+      register(project.portal.token);
+      register(project.portal.secret);
+      if (Array.isArray(project.portal.tokens)) {
+        for (const token of project.portal.tokens) {
+          register(token);
+        }
+      }
+    }
+    if (project.tokens && typeof project.tokens === 'object') {
+      register(project.tokens.portal);
+      register(project.tokens.portal_signature);
+      register(project.tokens.portal_secret);
+    }
+  }
+
+  if (config && typeof config === 'object') {
+    register(config.portalAccessToken);
+    register(config.metaManageToken);
+  }
+
+  return tokens;
+}
+
 function isPortalActive(rawProject) {
   if (!rawProject || typeof rawProject !== 'object') {
     return false;
@@ -2132,7 +2194,7 @@ function normalizeScheduleDraft(source, { defaultTimezone } = {}) {
     cadence: null,
     periods: [],
     times: [],
-    timezone: defaultTimezone || 'UTC',
+    timezone: defaultTimezone || DEFAULT_TIMEZONE_FALLBACK,
     quietWeekends: false,
   };
 
@@ -2169,7 +2231,7 @@ function describeScheduleDraft(draft, { timezone } = {}) {
     cadence: draft?.cadence || 'custom',
     periods: draft?.periods || [],
     times: draft?.times || [],
-    timezone: draft?.timezone || timezone || 'UTC',
+    timezone: draft?.timezone || timezone || DEFAULT_TIMEZONE_FALLBACK,
     quietWeekends: Boolean(draft?.quietWeekends),
   };
 
@@ -2451,18 +2513,27 @@ function normalizeTimeList(values, fallback = []) {
 
 function collectBillingSignals(account) {
   if (!account || typeof account !== 'object') {
-    return { issues: [], statusLabel: '', debtUsd: null, cardLast4: '', fingerprint: '' };
+    return { issues: [], statusLabel: '', debtUsd: null, cardLast4: '', fingerprint: '', isCritical: false };
   }
 
   const issues = [];
   if (Array.isArray(account.paymentIssues)) {
-    issues.push(...account.paymentIssues.filter(Boolean));
+    for (const hint of account.paymentIssues) {
+      if (hint) {
+        issues.push(String(hint));
+      }
+    }
   }
   if (account.paymentIssue) {
-    issues.push(account.paymentIssue);
+    issues.push(String(account.paymentIssue));
   }
 
+  const normalizedIssues = issues
+    .map((issue) => issue.trim())
+    .filter(Boolean);
+
   const statusLabel = account.paymentStatusLabel || account.statusLabel || account.status || '';
+  const statusNormalized = statusLabel.toLowerCase();
   const debtRaw = account.debtUsd ?? account.debt_usd ?? account.debtUSD ?? account.balance_due_usd ?? null;
   const debtUsd = Number.isFinite(Number(debtRaw)) ? Number(debtRaw) : null;
   const cardLast4 =
@@ -2472,19 +2543,30 @@ function collectBillingSignals(account) {
     account.paymentMethodLast4 ||
     '';
 
+  const criticalKeywords = ['оплат', 'задолж', 'списан', 'лимит', 'блок', 'declin', 'restrict'];
+  const hasCriticalIssue = normalizedIssues.some((issue) => {
+    const lowered = issue.toLowerCase();
+    return criticalKeywords.some((keyword) => lowered.includes(keyword));
+  });
+  const criticalStatus = criticalKeywords.some((keyword) => statusNormalized.includes(keyword));
+  const isCritical = criticalStatus || hasCriticalIssue;
+
   const fingerprintParts = [];
-  if (statusLabel) fingerprintParts.push(statusLabel);
-  if (debtUsd !== null) fingerprintParts.push(debtUsd.toFixed(2));
-  for (const hint of issues) {
-    fingerprintParts.push(String(hint));
+  if (isCritical) {
+    if (statusLabel) fingerprintParts.push(statusLabel);
+    if (debtUsd !== null) fingerprintParts.push(debtUsd.toFixed(2));
+    for (const hint of normalizedIssues) {
+      fingerprintParts.push(hint);
+    }
   }
 
   return {
-    issues,
+    issues: normalizedIssues,
     statusLabel,
     debtUsd,
     cardLast4,
     fingerprint: fingerprintParts.join('|'),
+    isCritical,
   };
 }
 
@@ -2752,6 +2834,8 @@ function formatReportPresetLabel(preset) {
       return 'Последние 7 дней';
     case 'month':
       return 'С начала месяца';
+    case 'year':
+      return 'Этот год';
     default:
       return 'Период';
   }
@@ -3229,8 +3313,8 @@ function buildProjectReportKeyboard(
     ],
     [
       { text: 'Месяц', callback_data: `${base}:report:month` },
+      { text: 'Год', callback_data: `${base}:report:year` },
       { text: 'Диапазон', callback_data: `${base}:report:custom` },
-      { text: 'CSV', callback_data: `${base}:report:csv` },
     ],
   ];
 
@@ -3797,6 +3881,18 @@ function renderAdminDashboard({
   return lines.join('\n');
 }
 
+const PORTAL_PERIOD_DEFINITIONS = [
+  { id: 'today', label: 'Сегодня', preset: 'today' },
+  { id: 'yesterday', label: 'Вчера', preset: 'yesterday' },
+  { id: 'week', label: '7 дней', preset: 'week' },
+  { id: 'month', label: 'Месяц', preset: 'month' },
+  { id: 'year', label: 'Год', preset: 'year' },
+];
+
+function listPortalPeriodDefinitions() {
+  return PORTAL_PERIOD_DEFINITIONS.map((item) => ({ ...item }));
+}
+
 function resolvePortalKpiMeta(kpi) {
   if (kpi && typeof kpi === 'object') {
     if (Number.isFinite(kpi.cpl)) {
@@ -3809,26 +3905,274 @@ function resolvePortalKpiMeta(kpi) {
   return { label: 'CPA', target: null };
 }
 
-function selectPortalTopCampaigns(report, { limit = 3 } = {}) {
-  const campaigns = Array.isArray(report?.campaigns) ? report.campaigns.slice() : [];
-  campaigns.sort((a, b) => (b?.spendUsd ?? 0) - (a?.spendUsd ?? 0));
+function mapCampaignStatusVisual(status) {
+  const normalized = String(status || '').toUpperCase();
+  if (normalized === 'ACTIVE') {
+    return { icon: '🟢', category: 'active', label: 'Активна' };
+  }
+  const completedHints = [
+    'PAUSED',
+    'ARCHIVED',
+    'DELETED',
+    'INACTIVE',
+    'STOP',
+    'OFF',
+    'DISAPPROVED',
+    'WITH_ISSUES',
+    'COMPLETED',
+    'ENDED',
+    'DISABLED',
+  ];
+  if (completedHints.some((hint) => normalized.includes(hint))) {
+    return { icon: '⚪', category: 'completed', label: 'Отключена' };
+  }
+  const pendingHints = ['PENDING', 'PROCESS', 'REVIEW', 'SCHEDULE', 'IN_PROGRESS'];
+  if (pendingHints.some((hint) => normalized.includes(hint))) {
+    return { icon: '🟡', category: 'pending', label: 'На модерации' };
+  }
+  if (!normalized) {
+    return { icon: '⚪', category: 'completed', label: 'Неактивна' };
+  }
+  return { icon: '🟡', category: 'pending', label: normalized };
+}
 
-  return campaigns.slice(0, Math.max(0, limit)).map((campaign) => {
-    const spendText = formatUsd(campaign?.spendUsd, { digitsBelowOne: 2, digitsAboveOne: 2 }) || '—';
-    const cost = Number.isFinite(campaign?.cpaUsd)
+function resolveCampaignKeyMetric(campaign, { fallbackObjective } = {}) {
+  const objective = String(campaign?.objective || fallbackObjective || '').toUpperCase();
+  const leads = Number(campaign?.leads);
+  const conversions = Number(campaign?.conversions);
+  const clicks = Number(campaign?.clicks);
+  const reach = Number(campaign?.reach);
+
+  if (objective.includes('LEAD')) {
+    return { label: 'Лиды', value: Number.isFinite(leads) ? leads : null };
+  }
+  if (objective.includes('CONVERSION') || objective.includes('SALE') || objective.includes('OUTCOME')) {
+    if (Number.isFinite(conversions)) {
+      return { label: 'Покупки', value: conversions };
+    }
+    if (Number.isFinite(leads)) {
+      return { label: 'Покупки', value: leads };
+    }
+    return { label: 'Покупки', value: null };
+  }
+  if (objective.includes('MESSAGE')) {
+    if (Number.isFinite(conversions)) {
+      return { label: 'Сообщения', value: conversions };
+    }
+    if (Number.isFinite(leads)) {
+      return { label: 'Сообщения', value: leads };
+    }
+    return { label: 'Сообщения', value: null };
+  }
+  if (objective.includes('TRAFFIC')) {
+    return { label: 'Клики', value: Number.isFinite(clicks) ? clicks : null };
+  }
+  if (objective.includes('AWARE') || objective.includes('REACH')) {
+    return { label: 'Охват', value: Number.isFinite(reach) ? reach : null };
+  }
+  return { label: 'Лиды', value: Number.isFinite(leads) ? leads : null };
+}
+
+function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objectiveHint, campaignIndex }) {
+  const payload = {
+    id: period.id,
+    label: period.label,
+    rangeLabel: period?.report?.range?.label || '',
+    error: period.error || null,
+    metrics: [],
+    campaigns: [],
+    fresh: false,
+  };
+
+  if (!payload.rangeLabel && period?.report?.range) {
+    const { since, until } = period.report.range;
+    const sinceLabel = since ? formatDateLabel(since, { timezone }) : '';
+    const untilLabel = until ? formatDateLabel(until, { timezone }) : '';
+    payload.rangeLabel = sinceLabel && untilLabel ? `${sinceLabel} — ${untilLabel}` : sinceLabel || untilLabel || '';
+  }
+
+  const report = period?.report;
+  if (!report || period.error) {
+    return payload;
+  }
+
+  const totals = report.totals || {};
+  const spendValue = Number.isFinite(totals.spendUsd) ? totals.spendUsd : null;
+  const leadsValue = Number.isFinite(totals.leads) ? totals.leads : null;
+  const cpaValue = Number.isFinite(totals.cpaUsd)
+    ? totals.cpaUsd
+    : safeDivision(totals.spendUsd, leadsValue);
+  const cpcValue = safeDivision(totals.spendUsd, totals.clicks);
+  const ctrValue = safeDivision(totals.clicks, totals.impressions) * 100;
+
+  payload.metrics = [
+    {
+      id: 'spend',
+      label: `Расход (${currency || 'USD'})`,
+      value: spendValue,
+      text: spendValue !== null ? formatUsd(spendValue, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—',
+    },
+    {
+      id: 'kpi',
+      label: kpiMeta.label,
+      value: Number.isFinite(cpaValue) ? cpaValue : null,
+      text: Number.isFinite(cpaValue) ? formatUsd(cpaValue, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—',
+    },
+    {
+      id: 'leads',
+      label: 'Лиды',
+      value: leadsValue,
+      text: formatInteger(leadsValue),
+    },
+    {
+      id: 'cpc',
+      label: 'CPC',
+      value: Number.isFinite(cpcValue) ? cpcValue : null,
+      text: Number.isFinite(cpcValue) ? formatUsd(cpcValue, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—',
+    },
+    {
+      id: 'ctr',
+      label: 'CTR',
+      value: Number.isFinite(ctrValue) ? ctrValue : null,
+      text: Number.isFinite(ctrValue) ? `${formatFloat(ctrValue, { digits: 1 })}%` : '—',
+    },
+    {
+      id: 'reach',
+      label: 'Reach',
+      value: Number.isFinite(totals.reach) ? totals.reach : null,
+      text: formatInteger(totals.reach),
+    },
+    {
+      id: 'impressions',
+      label: 'Показы',
+      value: Number.isFinite(totals.impressions) ? totals.impressions : null,
+      text: formatInteger(totals.impressions),
+    },
+    {
+      id: 'clicks',
+      label: 'Клики',
+      value: Number.isFinite(totals.clicks) ? totals.clicks : null,
+      text: formatInteger(totals.clicks),
+    },
+  ];
+
+  const campaigns = Array.isArray(report.campaigns) ? report.campaigns : [];
+  payload.campaigns = campaigns.map((campaign) => {
+    const rawId = String(campaign?.id || '');
+    const lookupId = rawId.replace(/^cmp_/, '');
+    const indexEntry = campaignIndex.get(rawId) || campaignIndex.get(lookupId) || null;
+    const statusSource = campaign?.status || indexEntry?.status || indexEntry?.statusLabel || '';
+    const statusVisual = mapCampaignStatusVisual(statusSource);
+    const fallbackObjective = campaign?.objective || indexEntry?.objective || indexEntry?.objective_type || objectiveHint;
+    const keyMetric = resolveCampaignKeyMetric(campaign, { fallbackObjective });
+    const keyMetricText = keyMetric.value !== null ? formatInteger(keyMetric.value) : '—';
+    const spend = Number.isFinite(campaign?.spendUsd) ? Number(campaign.spendUsd) : null;
+    const spendText = spend !== null ? formatUsd(spend, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—';
+    const denominator =
+      Number.isFinite(keyMetric.value) && keyMetric.value > 0
+        ? keyMetric.value
+        : Number.isFinite(campaign?.leads)
+        ? Number(campaign.leads)
+        : null;
+    const cpa = Number.isFinite(campaign?.cpaUsd)
       ? Number(campaign.cpaUsd)
-      : safeDivision(campaign?.spendUsd, campaign?.leads);
-    const costText = Number.isFinite(cost)
-      ? formatUsd(cost, { digitsBelowOne: 2, digitsAboveOne: 2 }) || '—'
+      : safeDivision(campaign?.spendUsd, denominator);
+    const cpaText = Number.isFinite(cpa)
+      ? formatUsd(cpa, { digitsBelowOne: 2, digitsAboveOne: 2 })
       : '—';
+    const cpc = safeDivision(campaign?.spendUsd, campaign?.clicks);
+    const cpcText = Number.isFinite(cpc)
+      ? formatUsd(cpc, { digitsBelowOne: 2, digitsAboveOne: 2 })
+      : '—';
+    const ctr = Number.isFinite(campaign?.ctr)
+      ? Number(campaign.ctr)
+      : safeDivision(campaign?.clicks, campaign?.impressions) * 100;
+    const ctrText = Number.isFinite(ctr) ? `${formatFloat(ctr, { digits: 1 })}%` : '—';
+    const lastActivitySource =
+      campaign?.dateStop ||
+      campaign?.dateStart ||
+      indexEntry?.dateStop ||
+      indexEntry?.date_start ||
+      indexEntry?.dateStart ||
+      null;
+    const lastActivity = lastActivitySource ? formatDateLabel(lastActivitySource, { timezone }) : '';
 
     return {
-      id: campaign?.id || '',
-      name: campaign?.name || (campaign?.id ? `Campaign ${campaign.id}` : 'Campaign'),
+      id: rawId || lookupId || '',
+      name: campaign?.name || indexEntry?.name || (rawId ? `Campaign ${rawId}` : 'Campaign'),
+      statusIcon: statusVisual.icon,
+      statusCategory: statusVisual.category,
+      statusLabel: statusVisual.label,
+      keyMetricLabel: keyMetric.label,
+      keyMetricText,
+      keyMetricValue: Number.isFinite(keyMetric.value) ? Number(keyMetric.value) : null,
       spendText,
-      costText,
+      spendValue: spend !== null ? spend : 0,
+      cpaText,
+      cpaValue: Number.isFinite(cpa) ? Number(cpa) : null,
+      cpcText,
+      cpcValue: Number.isFinite(cpc) ? Number(cpc) : null,
+      ctrText,
+      ctrValue: Number.isFinite(ctr) ? Number(ctr) : null,
+      objective: fallbackObjective || '',
+      lastActivity,
     };
   });
+
+  return payload;
+}
+
+function buildPortalDataset({ projectCode, signature, timezone, currency, periods, account, kpi }) {
+  const campaignIndex = new Map();
+  if (Array.isArray(account?.campaignSummaries)) {
+    for (const entry of account.campaignSummaries) {
+      if (!entry) {
+        continue;
+      }
+      const rawId = String(entry.id || entry.campaign_id || entry.campaignId || '').replace(/^cmp_/, '');
+      if (!rawId) {
+        continue;
+      }
+      campaignIndex.set(rawId, entry);
+      campaignIndex.set(String(entry.id || entry.campaign_id || entry.campaignId || ''), entry);
+    }
+  }
+
+  const kpiMeta = resolvePortalKpiMeta(kpi);
+  const objectiveHint = kpi?.objective || account?.objective || '';
+
+  const dataset = {};
+  let defaultPeriod = null;
+
+  for (const period of periods) {
+    const payload = buildPortalPeriodPayload(period, {
+      timezone,
+      currency,
+      kpiMeta,
+      objectiveHint,
+      campaignIndex,
+    });
+    dataset[period.id] = payload;
+    if (
+      !defaultPeriod ||
+      (!payload.error && payload.campaigns.length > 0 && period.id !== 'yesterday')
+    ) {
+      defaultPeriod = period.id;
+    }
+  }
+
+  if (!defaultPeriod) {
+    defaultPeriod = periods.find((item) => item && !item.error)?.id || periods[0]?.id || 'today';
+  }
+
+  return {
+    projectCode,
+    signature,
+    timezone,
+    currency,
+    defaultPeriod,
+    periods: dataset,
+  };
 }
 
 function renderClientPortalPage({
@@ -3842,12 +4186,12 @@ function renderClientPortalPage({
   kpi,
   insights = [],
   signature = '',
-  csvLinks = [],
   feedbackStatus = '',
+  projectCode = '',
 }) {
   const projectName = escapeHtml(project?.name || 'Проект');
-  const projectCode = project?.code ? `<span class="project-code">#${escapeHtml(project.code)}</span>` : '';
-  const currencyLabel = escapeHtml(currency || account?.currency || project?.metrics?.currency || 'USD');
+  const projectCodeTag = project?.code ? `<span class="project-code">#${escapeHtml(project.code)}</span>` : '';
+  const currencyCode = currency || account?.currency || project?.metrics?.currency || 'USD';
   const snapshot = resolveTimezoneSnapshot(generatedAt, timezone);
   const updatedLabel = snapshot
     ? `${snapshot.day}.${snapshot.month}.${snapshot.year} ${String(snapshot.hour).padStart(2, '0')}:${String(snapshot.minute).padStart(2, '0')} (${snapshot.timezone})`
@@ -3866,23 +4210,11 @@ function renderClientPortalPage({
     : '—';
 
   const kpiMeta = resolvePortalKpiMeta(kpi);
-
   const insightsList = Array.isArray(insights) ? insights.filter(Boolean) : [];
   const insightsBlock =
     insightsList.length > 0
       ? `<ul class="insights-list">${insightsList.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`
       : '<p class="muted">Новых замечаний нет — показатели держатся стабильно.</p>';
-
-  const csvSection = csvLinks.length
-    ? `<section class="downloads">
-        <h2 class="section-title">Экспорт отчётов</h2>
-        <div class="download-buttons">
-          ${csvLinks
-            .map((link) => `<a class="secondary-button" href="${escapeHtml(link.href)}">${escapeHtml(link.label)} · CSV</a>`)
-            .join('')}
-        </div>
-      </section>`
-    : '';
 
   const feedbackNotice =
     feedbackStatus === 'sent'
@@ -3901,112 +4233,29 @@ function renderClientPortalPage({
       </form>
     </section>`;
 
-  const metricDefs = [
-    { key: 'spend', label: `Расход (${currencyLabel})` },
-    { key: 'leads', label: 'Лиды' },
-    { key: 'cpa', label: kpiMeta.label },
-    { key: 'reach', label: 'Reach' },
-    { key: 'impressions', label: 'Показы' },
-    { key: 'frequency', label: 'Frequency' },
-  ];
-
-  const formatMetricValue = (report, key) => {
-    if (!report || typeof report !== 'object' || !report.totals) {
-      return '—';
-    }
-    const totals = report.totals;
-    switch (key) {
-      case 'spend': {
-        const formatted = formatUsd(totals.spendUsd, { digitsBelowOne: 2, digitsAboveOne: 2 });
-        return formatted || '—';
-      }
-      case 'leads':
-        return formatInteger(totals.leads);
-      case 'cpa': {
-        const value = Number.isFinite(totals.cpaUsd)
-          ? Number(totals.cpaUsd)
-          : safeDivision(totals.spendUsd, totals.leads);
-        const formatted = formatUsd(value, { digitsBelowOne: 2, digitsAboveOne: 2 });
-        return formatted || '—';
-      }
-      case 'reach':
-        return formatInteger(totals.reach);
-      case 'impressions':
-        return formatInteger(totals.impressions);
-      case 'frequency': {
-        const freq = safeDivision(totals.impressions, totals.reach);
-        return formatFloat(freq, { digits: 2 });
-      }
-      default:
-        return '—';
-    }
-  };
-
-  const headerCells = periods
-    .map((period) => {
-      const subtitle = period?.report?.range?.label || '';
-      return `<th><div>${escapeHtml(period.label)}</div>${subtitle ? `<span class="th-sub">${escapeHtml(subtitle)}</span>` : ''}</th>`;
-    })
-    .join('');
-
-  const rows = metricDefs
-    .map((metric) => {
-      const cells = periods
-        .map((period) => {
-          const value = period?.error ? '—' : formatMetricValue(period?.report, metric.key);
-          return `<td>${escapeHtml(value)}</td>`;
-        })
-        .join('');
-      return `<tr><th>${escapeHtml(metric.label)}</th>${cells}</tr>`;
-    })
-    .join('');
-
-  const errorLines = periods
-    .filter((period) => period?.error)
-    .map((period) => `• ${escapeHtml(period.label)} — ${escapeHtml(period.error)}`);
-
-  const errorBlock =
-    errorLines.length > 0
-      ? `<div class="error-block"><strong>⚠️ Не удалось обновить часть данных:</strong><br>${errorLines.join('<br>')}</div>`
-      : '';
-
-  const preferredOrder = ['week', 'month', 'today', 'yesterday'];
-  let topSource = null;
-  for (const key of preferredOrder) {
-    topSource = periods.find(
-      (period) =>
-        period?.id === key &&
-        !period?.error &&
-        Array.isArray(period?.report?.campaigns) &&
-        period.report.campaigns.length > 0,
-    );
-    if (topSource) {
-      break;
-    }
-  }
-  if (!topSource) {
-    topSource = periods.find(
-      (period) => !period?.error && Array.isArray(period?.report?.campaigns) && period.report.campaigns.length > 0,
-    );
-  }
-
-  const topCampaigns = selectPortalTopCampaigns(topSource?.report, { limit: 3 });
-  const topTitle = topSource ? `Топ кампании (${escapeHtml(topSource.label)})` : 'Топ кампании';
-  const topBlock =
-    topCampaigns.length > 0
-      ? `<ul class="campaign-list">${topCampaigns
-          .map(
-            (item) =>
-              `<li><span class="campaign-name">${escapeHtml(item.name)}</span><span class="campaign-metrics">${escapeHtml(
-                item.spendText,
-              )} | ${escapeHtml(kpiMeta.label)}: ${escapeHtml(item.costText)}</span></li>`,
-          )
-          .join('')}</ul>`
-      : '<p class="muted">Кампании ещё не накопили статистику.</p>';
-
   const managerButton = managerLink
     ? `<a class="primary-button" href="${escapeHtml(managerLink)}" target="_blank" rel="noopener noreferrer">Написать в чат</a>`
     : '<span class="primary-button disabled" aria-disabled="true">Ссылка на чат не настроена</span>';
+
+  const dataset = buildPortalDataset({
+    projectCode: projectCode || project?.code || project?.id || '',
+    signature,
+    timezone,
+    currency: currencyCode,
+    periods,
+    account,
+    kpi,
+  });
+  const datasetJson = escapeHtml(JSON.stringify(dataset));
+  const periodOrder = ['today', 'yesterday', 'week', 'month', 'year'];
+  const periodTabs = periodOrder
+    .filter((id) => dataset.periods[id])
+    .map((id) => {
+      const label = dataset.periods[id]?.label || formatReportPresetLabel(id);
+      const activeClass = id === dataset.defaultPeriod ? ' active' : '';
+      return `<button class="period-tab${activeClass}" data-period="${id}">${escapeHtml(label)}</button>`;
+    })
+    .join('');
 
   return `<!DOCTYPE html>
 <html lang="ru">
@@ -4051,7 +4300,7 @@ function renderClientPortalPage({
       }
       .cards {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
         gap: 16px;
         margin-bottom: 32px;
       }
@@ -4072,45 +4321,140 @@ function renderClientPortalPage({
         font-size: 1.2rem;
         font-weight: 600;
       }
-      .stats-table {
-        background: rgba(255, 255, 255, 0.02);
-        border-radius: 20px;
-        padding: 20px;
-        overflow-x: auto;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        min-width: 540px;
-      }
-      th,
-      td {
-        padding: 12px 16px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        text-align: left;
-        font-size: 0.95rem;
-      }
-      th {
-        font-weight: 600;
-      }
-      td {
-        font-variant-numeric: tabular-nums;
-      }
-      table tr:last-child th,
-      table tr:last-child td {
-        border-bottom: none;
-      }
-      .th-sub {
-        display: block;
-        margin-top: 4px;
-        font-size: 0.75rem;
-        color: #8f9299;
-        font-weight: 400;
+      .summary {
+        margin-bottom: 36px;
       }
       .section-title {
-        margin: 36px 0 12px;
         font-size: 1.25rem;
         font-weight: 600;
+        margin: 0 0 12px;
+      }
+      .period-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .period-tab {
+        border: none;
+        border-radius: 999px;
+        padding: 8px 18px;
+        background: rgba(255, 255, 255, 0.08);
+        color: inherit;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s ease;
+      }
+      .period-tab.active {
+        background: linear-gradient(135deg, #3772ff, #4a9bff);
+      }
+      .period-tab:hover {
+        background: rgba(74, 155, 255, 0.25);
+      }
+      .period-range {
+        font-size: 0.9rem;
+        color: #c7cad1;
+        margin-bottom: 16px;
+      }
+      .period-error {
+        padding: 12px 16px;
+        border-radius: 12px;
+        background: rgba(255, 99, 132, 0.15);
+        color: #ffb3be;
+        margin-bottom: 16px;
+      }
+      .metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+      }
+      .metric-card {
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 14px;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .metric-label {
+        font-size: 0.8rem;
+        color: #8f9299;
+        letter-spacing: 0.03em;
+      }
+      .metric-card strong {
+        font-size: 1.15rem;
+        font-weight: 600;
+      }
+      .campaigns {
+        margin-bottom: 36px;
+      }
+      .campaign-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      .campaign-filters,
+      .campaign-sorts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .filter-button,
+      .sort-button {
+        border: none;
+        border-radius: 999px;
+        padding: 8px 16px;
+        background: rgba(255, 255, 255, 0.08);
+        color: inherit;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s ease;
+      }
+      .filter-button.active,
+      .sort-button.active {
+        background: rgba(74, 155, 255, 0.3);
+      }
+      .filter-button:hover,
+      .sort-button:hover {
+        background: rgba(74, 155, 255, 0.2);
+      }
+      .campaign-row {
+        background: rgba(255, 255, 255, 0.04);
+        border-radius: 16px;
+        padding: 14px 16px;
+        margin-bottom: 10px;
+        transition: background 0.2s ease;
+      }
+      .campaign-row:hover {
+        background: rgba(255, 255, 255, 0.07);
+      }
+      .campaign-line {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+      .campaign-status {
+        font-size: 1.1rem;
+      }
+      .campaign-metrics {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        color: #c7cad1;
+        font-size: 0.9rem;
+      }
+      .campaign-metrics span {
+        display: inline-block;
+      }
+      .campaign-empty {
+        color: #8f9299;
+        font-size: 0.95rem;
+        margin-top: 8px;
       }
       .insights-list {
         list-style: none;
@@ -4130,24 +4474,6 @@ function renderClientPortalPage({
         position: absolute;
         left: 0;
         color: #4a9bff;
-      }
-      .campaign-list {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-      }
-      .campaign-name {
-        display: block;
-        font-weight: 600;
-      }
-      .campaign-metrics {
-        color: #c7cad1;
-        font-size: 0.9rem;
-        margin-top: 2px;
-        display: block;
       }
       .muted {
         color: #8f9299;
@@ -4174,26 +4500,8 @@ function renderClientPortalPage({
         cursor: default;
         pointer-events: none;
       }
-      .secondary-button {
-        display: inline-block;
-        padding: 12px 20px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.08);
-        color: #f5f6f8;
-        text-decoration: none;
-        font-weight: 500;
-        letter-spacing: 0.02em;
-        transition: background 0.15s ease, transform 0.15s ease;
-      }
-      .secondary-button:hover {
-        background: rgba(74, 155, 255, 0.2);
-        transform: translateY(-1px);
-      }
-      .download-buttons {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin-top: 16px;
+      .feedback {
+        margin-top: 36px;
       }
       .feedback-form {
         display: flex;
@@ -4241,32 +4549,22 @@ function renderClientPortalPage({
         background: rgba(255, 99, 132, 0.15);
         color: #ffb3be;
       }
-      .downloads {
-        margin-top: 40px;
-      }
       footer {
         margin-top: 40px;
         font-size: 0.8rem;
         color: #6f7279;
-      }
-      .error-block {
-        margin-top: 16px;
-        padding: 12px 16px;
-        border-radius: 12px;
-        background: rgba(255, 99, 132, 0.12);
-        color: #ff9ba7;
       }
       @media (max-width: 640px) {
         header {
           flex-direction: column;
           align-items: flex-start;
         }
-        .stats-table {
-          padding: 16px;
+        .campaign-toolbar {
+          flex-direction: column;
+          align-items: flex-start;
         }
-        th,
-        td {
-          padding: 10px 12px;
+        .campaign-metrics {
+          flex-direction: column;
         }
       }
     </style>
@@ -4275,7 +4573,7 @@ function renderClientPortalPage({
     <main>
       <header>
         <h1>${projectName}</h1>
-        ${projectCode}
+        ${projectCodeTag}
       </header>
       <section class="cards">
         <div class="card">
@@ -4283,37 +4581,291 @@ function renderClientPortalPage({
           <strong>${billingText}</strong>
         </div>
       </section>
+      <section class="summary">
+        <h2 class="section-title">Показатели</h2>
+        <div class="period-tabs" role="tablist">${periodTabs}</div>
+        <div class="period-range" id="period-range"></div>
+        <div class="period-error" id="period-error" hidden></div>
+        <div class="metrics-grid" id="metrics-grid"></div>
+      </section>
+      <section class="campaigns">
+        <div class="campaign-toolbar">
+          <div class="campaign-filters">
+            <button class="filter-button active" data-filter="active">🟢 Активные</button>
+            <button class="filter-button" data-filter="completed">⚪ Завершённые</button>
+            <button class="filter-button" data-filter="all">⚫ Все</button>
+          </div>
+          <div class="campaign-sorts">
+            <button class="sort-button active" data-sort="spend" data-label="Потрачено">🔽 Потрачено</button>
+            <button class="sort-button" data-sort="leads" data-label="Лиды">🔽 Лиды</button>
+            <button class="sort-button" data-sort="cpa" data-label="CPA">🔽 CPA</button>
+          </div>
+        </div>
+        <div class="campaign-list" id="campaign-list"></div>
+        <div class="campaign-empty" id="campaign-empty" hidden>Нет активных кампаний за выбранный период.</div>
+      </section>
       <section>
         <h2 class="section-title">Краткие выводы</h2>
         ${insightsBlock}
       </section>
-      <section class="stats-table">
-        <table>
-          <thead>
-            <tr>
-              <th>Показатель</th>
-              ${headerCells}
-            </tr>
-          </thead>
-          <tbody>
-            ${rows}
-          </tbody>
-        </table>
-        ${errorBlock}
-      </section>
-      ${csvSection}
-      <section>
-        <h2 class="section-title">${topTitle}</h2>
-        ${topBlock}
-      </section>
       ${feedbackSection}
       ${managerButton}
-      <footer>Portal powered by Targetbot · Таймзона: ${escapeHtml(timezone || snapshot?.timezone || 'UTC')}</footer>
+      <footer>Portal powered by Targetbot · Таймзона: ${escapeHtml(timezone || snapshot?.timezone || DEFAULT_TIMEZONE_FALLBACK)}</footer>
     </main>
+    <script type="application/json" id="portal-preload">${datasetJson}</script>
+    <script>
+      (() => {
+        const preload = document.getElementById('portal-preload');
+        if (!preload) {
+          return;
+        }
+        let data = {};
+        try {
+          data = JSON.parse(preload.textContent || '{}');
+        } catch (error) {
+          console.error('Portal preload parse error', error);
+        }
+        const state = {
+          projectCode: data.projectCode || '',
+          signature: data.signature || '',
+          timezone: data.timezone || '',
+          periods: data.periods || {},
+          defaultPeriod: data.defaultPeriod || 'today',
+          selectedPeriod: null,
+          filter: 'active',
+          sortKey: 'spend',
+          sortDir: 'desc',
+          fetching: new Set(),
+        };
+
+        const periodButtons = Array.from(document.querySelectorAll('[data-period]'));
+        const filterButtons = Array.from(document.querySelectorAll('[data-filter]'));
+        const sortButtons = Array.from(document.querySelectorAll('[data-sort]'));
+        const metricsGrid = document.getElementById('metrics-grid');
+        const periodRange = document.getElementById('period-range');
+        const periodError = document.getElementById('period-error');
+        const campaignList = document.getElementById('campaign-list');
+        const campaignEmpty = document.getElementById('campaign-empty');
+        const sortLabels = new Map(sortButtons.map((btn) => [btn.dataset.sort, btn.dataset.label || btn.textContent.trim()]));
+
+        const escapeText = (value) =>
+          String(value ?? '').replace(
+            /[&<>"']/g,
+            (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]),
+          );
+
+        const setActive = (buttons, target, attr) => {
+          buttons.forEach((btn) => {
+            if (btn.dataset[attr] === target) {
+              btn.classList.add('active');
+            } else {
+              btn.classList.remove('active');
+            }
+          });
+        };
+
+        const updateSortButtons = () => {
+          sortButtons.forEach((btn) => {
+            const key = btn.dataset.sort;
+            const label = sortLabels.get(key) || btn.textContent.trim();
+            if (key === state.sortKey) {
+              btn.classList.add('active');
+              btn.dataset.dir = state.sortDir;
+              btn.textContent = (state.sortDir === 'asc' ? '🔼' : '🔽') + ' ' + label;
+            } else {
+              btn.classList.remove('active');
+              btn.dataset.dir = 'desc';
+              btn.textContent = '🔽 ' + label;
+            }
+          });
+        };
+
+        const renderMetrics = (period) => {
+          const metrics = Array.isArray(period.metrics) ? period.metrics : [];
+          metricsGrid.innerHTML = metrics
+            .map((metric) => {
+              return (
+                '<div class="metric-card">' +
+                '<span class="metric-label">' +
+                escapeText(metric.label || '') +
+                '</span>' +
+                '<strong>' +
+                escapeText(metric.text || '—') +
+                '</strong>' +
+                '</div>'
+              );
+            })
+            .join('');
+        };
+
+        const renderCampaigns = (period) => {
+          const campaigns = Array.isArray(period.campaigns) ? period.campaigns.slice() : [];
+          let filtered = campaigns;
+          if (state.filter === 'active') {
+            filtered = campaigns.filter((item) => item.statusCategory === 'active');
+          } else if (state.filter === 'completed') {
+            filtered = campaigns.filter((item) => item.statusCategory === 'completed');
+          }
+          const valueKey = state.sortKey === 'leads' ? 'keyMetricValue' : state.sortKey + 'Value';
+          const dir = state.sortDir === 'asc' ? 1 : -1;
+          filtered.sort((a, b) => {
+            const aValue = Number.isFinite(a[valueKey]) ? Number(a[valueKey]) : -Infinity;
+            const bValue = Number.isFinite(b[valueKey]) ? Number(b[valueKey]) : -Infinity;
+            if (aValue === bValue) {
+              return a.name.localeCompare(b.name);
+            }
+            return aValue > bValue ? dir : -dir;
+          });
+
+          if (filtered.length === 0) {
+            campaignList.innerHTML = '';
+            campaignEmpty.removeAttribute('hidden');
+            return;
+          }
+
+          campaignEmpty.setAttribute('hidden', 'hidden');
+          campaignList.innerHTML = filtered
+            .map((item) => {
+              return (
+                '<div class="campaign-row" data-status="' +
+                escapeText(item.statusCategory || '') +
+                '">' +
+                '<div class="campaign-line">' +
+                '<span class="campaign-status">' +
+                escapeText(item.statusIcon || '⚪') +
+                '</span>' +
+                '<span class="campaign-name">' +
+                escapeText(item.name || '') +
+                '</span>' +
+                '</div>' +
+                '<div class="campaign-metrics">' +
+                '<span>' +
+                escapeText(item.keyMetricLabel || '') +
+                ': ' +
+                escapeText(item.keyMetricText || '—') +
+                '</span>' +
+                '<span>Потрачено: ' +
+                escapeText(item.spendText || '—') +
+                '</span>' +
+                '<span>CPA: ' +
+                escapeText(item.cpaText || '—') +
+                '</span>' +
+                '<span>CPC: ' +
+                escapeText(item.cpcText || '—') +
+                '</span>' +
+                '<span>CTR: ' +
+                escapeText(item.ctrText || '—') +
+                '</span>' +
+                '</div>' +
+                '</div>'
+              );
+            })
+            .join('');
+        };
+
+        const render = () => {
+          const periodId = state.selectedPeriod || state.defaultPeriod;
+          const period = state.periods[periodId];
+          if (!period) {
+            return;
+          }
+          setActive(periodButtons, periodId, 'period');
+          setActive(filterButtons, state.filter, 'filter');
+          updateSortButtons();
+          periodRange.textContent = period.rangeLabel || '';
+          if (period.error) {
+            periodError.textContent = '⚠ ' + period.error;
+            periodError.removeAttribute('hidden');
+          } else {
+            periodError.setAttribute('hidden', 'hidden');
+            periodError.textContent = '';
+          }
+          renderMetrics(period);
+          renderCampaigns(period);
+        };
+
+        const fetchPeriod = (periodId, { force = false } = {}) => {
+          if (!state.projectCode || !state.signature) {
+            return;
+          }
+          const existing = state.periods[periodId];
+          if (!force && existing && !existing.error && existing.fresh) {
+            return;
+          }
+          if (state.fetching.has(periodId)) {
+            return;
+          }
+          state.fetching.add(periodId);
+          const params = new URLSearchParams({
+            code: state.projectCode,
+            period: periodId,
+            sig: state.signature,
+          });
+          fetch('/api/meta/status?' + params.toString())
+            .then((response) => (response.ok ? response.json() : Promise.reject(new Error('http_error'))))
+            .then((body) => {
+              if (body && body.ok && body.period) {
+                state.periods[periodId] = { ...body.period, fresh: true };
+                if (state.selectedPeriod === periodId) {
+                  render();
+                }
+              }
+            })
+            .catch((error) => {
+              console.warn('Failed to refresh period', periodId, error);
+            })
+            .finally(() => {
+              state.fetching.delete(periodId);
+            });
+        };
+
+        periodButtons.forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const periodId = btn.dataset.period;
+            if (!periodId || periodId === state.selectedPeriod) {
+              return;
+            }
+            state.selectedPeriod = periodId;
+            render();
+            fetchPeriod(periodId);
+          });
+        });
+
+        filterButtons.forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const value = btn.dataset.filter;
+            if (!value) {
+              return;
+            }
+            state.filter = value;
+            render();
+          });
+        });
+
+        sortButtons.forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const key = btn.dataset.sort;
+            if (!key) {
+              return;
+            }
+            if (state.sortKey === key) {
+              state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
+            } else {
+              state.sortKey = key;
+              state.sortDir = 'desc';
+            }
+            render();
+          });
+        });
+
+        state.selectedPeriod = state.defaultPeriod;
+        render();
+        fetchPeriod(state.selectedPeriod);
+      })();
+    </script>
   </body>
 </html>`;
 }
-
 function generatePortalInsights({ periods, kpi, currency }) {
   const list = [];
   if (!Array.isArray(periods) || periods.length === 0) {
@@ -4409,73 +4961,6 @@ function generatePortalInsights({ periods, kpi, currency }) {
   }
 
   return list;
-}
-
-function renderPortalCsv({ project, account, period, report, timezone, generatedAt, currency, kpi }) {
-  const lines = [];
-  const add = (section, name, metric, value, unit = '') => {
-    lines.push([section, name, metric, value, unit].map(toCsvValue).join(','));
-  };
-
-  add('meta', 'project_name', 'value', project?.name || '', '');
-  add('meta', 'project_code', 'value', project?.code || project?.id || '', '');
-  add('meta', 'account_name', 'value', account?.name || account?.id || '', '');
-  if (timezone) {
-    add('meta', 'timezone', 'value', timezone, '');
-  }
-  add('meta', 'generated_at', 'value', new Date(generatedAt).toISOString(), '');
-
-  if (report?.range?.label) {
-    add('range', period?.label || '', 'label', report.range.label, '');
-  }
-  if (report?.range?.since || report?.range?.until) {
-    add('range', period?.label || '', 'since', report.range.since || '', '');
-    add('range', period?.label || '', 'until', report.range.until || '', '');
-  }
-
-  const totals = report?.totals || {};
-  const kpiMeta = resolvePortalKpiMeta(kpi);
-  add('totals', period?.label || '', 'spend', formatCsvNumber(totals.spendUsd), currency || 'USD');
-  add('totals', period?.label || '', 'leads', formatCsvNumber(totals.leads, { digits: 0 }), '');
-  const cost = Number.isFinite(totals.cpaUsd) ? totals.cpaUsd : safeDivision(totals.spendUsd, totals.leads);
-  add('totals', period?.label || '', kpiMeta.label.toLowerCase(), formatCsvNumber(cost), currency || 'USD');
-  add('totals', period?.label || '', 'reach', formatCsvNumber(totals.reach, { digits: 0 }), '');
-  add('totals', period?.label || '', 'impressions', formatCsvNumber(totals.impressions, { digits: 0 }), '');
-  const frequency = safeDivision(totals.impressions, totals.reach);
-  add('totals', period?.label || '', 'frequency', formatCsvNumber(frequency), '');
-
-  const campaigns = Array.isArray(report?.campaigns) ? report.campaigns : [];
-  const topCampaigns = campaigns.slice(0, 20);
-  for (const campaign of topCampaigns) {
-    const name = campaign?.name || campaign?.id || 'Campaign';
-    add('campaign', name, 'spend', formatCsvNumber(campaign?.spendUsd), currency || 'USD');
-    add('campaign', name, 'leads', formatCsvNumber(campaign?.leads, { digits: 0 }), '');
-    const campaignCost = Number.isFinite(campaign?.cpaUsd)
-      ? campaign.cpaUsd
-      : safeDivision(campaign?.spendUsd, campaign?.leads);
-    add('campaign', name, kpiMeta.label.toLowerCase(), formatCsvNumber(campaignCost), currency || 'USD');
-  }
-
-  return lines.join('\n');
-}
-
-function toCsvValue(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  const stringValue = String(value);
-  if (/[",\n]/.test(stringValue)) {
-    return `"${stringValue.replace(/"/g, '""')}"`;
-  }
-  return stringValue;
-}
-
-function formatCsvNumber(value, { digits = 2 } = {}) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) {
-    return '';
-  }
-  return num.toFixed(digits);
 }
 
 function escapeHtml(value) {
@@ -4788,6 +5273,7 @@ function resolveKv(env, name) {
 class KvStorage {
   constructor(env) {
     this.env = env;
+    this.cache = new Map();
   }
 
   namespace(name) {
@@ -4795,16 +5281,24 @@ class KvStorage {
   }
 
   async getJson(bindingName, key) {
+    const cacheKey = `${bindingName}:${key}`;
+    if (this.cache.has(cacheKey)) {
+      return this.cache.get(cacheKey);
+    }
     const namespace = this.namespace(bindingName);
     if (!namespace || typeof namespace.get !== 'function') return null;
     const raw = await namespace.get(key);
-    return safeJsonParse(raw);
+    const parsed = safeJsonParse(raw);
+    this.cache.set(cacheKey, parsed);
+    return parsed;
   }
 
   async putJson(bindingName, key, value, options = {}) {
     const namespace = this.namespace(bindingName);
     if (!namespace || typeof namespace.put !== 'function') return false;
     await namespace.put(key, JSON.stringify(value), options);
+    const cacheKey = `${bindingName}:${key}`;
+    this.cache.set(cacheKey, value);
     return true;
   }
 
@@ -4812,6 +5306,8 @@ class KvStorage {
     const namespace = this.namespace(bindingName);
     if (!namespace || typeof namespace.delete !== 'function') return false;
     await namespace.delete(key);
+    const cacheKey = `${bindingName}:${key}`;
+    this.cache.delete(cacheKey);
     return true;
   }
 
@@ -5708,7 +6204,7 @@ class MetaService {
     const response = await client.request(`/${accountId}/insights`, { searchParams: params });
     const entries = Array.isArray(response?.data) ? response.data : [];
 
-    const localSnapshot = resolveTimezoneSnapshot(now, timezone || this.config?.defaultTimezone || 'UTC');
+    const localSnapshot = resolveTimezoneSnapshot(now, timezone || this.config?.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK);
     const localDateIso = localSnapshot?.dateIso || null;
 
     const series = new Map();
@@ -6425,7 +6921,7 @@ class TelegramBot {
         draft.code = normalizeProjectIdForCallback(account.name || account.id || 'project');
       }
       if (!draft.timezone) {
-        draft.timezone = this.config.defaultTimezone || 'UTC';
+        draft.timezone = this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
       }
     } else {
       session.selectedAccountId = parsedAccount.numericId;
@@ -6893,7 +7389,7 @@ class TelegramBot {
       }
     }
 
-    const timezone = draft.timezone || this.config.defaultTimezone || 'UTC';
+    const timezone = draft.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
     session.scheduleSuggestion = buildDefaultProjectSchedule({ timezone });
     if (account) {
       session.kpiSuggestion = deriveDefaultProjectKpi(account, { currency: draft.currency || account.currency });
@@ -7626,7 +8122,7 @@ class TelegramBot {
         `Чат: <code>${escapeHtml(record.chat.id)}</code>${
           record.chat.thread_id ? ` / <code>${escapeHtml(record.chat.thread_id)}</code>` : ''
         }`,
-        `Таймзона: ${escapeHtml(record.settings?.timezone || 'UTC')}`,
+        `Таймзона: ${escapeHtml(record.settings?.timezone || DEFAULT_TIMEZONE_FALLBACK)}`,
         '',
         result.action === 'updated'
           ? 'Проверьте карточку проекта — новые параметры применены.'
@@ -7705,7 +8201,7 @@ class TelegramBot {
 
     const codeText = draft.code ? `<code>${escapeHtml(draft.code)}</code>` : 'создадим автоматически';
     const nameText = draft.name ? escapeHtml(draft.name) : account?.name ? escapeHtml(account.name) : 'будет подставлено из аккаунта';
-    const timezone = draft.timezone || this.config.defaultTimezone || 'UTC';
+    const timezone = draft.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
 
     const lines = [
       '<b>Выбор проекта</b>',
@@ -7926,7 +8422,7 @@ class TelegramBot {
     const accountId = record.meta_account_id || record.ad_account_id || '';
     const chatId = record.chat?.id || '';
     const threadId = record.chat?.thread_id || record.chat?.threadId || null;
-    const timezone = record.settings?.timezone || this.config.defaultTimezone || 'UTC';
+    const timezone = record.settings?.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
 
     const isUpdate = action === 'updated';
 
@@ -8084,7 +8580,7 @@ class TelegramBot {
     const accountMeta = this.findProjectConnectAccount(session, `act_${adAccountId}`);
     const currencyCandidate = draft.currency || accountMeta?.currency || stored?.metrics?.currency || 'USD';
     const currency = currencyCandidate ? String(currencyCandidate).toUpperCase() : 'USD';
-    const timezone = draft.timezone || stored?.settings?.timezone || this.config.defaultTimezone || 'UTC';
+    const timezone = draft.timezone || stored?.settings?.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
     const derivedSchedule = session.scheduleSuggestion || buildDefaultProjectSchedule({ timezone });
     const derivedKpi = session.kpiSuggestion || deriveDefaultProjectKpi(accountMeta, { currency });
     const storedSchedule = stored ? extractScheduleSettings(stored) : null;
@@ -8347,14 +8843,14 @@ class TelegramBot {
 
     if (!session.scheduleDraft) {
       const current = extractScheduleSettings(context.rawProject) || {};
-      const defaultTimezone = this.config.defaultTimezone || context.project?.timezone || 'UTC';
+      const defaultTimezone = this.config.defaultTimezone || context.project?.timezone || DEFAULT_TIMEZONE_FALLBACK;
       session.scheduleDraft = normalizeScheduleDraft(current, {
         defaultTimezone,
       });
     }
     if (!session.scheduleSuggestion && context.scheduleSuggestion) {
       session.scheduleSuggestion = normalizeScheduleDraft(context.scheduleSuggestion, {
-        defaultTimezone: this.config.defaultTimezone || 'UTC',
+        defaultTimezone: this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK,
       });
     }
     if (!session.scheduleMode) {
@@ -8542,7 +9038,7 @@ class TelegramBot {
         continue;
       }
 
-      const timezone = schedule.timezone || this.config.defaultTimezone || 'UTC';
+      const timezone = schedule.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
       const snapshot = resolveTimezoneSnapshot(now, timezone);
       if (!shouldRunScheduleToday(schedule, snapshot.weekday)) {
         continue;
@@ -8735,7 +9231,7 @@ class TelegramBot {
       }
 
       const schedule = extractScheduleSettings(rawProject) || {};
-      const timezone = schedule.timezone || this.config.defaultTimezone || 'UTC';
+      const timezone = schedule.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
       const snapshot = resolveTimezoneSnapshot(now, timezone);
       const localMinutes = snapshot?.minutes ?? 0;
       const localDateIso = snapshot?.dateIso || formatDateIsoInTimeZone(now, timezone);
@@ -8819,12 +9315,12 @@ class TelegramBot {
 
         if (shouldCheckBilling) {
           const signals = collectBillingSignals(account);
-          const hasIssues =
-            signals.issues.length > 0 || (Number.isFinite(signals.debtUsd) && Number(signals.debtUsd) > 0);
+          const fingerprint = signals.fingerprint || '';
+          const hasIssues = signals.isCritical && fingerprint;
 
           if (hasIssues) {
             const billingState = state.billing || {};
-            if (billingState.date !== localDateIso || billingState.fingerprint !== signals.fingerprint) {
+            if (billingState.fingerprint !== fingerprint) {
               const lines = [
                 '💳 <b>Проблемы с оплатой</b>',
                 `<b>${escapeHtml(project.name)}</b> — требуется внимание.`,
@@ -8850,12 +9346,14 @@ class TelegramBot {
               });
 
               state.billing = {
-                date: localDateIso,
-                fingerprint: signals.fingerprint,
+                fingerprint,
                 notifiedAt: new Date().toISOString(),
               };
               stateChanged = true;
             }
+          } else if (state.billing && state.billing.fingerprint) {
+            state.billing = { fingerprint: '', clearedAt: new Date().toISOString() };
+            stateChanged = true;
           }
         }
       }
@@ -9455,7 +9953,7 @@ class TelegramBot {
     }
 
     const schedule = extractScheduleSettings(rawProject) || {};
-    const timezone = schedule.timezone || this.config.defaultTimezone || 'UTC';
+    const timezone = schedule.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
     const campaignFilter = extractReportCampaignFilter(rawProject);
     const kpi = extractProjectKpi(rawProject);
     const kpiTarget = Number.isFinite(kpi?.cpa)
@@ -11159,72 +11657,6 @@ class TelegramBot {
             context.project.key ||
             `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(context.project.id || context.project.code || projectId)}`;
 
-          if (subAction === 'csv') {
-            const previewState = await this.loadReportPreview(projectKey);
-            if (!previewState || !previewState.preset) {
-              await this.telegram.answerCallbackQuery({
-                callback_query_id: id,
-                text: 'Сначала сформируйте отчёт, чтобы экспортировать CSV.',
-                show_alert: true,
-              });
-              return { handled: true };
-            }
-
-            const portalUrl = previewState.portalUrl
-              ? previewState.portalUrl
-              : await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
-            if (!portalUrl) {
-              await this.telegram.answerCallbackQuery({
-                callback_query_id: id,
-                text: 'У проекта нет ссылки портала. Создайте портал перед экспортом.',
-                show_alert: true,
-              });
-              return { handled: true };
-            }
-
-            const preset = String(previewState.preset);
-            const periodMap = { today: 'today', yesterday: 'yesterday', week: 'week', month: 'month' };
-            const periodId = periodMap[preset];
-            if (!periodId) {
-              await this.telegram.answerCallbackQuery({
-                callback_query_id: id,
-                text: 'CSV доступен для периодов Сегодня, Вчера, 7 дней и Месяц.',
-                show_alert: true,
-              });
-              return { handled: true };
-            }
-
-            let csvUrl;
-            try {
-              csvUrl = new URL(portalUrl);
-            } catch (error) {
-              await this.telegram.answerCallbackQuery({
-                callback_query_id: id,
-                text: 'Не удалось подготовить ссылку CSV.',
-                show_alert: true,
-              });
-              return { handled: true };
-            }
-
-            csvUrl.searchParams.set('format', 'csv');
-            csvUrl.searchParams.set('period', periodId);
-
-            const label = formatReportPresetLabel(preset);
-            await this.renderAdminMessage(message, {
-              chatId,
-              text: `<b>Экспорт CSV</b>\nПериод: ${escapeHtml(label)}.`,
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: '⬇️ Скачать CSV', url: csvUrl.toString() }],
-                  [{ text: '⬅️ К отчётам', callback_data: `${base}:reports` }],
-                ],
-              },
-            });
-
-            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Ссылка на CSV готова.' });
-            return { handled: true };
-          }
-
           if (subAction === 'send') {
             const target = extraAction || 'chat';
             const previewState = await this.loadReportPreview(projectKey);
@@ -11460,7 +11892,7 @@ class TelegramBot {
             context.project.key ||
             `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(context.project.id || context.project.code || projectId)}`;
           const scheduleSettings = extractScheduleSettings(context.rawProject);
-          const timezone = scheduleSettings?.timezone || this.config.defaultTimezone || 'UTC';
+          const timezone = scheduleSettings?.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
           const campaignFilter = extractReportCampaignFilter(context.rawProject);
           const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
 
@@ -11981,7 +12413,7 @@ class TelegramBot {
               context.project.id || context.project.code || projectId,
             )}`;
           const schedule = extractScheduleSettings(context.rawProject) || {};
-          const timezone = schedule.timezone || this.config.defaultTimezone || 'UTC';
+          const timezone = schedule.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
           const baseCallbackId = projectId;
 
           const renderAutopausePanel = async () => {
@@ -12574,7 +13006,7 @@ class TelegramBot {
               context.project.id || context.project.code || projectId,
             )}`;
           const timezone =
-            extractScheduleSettings(context.rawProject)?.timezone || this.config.defaultTimezone || 'UTC';
+            extractScheduleSettings(context.rawProject)?.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
 
           const renderPayment = async () => {
             const billingLines = formatClientBillingLines(context.project.clientBilling, { timezone });
@@ -12837,7 +13269,8 @@ class AppConfig {
   constructor(env = {}) {
     this.botToken = AppConfig.resolveToken(env);
     this.adminIds = parseAdminIds(env.ADMIN_IDS);
-    this.defaultTimezone = typeof env.DEFAULT_TZ === 'string' ? env.DEFAULT_TZ.trim() : '';
+    const envTz = typeof env.DEFAULT_TZ === 'string' ? env.DEFAULT_TZ.trim() : '';
+    this.defaultTimezone = envTz || DEFAULT_TIMEZONE_FALLBACK;
     this.workerUrl = typeof env.WORKER_URL === 'string' ? env.WORKER_URL.trim() : '';
     this.metaAppId = typeof env.FB_APP_ID === 'string' ? env.FB_APP_ID.trim() : '';
     this.metaAppSecret = typeof env.FB_APP_SECRET === 'string' ? env.FB_APP_SECRET.trim() : '';
@@ -13080,6 +13513,10 @@ class WorkerApp {
       return this.handleMetaManage(url, { normalizedPath });
     }
 
+    if (normalizedPath === '/api/meta/status') {
+      return this.handleMetaStatusApi(url);
+    }
+
     if (normalizedPath === '/fb_auth') {
       return this.handleFacebookAuth(url);
     }
@@ -13251,6 +13688,178 @@ class WorkerApp {
         { status: 502 },
       );
     }
+  }
+
+  async handleMetaStatusApi(url) {
+    if (!this.metaService) {
+      return jsonResponse({ ok: false, error: 'meta_service_unavailable' }, { status: 503 });
+    }
+
+    const method = (this.request.method || 'GET').toUpperCase();
+    if (method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          Allow: 'GET,HEAD,OPTIONS',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET,HEAD,OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+          'Access-Control-Max-Age': '600',
+        },
+      });
+    }
+
+    const wantsHead = method === 'HEAD';
+    if (method !== 'GET' && method !== 'HEAD') {
+      const response = jsonResponse(
+        { ok: false, error: 'method_not_allowed' },
+        {
+          status: 405,
+          headers: {
+            Allow: 'GET,HEAD,OPTIONS',
+            'Access-Control-Allow-Origin': '*',
+          },
+        },
+      );
+      if (wantsHead) {
+        const headers = new Headers(response.headers);
+        return new Response(null, { status: response.status, headers });
+      }
+      return response;
+    }
+
+    const respond = (body, { status = 200, headers = {} } = {}) => {
+      const response = jsonResponse(body, {
+        status,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+          ...headers,
+        },
+      });
+      if (wantsHead) {
+        const headHeaders = new Headers(response.headers);
+        return new Response(null, { status: response.status, headers: headHeaders });
+      }
+      return response;
+    };
+
+    const projectCode = safeDecode(
+      pickFirstFilled(url.searchParams.get('code'), url.searchParams.get('project'), ''),
+    );
+    if (!projectCode) {
+      return respond({ ok: false, error: 'project_required' }, { status: 400 });
+    }
+
+    const signature = pickFirstFilled(
+      url.searchParams.get('sig'),
+      url.searchParams.get('signature'),
+      url.searchParams.get('token'),
+      url.searchParams.get('key'),
+    );
+
+    if (!signature) {
+      return respond({ ok: false, error: 'signature_required' }, { status: 401 });
+    }
+
+    const refreshRequested = /^(1|true|yes|on)$/i.test(url.searchParams.get('refresh') || '');
+    const context = await this.resolveProjectContext(projectCode, {
+      forceMetaRefresh: refreshRequested,
+    });
+
+    if (!context?.project) {
+      return respond({ ok: false, error: 'project_not_found' }, { status: 404 });
+    }
+
+    const portalTokens = collectPortalTokens({
+      rawProject: context.rawProject,
+      project: context.project,
+      config: this.config,
+    });
+
+    if (portalTokens.size === 0) {
+      return respond({ ok: false, error: 'portal_disabled' }, { status: 403 });
+    }
+
+    const projectIdentifier = context.project.code || context.project.id || projectCode;
+    const signatureOk = await portalSignatureMatches(signature, {
+      code: projectIdentifier,
+      tokens: portalTokens,
+    });
+
+    if (!signatureOk) {
+      return respond({ ok: false, error: 'forbidden' }, { status: 403 });
+    }
+
+    const definitions = listPortalPeriodDefinitions();
+    const requestedPeriod = String(url.searchParams.get('period') || '').toLowerCase();
+    const definition =
+      definitions.find((item) => item.id === requestedPeriod) || definitions[0] || {
+        id: 'today',
+        label: 'Сегодня',
+        preset: 'today',
+      };
+
+    const timezone =
+      extractScheduleSettings(context.rawProject)?.timezone ||
+      this.config.defaultTimezone ||
+      DEFAULT_TIMEZONE_FALLBACK;
+    const campaignFilter = extractReportCampaignFilter(context.rawProject);
+    const kpi = extractProjectKpi(context.rawProject);
+
+    let currency =
+      context.account?.currency ||
+      context.project?.metrics?.currency ||
+      context.project?.currency ||
+      null;
+    let report = null;
+    let errorMessage = null;
+
+    try {
+      report = await this.metaService.fetchAccountReport({
+        project: context.project,
+        account: context.account,
+        preset: definition.preset,
+        timezone,
+        campaignIds: campaignFilter,
+      });
+      if (!currency && report?.currency) {
+        currency = report.currency;
+      }
+    } catch (error) {
+      errorMessage = error?.message || 'Не удалось загрузить статистику';
+    }
+
+    const periods = [
+      {
+        id: definition.id,
+        label: definition.label,
+        report,
+        error: errorMessage,
+      },
+    ];
+
+    const dataset = buildPortalDataset({
+      projectCode: projectIdentifier,
+      signature,
+      timezone,
+      currency: currency || report?.currency || 'USD',
+      periods,
+      account: context.account,
+      kpi,
+    });
+
+    const periodPayload = dataset.periods[definition.id] ? { ...dataset.periods[definition.id], fresh: true } : null;
+
+    return respond({
+      ok: true,
+      project: {
+        code: projectIdentifier,
+        name: context.project?.name || null,
+      },
+      timezone,
+      period: periodPayload,
+    });
   }
 
   buildWorkerAbsoluteUrl(path = '', { url } = {}) {
@@ -13960,41 +14569,11 @@ class WorkerApp {
       return htmlResponse('<h1>Проект не найден</h1><p>Ссылка устарела или проект ещё не подключён.</p>', { status: 404 });
     }
 
-    const portalTokens = new Set();
-    const registerToken = (value) => {
-      if (!value) {
-        return;
-      }
-      const token = String(value).trim();
-      if (token) {
-        portalTokens.add(token);
-      }
-    };
-
-    const rawTokens = extractPortalTokens(context.rawProject);
-    for (const token of rawTokens) {
-      registerToken(token);
-    }
-
-    if (context.project && typeof context.project === 'object') {
-      if (Array.isArray(context.project.portalTokens)) {
-        for (const token of context.project.portalTokens) {
-          registerToken(token);
-        }
-      }
-      registerToken(context.project.portalToken);
-      if (context.project.portal && typeof context.project.portal === 'object') {
-        registerToken(context.project.portal.token);
-        registerToken(context.project.portal.secret);
-      }
-    }
-
-    if (this.config.portalAccessToken) {
-      registerToken(this.config.portalAccessToken);
-    }
-    if (this.config.metaManageToken) {
-      registerToken(this.config.metaManageToken);
-    }
+    const portalTokens = collectPortalTokens({
+      rawProject: context.rawProject,
+      project: context.project,
+      config: this.config,
+    });
 
     if (portalTokens.size === 0) {
       return htmlResponse(
@@ -14017,16 +14596,11 @@ class WorkerApp {
     }
 
     const timezone =
-      extractScheduleSettings(context.rawProject)?.timezone || this.config.defaultTimezone || 'UTC';
+      extractScheduleSettings(context.rawProject)?.timezone || this.config.defaultTimezone || DEFAULT_TIMEZONE_FALLBACK;
     const campaignFilter = extractReportCampaignFilter(context.rawProject);
     const kpi = extractProjectKpi(context.rawProject);
 
-    const definitions = [
-      { id: 'today', label: 'Сегодня', preset: 'today' },
-      { id: 'yesterday', label: 'Вчера', preset: 'yesterday' },
-      { id: 'week', label: '7 дней', preset: 'week' },
-      { id: 'month', label: 'МТД', preset: 'month' },
-    ];
+    const definitions = listPortalPeriodDefinitions();
 
     if (method === 'POST') {
       return this.handleClientPortalPost({
@@ -14036,21 +14610,6 @@ class WorkerApp {
         url,
         formData: formPayload,
         jsonBody: jsonPayload,
-      });
-    }
-
-    const formatParam = (url.searchParams.get('format') || '').toLowerCase();
-    if (formatParam === 'csv') {
-      const targetId = (url.searchParams.get('period') || '').toLowerCase();
-      const definition = definitions.find((item) => item.id === targetId) || definitions[0];
-      return this.handleClientPortalCsv({
-        context,
-        definition,
-        timezone,
-        campaignFilter,
-        kpi,
-        url,
-        projectCode,
       });
     }
 
@@ -14091,17 +14650,6 @@ class WorkerApp {
       currency: inferredCurrency || context.account?.currency || 'USD',
     });
 
-    const csvLinks = definitions.map((definition) => {
-      const linkUrl = new URL(url.toString());
-      linkUrl.searchParams.set('format', 'csv');
-      linkUrl.searchParams.set('period', definition.id);
-      linkUrl.searchParams.delete('feedback');
-      if (!linkUrl.searchParams.get('sig')) {
-        linkUrl.searchParams.set('sig', signature);
-      }
-      return { id: definition.id, label: definition.label, href: linkUrl.toString() };
-    });
-
     const feedbackStatus = url.searchParams.get('feedback') || '';
 
     const html = renderClientPortalPage({
@@ -14115,8 +14663,8 @@ class WorkerApp {
       kpi,
       insights,
       signature,
-      csvLinks,
       feedbackStatus,
+      projectCode: projectIdentifier,
     });
 
     return htmlResponse(html);
@@ -14181,51 +14729,6 @@ class WorkerApp {
     redirectTarget.searchParams.delete('format');
     redirectTarget.searchParams.delete('period');
     return Response.redirect(redirectTarget.toString(), 303);
-  }
-
-  async handleClientPortalCsv({ context, definition, timezone, campaignFilter, kpi, url, projectCode }) {
-    let report;
-    try {
-      report = await this.metaService.fetchAccountReport({
-        project: context.project,
-        account: context.account,
-        preset: definition.preset,
-        timezone,
-        campaignIds: campaignFilter,
-      });
-    } catch (error) {
-      return htmlResponse(
-        `<h1>Не удалось подготовить CSV</h1><p>${escapeHtml(error?.message || String(error))}</p>`,
-        { status: 502 },
-      );
-    }
-
-    const currency =
-      report?.currency || context.account?.currency || context.project?.metrics?.currency || 'USD';
-
-    const csv = renderPortalCsv({
-      project: context.project,
-      account: context.account,
-      period: { id: definition.id, label: definition.label },
-      report,
-      timezone,
-      generatedAt: new Date(),
-      currency,
-      kpi,
-    });
-
-    const filenameBase = normalizeProjectIdForCallback(
-      context.project?.code || context.project?.id || projectCode || 'project',
-    );
-    const filename = `${filenameBase || 'project'}-${definition.id}.csv`;
-
-    return new Response(csv, {
-      headers: {
-        'content-type': 'text/csv; charset=utf-8',
-        'content-disposition': `attachment; filename="${filename}"`,
-        'cache-control': 'no-store',
-      },
-    });
   }
 
   async sendPortalFeedback({ context, projectCode, messageText }) {
