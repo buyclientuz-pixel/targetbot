@@ -140,7 +140,8 @@
    DEFAULT_TZ="Asia/Tashkent"
    ```
 3. Для запуска через Node.js или других инструментов можно задать те же значения в `.env`.
-4. Чтобы быстро отправить локальные значения в Cloudflare, экспортируйте их в текущую сессию (`export FB_APP_ID=...`) и выполните `npm run sync:secrets -- --env production`.
+4. Скрипты `npm run check:config` и `npm run sync:secrets` автоматически подхватывают переменные из `.env`, поэтому достаточно поддерживать файл в актуальном состоянии.
+5. Чтобы быстро отправить локальные значения в Cloudflare, экспортируйте их в текущую сессию (`export FB_APP_ID=...`) и выполните `npm run sync:secrets -- --env production`.
 
 > `.dev.vars` и `.env` не коммитятся в репозиторий — убедитесь, что файлы перечислены в `.gitignore` (уже настроено).
 
@@ -150,6 +151,7 @@
    `PROJECT_MANAGER_IDS`, `PROJECT_ACCOUNT_ACCESS`, `PROJECT_CHAT_PRESETS`, `GS_WEBHOOK`, а также связку R2 (`R2_ACCESS_KEY_ID`,
    `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_ENDPOINT`, `R2_ACCOUNT_ID`).
 2. При следующем деплое workflow автоматически вызовет `npm run sync:secrets -- --env production` и перенесёт значения в Cloudflare.
+   В workflow пробрасываются все `R2_*` секреты, поэтому при корректно заданных значениях синхронизация не будет пропускать R2.
 3. В логах появятся сообщения `✅ Synced secret <KEY>` для каждого отправленного ключа; отсутствие значения отмечается строкой `⚠️ Пропуск`.
 4. Детальный процесс описан в `docs/deployment.md` (пошаговый гайд по деплою и ротации секретов).
 
