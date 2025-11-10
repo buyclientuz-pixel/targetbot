@@ -6225,9 +6225,11 @@ function renderClientPortalPage({
           campaignModalSummary.innerHTML = summaryMetrics
             .map(
               (metric) =>
-                `<div class="campaign-modal__summary-card"><span>${escapeText(metric.label)}</span><strong>${escapeText(
-                  metric.value || '—',
-                )}</strong></div>`,
+                '<div class="campaign-modal__summary-card"><span>' +
+                escapeText(metric.label) +
+                '</span><strong>' +
+                escapeText(metric.value || '—') +
+                '</strong></div>',
             )
             .join('');
           if (detail.campaign) {
@@ -6244,11 +6246,21 @@ function renderClientPortalPage({
               .map(
                 (row) =>
                   '<tr>' +
-                  `<td>${escapeText(row.label || '')}</td>` +
-                  `<td>${escapeText(row.spendText || '—')}</td>` +
-                  `<td>${escapeText(row.leadsText || '—')}</td>` +
-                  `<td>${escapeText(row.cpaText || '—')}</td>` +
-                  `<td>${escapeText(row.ctrText || '—')}</td>` +
+                  '<td>' +
+                  escapeText(row.label || '') +
+                  '</td>' +
+                  '<td>' +
+                  escapeText(row.spendText || '—') +
+                  '</td>' +
+                  '<td>' +
+                  escapeText(row.leadsText || '—') +
+                  '</td>' +
+                  '<td>' +
+                  escapeText(row.cpaText || '—') +
+                  '</td>' +
+                  '<td>' +
+                  escapeText(row.ctrText || '—') +
+                  '</td>' +
                   '</tr>',
               )
               .join('');
@@ -6322,7 +6334,7 @@ function renderClientPortalPage({
             ? period.campaigns.find((item) => String(item.id) === campaignId)
             : null;
           showModalLoading(listItem);
-          const cacheKey = `${campaignId}:${state.includeArchived ? '1' : '0'}`;
+          const cacheKey = String(campaignId) + ':' + (state.includeArchived ? '1' : '0');
           if (state.campaignDetails.has(cacheKey)) {
             const cached = state.campaignDetails.get(cacheKey);
             renderModal(cached, listItem);
