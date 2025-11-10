@@ -52,6 +52,35 @@ const ALERT_BILLING_DEFAULT_TIMES = ['10:00', '14:00', '18:00'];
 const ALERT_FREQUENCY_THRESHOLD = 3.5;
 const ALERT_CTR_THRESHOLD = 0.5;
 const ALERT_CPA_THRESHOLD_MULTIPLIER = 1.2;
+const KPI_OBJECTIVE_OPTIONS = [
+  { value: 'LEAD_GENERATION', label: 'Лиды' },
+  { value: 'CONVERSIONS', label: 'Продажи' },
+  { value: 'OUTCOME_SALES', label: 'Покупки' },
+  { value: 'MESSAGES', label: 'Сообщения' },
+  { value: 'TRAFFIC', label: 'Трафик' },
+  { value: 'AWARENESS', label: 'Узнаваемость' },
+  { value: 'REACH', label: 'Охват' },
+];
+const KPI_CURRENCY_OPTIONS = ['USD', 'EUR', 'UZS', 'RUB', 'KZT'];
+const KPI_FIELD_CONFIG = {
+  cpa: { label: 'CPA', type: 'money', steps: [-5, -1, -0.5, -0.1, 0.1, 0.5, 1, 5] },
+  cpl: { label: 'CPL', type: 'money', steps: [-5, -1, -0.5, -0.1, 0.1, 0.5, 1, 5] },
+  leadsPerDay: { label: 'Лидов/день', type: 'int', steps: [-10, -5, -1, 1, 5, 10] },
+  dailyBudget: { label: 'Бюджет/день', type: 'int', steps: [-100, -20, -5, 5, 20, 100] },
+};
+const SCHEDULE_PERIOD_OPTIONS = [
+  { value: 'today', label: 'Сегодня' },
+  { value: 'yesterday', label: 'Вчера' },
+  { value: 'week', label: '7 дней' },
+  { value: 'month', label: 'Месяц' },
+];
+const SCHEDULE_TIME_OPTIONS = ['08:00', '09:00', '09:30', '10:00', '12:00', '14:00', '16:00', '18:00', '19:00', '20:00'];
+const SCHEDULE_CADENCE_OPTIONS = [
+  { value: 'daily', label: 'Ежедневно' },
+  { value: 'weekdays', label: 'По будням' },
+  { value: 'weekends', label: 'По выходным' },
+  { value: 'weekly', label: 'Раз в неделю' },
+];
 
 function resolveDefaultWebhookUrl(config, { origin = '' } = {}) {
   if (config?.telegramWebhookUrl) {
@@ -1960,6 +1989,209 @@ function formatScheduleLines(schedule, { timezone } = {}) {
   }
 
   return lines;
+}
+
+function normalizeKpiDraft(source, { suggestion } = {}) {
+  const draft = {
+    objective: null,
+    currency: null,
+    cpa: null,
+    cpl: null,
+    leadsPerDay: null,
+    dailyBudget: null,
+  };
+
+  if (source && typeof source === 'object') {
+    if (source.objective) {
+      draft.objective = String(source.objective).toUpperCase();
+    }
+    if (source.currency) {
+      draft.currency = String(source.currency).toUpperCase();
+    }
+    if (Number.isFinite(source.cpa)) {
+      draft.cpa = Number(source.cpa);
+    }
+    if (Number.isFinite(source.cpl)) {
+      draft.cpl = Number(source.cpl);
+    }
+    if (Number.isFinite(source.leadsPerDay)) {
+      draft.leadsPerDay = Number(source.leadsPerDay);
+    }
+    if (Number.isFinite(source.dailyBudget)) {
+      draft.dailyBudget = Number(source.dailyBudget);
+    }
+  }
+
+  if (!draft.currency && suggestion?.currency) {
+    draft.currency = String(suggestion.currency).toUpperCase();
+  }
+
+  if (!draft.objective && suggestion?.objective) {
+    draft.objective = String(suggestion.objective).toUpperCase();
+  }
+
+  if (!Number.isFinite(draft.cpa) && Number.isFinite(suggestion?.cpa)) {
+    draft.cpa = Number(suggestion.cpa);
+  }
+  if (!Number.isFinite(draft.cpl) && Number.isFinite(suggestion?.cpl)) {
+    draft.cpl = Number(suggestion.cpl);
+  }
+  if (!Number.isFinite(draft.leadsPerDay) && Number.isFinite(suggestion?.leadsPerDay)) {
+    draft.leadsPerDay = Number(suggestion.leadsPerDay);
+  }
+  if (!Number.isFinite(draft.dailyBudget) && Number.isFinite(suggestion?.dailyBudget)) {
+    draft.dailyBudget = Number(suggestion.dailyBudget);
+  }
+
+  return draft;
+}
+
+function formatKpiDraftValue(field, value, { currency } = {}) {
+  if (!['cpa', 'cpl', 'leadsPerDay', 'dailyBudget'].includes(field)) {
+    return value ? `<b>${escapeHtml(String(value))}</b>` : '—';
+  }
+
+  if (!Number.isFinite(value)) {
+    return '—';
+  }
+
+  const config = KPI_FIELD_CONFIG[field];
+  if (!config) {
+    return `<b>${escapeHtml(String(value))}</b>`;
+  }
+
+  if (config.type === 'money') {
+    return `<b>${formatUsd(value, { digitsBelowOne: 2, digitsAboveOne: 0 })}</b>`;
+  }
+
+  const suffix = field === 'dailyBudget' && currency ? ` ${escapeHtml(currency)}` : '';
+  return `<b>${formatInteger(value)}</b>${suffix}`;
+}
+
+function describeKpiDraft(draft) {
+  const currency = draft.currency || null;
+  const lines = [];
+  lines.push(`Цель: ${draft.objective ? `<b>${escapeHtml(String(draft.objective))}</b>` : '—'}`);
+  lines.push(`CPA: ${formatKpiDraftValue('cpa', draft.cpa)}`);
+  lines.push(`CPL: ${formatKpiDraftValue('cpl', draft.cpl)}`);
+  lines.push(`Лидов/день: ${formatKpiDraftValue('leadsPerDay', draft.leadsPerDay)}`);
+  lines.push(`Бюджет/день: ${formatKpiDraftValue('dailyBudget', draft.dailyBudget, { currency })}`);
+  lines.push(`Валюта: ${currency ? `<b>${escapeHtml(currency)}</b>` : '—'}`);
+  return lines;
+}
+
+function sanitizeKpiValue(value, field) {
+  const config = KPI_FIELD_CONFIG[field];
+  if (!config) {
+    return value;
+  }
+
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return null;
+  }
+
+  let result = num;
+  if (config.type === 'int') {
+    result = Math.round(result);
+  }
+  if (config.type === 'money') {
+    result = Math.round(result * 100) / 100;
+  }
+
+  if (Number.isFinite(config.min)) {
+    result = Math.max(config.min, result);
+  } else {
+    result = Math.max(0, result);
+  }
+
+  return result;
+}
+
+function adjustKpiDraftValue(draft, field, delta) {
+  if (!draft || !Object.prototype.hasOwnProperty.call(draft, field)) {
+    return draft;
+  }
+
+  const config = KPI_FIELD_CONFIG[field];
+  if (!config) {
+    return draft;
+  }
+
+  const current = Number.isFinite(draft[field]) ? draft[field] : 0;
+  const next = sanitizeKpiValue(current + delta, field);
+  draft[field] = Number.isFinite(next) ? next : null;
+  return draft;
+}
+
+function normalizeScheduleDraft(source, { defaultTimezone } = {}) {
+  const draft = {
+    cadence: null,
+    periods: [],
+    times: [],
+    timezone: defaultTimezone || 'UTC',
+    quietWeekends: false,
+  };
+
+  if (source && typeof source === 'object') {
+    if (source.cadence) {
+      draft.cadence = String(source.cadence).toLowerCase();
+    }
+    if (Array.isArray(source.periods)) {
+      draft.periods = source.periods.map((item) => String(item));
+    }
+    if (Array.isArray(source.times)) {
+      draft.times = source.times.map((item) => String(item));
+    }
+    if (source.timezone) {
+      draft.timezone = String(source.timezone);
+    }
+    if (typeof source.quietWeekends === 'boolean') {
+      draft.quietWeekends = source.quietWeekends;
+    }
+  }
+
+  if (!draft.timezone && defaultTimezone) {
+    draft.timezone = defaultTimezone;
+  }
+
+  draft.periods = Array.from(new Set(draft.periods.filter(Boolean)));
+  draft.times = Array.from(new Set(draft.times.filter(Boolean))).sort();
+
+  return draft;
+}
+
+function describeScheduleDraft(draft, { timezone } = {}) {
+  const effective = {
+    cadence: draft?.cadence || 'custom',
+    periods: draft?.periods || [],
+    times: draft?.times || [],
+    timezone: draft?.timezone || timezone || 'UTC',
+    quietWeekends: Boolean(draft?.quietWeekends),
+  };
+
+  return formatScheduleLines(effective, { timezone });
+}
+
+function toggleListValue(list, value) {
+  const set = new Set((list || []).map((item) => String(item)));
+  if (set.has(value)) {
+    set.delete(value);
+  } else {
+    set.add(value);
+  }
+  return Array.from(set);
+}
+
+function formatStepLabel(step) {
+  const sign = step > 0 ? '+' : '−';
+  const abs = Math.abs(step);
+  const digits = abs % 1 === 0 ? 0 : abs % 0.1 === 0 ? 1 : 2;
+  const formatted = abs.toLocaleString('ru-RU', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  return `${sign}${formatted}`;
 }
 
 function shouldRunScheduleToday(schedule, weekday) {
@@ -6417,34 +6649,162 @@ class TelegramBot {
   }
 
   async handleKpiSessionInput({ session, message, text }) {
-    const userId = session.userId;
-    const parseResult = parseKpiFormInput(text);
-    if (parseResult.errors.length > 0) {
-      await this.sendReply(
-        message,
-        ['⚠️ Исправьте ошибки:', ...parseResult.errors.map((line) => `• ${escapeHtml(line)}`), '', 'Повторите ввод или используйте /cancel.'].join('\n'),
-      );
-      this.queueLog({
-        kind: 'admin_session',
-        status: 'error',
-        session_kind: session.kind,
-        user_id: userId,
-        project_key: session.projectKey,
-        error: 'parse_kpi',
-      });
-      return { handled: true };
+    await this.sendReply(
+      message,
+      'Используйте кнопки редактора KPI под сообщением. Для отмены нажмите «↩️ Назад» или /cancel.',
+    );
+    return { handled: true };
+  }
+
+  buildKpiEditorKeyboard(base, session) {
+    const draft = session?.kpiDraft || {};
+    const mode = session?.kpiMode || 'main';
+
+    if (mode.startsWith('field:')) {
+      const field = mode.split(':')[1] || '';
+      if (field === 'objective') {
+        const rows = [];
+        for (let i = 0; i < KPI_OBJECTIVE_OPTIONS.length; i += 2) {
+          const slice = KPI_OBJECTIVE_OPTIONS.slice(i, i + 2);
+          rows.push(
+            slice.map((option) => ({
+              text: `${option.label}${draft.objective === option.value ? ' ✅' : ''}`,
+              callback_data: `${base}:kpi:objective:${option.value}`,
+            })),
+          );
+        }
+        rows.push([
+          { text: '🧹 Очистить', callback_data: `${base}:kpi:clear:objective` },
+          { text: '↩️ Назад', callback_data: `${base}:kpi:back` },
+        ]);
+        rows.push([{ text: '✅ Сохранить', callback_data: `${base}:kpi:save` }]);
+        return { inline_keyboard: rows };
+      }
+
+      if (field === 'currency') {
+        const rows = [];
+        const choices = Array.from(new Set([draft.currency, ...KPI_CURRENCY_OPTIONS].filter(Boolean)));
+        for (let i = 0; i < choices.length; i += 3) {
+          rows.push(
+            choices.slice(i, i + 3).map((value) => ({
+              text: `${value}${draft.currency === value ? ' ✅' : ''}`,
+              callback_data: `${base}:kpi:currency:${value}`,
+            })),
+          );
+        }
+        rows.push([
+          { text: '🧹 Очистить', callback_data: `${base}:kpi:clear:currency` },
+          { text: '↩️ Назад', callback_data: `${base}:kpi:back` },
+        ]);
+        rows.push([{ text: '✅ Сохранить', callback_data: `${base}:kpi:save` }]);
+        return { inline_keyboard: rows };
+      }
+
+      if (Object.prototype.hasOwnProperty.call(KPI_FIELD_CONFIG, field)) {
+        const config = KPI_FIELD_CONFIG[field];
+        const rows = [];
+        const negativeSteps = (config.steps || []).filter((step) => step < 0);
+        const positiveSteps = (config.steps || []).filter((step) => step > 0);
+        if (negativeSteps.length > 0) {
+          rows.push(
+            negativeSteps.map((step) => ({
+              text: formatStepLabel(step),
+              callback_data: `${base}:kpi:adjust:${field}:${step}`,
+            })),
+          );
+        }
+        if (positiveSteps.length > 0) {
+          rows.push(
+            positiveSteps.map((step) => ({
+              text: formatStepLabel(step),
+              callback_data: `${base}:kpi:adjust:${field}:${step}`,
+            })),
+          );
+        }
+        rows.push([
+          { text: '🧹 Очистить', callback_data: `${base}:kpi:clear:${field}` },
+          { text: '↩️ Назад', callback_data: `${base}:kpi:back` },
+        ]);
+        rows.push([{ text: '✅ Сохранить', callback_data: `${base}:kpi:save` }]);
+        return { inline_keyboard: rows };
+      }
     }
 
-    if (parseResult.touched.size === 0) {
-      await this.sendReply(message, 'Не удалось распознать поля. Укажите пары вида <code>cpa=2.4</code> или <code>currency=USD</code>.');
-      return { handled: true };
+    const keyboard = { inline_keyboard: [] };
+    keyboard.inline_keyboard.push([
+      { text: '🎯 Цель', callback_data: `${base}:kpi:field:objective` },
+      { text: '💰 CPA', callback_data: `${base}:kpi:field:cpa` },
+      { text: '📊 CPL', callback_data: `${base}:kpi:field:cpl` },
+    ]);
+    keyboard.inline_keyboard.push([
+      { text: '👥 Лиды/день', callback_data: `${base}:kpi:field:leadsPerDay` },
+      { text: '💵 Бюджет/день', callback_data: `${base}:kpi:field:dailyBudget` },
+      { text: '💱 Валюта', callback_data: `${base}:kpi:field:currency` },
+    ]);
+    if (session?.kpiSuggestion) {
+      keyboard.inline_keyboard.push([{ text: '♻️ Подставить рекомендации', callback_data: `${base}:kpi:apply` }]);
+    }
+    keyboard.inline_keyboard.push([
+      { text: '✅ Сохранить', callback_data: `${base}:kpi:save` },
+      { text: '↩️ Отмена', callback_data: `${base}:kpi:cancel` },
+    ]);
+    keyboard.inline_keyboard.push([
+      { text: '⬅️ К проекту', callback_data: `${base}:open` },
+      { text: '⚙️ Настройки', callback_data: `${base}:settings` },
+    ]);
+    return keyboard;
+  }
+
+  async renderKpiEditor(message, { chatId, base, session, context }) {
+    if (!session) {
+      return;
     }
 
+    if (!session.kpiDraft) {
+      const current = extractProjectKpi(context.rawProject) || {};
+      session.kpiDraft = normalizeKpiDraft(current, { suggestion: session.kpiSuggestion || context.kpiSuggestion });
+    }
+    if (!session.kpiSuggestion && context.kpiSuggestion) {
+      session.kpiSuggestion = normalizeKpiDraft(context.kpiSuggestion);
+    }
+    if (!session.kpiMode) {
+      session.kpiMode = 'main';
+    }
+
+    await this.saveAdminSession(session);
+
+    const draft = session.kpiDraft || {};
+    const lines = ['<b>Редактор KPI</b>', ...describeKpiDraft(draft)];
+    if (session.kpiSuggestion) {
+      lines.push('', '<b>Рекомендация</b>', ...describeKpiDraft(session.kpiSuggestion));
+    }
+
+    if (session.kpiMode === 'main') {
+      lines.push('', 'Выберите параметр для изменения.');
+    } else if (session.kpiMode.startsWith('field:')) {
+      const field = session.kpiMode.split(':')[1] || '';
+      const config = KPI_FIELD_CONFIG[field];
+      if (config) {
+        lines.push('', `${config.label}: используйте кнопки для изменения значения.`);
+      } else if (field === 'objective') {
+        lines.push('', 'Выберите целевую оптимизацию кампаний.');
+      } else if (field === 'currency') {
+        lines.push('', 'Выберите валюту бюджета.');
+      }
+    }
+
+    const replyMarkup = this.buildKpiEditorKeyboard(base, session);
+    await this.renderAdminMessage(message, {
+      chatId,
+      text: lines.join('\n'),
+      reply_markup: replyMarkup,
+    });
+  }
+
+  async saveKpiDraftFromSession(session, { context, userId, base, message, chatId }) {
     const projectKey = session.projectKey;
     if (!projectKey) {
-      await this.sendReply(message, 'Не удалось определить проект для сохранения KPI. Попробуйте открыть карточку проекта заново.');
-      await this.clearAdminSession(userId);
-      return { handled: true };
+      return { ok: false, reason: 'project_missing' };
     }
 
     let raw = await this.storage.getJson('DB', projectKey);
@@ -6454,75 +6814,28 @@ class TelegramBot {
 
     applyProjectIdentity(raw, session.projectSnapshot);
 
-    const current =
-      (raw.settings && raw.settings.kpi) ||
-      raw.kpi ||
-      (raw.metrics && raw.metrics.kpi) ||
-      {};
-
-    const next = { ...current };
-
-    if (parseResult.touched.has('objective')) {
-      if (parseResult.values.objective) {
-        next.objective = parseResult.values.objective;
-      } else {
-        delete next.objective;
-      }
-    }
-    if (parseResult.touched.has('currency')) {
-      if (parseResult.values.currency) {
-        next.currency = parseResult.values.currency;
-      } else {
-        delete next.currency;
-      }
-    }
-    if (parseResult.touched.has('cpa')) {
-      if (Number.isFinite(parseResult.values.cpa)) {
-        next.cpa = parseResult.values.cpa;
-      } else {
-        delete next.cpa;
-      }
-    }
-    if (parseResult.touched.has('cpl')) {
-      if (Number.isFinite(parseResult.values.cpl)) {
-        next.cpl = parseResult.values.cpl;
-      } else {
-        delete next.cpl;
-      }
-    }
-    if (parseResult.touched.has('leadsPerDay')) {
-      if (Number.isFinite(parseResult.values.leadsPerDay)) {
-        next.leadsPerDay = parseResult.values.leadsPerDay;
-      } else {
-        delete next.leadsPerDay;
-      }
-    }
-    if (parseResult.touched.has('dailyBudget')) {
-      if (Number.isFinite(parseResult.values.dailyBudget)) {
-        next.dailyBudget = parseResult.values.dailyBudget;
-      } else {
-        delete next.dailyBudget;
-      }
-    }
+    const draft = session.kpiDraft || normalizeKpiDraft(extractProjectKpi(context.rawProject) || {}, {
+      suggestion: session.kpiSuggestion,
+    });
 
     const storedKpi = {};
-    if (next.objective) {
-      storedKpi.objective = next.objective;
+    if (draft.objective) {
+      storedKpi.objective = draft.objective;
     }
-    if (Number.isFinite(next.cpa)) {
-      storedKpi.cpa = next.cpa;
+    if (Number.isFinite(draft.cpa)) {
+      storedKpi.cpa = sanitizeKpiValue(draft.cpa, 'cpa');
     }
-    if (Number.isFinite(next.cpl)) {
-      storedKpi.cpl = next.cpl;
+    if (Number.isFinite(draft.cpl)) {
+      storedKpi.cpl = sanitizeKpiValue(draft.cpl, 'cpl');
     }
-    if (Number.isFinite(next.leadsPerDay)) {
-      storedKpi.leadsPerDay = next.leadsPerDay;
+    if (Number.isFinite(draft.leadsPerDay)) {
+      storedKpi.leadsPerDay = sanitizeKpiValue(draft.leadsPerDay, 'leadsPerDay');
     }
-    if (Number.isFinite(next.dailyBudget)) {
-      storedKpi.dailyBudget = next.dailyBudget;
+    if (Number.isFinite(draft.dailyBudget)) {
+      storedKpi.dailyBudget = sanitizeKpiValue(draft.dailyBudget, 'dailyBudget');
     }
-    if (next.currency) {
-      storedKpi.currency = next.currency;
+    if (draft.currency) {
+      storedKpi.currency = draft.currency;
     }
 
     const now = new Date().toISOString();
@@ -6532,22 +6845,24 @@ class TelegramBot {
     raw.metrics = raw.metrics || {};
     raw.metrics.kpi = { ...storedKpi };
     raw.updated_at = now;
-    raw.updated_by = userId;
+    if (userId) {
+      raw.updated_by = userId;
+    }
 
     await this.storage.putJson('DB', projectKey, raw);
     await this.clearAdminSession(userId);
 
     const lines = ['<b>KPI обновлены</b>', ...formatKpiLines(storedKpi), '', 'Можно открыть карточку проекта для просмотра изменений.'];
-
-    const base = session.base || `admin:project:${session.projectCallbackId || ''}`;
     const replyMarkup = {
       inline_keyboard: [
-        [{ text: '⬅️ К проекту', callback_data: `${base}:open` }],
-        [{ text: '⚙️ Настройки', callback_data: `${base}:settings` }],
+        [
+          { text: '⬅️ К проекту', callback_data: `${base}:open` },
+          { text: '⚙️ Настройки', callback_data: `${base}:settings` },
+        ],
       ],
     };
 
-    await this.sendReply(message, lines.join('\n'), { reply_markup: replyMarkup });
+    await this.renderAdminMessage(message, { chatId, text: lines.join('\n'), reply_markup: replyMarkup });
     this.queueLog({
       kind: 'admin_session',
       status: 'saved',
@@ -6556,7 +6871,7 @@ class TelegramBot {
       project_key: projectKey,
     });
 
-    return { handled: true };
+    return { ok: true, storedKpi };
   }
 
   async handleReportCustomSessionInput({ session, message, text }) {
@@ -7437,37 +7752,173 @@ class TelegramBot {
   }
 
   async handleScheduleSessionInput({ session, message, text }) {
-    const userId = session.userId;
-    const parseResult = parseScheduleFormInput(text);
-    if (parseResult.errors.length > 0) {
-      await this.sendReply(
-        message,
-        ['⚠️ Исправьте ошибки:', ...parseResult.errors.map((line) => `• ${escapeHtml(line)}`), '', 'Повторите ввод или используйте /cancel.'].join('\n'),
-      );
-      this.queueLog({
-        kind: 'admin_session',
-        status: 'error',
-        session_kind: session.kind,
-        user_id: userId,
-        project_key: session.projectKey,
-        error: 'parse_schedule',
+    await this.sendReply(
+      message,
+      'Используйте кнопки редактора расписания под сообщением. Для отмены нажмите «↩️ Назад» или /cancel.',
+    );
+    return { handled: true };
+  }
+
+  buildScheduleEditorKeyboard(base, session) {
+    const mode = session?.scheduleMode || 'main';
+    const draft = session?.scheduleDraft || {};
+
+    if (mode === 'periods') {
+      const rows = [];
+      for (const option of SCHEDULE_PERIOD_OPTIONS) {
+        rows.push([
+          {
+            text: `${option.label}${draft.periods?.includes(option.value) ? ' ✅' : ''}`,
+            callback_data: `${base}:schedule:periods:toggle:${option.value}`,
+          },
+        ]);
+      }
+      rows.push([
+        { text: '🧹 Очистить', callback_data: `${base}:schedule:periods:clear` },
+        { text: '↩️ Назад', callback_data: `${base}:schedule:back` },
+      ]);
+      rows.push([{ text: '✅ Сохранить', callback_data: `${base}:schedule:save` }]);
+      return { inline_keyboard: rows };
+    }
+
+    if (mode === 'times') {
+      const rows = [];
+      for (let i = 0; i < SCHEDULE_TIME_OPTIONS.length; i += 3) {
+        rows.push(
+          SCHEDULE_TIME_OPTIONS.slice(i, i + 3).map((time) => ({
+            text: `${time}${draft.times?.includes(time) ? ' ✅' : ''}`,
+            callback_data: `${base}:schedule:times:toggle:${time}`,
+          })),
+        );
+      }
+      rows.push([
+        { text: '🧹 Очистить', callback_data: `${base}:schedule:times:clear` },
+        { text: '↩️ Назад', callback_data: `${base}:schedule:back` },
+      ]);
+      rows.push([{ text: '✅ Сохранить', callback_data: `${base}:schedule:save` }]);
+      return { inline_keyboard: rows };
+    }
+
+    if (mode === 'timezone') {
+      const rows = [];
+      const baseChoices = [draft.timezone, this.config.defaultTimezone, 'Asia/Tashkent', 'Asia/Almaty', 'Europe/Moscow', 'UTC']
+        .filter(Boolean)
+        .map((value) => String(value));
+      const unique = Array.from(new Set(baseChoices));
+      for (let i = 0; i < unique.length; i += 2) {
+        rows.push(
+          unique.slice(i, i + 2).map((value) => ({
+            text: `${value}${draft.timezone === value ? ' ✅' : ''}`,
+            callback_data: `${base}:schedule:timezone:set:${encodeURIComponent(value)}`,
+          })),
+        );
+      }
+      rows.push([
+        { text: '↩️ Назад', callback_data: `${base}:schedule:back` },
+      ]);
+      rows.push([{ text: '✅ Сохранить', callback_data: `${base}:schedule:save` }]);
+      return { inline_keyboard: rows };
+    }
+
+    if (mode === 'cadence') {
+      const rows = [];
+      for (const option of SCHEDULE_CADENCE_OPTIONS) {
+        rows.push([
+          {
+            text: `${option.label}${draft.cadence === option.value ? ' ✅' : ''}`,
+            callback_data: `${base}:schedule:cadence:set:${option.value}`,
+          },
+        ]);
+      }
+      rows.push([
+        { text: '↩️ Назад', callback_data: `${base}:schedule:back` },
+      ]);
+      rows.push([{ text: '✅ Сохранить', callback_data: `${base}:schedule:save` }]);
+      return { inline_keyboard: rows };
+    }
+
+    const keyboard = { inline_keyboard: [] };
+    keyboard.inline_keyboard.push([
+      { text: '🗓️ Периоды', callback_data: `${base}:schedule:periods` },
+      { text: '⏰ Время', callback_data: `${base}:schedule:times` },
+    ]);
+    keyboard.inline_keyboard.push([
+      { text: '🌍 Таймзона', callback_data: `${base}:schedule:timezone` },
+      { text: '🔁 Частота', callback_data: `${base}:schedule:cadence` },
+    ]);
+    keyboard.inline_keyboard.push([
+      {
+        text: draft.quietWeekends ? '🔔 Включить выходные' : '🤫 Тихие выходные',
+        callback_data: `${base}:schedule:quiet:toggle`,
+      },
+    ]);
+    if (session?.scheduleSuggestion) {
+      keyboard.inline_keyboard.push([{ text: '♻️ Подставить рекомендации', callback_data: `${base}:schedule:apply` }]);
+    }
+    keyboard.inline_keyboard.push([
+      { text: '✅ Сохранить', callback_data: `${base}:schedule:save` },
+      { text: '↩️ Отмена', callback_data: `${base}:schedule:cancel` },
+    ]);
+    keyboard.inline_keyboard.push([
+      { text: '⬅️ К проекту', callback_data: `${base}:open` },
+      { text: '🎯 KPI', callback_data: `${base}:kpi` },
+    ]);
+    return keyboard;
+  }
+
+  async renderScheduleEditor(message, { chatId, base, session, context }) {
+    if (!session) {
+      return;
+    }
+
+    if (!session.scheduleDraft) {
+      const current = extractScheduleSettings(context.rawProject) || {};
+      const defaultTimezone = this.config.defaultTimezone || context.project?.timezone || 'UTC';
+      session.scheduleDraft = normalizeScheduleDraft(current, {
+        defaultTimezone,
       });
-      return { handled: true };
+    }
+    if (!session.scheduleSuggestion && context.scheduleSuggestion) {
+      session.scheduleSuggestion = normalizeScheduleDraft(context.scheduleSuggestion, {
+        defaultTimezone: this.config.defaultTimezone || 'UTC',
+      });
+    }
+    if (!session.scheduleMode) {
+      session.scheduleMode = 'main';
     }
 
-    if (parseResult.touched.size === 0) {
-      await this.sendReply(
-        message,
-        'Укажите параметры расписания, например <code>times=09:30,19:00</code> или <code>quiet_weekends=yes</code>.',
-      );
-      return { handled: true };
+    await this.saveAdminSession(session);
+
+    const draft = session.scheduleDraft || {};
+    const lines = ['<b>Редактор расписания</b>', ...describeScheduleDraft(draft, { timezone: this.config.defaultTimezone })];
+    if (session.scheduleSuggestion) {
+      lines.push('', '<b>Рекомендация</b>', ...describeScheduleDraft(session.scheduleSuggestion, { timezone: this.config.defaultTimezone }));
     }
 
+    if (session.scheduleMode === 'main') {
+      lines.push('', 'Выберите блок для изменения.');
+    } else if (session.scheduleMode === 'periods') {
+      lines.push('', 'Отметьте периоды, которые войдут в отчёты.');
+    } else if (session.scheduleMode === 'times') {
+      lines.push('', 'Выберите время отправки отчётов.');
+    } else if (session.scheduleMode === 'timezone') {
+      lines.push('', 'Выберите часовой пояс, в котором считать расписание.');
+    } else if (session.scheduleMode === 'cadence') {
+      lines.push('', 'Выберите частоту отправки отчётов.');
+    }
+
+    const replyMarkup = this.buildScheduleEditorKeyboard(base, session);
+    await this.renderAdminMessage(message, {
+      chatId,
+      text: lines.join('\n'),
+      reply_markup: replyMarkup,
+    });
+  }
+
+  async saveScheduleDraftFromSession(session, { context, userId, base, message, chatId }) {
     const projectKey = session.projectKey;
     if (!projectKey) {
-      await this.sendReply(message, 'Не удалось определить проект для сохранения расписания. Попробуйте открыть карточку проекта заново.');
-      await this.clearAdminSession(userId);
-      return { handled: true };
+      return { ok: false, reason: 'project_missing' };
     }
 
     let raw = await this.storage.getJson('DB', projectKey);
@@ -7477,76 +7928,27 @@ class TelegramBot {
 
     applyProjectIdentity(raw, session.projectSnapshot);
 
-    const current =
-      (raw.settings && raw.settings.schedule) ||
-      raw.schedule ||
-      (raw.reporting && raw.reporting.schedule) ||
-      {};
-
-    const next = { ...current };
-
-    if (parseResult.touched.has('cadence')) {
-      if (parseResult.values.cadence) {
-        next.cadence = parseResult.values.cadence;
-      } else {
-        delete next.cadence;
-      }
-    }
-
-    if (parseResult.touched.has('timezone')) {
-      if (parseResult.values.timezone) {
-        next.timezone = parseResult.values.timezone;
-      } else {
-        delete next.timezone;
-      }
-    }
-
-    if (parseResult.touched.has('times')) {
-      if (Array.isArray(parseResult.values.times) && parseResult.values.times.length > 0) {
-        next.times = parseResult.values.times;
-      } else {
-        delete next.times;
-      }
-    }
-
-    if (parseResult.touched.has('periods')) {
-      if (Array.isArray(parseResult.values.periods) && parseResult.values.periods.length > 0) {
-        next.periods = parseResult.values.periods;
-      } else {
-        delete next.periods;
-      }
-    }
-
-    if (parseResult.touched.has('quietWeekends')) {
-      if (parseResult.values.quietWeekends === null) {
-        delete next.quietWeekends;
-        delete next.quiet_weekends;
-        delete next.mute_weekends;
-      } else {
-        const flag = Boolean(parseResult.values.quietWeekends);
-        next.quietWeekends = flag;
-        next.quiet_weekends = flag;
-        next.mute_weekends = flag;
-      }
-    }
+    const draft = session.scheduleDraft || normalizeScheduleDraft(extractScheduleSettings(context.rawProject) || {}, {
+      defaultTimezone: this.config.defaultTimezone,
+    });
 
     const storedSchedule = {};
-    if (next.cadence) {
-      storedSchedule.cadence = next.cadence;
+    if (draft.cadence) {
+      storedSchedule.cadence = draft.cadence;
     }
-    if (Array.isArray(next.times) && next.times.length > 0) {
-      storedSchedule.times = next.times;
+    if (Array.isArray(draft.times) && draft.times.length > 0) {
+      storedSchedule.times = Array.from(new Set(draft.times)).sort();
     }
-    if (Array.isArray(next.periods) && next.periods.length > 0) {
-      storedSchedule.periods = next.periods;
+    if (Array.isArray(draft.periods) && draft.periods.length > 0) {
+      storedSchedule.periods = Array.from(new Set(draft.periods));
     }
-    if (next.timezone) {
-      storedSchedule.timezone = next.timezone;
+    if (draft.timezone) {
+      storedSchedule.timezone = draft.timezone;
     }
-    if (typeof next.quietWeekends === 'boolean') {
-      storedSchedule.quietWeekends = next.quietWeekends;
-      storedSchedule.quiet_weekends = next.quietWeekends;
-      storedSchedule.mute_weekends = next.quietWeekends;
+    if (typeof draft.quietWeekends === 'boolean') {
+      storedSchedule.quietWeekends = draft.quietWeekends;
+      storedSchedule.quiet_weekends = draft.quietWeekends;
+      storedSchedule.mute_weekends = draft.quietWeekends;
     }
 
     const now = new Date().toISOString();
@@ -7556,7 +7958,9 @@ class TelegramBot {
     raw.reporting = raw.reporting || {};
     raw.reporting.schedule = { ...storedSchedule };
     raw.updated_at = now;
-    raw.updated_by = userId;
+    if (userId) {
+      raw.updated_by = userId;
+    }
 
     await this.storage.putJson('DB', projectKey, raw);
     await this.clearAdminSession(userId);
@@ -7568,15 +7972,16 @@ class TelegramBot {
       'Настройки можно скорректировать повторно в любой момент.',
     ];
 
-    const base = session.base || `admin:project:${session.projectCallbackId || ''}`;
     const replyMarkup = {
       inline_keyboard: [
-        [{ text: '⬅️ К проекту', callback_data: `${base}:open` }],
-        [{ text: '🎯 KPI', callback_data: `${base}:kpi` }],
+        [
+          { text: '⬅️ К проекту', callback_data: `${base}:open` },
+          { text: '🎯 KPI', callback_data: `${base}:kpi` },
+        ],
       ],
     };
 
-    await this.sendReply(message, lines.join('\n'), { reply_markup: replyMarkup });
+    await this.renderAdminMessage(message, { chatId, text: lines.join('\n'), reply_markup: replyMarkup });
     this.queueLog({
       kind: 'admin_session',
       status: 'saved',
@@ -7585,7 +7990,7 @@ class TelegramBot {
       project_key: projectKey,
     });
 
-    return { handled: true };
+    return { ok: true, storedSchedule };
   }
 
   async runPingTest(context) {
@@ -9739,6 +10144,7 @@ class TelegramBot {
         const action = parts[3] || 'open';
         const subAction = parts[4] || '';
         const extraAction = parts[5] || '';
+        const extraParam = parts[6] || '';
         const base = `admin:project:${projectId}`;
 
         if (!chatId) {
@@ -10184,76 +10590,204 @@ class TelegramBot {
           return { handled: true };
         }
 
-        if (action === 'kpi' && subAction === 'edit') {
-          const session = await this.startAdminSession({
-            userId,
-            chatId,
-            threadId: message?.message_thread_id ?? null,
-            project: context.project,
-            kind: 'kpi_edit',
-            base,
-          });
-
-          const kpi = extractProjectKpi(context.rawProject);
-          const instructions = [
-            '<b>Редактор KPI</b>',
-            'Отправьте параметры в формате <code>ключ=значение</code> в следующем сообщении. Примеры:',
-            '<code>objective=LEAD_GENERATION</code>',
-            '<code>cpa=2.4</code>',
-            '<code>leads=12</code>',
-            '<code>budget=50</code>',
-            '<code>currency=USD</code>',
-            'Чтобы очистить значение, укажите <code>-</code> (например, <code>cpl=-</code>). Для отмены — /cancel или «отмена».',
-            '',
-            '<b>Текущие KPI</b>',
-            ...formatKpiLines(kpi),
-          ];
-
-          await this.renderAdminMessage(message, {
-            chatId,
-            text: instructions.join('\n'),
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                  { text: '⚙️ Настройки', callback_data: `${base}:settings` },
-                ],
-              ],
-            },
-          });
-
-          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Жду значения KPI.' });
-          this.queueLog({
-            kind: 'callback',
-            status: 'ok',
-            data,
-            chat_id: chatId,
-            user_id: userId,
-            project_id: context.project.id,
-            action: 'kpi_edit_start',
-            session: session ? { kind: session.kind, project_key: session.projectKey } : null,
-          });
-
-          return { handled: true };
-        }
-
         if (action === 'kpi') {
-          const kpi = extractProjectKpi(context.rawProject);
-          const body = ['<b>KPI проекта</b>', ...formatKpiLines(kpi)];
-          await this.renderAdminMessage(message, {
-            chatId,
-            text: body.join('\n'),
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: '✏️ Изменить KPI', callback_data: `${base}:kpi:edit` },
-                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                ],
-              ],
-            },
-          });
+          const expectedProjectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(context.project.id || context.project.code || projectId)}`;
 
-          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'KPI отображены.' });
+          if (subAction === 'edit') {
+            const session = await this.startAdminSession({
+              userId,
+              chatId,
+              threadId: message?.message_thread_id ?? null,
+              project: context.project,
+              kind: 'kpi_edit',
+              base,
+            });
+            if (session) {
+              session.projectKey = expectedProjectKey;
+              session.kpiMode = 'main';
+              session.kpiDraft = null;
+              if (context.kpiSuggestion) {
+                session.kpiSuggestion = normalizeKpiDraft(context.kpiSuggestion);
+              }
+              await this.saveAdminSession(session);
+              await this.renderKpiEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Редактор KPI открыт.' });
+              this.queueLog({
+                kind: 'callback',
+                status: 'ok',
+                data,
+                chat_id: chatId,
+                user_id: userId,
+                project_id: context.project.id,
+                action: 'kpi_editor_open',
+              });
+              return { handled: true };
+            }
+          }
+
+          const session = userId ? await this.loadAdminSession(userId) : null;
+          const ownsSession =
+            session &&
+            session.kind === 'kpi_edit' &&
+            session.projectKey === expectedProjectKey &&
+            (!session.projectId || session.projectId === (context.project.id || ''));
+
+          if (subAction === 'save') {
+            if (!ownsSession) {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Откройте редактор KPI через кнопку «✏️ Изменить KPI».',
+                show_alert: true,
+              });
+              return { handled: true };
+            }
+
+            const result = await this.saveKpiDraftFromSession(session, {
+              context,
+              userId,
+              base,
+              message,
+              chatId,
+            });
+            if (result.ok) {
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'KPI сохранены.' });
+            } else {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Не удалось сохранить KPI. Повторите попытку.',
+                show_alert: true,
+              });
+            }
+            return { handled: true };
+          }
+
+          if (subAction === 'cancel') {
+            if (ownsSession) {
+              await this.clearAdminSession(userId);
+            }
+            const kpi = extractProjectKpi(context.rawProject);
+            const body = ['<b>KPI проекта</b>', ...formatKpiLines(kpi)];
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: body.join('\n'),
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '✏️ Изменить KPI', callback_data: `${base}:kpi:edit` },
+                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                  ],
+                ],
+              },
+            });
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Изменения отменены.' });
+            return { handled: true };
+          }
+
+          if (subAction === 'field' && ownsSession) {
+            session.kpiMode = `field:${extraAction || ''}`;
+            await this.renderKpiEditor(message, { chatId, base, session, context });
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Выберите значение.' });
+            return { handled: true };
+          }
+
+          if (subAction === 'back' && ownsSession) {
+            session.kpiMode = 'main';
+            await this.renderKpiEditor(message, { chatId, base, session, context });
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'К параметрам KPI.' });
+            return { handled: true };
+          }
+
+          if (subAction === 'apply' && ownsSession) {
+            if (session.kpiSuggestion) {
+              session.kpiDraft = normalizeKpiDraft(session.kpiSuggestion);
+              session.kpiMode = 'main';
+              await this.renderKpiEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Рекомендации подставлены.' });
+            } else {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Нет подготовленных рекомендаций.',
+                show_alert: true,
+              });
+            }
+            return { handled: true };
+          }
+
+          if (subAction === 'objective' && ownsSession) {
+            if (!session.kpiDraft) {
+              session.kpiDraft = normalizeKpiDraft({}, { suggestion: session.kpiSuggestion });
+            }
+            session.kpiDraft.objective = extraAction ? String(extraAction).toUpperCase() : null;
+            session.kpiMode = 'field:objective';
+            await this.renderKpiEditor(message, { chatId, base, session, context });
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Цель обновлена.' });
+            return { handled: true };
+          }
+
+          if (subAction === 'currency' && ownsSession) {
+            if (!session.kpiDraft) {
+              session.kpiDraft = normalizeKpiDraft({}, { suggestion: session.kpiSuggestion });
+            }
+            session.kpiDraft.currency = extraAction ? String(extraAction).toUpperCase() : null;
+            session.kpiMode = 'field:currency';
+            await this.renderKpiEditor(message, { chatId, base, session, context });
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Валюта обновлена.' });
+            return { handled: true };
+          }
+
+          if (subAction === 'clear' && ownsSession) {
+            if (!session.kpiDraft) {
+              session.kpiDraft = normalizeKpiDraft({}, { suggestion: session.kpiSuggestion });
+            }
+            if (extraAction === 'objective' || extraAction === 'currency') {
+              session.kpiDraft[extraAction] = null;
+            } else if (Object.prototype.hasOwnProperty.call(KPI_FIELD_CONFIG, extraAction)) {
+              session.kpiDraft[extraAction] = null;
+            }
+            session.kpiMode = extraAction ? `field:${extraAction}` : 'main';
+            await this.renderKpiEditor(message, { chatId, base, session, context });
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Значение очищено.' });
+            return { handled: true };
+          }
+
+          if (subAction === 'adjust' && ownsSession) {
+            if (!session.kpiDraft) {
+              session.kpiDraft = normalizeKpiDraft({}, { suggestion: session.kpiSuggestion });
+            }
+            const field = extraAction;
+            const delta = Number(extraParam || 0);
+            if (Object.prototype.hasOwnProperty.call(KPI_FIELD_CONFIG, field) && Number.isFinite(delta)) {
+              adjustKpiDraftValue(session.kpiDraft, field, delta);
+              session.kpiMode = `field:${field}`;
+              await this.renderKpiEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Значение обновлено.' });
+              return { handled: true };
+            }
+          }
+
+          if (!subAction) {
+            const kpi = extractProjectKpi(context.rawProject);
+            const body = ['<b>KPI проекта</b>', ...formatKpiLines(kpi)];
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: body.join('\n'),
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '✏️ Изменить KPI', callback_data: `${base}:kpi:edit` },
+                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                  ],
+                ],
+              },
+            });
+
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'KPI отображены.' });
+            return { handled: true };
+          }
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Действие недоступно.' });
           return { handled: true };
         }
 
@@ -10395,57 +10929,224 @@ class TelegramBot {
           return { handled: true };
         }
 
-        if (action === 'schedule' && subAction === 'edit') {
-          const session = await this.startAdminSession({
-            userId,
-            chatId,
-            threadId: message?.message_thread_id ?? null,
-            project: context.project,
-            kind: 'schedule_edit',
-            base,
-          });
+        if (action === 'schedule') {
+          const expectedProjectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(context.project.id || context.project.code || projectId)}`;
 
-          const schedule = extractScheduleSettings(context.rawProject);
-          const instructions = [
-            '<b>Редактор расписания</b>',
-            'Укажите параметры через <code>ключ=значение</code>. Можно перечислять несколько ключей в одном сообщении:',
-            '<code>cadence=daily</code>',
-            '<code>times=09:30,19:00</code>',
-            '<code>periods=today,week</code>',
-            '<code>timezone=Asia/Tashkent</code>',
-            '<code>quiet_weekends=yes</code>',
-            'Чтобы очистить значение, укажите <code>-</code>. Для отмены — /cancel или «отмена».',
-            '',
-            '<b>Текущее расписание</b>',
-            ...formatScheduleLines(schedule, { timezone: this.config.defaultTimezone }),
-          ];
+          if (subAction === 'edit') {
+            const session = await this.startAdminSession({
+              userId,
+              chatId,
+              threadId: message?.message_thread_id ?? null,
+              project: context.project,
+              kind: 'schedule_edit',
+              base,
+            });
+            if (session) {
+              session.projectKey = expectedProjectKey;
+              session.scheduleMode = 'main';
+              session.scheduleDraft = null;
+              const suggestion = context.scheduleSuggestion || context.account?.reportingSchedule || session.scheduleSuggestion;
+              if (suggestion) {
+                session.scheduleSuggestion = normalizeScheduleDraft(suggestion, {
+                  defaultTimezone: this.config.defaultTimezone,
+                });
+              }
+              await this.saveAdminSession(session);
+              await this.renderScheduleEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Редактор расписания открыт.' });
+              this.queueLog({
+                kind: 'callback',
+                status: 'ok',
+                data,
+                chat_id: chatId,
+                user_id: userId,
+                project_id: context.project.id,
+                action: 'schedule_editor_open',
+              });
+              return { handled: true };
+            }
+          }
 
-          await this.renderAdminMessage(message, {
-            chatId,
-            text: instructions.join('\n'),
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                  { text: '🎯 KPI', callback_data: `${base}:kpi` },
+          const session = userId ? await this.loadAdminSession(userId) : null;
+          const ownsSession =
+            session &&
+            session.kind === 'schedule_edit' &&
+            session.projectKey === expectedProjectKey &&
+            (!session.projectId || session.projectId === (context.project.id || ''));
+
+          if (subAction === 'save') {
+            if (!ownsSession) {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Откройте редактор расписания через кнопку «🕒 Изменить расписание».',
+                show_alert: true,
+              });
+              return { handled: true };
+            }
+
+            const result = await this.saveScheduleDraftFromSession(session, {
+              context,
+              userId,
+              base,
+              message,
+              chatId,
+            });
+            if (result.ok) {
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Расписание сохранено.' });
+            } else {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Не удалось сохранить расписание. Попробуйте позже.',
+                show_alert: true,
+              });
+            }
+            return { handled: true };
+          }
+
+          if (subAction === 'cancel') {
+            if (ownsSession) {
+              await this.clearAdminSession(userId);
+            }
+            const schedule = extractScheduleSettings(context.rawProject);
+            const body = ['<b>Расписание</b>', ...formatScheduleLines(schedule, { timezone: this.config.defaultTimezone })];
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: body.join('\n'),
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '🕒 Изменить расписание', callback_data: `${base}:schedule:edit` },
+                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                  ],
                 ],
-                [{ text: '⚙️ Настройки', callback_data: `${base}:settings` }],
-              ],
-            },
-          });
+              },
+            });
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Изменения отменены.' });
+            return { handled: true };
+          }
 
-          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Жду параметры расписания.' });
-          this.queueLog({
-            kind: 'callback',
-            status: 'ok',
-            data,
-            chat_id: chatId,
-            user_id: userId,
-            project_id: context.project.id,
-            action: 'schedule_edit_start',
-            session: session ? { kind: session.kind, project_key: session.projectKey } : null,
-          });
+          if (!ownsSession && subAction) {
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: 'Откройте редактор расписания через кнопку «🕒 Изменить расписание».',
+              show_alert: true,
+            });
+            return { handled: true };
+          }
 
+          if (ownsSession) {
+            if (!session.scheduleDraft) {
+              session.scheduleDraft = normalizeScheduleDraft(extractScheduleSettings(context.rawProject) || {}, {
+                defaultTimezone: this.config.defaultTimezone,
+              });
+            }
+
+            if (subAction === 'periods') {
+              if (extraAction === 'toggle' && extraParam) {
+                session.scheduleDraft.periods = toggleListValue(session.scheduleDraft.periods, extraParam);
+              } else if (extraAction === 'clear') {
+                session.scheduleDraft.periods = [];
+              }
+              session.scheduleMode = 'periods';
+              await this.renderScheduleEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Периоды обновлены.' });
+              return { handled: true };
+            }
+
+            if (subAction === 'times') {
+              if (extraAction === 'toggle' && extraParam) {
+                session.scheduleDraft.times = toggleListValue(session.scheduleDraft.times, extraParam).sort();
+              } else if (extraAction === 'clear') {
+                session.scheduleDraft.times = [];
+              }
+              session.scheduleMode = 'times';
+              await this.renderScheduleEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Время обновлено.' });
+              return { handled: true };
+            }
+
+            if (subAction === 'timezone') {
+              if (extraAction === 'set' && extraParam) {
+                try {
+                  session.scheduleDraft.timezone = decodeURIComponent(extraParam);
+                } catch (error) {
+                  session.scheduleDraft.timezone = extraParam;
+                }
+              }
+              session.scheduleMode = 'timezone';
+              await this.renderScheduleEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Таймзона обновлена.' });
+              return { handled: true };
+            }
+
+            if (subAction === 'cadence') {
+              if (extraAction === 'set' && extraParam) {
+                session.scheduleDraft.cadence = extraParam;
+              }
+              session.scheduleMode = 'cadence';
+              await this.renderScheduleEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Частота обновлена.' });
+              return { handled: true };
+            }
+
+            if (subAction === 'quiet') {
+              if (extraAction === 'toggle') {
+                session.scheduleDraft.quietWeekends = !session.scheduleDraft.quietWeekends;
+              }
+              session.scheduleMode = 'main';
+              await this.renderScheduleEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Режим выходных обновлён.' });
+              return { handled: true };
+            }
+
+            if (subAction === 'apply') {
+              if (session.scheduleSuggestion) {
+                session.scheduleDraft = normalizeScheduleDraft(session.scheduleSuggestion, {
+                  defaultTimezone: this.config.defaultTimezone,
+                });
+                session.scheduleMode = 'main';
+                await this.renderScheduleEditor(message, { chatId, base, session, context });
+                await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Рекомендация подставлена.' });
+              } else {
+                await this.telegram.answerCallbackQuery({
+                  callback_query_id: id,
+                  text: 'Рекомендация недоступна.',
+                  show_alert: true,
+                });
+              }
+              return { handled: true };
+            }
+
+            if (subAction === 'back') {
+              session.scheduleMode = 'main';
+              await this.renderScheduleEditor(message, { chatId, base, session, context });
+              await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Вернулись к параметрам.' });
+              return { handled: true };
+            }
+          }
+
+          if (!subAction) {
+            const schedule = extractScheduleSettings(context.rawProject);
+            const body = ['<b>Расписание</b>', ...formatScheduleLines(schedule, { timezone: this.config.defaultTimezone })];
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: body.join('\n'),
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: '🕒 Изменить расписание', callback_data: `${base}:schedule:edit` },
+                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                  ],
+                ],
+              },
+            });
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Расписание отображено.' });
+            return { handled: true };
+          }
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Действие недоступно.' });
           return { handled: true };
         }
 
