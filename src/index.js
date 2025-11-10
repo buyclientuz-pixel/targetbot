@@ -150,10 +150,21 @@ function formatCpaRange(minValue, maxValue, campaigns = []) {
     for (const campaign of campaigns) {
       if (!campaign) continue;
       register(campaign.cpaUsd, candidates);
+      register(campaign.cpa, candidates);
       register(campaign.costPerResultUsd, candidates);
       register(campaign.cost_per_result_usd, candidates);
       register(campaign.cost_per_lead_usd, candidates);
       register(campaign.cost_per_action, candidates);
+      register(campaign.cost_per_lead, candidates);
+      register(campaign.cost_per_purchase, candidates);
+      register(campaign.costPerLeadUsd, candidates);
+      register(campaign.costPerPurchaseUsd, candidates);
+      if (Array.isArray(campaign.cost_per_action_type)) {
+        for (const action of campaign.cost_per_action_type) {
+          if (!action) continue;
+          register(action.value, candidates);
+        }
+      }
     }
   }
 
@@ -2745,11 +2756,26 @@ function buildCampaignLines(campaigns, { limit = 6 } = {}) {
   const lines = [];
   const display = campaigns.slice(0, limit);
   for (const campaign of display) {
-    const spendText = Number.isFinite(campaign.spendUsd)
-      ? formatUsd(campaign.spendUsd, { digitsBelowOne: 2, digitsAboveOne: 2 })
+    const spendValue = Number.isFinite(Number(campaign?.spendUsd))
+      ? Number(campaign.spendUsd)
+      : Number.isFinite(Number(campaign?.spend_usd))
+      ? Number(campaign.spend_usd)
+      : Number.isFinite(Number(campaign?.spend))
+      ? Number(campaign.spend)
+      : null;
+    const spendText = spendValue !== null
+      ? formatUsd(spendValue, { digitsBelowOne: 2, digitsAboveOne: 2 })
       : '—';
-    const statusVisual = mapCampaignStatusVisual(campaign.status || campaign.effective_status || '');
-    const metrics = describeCampaignPrimaryMetrics(campaign, { objective: campaign.objective });
+    const statusVisual = mapCampaignStatusVisual(
+      campaign.status || campaign.effective_status || campaign.statusLabel || campaign.status_label || '',
+    );
+    const metrics = describeCampaignPrimaryMetrics(
+      {
+        ...campaign,
+        spendUsd: Number.isFinite(spendValue) ? spendValue : campaign.spendUsd,
+      },
+      { objective: campaign.objective || campaign.optimization_goal || campaign.optimizationGoal },
+    );
     const metricParts = [];
     if (metrics.label) {
       metricParts.push(`${metrics.label}: ${metrics.valueText}`);
@@ -2761,10 +2787,8 @@ function buildCampaignLines(campaigns, { limit = 6 } = {}) {
       metricParts.push(...metrics.extraParts);
     }
     const metricLine = metricParts.length > 0 ? metricParts.join(' | ') : '—';
-    lines.push(
-      `${statusVisual.icon} <b>${escapeHtml(campaign.name)}</b> — ${spendText}`,
-      metricLine,
-    );
+    const title = campaign.name || campaign.campaign_name || campaign.campaignName || 'Кампания';
+    lines.push(`${statusVisual.icon} <b>${escapeHtml(title)}</b> — ${spendText}`, metricLine);
     lines.push('');
   }
 
@@ -2854,13 +2878,63 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
   lines.push('', portalLine);
 
   lines.push('', '<b>Актуальные кампании</b>');
-  const campaigns = Array.isArray(account?.campaignSummaries) ? account.campaignSummaries : [];
+  const campaignMap = new Map();
+  const registerCampaigns = (source) => {
+    if (!Array.isArray(source)) {
+      return;
+    }
+    for (const entry of source) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+      const rawId =
+        entry.id || entry.campaign_id || entry.campaignId || entry.account_campaign_id || entry.accountCampaignId || '';
+      const normalizedId = rawId ? String(rawId).replace(/^cmp_/, '') : '';
+      const fallbackKey = entry.name ? `name:${entry.name}` : null;
+      const key = normalizedId || fallbackKey;
+      if (!key) {
+        continue;
+      }
+      const normalizedEntry = {};
+      for (const [field, value] of Object.entries(entry)) {
+        if (value !== undefined && value !== null) {
+          normalizedEntry[field] = value;
+        }
+      }
+      const existing = campaignMap.get(key) || {};
+      campaignMap.set(key, { ...existing, ...normalizedEntry });
+    }
+  };
+
+  registerCampaigns(account?.campaignSummaries);
+  registerCampaigns(project?.metrics?.campaigns);
+  registerCampaigns(project?.campaigns);
+  registerCampaigns(rawProject?.metrics?.campaigns);
+  registerCampaigns(rawProject?.report?.campaigns);
+  registerCampaigns(rawProject?.campaignSummaries);
+
+  const campaigns = Array.from(campaignMap.values()).sort((a, b) => {
+    const spendA = Number.isFinite(Number(a?.spendUsd))
+      ? Number(a.spendUsd)
+      : Number.isFinite(Number(a?.spend_usd))
+      ? Number(a.spend_usd)
+      : Number.isFinite(Number(a?.spend))
+      ? Number(a.spend)
+      : 0;
+    const spendB = Number.isFinite(Number(b?.spendUsd))
+      ? Number(b.spendUsd)
+      : Number.isFinite(Number(b?.spend_usd))
+      ? Number(b.spend_usd)
+      : Number.isFinite(Number(b?.spend))
+      ? Number(b.spend)
+      : 0;
+    return spendB - spendA;
+  });
+
   lines.push(...buildCampaignLines(campaigns));
 
   const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd, campaigns);
-  if (cpaRange) {
-    lines.push(`CPA (7д): ${cpaRange}`);
-  }
+  lines.push(`CPA (7д): ${cpaRange || 'данных нет'}`);
 
   const kpi = extractProjectKpi(rawProject);
   lines.push('', '<b>KPI</b>', ...formatKpiLines(kpi));
@@ -3231,15 +3305,21 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   if (kpiLine) {
     summaryLines.push(kpiLine);
   }
-  if (Number.isFinite(report?.totals?.reach) || Number.isFinite(report?.totals?.impressions)) {
-    const reachText = Number.isFinite(report?.totals?.reach) ? formatInteger(report.totals.reach) : '—';
-    const impressionsText = Number.isFinite(report?.totals?.impressions)
-      ? formatInteger(report.totals.impressions)
-      : '—';
-    const clicksText = Number.isFinite(report?.totals?.clicks)
-      ? formatInteger(report.totals.clicks)
-      : '—';
-    summaryLines.push(`Охват: ${reachText} | Показы: ${impressionsText} | Клики: ${clicksText}`);
+  const summaryParts = [];
+  if (Number.isFinite(report?.totals?.reach)) {
+    summaryParts.push(`Охват: ${formatInteger(report.totals.reach)}`);
+  }
+  if (Number.isFinite(report?.totals?.impressions)) {
+    summaryParts.push(`Показы: ${formatInteger(report.totals.impressions)}`);
+  }
+  if (totalMetrics.label) {
+    summaryParts.push(`${totalMetrics.label}: ${totalMetrics.valueText}`);
+  }
+  if (totalMetrics.costLabel) {
+    summaryParts.push(`${totalMetrics.costLabel}: ${totalCostText}`);
+  }
+  if (summaryParts.length > 0) {
+    summaryLines.push(summaryParts.join(' | '));
   }
 
   if (summaryLines.length > 0) {
@@ -3367,17 +3447,12 @@ function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
 
   keyboard.push([
     { text: '💳 Оплата', callback_data: `${base}:payment` },
-    { text: '⏸ Пауза отчётов', callback_data: `${base}:autopause` },
-    { text: '🔕 Тихий режим', callback_data: `${base}:quiet` },
-  ]);
-
-  keyboard.push([
     { text: '📈 Отчёты', callback_data: `${base}:reports` },
     { text: '🎯 KPI', callback_data: `${base}:kpi` },
-    { text: '🚨 Алерты', callback_data: `${base}:alerts` },
   ]);
 
   keyboard.push([
+    { text: '🚨 Алерты', callback_data: `${base}:alerts` },
     { text: '🔄 Обновить', callback_data: `${base}:refresh` },
     { text: '⬅️ В админку', callback_data: 'admin:panel' },
   ]);
@@ -4158,7 +4233,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     },
     {
       id: 'reach',
-      label: 'Reach',
+      label: 'Охват',
       value: Number.isFinite(totals.reach) ? totals.reach : null,
       text: formatInteger(totals.reach),
     },
@@ -4208,12 +4283,13 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     const metrics = describeCampaignPrimaryMetrics(campaign, { objective: fallbackObjective });
     const keyMetricValue = Number.isFinite(metrics.value) ? metrics.value : null;
     const keyMetricText = metrics.valueText || '—';
-    const derivedCpa = Number.isFinite(metrics.cost) ? metrics.cost : Number(campaign?.cpaUsd);
-    const cpa = Number.isFinite(derivedCpa)
-      ? derivedCpa
+    const costLabel = metrics.costLabel || (metrics.label === 'Клики' ? 'CPC' : 'CPA');
+    const derivedCost = Number.isFinite(metrics.cost) ? metrics.cost : Number(campaign?.cpaUsd);
+    const costValue = Number.isFinite(derivedCost)
+      ? derivedCost
       : safeDivision(campaign?.spendUsd, keyMetricValue || campaign?.leads);
-    const cpaText = Number.isFinite(cpa)
-      ? formatUsd(cpa, { digitsBelowOne: 2, digitsAboveOne: 2 })
+    const costText = Number.isFinite(costValue)
+      ? formatUsd(costValue, { digitsBelowOne: 2, digitsAboveOne: 2 })
       : '—';
     const cpc = safeDivision(campaign?.spendUsd, campaign?.clicks);
     const cpcText = Number.isFinite(cpc)
@@ -4243,8 +4319,11 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
       keyMetricValue,
       spendText,
       spendValue: spend !== null ? spend : 0,
-      cpaText,
-      cpaValue: Number.isFinite(cpa) ? Number(cpa) : null,
+      costLabel,
+      costText,
+      costValue: Number.isFinite(costValue) ? Number(costValue) : null,
+      cpaText: costText,
+      cpaValue: Number.isFinite(costValue) ? Number(costValue) : null,
       cpcText,
       cpcValue: Number.isFinite(cpc) ? Number(cpc) : null,
       ctrText,
@@ -4356,6 +4435,20 @@ function renderClientPortalPage({
     account?.card_last4 ||
     account?.default_card_last4 ||
     '';
+  const paymentIssuesText = Array.isArray(account?.paymentIssues)
+    ? account.paymentIssues.filter(Boolean).join(' • ')
+    : '';
+  const paymentTags = [];
+  if (debtText) {
+    paymentTags.push(`<span class="status-tag status-tag--warning">Долг ${escapeHtml(debtText)}</span>`);
+  }
+  if (cardLast4) {
+    paymentTags.push(`<span class="status-tag">Карта ****${escapeHtml(String(cardLast4))}</span>`);
+  }
+  const paymentTagMarkup = paymentTags.length > 0 ? `<div class="status-tags">${paymentTags.join('')}</div>` : '';
+  const statusToneClass =
+    statusEmoji === '🔴' ? 'status-value--alert' : statusEmoji === '🟡' ? 'status-value--warn' : 'status-value--ok';
+  const timezoneLabel = snapshot?.timezone || timezone || '';
 
   const kpiMeta = resolvePortalKpiMeta(kpi);
   const insightsList = Array.isArray(insights) ? insights.filter(Boolean) : [];
@@ -4530,53 +4623,67 @@ function renderClientPortalPage({
         font-size: 0.85rem;
         color: #9ba0a9;
       }
-      .payment-card {
-        gap: 20px;
+      .status-card {
+        gap: 16px;
       }
-      .status-chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        border-radius: 999px;
-        padding: 6px 12px;
-        background: rgba(255, 255, 255, 0.08);
-        font-size: 0.85rem;
-        color: #f5f6f8;
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
       }
-      .payment-body {
+      .status-item {
+        background: rgba(255, 255, 255, 0.06);
+        border-radius: 14px;
+        padding: 14px 16px;
         display: flex;
         flex-direction: column;
         gap: 6px;
+        min-height: 100%;
       }
-      .payment-label {
+      .status-title {
         font-size: 0.75rem;
         text-transform: uppercase;
         letter-spacing: 0.08em;
         color: #9ba0a9;
       }
-      .payment-amount {
-        font-size: 1.4rem;
+      .status-value {
+        font-size: 1.15rem;
         font-weight: 600;
       }
-      .payment-meta {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-        display: grid;
-        gap: 6px;
-        font-size: 0.9rem;
+      .status-value--ok {
+        color: #8be4a2;
+      }
+      .status-value--warn {
+        color: #ffd27f;
+      }
+      .status-value--alert {
+        color: #ff9aa2;
+      }
+      .status-meta {
+        font-size: 0.85rem;
         color: #c7cad1;
       }
-      .payment-meta li {
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
+      .status-meta--alert {
+        color: #ffb3be;
       }
-      .payment-meta .meta-label {
-        color: #9ba0a9;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-size: 0.75rem;
+      .status-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .status-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        border-radius: 999px;
+        padding: 4px 10px;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 0.78rem;
+        letter-spacing: 0.03em;
+      }
+      .status-tag--warning {
+        background: rgba(255, 99, 132, 0.18);
+        color: #ffb3be;
       }
       .summary {
         margin-bottom: 36px;
@@ -4864,32 +4971,36 @@ function renderClientPortalPage({
               : ''
           }
         </div>
-        <div class="card payment-card">
+        <div class="card status-card">
           <div class="card-head">
-            <span class="card-title">Оплата Meta</span>
-            <span class="status-chip">${statusEmoji} ${escapeHtml(accountStatusLabel || '—')}</span>
+            <span class="card-title">Оплата и статус</span>
           </div>
-          <div class="payment-body">
-            <span class="payment-label">Следующая дата</span>
-            <span class="payment-amount">${billingText}</span>
+          <div class="status-grid">
+            <div class="status-item">
+              <span class="status-title">Статус Meta</span>
+              <span class="status-value ${statusToneClass}">${statusEmoji} ${escapeHtml(accountStatusLabel || '—')}</span>
+              ${
+                billingCountdown.label && billingCountdown.label !== '—'
+                  ? `<span class="status-meta">До оплаты: ${escapeHtml(billingCountdown.label)}</span>`
+                  : ''
+              }
+              ${
+                paymentIssuesText
+                  ? `<span class="status-meta status-meta--alert">${escapeHtml(paymentIssuesText)}</span>`
+                  : ''
+              }
+            </div>
+            <div class="status-item">
+              <span class="status-title">Следующая оплата</span>
+              <span class="status-value">${billingText}</span>
+              ${paymentTagMarkup}
+            </div>
+            <div class="status-item">
+              <span class="status-title">Обновлено</span>
+              <span class="status-value" id="updated-at">${escapeHtml(updatedLabel)}</span>
+              ${timezoneLabel ? `<span class="status-meta">Часовой пояс: ${escapeHtml(timezoneLabel)}</span>` : ''}
+            </div>
           </div>
-          <ul class="payment-meta">
-            ${
-              billingCountdown.label && billingCountdown.label !== '—'
-                ? `<li><span class="meta-label">До оплаты</span><span>${escapeHtml(billingCountdown.label)}</span></li>`
-                : ''
-            }
-            ${
-              debtText
-                ? `<li><span class="meta-label">Долг</span><span><b>${escapeHtml(debtText)}</b></span></li>`
-                : ''
-            }
-            ${
-              cardLast4
-                ? `<li><span class="meta-label">Карта</span><span>****${escapeHtml(String(cardLast4))}</span></li>`
-                : ''
-            }
-          </ul>
         </div>
       </section>
       <section class="summary">
@@ -4909,7 +5020,7 @@ function renderClientPortalPage({
           <div class="campaign-sorts">
             <button class="sort-button active" data-sort="spend" data-label="Потрачено">🔽 Потрачено</button>
             <button class="sort-button" data-sort="leads" data-label="Лиды">🔽 Лиды</button>
-            <button class="sort-button" data-sort="cpa" data-label="CPA">🔽 CPA</button>
+            <button class="sort-button" data-sort="cpa" data-label="Стоимость цели">🔽 Стоимость цели</button>
           </div>
         </div>
         <div class="campaign-list" id="campaign-list"></div>
@@ -5059,7 +5170,12 @@ function renderClientPortalPage({
           } else if (state.filter === 'completed') {
             filtered = campaigns.filter((item) => item.statusCategory === 'completed');
           }
-          const valueKey = state.sortKey === 'leads' ? 'keyMetricValue' : state.sortKey + 'Value';
+          const valueKey =
+            state.sortKey === 'leads'
+              ? 'keyMetricValue'
+              : state.sortKey === 'cpa'
+              ? 'costValue'
+              : state.sortKey + 'Value';
           const dir = state.sortDir === 'asc' ? 1 : -1;
           filtered.sort((a, b) => {
             const aValue = Number.isFinite(a[valueKey]) ? Number(a[valueKey]) : -Infinity;
@@ -5100,8 +5216,10 @@ function renderClientPortalPage({
                 '<span>Потрачено: ' +
                 escapeText(item.spendText || '—') +
                 '</span>' +
-                '<span>CPA: ' +
-                escapeText(item.cpaText || '—') +
+                '<span>' +
+                escapeText(item.costLabel || 'CPA') +
+                ': ' +
+                escapeText(item.costText || item.cpaText || '—') +
                 '</span>' +
                 '<span>CPC: ' +
                 escapeText(item.cpcText || '—') +
