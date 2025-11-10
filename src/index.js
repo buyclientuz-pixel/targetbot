@@ -7016,7 +7016,7 @@ class HttpR2Bucket {
     this.accessKeyId = accessKeyId;
     this.secretAccessKey = secretAccessKey;
     this.fetcher = typeof fetcher === 'function' ? fetcher : globalThis.fetch;
-    this.basePath = `${baseUrl.pathname.replace(/\/+$, '')}/${bucketName}`;
+    this.basePath = `${baseUrl.pathname.replace(/\/+$/, '')}/${bucketName}`;
     this.signingKeyCache = null;
   }
 
