@@ -47,6 +47,7 @@ const REPORT_PRESET_MAP = {
   month: 'this_month',
 };
 const ALERT_STATE_PREFIX = 'alert:state:';
+const AUTOPAUSE_STATE_PREFIX = 'autopause:state:';
 const ALERT_ZERO_DEFAULT_TIME = '12:00';
 const ALERT_ZERO_TIME_OPTIONS = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00'];
 const ALERT_BILLING_DEFAULT_TIMES = ['10:00', '14:00', '18:00'];
@@ -82,6 +83,7 @@ const SCHEDULE_CADENCE_OPTIONS = [
   { value: 'weekends', label: 'По выходным' },
   { value: 'weekly', label: 'Раз в неделю' },
 ];
+const AUTOPAUSE_THRESHOLD_OPTIONS = [2, 3, 4, 5];
 
 function resolveDefaultWebhookUrl(config, { origin = '' } = {}) {
   if (config?.telegramWebhookUrl) {
@@ -2236,6 +2238,65 @@ function extractAlertSettings(rawProject) {
   };
 }
 
+function extractAutopauseSettings(rawProject) {
+  const candidates = [
+    rawProject?.autopause,
+    rawProject?.settings?.autopause,
+    rawProject?.config?.autopause,
+    rawProject?.reporting?.autopause,
+    rawProject?.state?.autopause,
+    rawProject?.client?.autopause,
+  ];
+
+  let config = null;
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === 'object') {
+      config = candidate;
+      break;
+    }
+  }
+
+  const enabled = Boolean(config?.enabled ?? config?.active ?? config?.on ?? config?.value);
+  const manualOnly = Boolean(config?.manual ?? config?.manualOnly ?? config?.manual_only);
+  const allowAuto = config?.auto === false || config?.automatic === false ? false : true;
+  const thresholdRaw =
+    config?.threshold_days ??
+    config?.thresholdDays ??
+    config?.days ??
+    config?.consecutiveDays ??
+    config?.streak ??
+    config?.threshold ??
+    3;
+  const thresholdDays = Number.isFinite(Number(thresholdRaw)) ? Math.max(1, Math.round(Number(thresholdRaw))) : 3;
+
+  const lastTriggeredAt =
+    config?.lastTriggeredAt || config?.last_triggered_at || config?.last_run_at || config?.lastActionAt || null;
+  const lastReason = config?.lastReason || config?.last_reason || config?.reason || null;
+
+  const pausedCampaignIds = Array.isArray(config?.pausedCampaignIds)
+    ? config.pausedCampaignIds.map((id) => String(id))
+    : Array.isArray(config?.last_campaign_ids)
+    ? config.last_campaign_ids.map((id) => String(id))
+    : [];
+
+  const lastCampaigns = Array.isArray(config?.lastCampaigns)
+    ? config.lastCampaigns
+    : Array.isArray(config?.last_campaigns)
+    ? config.last_campaigns
+    : [];
+
+  return {
+    enabled,
+    manualOnly,
+    allowAuto,
+    thresholdDays,
+    lastTriggeredAt,
+    lastReason,
+    lastCampaigns,
+    pausedCampaignIds,
+  };
+}
+
 function formatAlertLines(alerts, { account, campaigns }) {
   const lines = [];
 
@@ -2915,6 +2976,95 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   };
 }
 
+function selectAutopauseCandidates({ campaigns = [], kpiTarget = null, limit = 5 } = {}) {
+  if (!Array.isArray(campaigns)) {
+    return [];
+  }
+
+  const candidates = [];
+  for (const campaign of campaigns) {
+    if (!campaign || typeof campaign !== 'object') {
+      continue;
+    }
+
+    const id = campaign.id || campaign.campaignId || null;
+    if (!id) {
+      continue;
+    }
+
+    const spend = Number.isFinite(campaign.spendUsd) ? campaign.spendUsd : null;
+    const leads = Number.isFinite(campaign.leads) ? campaign.leads : null;
+    const cpa = Number.isFinite(campaign.cpaUsd)
+      ? campaign.cpaUsd
+      : Number.isFinite(spend) && Number.isFinite(leads) && leads > 0
+      ? spend / leads
+      : null;
+
+    const reasons = [];
+    if (Number.isFinite(spend) && spend > 0 && (!Number.isFinite(leads) || leads === 0)) {
+      reasons.push('нет лидов при расходе');
+    }
+    if (Number.isFinite(kpiTarget) && Number.isFinite(cpa) && cpa > kpiTarget) {
+      const diff = cpa - kpiTarget;
+      if (diff / kpiTarget >= 0.15) {
+        reasons.push(`CPA ${formatUsd(cpa, { digitsBelowOne: 2, digitsAboveOne: 0 })}`);
+      }
+    }
+
+    if (reasons.length === 0) {
+      continue;
+    }
+
+    candidates.push({
+      id: String(id),
+      name: campaign.name || `Кампания ${id}`,
+      spend,
+      leads,
+      cpa,
+      reason: reasons.join(', '),
+    });
+  }
+
+  candidates.sort((a, b) => {
+    const spendA = Number.isFinite(a.spend) ? a.spend : 0;
+    const spendB = Number.isFinite(b.spend) ? b.spend : 0;
+    return spendB - spendA;
+  });
+
+  return candidates.slice(0, Math.max(1, limit));
+}
+
+function buildDigestPreview({ sections = [], timezone }) {
+  const digestLines = ['<b>Сводный отчёт</b>'];
+
+  for (const section of sections) {
+    if (!section || !section.preview) {
+      continue;
+    }
+
+    const { label, preview } = section;
+    const range = preview.range || {};
+    const sinceLabel = range.since ? formatDateShort(range.since, { timezone: range.timezone || timezone }) : null;
+    const untilLabel = range.until ? formatDateShort(range.until, { timezone: range.timezone || timezone }) : sinceLabel;
+    let header = label || 'Период';
+    if (sinceLabel && untilLabel) {
+      header = `${label} (${sinceLabel === untilLabel ? sinceLabel : `${sinceLabel} — ${untilLabel}`})`;
+    } else if (preview.label) {
+      header = `${label} (${preview.label})`;
+    }
+
+    digestLines.push('', `<b>${escapeHtml(header)}</b>`);
+
+    const previewLines = String(preview.text || '')
+      .split('\n')
+      .map((line) => line.trimEnd());
+    const body = previewLines.slice(1);
+    digestLines.push(...(body.length > 0 ? body : ['• Данных нет.']));
+  }
+
+  return { text: digestLines.join('\n') };
+}
+
 function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
   const keyboard = [];
   const portalButton = portalUrl
@@ -2987,6 +3137,36 @@ function buildProjectReportKeyboard(
   ]);
 
   return { inline_keyboard: rows };
+}
+
+function buildAutopauseKeyboard(base, { autopause } = {}) {
+  const enabled = Boolean(autopause?.enabled);
+  const threshold = Number.isFinite(autopause?.thresholdDays) ? autopause.thresholdDays : 3;
+
+  const toggleLabel = enabled ? '🔴 Выключить' : '🟢 Включить';
+  const keyboard = [];
+
+  keyboard.push([
+    { text: toggleLabel, callback_data: `${base}:autopause:toggle` },
+    { text: '🔄 Обновить', callback_data: `${base}:autopause` },
+  ]);
+
+  const thresholdRow = AUTOPAUSE_THRESHOLD_OPTIONS.map((days) => {
+    const selected = days === threshold;
+    const label = selected ? `• ${days}д` : `${days}д`;
+    return { text: label, callback_data: `${base}:autopause:threshold:${days}` };
+  });
+  keyboard.push(thresholdRow);
+
+  keyboard.push([{ text: '⏸ Поставить на паузу', callback_data: `${base}:autopause:trigger` }]);
+
+  if (enabled) {
+    keyboard.push([{ text: '📄 История', callback_data: `${base}:autopause:history` }]);
+  }
+
+  keyboard.push([{ text: '⬅️ К проекту', callback_data: `${base}:open` }]);
+
+  return { inline_keyboard: keyboard };
 }
 
 function buildPaymentCalendarKeyboard(base, { timezone } = {}) {
@@ -5324,6 +5504,42 @@ class MetaService {
       range: rangeInfo,
       currency: account?.currency || project?.metrics?.currency || project?.currency || null,
     };
+  }
+
+  async pauseCampaigns({ campaignIds } = {}) {
+    if (!Array.isArray(campaignIds) || campaignIds.length === 0) {
+      return { paused: [], failed: [] };
+    }
+
+    const uniqueIds = Array.from(new Set(campaignIds.map((id) => String(id).trim()).filter(Boolean)));
+    if (uniqueIds.length === 0) {
+      return { paused: [], failed: [] };
+    }
+
+    const token = await this.resolveAccessToken();
+    if (!token) {
+      throw new Error('Meta токен не задан.');
+    }
+
+    const client = new MetaClient({
+      accessToken: token,
+      version: this.config?.metaGraphVersion || META_DEFAULT_GRAPH_VERSION,
+      fetcher: this.fetcher,
+    });
+
+    const paused = [];
+    const failed = [];
+
+    for (const id of uniqueIds) {
+      try {
+        await client.request(`/${id}`, { method: 'POST', body: { status: 'PAUSED' } });
+        paused.push(id);
+      } catch (error) {
+        failed.push({ id, error: error?.message || String(error) });
+      }
+    }
+
+    return { paused, failed };
   }
 
   async fetchCampaignTimeseries({
@@ -8351,6 +8567,8 @@ class TelegramBot {
       const account = project.adAccountId ? accountMap.get(String(project.adAccountId)) : null;
 
       const alerts = extractAlertSettings(rawProject) || {};
+      const autopauseConfig = extractAutopauseSettings(rawProject);
+      let autopauseState = await this.readAutopauseState(projectKey);
       if (!alerts) {
         continue;
       }
@@ -8696,6 +8914,47 @@ class TelegramBot {
               kpiState.lastNotifiedDate = localDateIso;
             }
 
+            const autopThreshold = Number.isFinite(autopauseConfig?.thresholdDays)
+              ? autopauseConfig.thresholdDays
+              : 3;
+
+            if (
+              exceeded &&
+              autopauseConfig?.enabled &&
+              autopauseConfig.allowAuto !== false &&
+              !autopauseConfig.manualOnly &&
+              this.metaService &&
+              streak >= autopThreshold
+            ) {
+              const lastAutoDate = autopauseState?.lastAutoDate || autopauseState?.lastAttemptDate || null;
+              if (lastAutoDate !== localDateIso) {
+                try {
+                  const result = await this.applyAutopauseToProject({
+                    projectKey,
+                    project,
+                    rawProject,
+                    account,
+                    report,
+                    reason: 'kpi_overrun',
+                    baseCallbackId,
+                    adminTargets,
+                    notifyAdmins: true,
+                  });
+
+                  autopauseState = await this.readAutopauseState(projectKey);
+                  autopauseState.lastAutoDate = localDateIso;
+                  autopauseState.lastAttemptDate = localDateIso;
+                  autopauseState.lastAttemptResult = result.ok
+                    ? `поставлено ${result.paused.length}`
+                    : result.reason || 'без изменений';
+                  autopauseState.lastReason = result.reason || 'kpi_overrun';
+                  await this.writeAutopauseState(projectKey, autopauseState);
+                } catch (error) {
+                  console.error('Autopause apply failed', projectKey, error);
+                }
+              }
+            }
+
             state.kpi = kpiState;
             stateChanged = true;
           } catch (error) {
@@ -9009,6 +9268,166 @@ class TelegramBot {
     return sent;
   }
 
+  async applyAutopauseToProject({
+    projectKey,
+    project,
+    rawProject,
+    account,
+    report = null,
+    reason = 'manual',
+    baseCallbackId = null,
+    adminTargets = [],
+    notifyAdmins = false,
+    userId = null,
+  }) {
+    const autopause = extractAutopauseSettings(rawProject);
+    if (!autopause.enabled) {
+      return { ok: false, reason: 'disabled', autopause };
+    }
+
+    if (reason !== 'manual' && autopause.manualOnly) {
+      return { ok: false, reason: 'manual_only', autopause };
+    }
+
+    if (!this.metaService) {
+      return { ok: false, reason: 'meta_unavailable', autopause };
+    }
+
+    const schedule = extractScheduleSettings(rawProject) || {};
+    const timezone = schedule.timezone || this.config.defaultTimezone || 'UTC';
+    const campaignFilter = extractReportCampaignFilter(rawProject);
+    const kpi = extractProjectKpi(rawProject);
+    const kpiTarget = Number.isFinite(kpi?.cpa)
+      ? kpi.cpa
+      : Number.isFinite(kpi?.cpl)
+      ? kpi.cpl
+      : null;
+
+    let accountReport = report;
+    if (!accountReport) {
+      try {
+        accountReport = await this.metaService.fetchAccountReport({
+          project,
+          account,
+          preset: 'week',
+          timezone,
+          campaignIds: campaignFilter,
+        });
+      } catch (error) {
+        return { ok: false, reason: 'report_failed', error, autopause };
+      }
+    }
+
+    const candidates = selectAutopauseCandidates({
+      campaigns: accountReport?.campaigns || [],
+      kpiTarget,
+      limit: 6,
+    });
+
+    if (candidates.length === 0) {
+      return { ok: false, reason: 'no_candidates', autopause };
+    }
+
+    let pauseResult;
+    try {
+      pauseResult = await this.metaService.pauseCampaigns({
+        campaignIds: candidates.map((item) => item.id),
+      });
+    } catch (error) {
+      return { ok: false, reason: 'meta_error', error, autopause };
+    }
+
+    const paused = pauseResult.paused || [];
+    const failed = pauseResult.failed || [];
+    const nowIso = new Date().toISOString();
+
+    let stored = null;
+    try {
+      stored = (await this.storage.getJson('DB', projectKey)) || {};
+    } catch (error) {
+      stored = {};
+    }
+
+    if (!stored || typeof stored !== 'object') {
+      stored = {};
+    }
+
+    const storedAutopause =
+      stored.autopause && typeof stored.autopause === 'object' ? { ...stored.autopause } : {};
+
+    storedAutopause.enabled = autopause.enabled;
+    storedAutopause.manual_only = autopause.manualOnly;
+    storedAutopause.threshold_days = autopause.thresholdDays;
+    storedAutopause.last_triggered_at = nowIso;
+    storedAutopause.last_reason = reason;
+    storedAutopause.last_campaign_ids = paused;
+    storedAutopause.last_campaigns = candidates.map((item) => ({
+      id: item.id,
+      name: item.name,
+      reason: item.reason,
+    }));
+
+    stored.autopause = storedAutopause;
+    stored.updated_at = nowIso;
+    if (userId) {
+      stored.updated_by = userId;
+    }
+
+    await this.storage.putJson('DB', projectKey, stored);
+
+    const autopauseState = await this.readAutopauseState(projectKey);
+    autopauseState.lastTriggeredAt = nowIso;
+    autopauseState.lastReason = reason;
+    autopauseState.lastPausedIds = paused;
+    autopauseState.lastFailed = failed;
+    autopauseState.lastCandidates = candidates;
+    await this.writeAutopauseState(projectKey, autopauseState);
+
+    if (notifyAdmins && baseCallbackId) {
+      const lines = [
+        '⏸ <b>Автопауза кампаний</b>',
+        `<b>${escapeHtml(project.name)}</b> — приостановлены кампании по причине ${escapeHtml(reason)}.`,
+      ];
+
+      if (paused.length > 0) {
+        lines.push('', 'Поставлены на паузу:');
+        for (const entry of candidates) {
+          if (!paused.includes(entry.id)) {
+            continue;
+          }
+          lines.push(`• <b>${escapeHtml(entry.name)}</b> — ${escapeHtml(entry.reason)}`);
+        }
+      }
+
+      if (failed.length > 0) {
+        lines.push('', 'Не удалось остановить:');
+        for (const entry of failed) {
+          lines.push(`• ${escapeHtml(entry.id)} — ${escapeHtml(entry.error || 'ошибка')}`);
+        }
+      }
+
+      const extraRows = [[{ text: '⬅️ К проекту', callback_data: `admin:project:${baseCallbackId}:open` }]];
+
+      await this.sendProjectAlert({
+        project,
+        baseCallbackId,
+        text: lines.join('\n'),
+        extraRows,
+        adminTargets,
+        kind: 'autopause',
+      });
+    }
+
+    return {
+      ok: paused.length > 0,
+      paused,
+      failed,
+      candidates,
+      autopause: storedAutopause,
+      reason,
+    };
+  }
+
   getDefaultWebhookUrl() {
     return resolveDefaultWebhookUrl(this.config);
   }
@@ -9186,6 +9605,26 @@ class TelegramBot {
     }
     const key = `${ALERT_STATE_PREFIX}${projectKey}`;
     return this.storage.putJson('DB', key, state);
+  }
+
+  async readAutopauseState(projectKey) {
+    if (!projectKey) {
+      return {};
+    }
+    const key = `${AUTOPAUSE_STATE_PREFIX}${projectKey}`;
+    const state = await this.storage.getJson('DB', key);
+    if (!state || typeof state !== 'object') {
+      return {};
+    }
+    return state;
+  }
+
+  async writeAutopauseState(projectKey, state) {
+    if (!projectKey) {
+      return false;
+    }
+    const key = `${AUTOPAUSE_STATE_PREFIX}${projectKey}`;
+    return this.storage.putJson('DB', key, state || {});
   }
 
   async buildAdminPanelPayload({ forceMetaRefresh = false, adminId = null, chatId = null, threadId = null } = {}) {
@@ -10560,11 +10999,68 @@ class TelegramBot {
             `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(context.project.id || context.project.code || projectId)}`;
 
           if (subAction === 'csv') {
-            await this.telegram.answerCallbackQuery({
-              callback_query_id: id,
-              text: 'Экспорт CSV появится после подключения хранилища.',
-              show_alert: true,
+            const previewState = await this.loadReportPreview(projectKey);
+            if (!previewState || !previewState.preset) {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Сначала сформируйте отчёт, чтобы экспортировать CSV.',
+                show_alert: true,
+              });
+              return { handled: true };
+            }
+
+            const portalUrl = previewState.portalUrl
+              ? previewState.portalUrl
+              : await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
+            if (!portalUrl) {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'У проекта нет ссылки портала. Создайте портал перед экспортом.',
+                show_alert: true,
+              });
+              return { handled: true };
+            }
+
+            const preset = String(previewState.preset);
+            const periodMap = { today: 'today', yesterday: 'yesterday', week: 'week', month: 'month' };
+            const periodId = periodMap[preset];
+            if (!periodId) {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'CSV доступен для периодов Сегодня, Вчера, 7 дней и Месяц.',
+                show_alert: true,
+              });
+              return { handled: true };
+            }
+
+            let csvUrl;
+            try {
+              csvUrl = new URL(portalUrl);
+            } catch (error) {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Не удалось подготовить ссылку CSV.',
+                show_alert: true,
+              });
+              return { handled: true };
+            }
+
+            csvUrl.searchParams.set('format', 'csv');
+            csvUrl.searchParams.set('period', periodId);
+
+            const label = formatReportPresetLabel(preset);
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: `<b>Экспорт CSV</b>\nПериод: ${escapeHtml(label)}.`,
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '⬇️ Скачать CSV', url: csvUrl.toString() }],
+                  [{ text: '⬅️ К отчётам', callback_data: `${base}:reports` }],
+                ],
+              },
             });
+
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Ссылка на CSV готова.' });
             return { handled: true };
           }
 
@@ -10799,18 +11295,104 @@ class TelegramBot {
         }
 
         if (action === 'digest') {
+          const projectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(context.project.id || context.project.code || projectId)}`;
+          const scheduleSettings = extractScheduleSettings(context.rawProject);
+          const timezone = scheduleSettings?.timezone || this.config.defaultTimezone || 'UTC';
+          const campaignFilter = extractReportCampaignFilter(context.rawProject);
           const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
-          await this.renderAdminMessage(message, {
-            chatId,
-            text: [
-              '<b>Сводный отчёт</b>',
-              'В следующей итерации добавим комбинированный отчёт (неделя + сегодня/вчера) и автоматическую отправку клиенту.',
-              'Сейчас можно воспользоваться кнопками периодов для просмотра статистики.',
-            ].join('\n'),
-            reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
+
+          const definitions = [
+            { id: 'week', preset: 'week', label: '7 дней' },
+            { id: 'yesterday', preset: 'yesterday', label: 'Вчера' },
+            { id: 'today', preset: 'today', label: 'Сегодня' },
+          ];
+
+          const sections = [];
+          const errors = [];
+
+          for (const definition of definitions) {
+            let reportData = null;
+            if (this.metaService) {
+              try {
+                reportData = await this.metaService.fetchAccountReport({
+                  project: context.project,
+                  account: context.account,
+                  preset: definition.preset,
+                  timezone,
+                  campaignIds: campaignFilter,
+                });
+              } catch (error) {
+                errors.push(`${definition.label}: ${error?.message || 'ошибка Meta API'}`);
+              }
+            }
+
+            const preview = buildProjectReportPreview({
+              project: context.project,
+              account: context.account,
+              rawProject: context.rawProject,
+              preset: definition.preset,
+              report: reportData,
+            });
+
+            sections.push({ definition, preview, label: definition.label });
+          }
+
+          const digest = buildDigestPreview({ sections, timezone });
+
+          let adminText = digest.text;
+          if (!this.metaService) {
+            adminText = `${adminText}\n\n⚠️ Прямая выгрузка Meta недоступна — показаны данные панели.`;
+          } else if (errors.length > 0) {
+            adminText = `${adminText}\n\n⚠️ Не все периоды удалось обновить:\n${errors
+              .map((line) => `• ${escapeHtml(line)}`)
+              .join('\n')}`;
+          }
+
+          const clientText = digest.text;
+
+          const nowIso = new Date().toISOString();
+          await this.saveReportPreview(projectKey, {
+            adminText,
+            clientText,
+            text: clientText,
+            preset: 'digest',
+            range: null,
+            label: 'Сводный отчёт',
+            portalUrl,
+            generated_at: nowIso,
+            generated_by: userId,
+            digest: sections.map((section) => ({
+              id: section.definition.id,
+              label: section.definition.label,
+              range: section.preview?.range || null,
+            })),
           });
 
-          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Сводный отчёт в разработке.' });
+          const replyMarkup = buildProjectReportKeyboard(base, {
+            portalUrl,
+            hasPreview: true,
+            canSendToChat: Boolean(context.project.chatId),
+            canSendToAdmin: true,
+          });
+
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: adminText,
+            reply_markup: replyMarkup,
+          });
+
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Сводный отчёт готов.' });
+          this.queueLog({
+            kind: 'callback',
+            status: 'ok',
+            data,
+            chat_id: chatId,
+            user_id: userId,
+            project_id: context.project.id,
+            action: 'report:digest',
+          });
           return { handled: true };
         }
 
@@ -11232,24 +11814,246 @@ class TelegramBot {
         }
 
         if (action === 'autopause') {
-          await this.renderAdminMessage(message, {
-            chatId,
-            text: [
-              '<b>Автопауза</b>',
-              'Настройка пауз кампаний по KPI появится после подключения автоматического управления.',
-              'Подготовьте список кампаний и порог превышения CPL/CPA — бот будет отслеживать их ежедневно.',
-            ].join('\n'),
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: '🕒 Изменить расписание', callback_data: `${base}:schedule:edit` },
-                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                ],
-              ],
-            },
-          });
+          const projectKey =
+            context.project.key ||
+            `${PROJECT_KEY_PREFIX}${normalizeProjectIdForCallback(
+              context.project.id || context.project.code || projectId,
+            )}`;
+          const schedule = extractScheduleSettings(context.rawProject) || {};
+          const timezone = schedule.timezone || this.config.defaultTimezone || 'UTC';
+          const baseCallbackId = projectId;
 
-          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Автопауза скоро будет.' });
+          const renderAutopausePanel = async () => {
+            const freshContext = context;
+            const autopause = extractAutopauseSettings(freshContext.rawProject);
+            const autopauseState = await this.readAutopauseState(projectKey);
+
+            const lines = ['<b>Автопауза кампаний</b>'];
+            lines.push(autopause.enabled ? 'Статус: 🟢 Включена' : 'Статус: 🔴 Отключена');
+            lines.push(`Порог превышений: ${autopause.thresholdDays} дн.`);
+
+            if (autopause.manualOnly) {
+              lines.push('Режим: вручную (автостоп по KPI не запустится без подтверждения).');
+            }
+
+            if (autopause.lastTriggeredAt) {
+              lines.push(
+                `Последнее действие: ${escapeHtml(formatTimestamp(autopause.lastTriggeredAt, timezone))}`,
+              );
+            } else {
+              lines.push('Последнее действие: ещё не выполнялось.');
+            }
+
+            if (Array.isArray(autopause.lastCampaigns) && autopause.lastCampaigns.length > 0) {
+              lines.push('', 'Последние кампании:');
+              const preview = autopause.lastCampaigns.slice(0, 3);
+              for (const entry of preview) {
+                const name = escapeHtml(entry?.name || entry?.id || 'Кампания');
+                const reason = entry?.reason ? ` — ${escapeHtml(entry.reason)}` : '';
+                lines.push(`• ${name}${reason}`);
+              }
+              if (autopause.lastCampaigns.length > preview.length) {
+                lines.push(`…ещё ${autopause.lastCampaigns.length - preview.length} кампаний`);
+              }
+            }
+
+            if (autopauseState?.lastAttemptDate) {
+              const attemptLabel = formatDateShort(autopauseState.lastAttemptDate, { timezone });
+              const attemptResult = autopauseState.lastAttemptResult || autopauseState.lastReason || 'попытка';
+              lines.push('', `Последняя проверка: ${escapeHtml(attemptLabel)} (${escapeHtml(attemptResult)})`);
+            }
+
+            lines.push('', 'Используйте кнопки ниже для управления автопаузой.');
+
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: lines.join('\n'),
+              reply_markup: buildAutopauseKeyboard(base, { autopause }),
+            });
+          };
+
+          const updateAutopauseRecord = async (mutator) => {
+            let stored = null;
+            try {
+              stored = await this.storage.getJson('DB', projectKey);
+            } catch (error) {
+              console.warn('Failed to read project before autopause update', projectKey, error);
+            }
+            if (!stored || typeof stored !== 'object') {
+              stored = {};
+            }
+            if (!stored.autopause || typeof stored.autopause !== 'object') {
+              stored.autopause = {};
+            }
+
+            mutator(stored.autopause);
+
+            stored.updated_at = new Date().toISOString();
+            if (userId) {
+              stored.updated_by = userId;
+            }
+
+            await this.storage.putJson('DB', projectKey, stored);
+            context = await this.resolveProjectContext(projectId, { forceMetaRefresh: false });
+          };
+
+          if (subAction === 'toggle') {
+            const current = extractAutopauseSettings(context.rawProject);
+            const nextEnabled = !current.enabled;
+
+            await updateAutopauseRecord((autopause) => {
+              autopause.enabled = nextEnabled;
+              autopause.threshold_days = Number.isFinite(current.thresholdDays)
+                ? current.thresholdDays
+                : 3;
+            });
+
+            await renderAutopausePanel();
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: nextEnabled ? 'Автопауза включена.' : 'Автопауза отключена.',
+            });
+
+            this.queueLog({
+              kind: 'callback',
+              status: 'ok',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: `autopause:${nextEnabled ? 'on' : 'off'}`,
+            });
+            return { handled: true };
+          }
+
+          if (subAction === 'threshold') {
+            const daysToken = extraAction || extraParam;
+            const days = Number(daysToken);
+            if (!Number.isFinite(days) || days <= 0) {
+              await this.telegram.answerCallbackQuery({
+                callback_query_id: id,
+                text: 'Укажите число дней от 1 и выше.',
+                show_alert: true,
+              });
+              return { handled: true };
+            }
+
+            const normalized = Math.max(1, Math.round(days));
+            await updateAutopauseRecord((autopause) => {
+              autopause.threshold_days = normalized;
+            });
+
+            await renderAutopausePanel();
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: `Порог установлен: ${normalized} дн.`,
+            });
+
+            this.queueLog({
+              kind: 'callback',
+              status: 'ok',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: `autopause:threshold:${normalized}`,
+            });
+            return { handled: true };
+          }
+
+          if (subAction === 'trigger') {
+            const result = await this.applyAutopauseToProject({
+              projectKey,
+              project: context.project,
+              rawProject: context.rawProject,
+              account: context.account,
+              report: null,
+              reason: 'manual',
+              baseCallbackId,
+              adminTargets: Array.from(this.config.adminIds),
+              notifyAdmins: false,
+              userId,
+            });
+
+            context = await this.resolveProjectContext(projectId, { forceMetaRefresh: false });
+            const autopauseState = await this.readAutopauseState(projectKey);
+            autopauseState.lastAttemptDate = formatDateIsoInTimeZone(new Date(), timezone).slice(0, 10);
+            autopauseState.lastAttemptResult = result.ok
+              ? `поставлено ${result.paused.length}`
+              : result.reason || 'без изменений';
+            await this.writeAutopauseState(projectKey, autopauseState);
+
+            await renderAutopausePanel();
+
+            const answerText = result.ok
+              ? `Поставлено на паузу кампаний: ${result.paused.length}.`
+              : result.reason === 'no_candidates'
+              ? 'Нет кампаний для остановки.'
+              : result.reason === 'disabled'
+              ? 'Автопауза отключена.'
+              : 'Не удалось запустить автопаузу.';
+
+            await this.telegram.answerCallbackQuery({
+              callback_query_id: id,
+              text: answerText,
+              show_alert: !result.ok,
+            });
+
+            this.queueLog({
+              kind: 'callback',
+              status: result.ok ? 'ok' : 'noop',
+              data,
+              chat_id: chatId,
+              user_id: userId,
+              project_id: context.project.id,
+              action: 'autopause:trigger',
+              paused: result.paused,
+              reason: result.reason,
+            });
+            return { handled: true };
+          }
+
+          if (subAction === 'history') {
+            const autopause = extractAutopauseSettings(context.rawProject);
+            const autopauseState = await this.readAutopauseState(projectKey);
+            const lines = ['<b>История автопаузы</b>'];
+            if (autopause.lastTriggeredAt) {
+              lines.push(
+                `Последний стоп: ${escapeHtml(formatTimestamp(autopause.lastTriggeredAt, timezone))}`,
+              );
+            }
+            if (Array.isArray(autopause.lastCampaigns) && autopause.lastCampaigns.length > 0) {
+              lines.push('', 'Кампании:');
+              for (const entry of autopause.lastCampaigns) {
+                const name = escapeHtml(entry?.name || entry?.id || 'Кампания');
+                const reason = entry?.reason ? ` — ${escapeHtml(entry.reason)}` : '';
+                lines.push(`• ${name}${reason}`);
+              }
+            }
+            if (autopauseState?.lastFailed?.length) {
+              lines.push('', 'Ошибки:');
+              for (const entry of autopauseState.lastFailed) {
+                lines.push(`• ${escapeHtml(entry.id)} — ${escapeHtml(entry.error || 'ошибка')}`);
+              }
+            }
+            if (!autopause.lastTriggeredAt && !autopauseState?.lastFailed?.length) {
+              lines.push('Действий ещё не было.');
+            }
+
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: lines.join('\n'),
+              reply_markup: {
+                inline_keyboard: [[{ text: '⬅️ Назад', callback_data: `${base}:autopause` }]],
+              },
+            });
+
+            await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'История показана.' });
+            return { handled: true };
+          }
+
+          await renderAutopausePanel();
+          await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Настройки автопаузы.' });
           return { handled: true };
         }
 
