@@ -11714,6 +11714,24 @@ class WorkerApp {
     return htmlResponse(parts.join(''));
   }
 
+  async resolveProjectContext(callbackId, options = {}) {
+    const bot = this.bot;
+    if (bot && typeof bot.resolveProjectContext === 'function') {
+      return bot.resolveProjectContext(callbackId, options);
+    }
+
+    if (!this._portalContextResolver) {
+      const base = {
+        storage: this.storage,
+        metaService: this.metaService,
+        executionContext: this.executionContext,
+      };
+      this._portalContextResolver = TelegramBot.prototype.resolveProjectContext.bind(base);
+    }
+
+    return this._portalContextResolver(callbackId, options);
+  }
+
   async handleClientPortal(url, { normalizedPath } = {}) {
     if (!this.metaService) {
       return htmlResponse('<h1>Портал недоступен</h1><p>Сервис Meta временно отключён.</p>', { status: 503 });
