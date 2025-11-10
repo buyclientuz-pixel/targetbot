@@ -14,6 +14,14 @@ const BOT_TOKEN_KEYS = [
 ];
 
 const OPTIONAL_KEYS = ['DEFAULT_TZ', 'WORKER_URL', 'FB_APP_ID', 'FB_APP_SECRET', 'GS_WEBHOOK'];
+const META_KEYS = ['FB_APP_ID', 'FB_APP_SECRET'];
+const R2_KEYS = [
+  'R2_ACCESS_KEY_ID',
+  'R2_SECRET_ACCESS_KEY',
+  'R2_BUCKET_NAME',
+  'R2_ACCOUNT_ID',
+  'R2_ENDPOINT',
+];
 const TELEGRAM_TIMEOUT_MS = 9000;
 
 function log(kind, message) {
@@ -140,6 +148,35 @@ async function main() {
     } else {
       log('warn', `${key} пока не задан.`);
     }
+  }
+
+  const missingMeta = META_KEYS.filter((key) => !env[key]);
+  if (missingMeta.length === 0) {
+    log('ok', 'Meta OAuth: FB_APP_ID и FB_APP_SECRET найдены.');
+  } else {
+    log('error', `Meta OAuth: отсутствуют ${missingMeta.join(', ')}.`);
+    console.log(
+      [
+        '  • Получите значения в Meta for Developers → Settings → Basic;',
+        '  • Локально добавьте строки FB_APP_ID и FB_APP_SECRET в .dev.vars или .env;',
+        '  • Для Cloudflare выполните `wrangler secret put FB_APP_ID` и `wrangler secret put FB_APP_SECRET`;',
+        '  • В GitHub Actions задайте одноимённые Secrets, чтобы синхронизировать значения автоматически.',
+      ].join('\n'),
+    );
+  }
+
+  const missingR2 = R2_KEYS.filter((key) => !env[key]);
+  if (missingR2.length === 0) {
+    log('ok', 'R2: все ключи найдены.');
+  } else {
+    log('warn', `R2: отсутствуют ${missingR2.join(', ')}.`);
+    console.log(
+      [
+        '  • Создайте API Token в Cloudflare R2 (доступ к чтению/записи);',
+        '  • Добавьте значения в .dev.vars/.env и синхронизируйте через `npm run sync:secrets`;',
+        '  • Убедитесь, что Secrets заданы в GitHub Actions и Workers → Settings → Variables.',
+      ].join('\n'),
+    );
   }
 
   if (args.has('--ping-telegram')) {
