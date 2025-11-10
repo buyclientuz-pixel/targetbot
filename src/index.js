@@ -2509,14 +2509,21 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   const sinceLabel = range?.since ? formatDateShort(range.since, { timezone: range?.timezone }) : null;
   const untilLabel = range?.until ? formatDateShort(range.until, { timezone: range?.timezone }) : sinceLabel;
 
-  let headerLabel = baseLabel;
+  const titleLabel = baseLabel || 'Период';
+  let periodLabel = '';
   if (sinceLabel && untilLabel) {
-    headerLabel = `${baseLabel} — ${sinceLabel}${sinceLabel !== untilLabel ? ` / ${untilLabel}` : ''}`;
+    periodLabel = sinceLabel === untilLabel ? sinceLabel : `${sinceLabel} — ${untilLabel}`;
+  } else if (range?.label) {
+    periodLabel = range.label;
   } else if (sinceLabel) {
-    headerLabel = `${baseLabel} — ${sinceLabel}`;
+    periodLabel = sinceLabel;
   }
 
-  lines.push(`<b>Отчёт</b> (${escapeHtml(headerLabel)})`);
+  const headerLine = periodLabel
+    ? `<b>Отчёт ${escapeHtml(titleLabel)}</b> (${escapeHtml(periodLabel)})`
+    : `<b>Отчёт ${escapeHtml(titleLabel)}</b>`;
+
+  lines.push(headerLine);
 
   const campaigns = Array.isArray(report?.campaigns)
     ? report.campaigns
@@ -2547,7 +2554,8 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
       const cplText = Number.isFinite(cpl)
         ? formatUsd(cpl, { digitsBelowOne: 2, digitsAboveOne: 0 })
         : '—';
-      lines.push(`• <b>${escapeHtml(campaign.name)}</b> — ${spendText} | Лиды: ${leadsText} | CPL: ${cplText}`);
+      lines.push(`• <b>${escapeHtml(campaign.name)}</b>`);
+      lines.push(`— ${spendText} | Лиды: ${leadsText} | CPL: ${cplText}`);
     }
   }
 
@@ -2567,7 +2575,7 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
     ? formatUsd(totalCpl, { digitsBelowOne: 2, digitsAboveOne: 0 })
     : '—';
 
-  lines.push(`<b>ИТОГО:</b> ${totalSpendText} | Лиды: ${totalLeadsText} | CPL: ${totalCplText}`);
+  lines.push(`ИТОГО: ${totalSpendText} | Лиды: ${totalLeadsText} | CPL: ${totalCplText}`);
 
   const kpi = extractProjectKpi(rawProject);
   const kpiLine = buildReportKpiLine(kpi, {
@@ -2594,11 +2602,15 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   return { text: lines.join('\n'), campaigns };
 }
 
-function buildProjectDetailKeyboard(base, { chatUrl } = {}) {
+function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
   const keyboard = [];
+  const portalButton = portalUrl
+    ? { text: '🌐 Портал', url: portalUrl }
+    : { text: '🌐 Портал', callback_data: `${base}:portal` };
+
   keyboard.push([
     chatUrl ? { text: '💬 Чат-группа', url: chatUrl } : { text: '💬 Чат-группа', callback_data: `${base}:chat` },
-    { text: '🌐 Портал', callback_data: `${base}:portal` },
+    portalButton,
     { text: '📊 Аналитика', callback_data: `${base}:analytics` },
   ]);
 
@@ -2615,6 +2627,7 @@ function buildProjectDetailKeyboard(base, { chatUrl } = {}) {
   ]);
 
   keyboard.push([
+    { text: '⚙️ Портал', callback_data: `${base}:portal` },
     { text: '🔄 Обновить', callback_data: `${base}:refresh` },
     { text: '⬅️ В админку', callback_data: 'admin:panel' },
   ]);
@@ -9757,8 +9770,12 @@ class TelegramBot {
             rawProject: context.rawProject,
             timezone: this.config.defaultTimezone,
           });
+          const portalUrl = await this.buildProjectPortalLink(context.project, {
+            rawProject: context.rawProject,
+          });
           const replyMarkup = buildProjectDetailKeyboard(base, {
             chatUrl: context.project.chatUrl,
+            portalUrl,
           });
 
           await this.renderAdminMessage(message, {
