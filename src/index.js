@@ -88,6 +88,7 @@ const SCHEDULE_CADENCE_OPTIONS = [
   { value: 'weekly', label: 'Раз в неделю' },
 ];
 const AUTOPAUSE_THRESHOLD_OPTIONS = [2, 3, 4, 5];
+const GROUP_CHAT_TYPES = new Set(['group', 'supergroup']);
 
 function resolveDefaultWebhookUrl(config, { origin = '' } = {}) {
   if (config?.telegramWebhookUrl) {
@@ -439,6 +440,23 @@ function buildChatKey(chatId, threadId) {
 
   const thread = threadId === undefined || threadId === null ? '' : String(threadId).trim();
   return `${id}:${thread}`;
+}
+
+function normalizeThreadIdValue(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+
+  return String(value).trim();
+}
+
+function buildChatRegistryStorageKey(chatId, threadId) {
+  const chatKey = buildChatKey(chatId, threadId);
+  if (!chatKey) {
+    return '';
+  }
+
+  return `${CHAT_KEY_PREFIX}${chatKey}`;
 }
 
 function truncateLabel(value, maxLength = 32) {
@@ -8034,12 +8052,81 @@ class TelegramBot {
     this.executionContext = executionContext;
     this.metaService = metaService;
     this.commands = new Map();
+    this.registeredChatCache = new Map();
 
     this.registerDefaultCommands();
   }
 
   registerCommand(name, handler) {
     this.commands.set(name, handler);
+  }
+
+  setChatRegistrationCache(chatId, threadId, value) {
+    const normalizedChatId = normalizeTelegramId(chatId);
+    if (!normalizedChatId) {
+      return;
+    }
+
+    const normalizedThreadId = normalizeThreadIdValue(threadId);
+    const cacheKey = buildChatKey(normalizedChatId, normalizedThreadId);
+    const anyKey = `${normalizedChatId}:*`;
+    const flag = Boolean(value);
+
+    if (cacheKey) {
+      this.registeredChatCache.set(cacheKey, flag);
+    }
+
+    this.registeredChatCache.set(anyKey, flag);
+  }
+
+  async isChatRegistered(chatId, threadId) {
+    const normalizedChatId = normalizeTelegramId(chatId);
+    if (!normalizedChatId) {
+      return false;
+    }
+
+    const normalizedThreadId = normalizeThreadIdValue(threadId);
+    const anyKey = `${normalizedChatId}:*`;
+    if (this.registeredChatCache.has(anyKey)) {
+      const cached = this.registeredChatCache.get(anyKey);
+      if (cached) {
+        return true;
+      }
+    }
+
+    const cacheKey = buildChatKey(normalizedChatId, normalizedThreadId);
+    if (cacheKey && this.registeredChatCache.has(cacheKey)) {
+      return this.registeredChatCache.get(cacheKey);
+    }
+
+    const storageKey = buildChatRegistryStorageKey(normalizedChatId, normalizedThreadId);
+    if (storageKey) {
+      try {
+        const record = await this.storage.getJson('DB', storageKey);
+        if (record) {
+          this.setChatRegistrationCache(normalizedChatId, normalizedThreadId, true);
+          return true;
+        }
+      } catch (error) {
+        console.warn('Failed to read chat registration state', storageKey, error);
+      }
+    }
+
+    if (typeof this.storage?.listKeys === 'function') {
+      try {
+        const prefix = `${CHAT_KEY_PREFIX}${normalizedChatId}:`;
+        const keys = await this.storage.listKeys('DB', prefix, 1);
+        if (Array.isArray(keys) && keys.length > 0) {
+          this.setChatRegistrationCache(normalizedChatId, normalizedThreadId, true);
+          return true;
+        }
+      } catch (error) {
+        console.warn('Failed to list chat registrations for chat', normalizedChatId, error);
+      }
+    }
+
+    this.setChatRegistrationCache(normalizedChatId, normalizedThreadId, false);
+    return false;
   }
 
   registerDefaultCommands() {
@@ -8075,33 +8162,42 @@ class TelegramBot {
     this.registerCommand('register', async (context) => {
       const chatId = context.chatId;
       const threadId = context.threadId;
-      if (!chatId) {
+      const normalizedChatId = normalizeTelegramId(chatId);
+      const normalizedThreadId = normalizeThreadIdValue(threadId);
+
+      if (!normalizedChatId) {
         await context.reply('❌ Не удалось определить чат.');
         return;
       }
 
-      if (!threadId) {
+      if (!normalizedThreadId) {
         await context.reply('ℹ️ Команду <code>/register</code> нужно запускать внутри нужного топика (форум сообщения).');
         return;
       }
 
       const payload = {
-        chat_id: chatId,
-        thread_id: threadId,
+        chat_id: normalizedChatId,
+        thread_id: normalizedThreadId,
         title: context.chat?.title ?? '',
         added_by: context.userId,
         added_by_name: context.userDisplayName,
         created_at: new Date().toISOString(),
       };
 
-      const key = `${CHAT_KEY_PREFIX}${chatId}:${threadId}`;
+      const key = buildChatRegistryStorageKey(normalizedChatId, normalizedThreadId);
+      if (!key) {
+        await context.reply('⚠️ Не удалось сохранить чат. Повторите попытку позже.');
+        return;
+      }
+
       await this.storage.putJson('DB', key, payload);
+      this.setChatRegistrationCache(normalizedChatId, normalizedThreadId, true);
 
       await context.reply(
         [
           '✅ Топик зарегистрирован.',
-          `Chat ID: <code>${chatId}</code>`,
-          `Thread ID: <code>${threadId}</code>`,
+          `Chat ID: <code>${normalizedChatId}</code>`,
+          `Thread ID: <code>${normalizedThreadId}</code>`,
         ].join('\n'),
       );
     });
@@ -11175,6 +11271,38 @@ class TelegramBot {
     const [commandToken, ...rest] = text.split(/\s+/);
     const commandName = commandToken.slice(1).toLowerCase();
     const args = rest;
+
+    const chatType = message?.chat?.type ?? '';
+    const isGroupChat = GROUP_CHAT_TYPES.has(String(chatType));
+    const chatId = normalizeTelegramId(message?.chat?.id);
+    const threadId = normalizeThreadIdValue(message?.message_thread_id);
+
+    if (isGroupChat) {
+      if (commandName !== 'register') {
+        this.queueLog({
+          kind: 'command',
+          name: commandName,
+          status: 'ignored',
+          reason: 'group_command_blocked',
+          chat_id: chatId ?? message?.chat?.id ?? null,
+          thread_id: threadId || null,
+        });
+        return { handled: false, reason: 'group_command_blocked' };
+      }
+
+      const alreadyRegistered = await this.isChatRegistered(chatId, threadId);
+      if (alreadyRegistered) {
+        this.queueLog({
+          kind: 'command',
+          name: commandName,
+          status: 'ignored',
+          reason: 'group_already_registered',
+          chat_id: chatId ?? message?.chat?.id ?? null,
+          thread_id: threadId || null,
+        });
+        return { handled: false, reason: 'group_chat_registered' };
+      }
+    }
 
     const handler = this.commands.get(commandName);
     const context = new BotCommandContext(this, update, message, args);
