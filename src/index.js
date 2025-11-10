@@ -2800,6 +2800,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       code: record.code || record.id || '',
       callbackId: normalizeProjectIdForCallback(record.id),
       chatUrl: record.chatUrl || '',
+      chatTitle: record.chatTitle || record.chat?.title || '',
       lines,
       daysUntil,
       spendUsd,
@@ -2840,6 +2841,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       id: account.accountId || account.id,
       callbackId: normalizeProjectIdForCallback(account.accountId || account.id),
       chatUrl: '',
+      chatTitle: '',
       lines,
       daysUntil,
       title: account.name || account.id || 'Рекламный аккаунт',
@@ -2859,6 +2861,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
     items: items.concat(placeholdersShown),
     placeholderCount: placeholders.length,
     placeholdersShown: placeholdersShown.length,
+    placeholders,
   };
 }
 
@@ -5347,7 +5350,14 @@ class TelegramBot {
     }
   }
 
-  async startProjectConnectSession({ userId, chatId, threadId, accounts = [] } = {}) {
+  async startProjectConnectSession({
+    userId,
+    chatId,
+    threadId,
+    accounts = [],
+    preferredAccountId = '',
+    preferredChatKey = '',
+  } = {}) {
     if (!userId) {
       return null;
     }
@@ -5392,6 +5402,21 @@ class TelegramBot {
     };
 
     await this.populateProjectConnectSession(session, { accounts, registry, chatRegistry });
+
+    if (preferredAccountId) {
+      const applied = this.applyProjectConnectAccount(session, preferredAccountId, { userId });
+      if (!applied.ok) {
+        console.warn('Failed to preselect account for project connect session', applied.error);
+      }
+    }
+
+    if (preferredChatKey) {
+      const entry = session.availableChats.find((chat) => chat.key === preferredChatKey);
+      if (entry) {
+        this.applyProjectConnectChatEntry(session, entry);
+      }
+    }
+
     this.refreshProjectConnectSuggestions(session);
     await this.saveAdminSession(session);
     this.queueLog({
@@ -8139,6 +8164,52 @@ class TelegramBot {
     }
   }
 
+  async renderAdminMessage(message, payload = {}) {
+    if (!payload || typeof payload !== 'object') {
+      return null;
+    }
+
+    const {
+      chatId = null,
+      text = '',
+      parse_mode = 'HTML',
+      disable_web_page_preview = true,
+      reply_markup = undefined,
+    } = payload;
+
+    if (!text) {
+      return null;
+    }
+
+    const base = {
+      text,
+      parse_mode,
+      disable_web_page_preview,
+      reply_markup,
+    };
+
+    if (message?.chat?.id && message?.message_id) {
+      try {
+        await this.telegram.editMessageText({
+          chat_id: message.chat.id,
+          message_id: message.message_id,
+          ...base,
+        });
+        return { mode: 'edit' };
+      } catch (error) {
+        console.warn('Failed to edit admin message', error);
+      }
+    }
+
+    const targetChatId = chatId ?? message?.chat?.id ?? null;
+    if (!targetChatId) {
+      throw new Error('chat_id is required for admin message');
+    }
+
+    await this.sendMessageWithFallback({ chat_id: targetChatId, ...base }, message);
+    return { mode: 'send' };
+  }
+
   async sendProjectAlert({ project, baseCallbackId, text, extraRows = [], adminTargets = [], kind }) {
     if (!text || !project) {
       return false;
@@ -8415,7 +8486,7 @@ class TelegramBot {
     if (placeholderCount > placeholdersShown) {
       summary.push(
         '',
-        `Аккаунтов Meta без проекта: показано ${placeholdersShown} из ${placeholderCount}. Используйте «Подключить проект» для остальных.`,
+        `Аккаунтов Meta без проекта: показано ${placeholdersShown} из ${placeholderCount}. Загляните в раздел «Новые РК».`,
       );
     }
 
@@ -8435,54 +8506,30 @@ class TelegramBot {
       [authButton, { text: '➕ Подключить проект', callback_data: 'admin:project:connect' }],
       [
         { text: '📁 Проекты', callback_data: 'admin:projects' },
-        { text: '🔄 Обновиться', callback_data: 'admin:refresh' },
-      ],
-      [
-        { text: '📄 Логи', callback_data: 'admin:logs' },
-        { text: '🔁 Вебхук', callback_data: 'admin:webhook:refresh' },
+        { text: '🆕 Новые РК', callback_data: 'admin:projects:new' },
       ],
     ];
 
-    for (const summaryItem of projectSummaries) {
-      if (summaryItem.placeholder) {
-        inlineKeyboard.push([
-          {
-            text: summaryItem.accountId ? `➕ Подключить ${summaryItem.accountId}` : '➕ Подключить проект',
-            callback_data: 'admin:project:connect',
-          },
-        ]);
-        continue;
-      }
-
-      const base = `admin:project:${summaryItem.callbackId}`;
-      const chatButton = summaryItem.chatUrl
-        ? { text: '💬 Перейти в чат', url: summaryItem.chatUrl }
-        : { text: '💬 Перейти в чат', callback_data: `${base}:chat` };
-      const portalUrl = await this.buildProjectPortalLink(summaryItem);
-      inlineKeyboard.push([
-        chatButton,
-        { text: 'ℹ️ Детали', callback_data: `${base}:open` },
-        { text: '💳 Оплата', callback_data: `${base}:payment` },
-      ]);
-      const reportRow = [
-        { text: '📊 Отчёт', callback_data: `${base}:report` },
-        { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
-        { text: '📄 CSV', callback_data: `${base}:report:csv` },
-      ];
-      if (portalUrl) {
-        reportRow.push({ text: '🌐 Портал', url: portalUrl });
-      }
-      inlineKeyboard.push(reportRow);
-      inlineKeyboard.push([
-        { text: '🎯 Управление KPI', callback_data: `${base}:kpi` },
-        { text: '⏸ Автопауза', callback_data: `${base}:autopause` },
-        { text: '⚙️ Настройки', callback_data: `${base}:settings` },
-      ]);
+    const hasPortal = projectSummaries.some(
+      (item) => !item.placeholder && Array.isArray(item.portalTokens) && item.portalTokens.length > 0,
+    );
+    if (hasPortal) {
+      inlineKeyboard.push([{ text: '🌐 Портал', callback_data: 'admin:portal' }]);
     }
+
+    inlineKeyboard.push([
+      { text: '🔄 Обновиться', callback_data: 'admin:refresh' },
+      { text: '🔁 Вебхук', callback_data: 'admin:webhook:refresh' },
+    ]);
 
     const replyMarkup = { inline_keyboard: inlineKeyboard };
 
-    return { text: summary.join('\n'), reply_markup: replyMarkup };
+    return {
+      text: summary.join('\n'),
+      reply_markup: replyMarkup,
+      placeholders: projectSummaryResult.placeholders || [],
+      projectSummaries,
+    };
   }
 
   async resolveProjectContext(callbackId, { forceMetaRefresh = false } = {}) {
@@ -8634,43 +8681,11 @@ class TelegramBot {
         const updatePanel = async () => {
           const text = this.renderProjectConnectPanel(session);
           const replyMarkup = this.buildProjectConnectKeyboard(session);
-          if (message?.chat?.id && message?.message_id) {
-            try {
-              await this.telegram.editMessageText({
-                chat_id: message.chat.id,
-                message_id: message.message_id,
-                text,
-                parse_mode: 'HTML',
-                disable_web_page_preview: true,
-                reply_markup: replyMarkup,
-              });
-            } catch (error) {
-              console.warn('Failed to edit project connect message', error);
-              if (chatId) {
-                await this.sendMessageWithFallback(
-                  {
-                    chat_id: chatId,
-                    text,
-                    parse_mode: 'HTML',
-                    disable_web_page_preview: true,
-                    reply_markup: replyMarkup,
-                  },
-                  message,
-                );
-              }
-            }
-          } else if (chatId) {
-            await this.sendMessageWithFallback(
-              {
-                chat_id: chatId,
-                text,
-                parse_mode: 'HTML',
-                disable_web_page_preview: true,
-                reply_markup: replyMarkup,
-              },
-              message,
-            );
-          }
+          await this.renderAdminMessage(message, {
+            chatId,
+            text,
+            reply_markup: replyMarkup,
+          });
         };
 
         switch (action) {
@@ -8873,41 +8888,11 @@ class TelegramBot {
               inline_keyboard: [[{ text: '⬅️ К админке', callback_data: 'admin:panel' }]],
             };
 
-            if (message?.chat?.id && message?.message_id) {
-              try {
-                await this.telegram.editMessageText({
-                  chat_id: message.chat.id,
-                  message_id: message.message_id,
-                  text: lines.join('\n'),
-                  parse_mode: 'HTML',
-                  disable_web_page_preview: true,
-                  reply_markup: successMarkup,
-                });
-              } catch (error) {
-                console.warn('Failed to edit project connect success message', error);
-                await this.sendMessageWithFallback(
-                  {
-                    chat_id: chatId,
-                    text: lines.join('\n'),
-                    parse_mode: 'HTML',
-                    disable_web_page_preview: true,
-                    reply_markup: successMarkup,
-                  },
-                  message,
-                );
-              }
-            } else if (chatId) {
-              await this.sendMessageWithFallback(
-                {
-                  chat_id: chatId,
-                  text: lines.join('\n'),
-                  parse_mode: 'HTML',
-                  disable_web_page_preview: true,
-                  reply_markup: successMarkup,
-                },
-                message,
-              );
-            }
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: lines.join('\n'),
+              reply_markup: successMarkup,
+            });
 
             await this.notifyProjectCreated(record, {
               initiator: userId,
@@ -9025,16 +9010,11 @@ class TelegramBot {
           inline_keyboard: [[{ text: 'Открыть Meta OAuth', url: session.link }]],
         };
 
-        await this.sendMessageWithFallback(
-          {
-            chat_id: chatId,
-            text: `${body.join('\n')}\n\n${escapeHtml(session.link)}`,
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
-            reply_markup: replyMarkup,
-          },
-          message,
-        );
+        await this.renderAdminMessage(message, {
+          chatId,
+          text: `${body.join('\n')}\n\n${escapeHtml(session.link)}`,
+          reply_markup: replyMarkup,
+        });
 
         await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Ссылка для авторизации отправлена.' });
         this.queueLog({
@@ -9044,6 +9024,90 @@ class TelegramBot {
           chat_id: chatId,
           user_id: userId,
           action: 'meta_oauth_link',
+        });
+        return { handled: true };
+      }
+
+      if (data.startsWith('admin:new:connect:')) {
+        if (!this.config.isProjectManager(userId)) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: '⛔ У вас нет прав для подключения проектов.',
+            show_alert: true,
+          });
+          this.queueLog({
+            kind: 'callback',
+            status: 'forbidden',
+            data,
+            chat_id: chatId,
+            user_id: userId,
+            action: 'project_connect_forbidden',
+          });
+          return { handled: false, reason: 'project_connect_forbidden' };
+        }
+
+        const accountToken = data.slice('admin:new:connect:'.length).trim();
+        if (!accountToken) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось определить рекламный кабинет.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'account_missing' };
+        }
+
+        let accounts = [];
+        if (this.metaService) {
+          try {
+            const overview = await this.metaService.ensureOverview({
+              backgroundRefresh: true,
+              executionContext: this.executionContext,
+            });
+            accounts = Array.isArray(overview?.status?.facebook?.adAccounts)
+              ? overview.status.facebook.adAccounts
+              : [];
+          } catch (error) {
+            console.warn('Failed to load Meta overview for quick connect', error);
+          }
+        } else {
+          const status = await this.storage.readMetaStatus();
+          accounts = Array.isArray(status?.facebook?.adAccounts) ? status.facebook.adAccounts : [];
+        }
+
+        const session = await this.startProjectConnectSession({
+          userId,
+          chatId,
+          threadId: message?.message_thread_id ?? null,
+          accounts,
+          preferredAccountId: accountToken,
+        });
+
+        if (!session) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось открыть форму. Попробуйте ещё раз.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'project_connect_session_failed' };
+        }
+
+        const body = this.renderProjectConnectPanel(session);
+        const replyMarkup = this.buildProjectConnectKeyboard(session);
+
+        await this.renderAdminMessage(message, {
+          chatId,
+          text: body,
+          reply_markup: replyMarkup,
+        });
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Форма подключения открыта.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+          action: 'project_connect_start',
         });
         return { handled: true };
       }
@@ -9103,16 +9167,11 @@ class TelegramBot {
         const body = this.renderProjectConnectPanel(session);
         const replyMarkup = this.buildProjectConnectKeyboard(session);
 
-        await this.sendMessageWithFallback(
-          {
-            chat_id: chatId,
-            text: body,
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
-            reply_markup: replyMarkup,
-          },
-          message,
-        );
+        await this.renderAdminMessage(message, {
+          chatId,
+          text: body,
+          reply_markup: replyMarkup,
+        });
 
         await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Форма отправлена.' });
         this.queueLog({
@@ -9165,54 +9224,179 @@ class TelegramBot {
         const summaryResult = buildProjectSummaries(projectRecords, metaStatus, {
           timezone: this.config.defaultTimezone,
         });
-        const items = summaryResult.items;
+        const items = summaryResult.items.filter((item) => !item.placeholder);
+        const buttons = [];
+        for (const item of items) {
+          const chatLabel = item.chatTitle ? ` · ${truncateLabel(item.chatTitle, 18)}` : '';
+          const label = truncateLabel(`${item.title}${chatLabel}`, 32);
+          buttons.push({
+            text: label,
+            callback_data: `admin:project:${item.callbackId}:open`,
+          });
+        }
+
+        const keyboard = chunkArray(buttons, 2);
+        keyboard.push([{ text: '⬅️ К админке', callback_data: 'admin:panel' }]);
+
         const lines = [];
-        if (items.length === 0) {
-          lines.push('<b>Проекты пока не подключены.</b>');
-        } else {
-          lines.push('<b>Подключённые проекты</b>');
-          for (const item of items) {
-            if (item.placeholder) {
-              lines.push(
-                `• [Meta] ${escapeHtml(item.title || item.accountId || 'Рекламный аккаунт')} — ${
-                  item.accountId ? `<code>${escapeHtml(item.accountId)}</code>` : 'без ID'
-                } (не подключен)`,
-              );
-            } else {
-              lines.push(
-                `• ${escapeHtml(item.title || item.id)}${
-                  item.accountId ? ` — <code>${escapeHtml(item.accountId)}</code>` : ''
-                }`,
-              );
+        lines.push('<b>Проекты</b>');
+        lines.push(items.length ? 'Выберите проект для просмотра.' : 'Проекты пока не подключены.');
+
+        await this.renderAdminMessage(message, {
+          chatId,
+          text: lines.join('\n'),
+          reply_markup: { inline_keyboard: keyboard },
+        });
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Проекты отображены.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+        });
+        return { handled: true };
+      }
+
+      if (data === 'admin:projects:new') {
+        if (!chatId) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось определить чат.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'chat_missing' };
+        }
+
+        const projectKeys = await this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 50);
+        const projectRecords = await Promise.all(
+          projectKeys.map(async (key) => {
+            try {
+              const data = await this.storage.getJson('DB', key);
+              return normalizeProjectRecord(key, data);
+            } catch (error) {
+              console.warn('Failed to load project for new accounts list', key, error);
+              return normalizeProjectRecord(key, null);
             }
+          }),
+        );
+
+        let metaStatus = await this.storage.readMetaStatus();
+        if (this.metaService) {
+          try {
+            const ensure = await this.metaService.ensureOverview({
+              backgroundRefresh: true,
+              executionContext: this.executionContext,
+            });
+            metaStatus = ensure?.status ?? metaStatus;
+          } catch (error) {
+            console.warn('Failed to refresh Meta overview for new accounts list', error);
           }
         }
 
-        if (summaryResult.placeholderCount > summaryResult.placeholdersShown) {
-          lines.push(
-            `… ещё ${
-              summaryResult.placeholderCount - summaryResult.placeholdersShown
-            } аккаунтов Meta ожидают подключения.`,
-          );
+        const summaryResult = buildProjectSummaries(projectRecords, metaStatus, {
+          timezone: this.config.defaultTimezone,
+        });
+
+        const placeholders = Array.isArray(summaryResult.placeholders)
+          ? summaryResult.placeholders
+          : [];
+
+        const buttons = [];
+        for (const item of placeholders) {
+          const label = truncateLabel(item.title || item.accountId || 'Рекламный аккаунт', 32);
+          const accountToken = item.accountId || item.id || item.callbackId;
+          buttons.push({
+            text: `➕ ${label}`,
+            callback_data: `admin:new:connect:${accountToken}`,
+          });
         }
 
-        if (projectKeys.length > projectRecords.length) {
-          lines.push('Показаны не все проекты — используйте KV или поиск для полного списка.');
+        if (buttons.length === 0) {
+          buttons.push({ text: '✅ Все кабинеты подключены', callback_data: 'admin:panel' });
         }
 
-        const body = lines.join('\n');
+        const keyboard = chunkArray(buttons, 1);
+        keyboard.push([{ text: '⬅️ К админке', callback_data: 'admin:panel' }]);
 
-        await this.sendMessageWithFallback(
-          {
-            chat_id: chatId,
-            text: body,
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
-          },
-          message,
+        const lines = [];
+        lines.push('<b>Новые рекламные кабинеты</b>');
+        lines.push(
+          placeholders.length
+            ? 'Выберите кабинет, чтобы начать подключение проекта.'
+            : 'Свободных кабинетов Meta не осталось — все проекты подключены.',
         );
 
-        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Список проектов отправлен.' });
+        await this.renderAdminMessage(message, {
+          chatId,
+          text: lines.join('\n'),
+          reply_markup: { inline_keyboard: keyboard },
+        });
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Список кабинетов обновлён.' });
+        this.queueLog({
+          kind: 'callback',
+          status: 'ok',
+          data,
+          chat_id: chatId,
+          user_id: userId,
+        });
+        return { handled: true };
+      }
+
+      if (data === 'admin:portal') {
+        if (!chatId) {
+          await this.telegram.answerCallbackQuery({
+            callback_query_id: id,
+            text: 'Не удалось определить чат.',
+            show_alert: true,
+          });
+          return { handled: false, reason: 'chat_missing' };
+        }
+
+        const projectKeys = await this.storage.listKeys('DB', PROJECT_KEY_PREFIX, 50);
+        const projects = [];
+        for (const key of projectKeys) {
+          try {
+            const raw = await this.storage.getJson('DB', key);
+            const record = normalizeProjectRecord(key, raw);
+            projects.push({ record, raw });
+          } catch (error) {
+            console.warn('Failed to load project for portal list', key, error);
+          }
+        }
+
+        const buttons = [];
+        for (const { record, raw } of projects) {
+          if (!record) continue;
+          const portalUrl = await this.buildProjectPortalLink(record, { rawProject: raw });
+          if (!portalUrl) continue;
+          const label = truncateLabel(record.name || record.code || record.id || 'Проект', 32);
+          buttons.push({ text: label, url: portalUrl });
+        }
+
+        const keyboard = [];
+        if (buttons.length > 0) {
+          keyboard.push(...chunkArray(buttons, 1));
+        }
+        keyboard.push([{ text: '⬅️ К админке', callback_data: 'admin:panel' }]);
+
+        const lines = [];
+        lines.push('<b>Клиентские порталы</b>');
+        if (buttons.length === 0) {
+          lines.push('Для проектов пока не настроены токены портала.');
+        } else {
+          lines.push('Выберите проект, чтобы открыть портал.');
+        }
+
+        await this.renderAdminMessage(message, {
+          chatId,
+          text: lines.join('\n'),
+          reply_markup: { inline_keyboard: keyboard },
+        });
+
+        await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Порталы готовы.' });
         this.queueLog({
           kind: 'callback',
           status: 'ok',
@@ -9321,16 +9505,11 @@ class TelegramBot {
           chatId,
           threadId: message?.message_thread_id ?? null,
         });
-        await this.sendMessageWithFallback(
-          {
-            chat_id: chatId,
-            text: panel.text,
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
-            reply_markup: panel.reply_markup,
-          },
-          message,
-        );
+        await this.renderAdminMessage(message, {
+          chatId,
+          text: panel.text,
+          reply_markup: panel.reply_markup,
+        });
 
         await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Админ-панель отправлена.' });
         this.queueLog({
@@ -9358,15 +9537,10 @@ class TelegramBot {
           ? ['<b>Журнал Telegram</b>', ...logs.map((entry) => formatLogLine(entry, { timezone: this.config.defaultTimezone, limit: 120 }))].join('\n')
           : '<b>Журнал Telegram пуст.</b>';
 
-        await this.sendMessageWithFallback(
-          {
-            chat_id: chatId,
-            text: body,
-            parse_mode: 'HTML',
-            disable_web_page_preview: true,
-          },
-          message,
-        );
+        await this.renderAdminMessage(message, {
+          chatId,
+          text: body,
+        });
 
         await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Логи отправлены.' });
         this.queueLog({
@@ -9434,16 +9608,11 @@ class TelegramBot {
             portalUrl,
           });
 
-          await this.sendMessageWithFallback(
-            {
-              chat_id: chatId,
-              text: detail.text,
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              reply_markup: replyMarkup,
-            },
-            message,
-          );
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: detail.text,
+            reply_markup: replyMarkup,
+          });
 
           await this.telegram.answerCallbackQuery({
             callback_query_id: id,
@@ -9482,19 +9651,14 @@ class TelegramBot {
               base,
             });
 
-            await this.sendMessageWithFallback(
-              {
-                chat_id: chatId,
-                text: [
-                  '<b>Пользовательский период отчёта</b>',
-                  'Отправьте даты в формате <code>YYYY-MM-DD YYYY-MM-DD</code>.',
-                  'Например: <code>2024-05-01 2024-05-07</code>.',
-                ].join('\n'),
-                parse_mode: 'HTML',
-                disable_web_page_preview: true,
-              },
-              message,
-            );
+            await this.renderAdminMessage(message, {
+              chatId,
+              text: [
+                '<b>Пользовательский период отчёта</b>',
+                'Отправьте даты в формате <code>YYYY-MM-DD YYYY-MM-DD</code>.',
+                'Например: <code>2024-05-01 2024-05-07</code>.',
+              ].join('\n'),
+            });
 
             await this.telegram.answerCallbackQuery({
               callback_query_id: id,
@@ -9531,15 +9695,10 @@ class TelegramBot {
               });
             } catch (error) {
               const errorMessage = error?.message || 'Не удалось получить данные Meta.';
-              await this.sendMessageWithFallback(
-                {
-                  chat_id: chatId,
-                  text: ['<b>Ошибка при формировании отчёта</b>', escapeHtml(errorMessage)].join('\n'),
-                  parse_mode: 'HTML',
-                  disable_web_page_preview: true,
-                },
-                message,
-              );
+              await this.renderAdminMessage(message, {
+                chatId,
+                text: ['<b>Ошибка при формировании отчёта</b>', escapeHtml(errorMessage)].join('\n'),
+              });
               await this.telegram.answerCallbackQuery({
                 callback_query_id: id,
                 text: 'Не удалось получить данные Meta.',
@@ -9574,16 +9733,11 @@ class TelegramBot {
             bodyText = `${bodyText}\n⚠️ Не удалось получить свежий отчёт — показаны данные панели.`;
           }
 
-          await this.sendMessageWithFallback(
-            {
-              chat_id: chatId,
-              text: bodyText,
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
-            },
-            message,
-          );
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: bodyText,
+            reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
+          });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Отчёт подготовлен.' });
           this.queueLog({
@@ -9602,20 +9756,15 @@ class TelegramBot {
 
         if (action === 'digest') {
           const portalUrl = await this.buildProjectPortalLink(context.project, { rawProject: context.rawProject });
-          await this.sendMessageWithFallback(
-            {
-              chat_id: chatId,
-              text: [
-                '<b>Сводный отчёт</b>',
-                'В следующей итерации добавим комбинированный отчёт (неделя + сегодня/вчера) и автоматическую отправку клиенту.',
-                'Сейчас можно воспользоваться кнопками периодов для просмотра статистики.',
-              ].join('\n'),
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
-            },
-            message,
-          );
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: [
+              '<b>Сводный отчёт</b>',
+              'В следующей итерации добавим комбинированный отчёт (неделя + сегодня/вчера) и автоматическую отправку клиенту.',
+              'Сейчас можно воспользоваться кнопками периодов для просмотра статистики.',
+            ].join('\n'),
+            reply_markup: buildProjectReportKeyboard(base, { portalUrl }),
+          });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Сводный отчёт в разработке.' });
           return { handled: true };
@@ -9646,23 +9795,18 @@ class TelegramBot {
             ...formatKpiLines(kpi),
           ];
 
-          await this.sendMessageWithFallback(
-            {
-              chat_id: chatId,
-              text: instructions.join('\n'),
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                    { text: '⚙️ Настройки', callback_data: `${base}:settings` },
-                  ],
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: instructions.join('\n'),
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                  { text: '⚙️ Настройки', callback_data: `${base}:settings` },
                 ],
-              },
+              ],
             },
-            message,
-          );
+          });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Жду значения KPI.' });
           this.queueLog({
@@ -9682,50 +9826,40 @@ class TelegramBot {
         if (action === 'kpi') {
           const kpi = extractProjectKpi(context.rawProject);
           const body = ['<b>KPI проекта</b>', ...formatKpiLines(kpi)];
-          await this.sendMessageWithFallback(
-            {
-              chat_id: chatId,
-              text: body.join('\n'),
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    { text: '✏️ Изменить KPI', callback_data: `${base}:kpi:edit` },
-                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                  ],
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: body.join('\n'),
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '✏️ Изменить KPI', callback_data: `${base}:kpi:edit` },
+                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
                 ],
-              },
+              ],
             },
-            message,
-          );
+          });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'KPI отображены.' });
           return { handled: true };
         }
 
         if (action === 'autopause') {
-          await this.sendMessageWithFallback(
-            {
-              chat_id: chatId,
-              text: [
-                '<b>Автопауза</b>',
-                'Настройка пауз кампаний по KPI появится после подключения автоматического управления.',
-                'Подготовьте список кампаний и порог превышения CPL/CPA — бот будет отслеживать их ежедневно.',
-              ].join('\n'),
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    { text: '🕒 Изменить расписание', callback_data: `${base}:schedule:edit` },
-                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                  ],
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: [
+              '<b>Автопауза</b>',
+              'Настройка пауз кампаний по KPI появится после подключения автоматического управления.',
+              'Подготовьте список кампаний и порог превышения CPL/CPA — бот будет отслеживать их ежедневно.',
+            ].join('\n'),
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '🕒 Изменить расписание', callback_data: `${base}:schedule:edit` },
+                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
                 ],
-              },
+              ],
             },
-            message,
-          );
+          });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Автопауза скоро будет.' });
           return { handled: true };
@@ -9756,24 +9890,19 @@ class TelegramBot {
             ...formatScheduleLines(schedule, { timezone: this.config.defaultTimezone }),
           ];
 
-          await this.sendMessageWithFallback(
-            {
-              chat_id: chatId,
-              text: instructions.join('\n'),
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                    { text: '🎯 KPI', callback_data: `${base}:kpi` },
-                  ],
-                  [{ text: '⚙️ Настройки', callback_data: `${base}:settings` }],
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: instructions.join('\n'),
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
+                  { text: '🎯 KPI', callback_data: `${base}:kpi` },
                 ],
-              },
+                [{ text: '⚙️ Настройки', callback_data: `${base}:settings` }],
+              ],
             },
-            message,
-          );
+          });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Жду параметры расписания.' });
           this.queueLog({
@@ -9805,23 +9934,18 @@ class TelegramBot {
             'Используйте кнопки ниже, чтобы изменить расписание или вернуться к проекту.',
           ];
 
-          await this.sendMessageWithFallback(
-            {
-              chat_id: chatId,
-              text: body.join('\n'),
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    { text: '🕒 Изменить расписание', callback_data: `${base}:schedule:edit` },
-                    { text: '⬅️ К проекту', callback_data: `${base}:open` },
-                  ],
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: body.join('\n'),
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '🕒 Изменить расписание', callback_data: `${base}:schedule:edit` },
+                  { text: '⬅️ К проекту', callback_data: `${base}:open` },
                 ],
-              },
+              ],
             },
-            message,
-          );
+          });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Настройки показаны.' });
           return { handled: true };
@@ -9835,18 +9959,13 @@ class TelegramBot {
             'Бот зафиксирует событие в журнале и снимет предупреждение о задолженности.',
           ];
 
-          await this.sendMessageWithFallback(
-            {
-              chat_id: chatId,
-              text: lines.join('\n'),
-              parse_mode: 'HTML',
-              disable_web_page_preview: true,
-              reply_markup: {
-                inline_keyboard: [[{ text: '⬅️ К проекту', callback_data: `${base}:open` }]],
-              },
+          await this.renderAdminMessage(message, {
+            chatId,
+            text: lines.join('\n'),
+            reply_markup: {
+              inline_keyboard: [[{ text: '⬅️ К проекту', callback_data: `${base}:open` }]],
             },
-            message,
-          );
+          });
 
           await this.telegram.answerCallbackQuery({ callback_query_id: id, text: 'Жду информацию об оплате.' });
           return { handled: true };
