@@ -5278,23 +5278,25 @@ function renderClientPortalPage({
         gap: 10px;
         cursor: pointer;
         transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+        outline: none;
       }
       .campaign-card:hover,
-      .campaign-card:focus {
+      .campaign-card:focus,
+      .campaign-card:focus-visible {
         transform: translateY(-2px);
         background: rgba(255, 255, 255, 0.08);
         box-shadow: 0 18px 32px rgba(0, 0, 0, 0.22);
-        outline: none;
       }
       .campaign-card__line {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 10px;
+        gap: 12px;
         font-weight: 600;
       }
       .campaign-card__status {
         font-size: 1.2rem;
+        flex: 0 0 auto;
       }
       .campaign-card__status[data-tone='active'] {
         color: #6de28c;
@@ -5307,10 +5309,21 @@ function renderClientPortalPage({
       }
       .campaign-card__name {
         font-size: 1.05rem;
+        flex: 0 1 auto;
+        white-space: nowrap;
       }
       .campaign-card__metric {
+        display: inline-flex;
+        align-items: center;
         font-size: 0.95rem;
         color: #c7cad1;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      .campaign-card__metric::before {
+        content: '|';
+        margin: 0 10px;
+        color: rgba(255, 255, 255, 0.25);
       }
       .campaign-card__meta {
         display: flex;
@@ -5970,35 +5983,38 @@ function renderClientPortalPage({
               const costText = item.costText || '—';
               const ctrText = item.ctrText || '—';
               const lastActivity = item.lastActivity || '—';
+              const campaignName = item.name || 'Кампания';
+              const statusTone = item.statusTone || item.statusCategory || '';
+              const statusLabel = item.statusLabel || '';
               return (
-                '<article class="campaign-card" data-status="' +
-                escapeText(item.statusCategory || '') +
+                '<article class="campaign-card" role="button" tabindex="0" data-status="' +
+                escapeText(statusLabel) +
+                '" data-tone="' +
+                escapeText(statusTone) +
                 '" data-campaign-id="' +
                 escapeText(item.id || '') +
-                '" tabindex="0" role="button" aria-pressed="false">' +
+                '" aria-label="' +
+                escapeText(`Подробнее о кампании ${campaignName}`) +
+                '">' +
                 '<div class="campaign-card__line">' +
                 '<span class="campaign-card__status" data-tone="' +
-                escapeText(item.statusTone || '') +
+                escapeText(statusTone) +
                 '" title="' +
-                escapeText(item.statusLabel || '') +
+                escapeText(statusLabel) +
                 '">' +
                 escapeText(item.statusIcon || '⚪️') +
                 '</span>' +
-                '<span class="campaign-card__name">«' +
-                escapeText(item.name || '') +
-                '»</span>' +
+                '<span class="campaign-card__name">"' +
+                escapeText(campaignName) +
+                '"</span>' +
                 '<span class="campaign-card__metric">' +
-                escapeText(keyLabel) +
-                ': ' +
-                escapeText(keyText) +
+                escapeText(`${keyLabel}: ${keyText}`) +
                 '</span>' +
                 '<span class="campaign-card__metric">Потрачено: ' +
                 escapeText(spendText) +
                 '</span>' +
                 '<span class="campaign-card__metric">' +
-                escapeText(costLabel || 'CPA') +
-                ': ' +
-                escapeText(costText) +
+                escapeText(`${costLabel || 'CPA'}: ${costText}`) +
                 '</span>' +
                 '<span class="campaign-card__metric">CTR: ' +
                 escapeText(ctrText) +
