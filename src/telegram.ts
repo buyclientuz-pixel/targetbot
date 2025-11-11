@@ -1,6 +1,6 @@
 import { ensureProjectReport, refreshAllProjects } from "./api/projects";
 import { clearMetaStatusCache, loadMetaStatus } from "./api/meta";
-import { checkAndRefreshFacebookToken } from "./fb/auth";
+import { checkAndRefreshFacebookToken, getFacebookTokenStatus } from "./fb/auth";
 import {
   loadProjectCards,
   readProjectConfig,
@@ -32,6 +32,7 @@ import {
   ProjectAlertsConfig,
   WorkerEnv,
   MetaAccountInfo,
+  MetaTokenStatus,
 } from "./types";
 import {
   formatCurrency,
@@ -95,9 +96,7 @@ const HELP_MESSAGE =
   "/report — отчёт\n" +
   "/admin — панель администратора";
 
-const ADMIN_MENU_MESSAGE =
-  "⚙️ Панель администратора\n\n" +
-  "Выберите действие с помощью кнопок ниже:";
+const ADMIN_MENU_MESSAGE = "⚙️ Панель администратора";
 
 const TECH_PANEL_KEYBOARD = {
   inline_keyboard: [
@@ -263,13 +262,98 @@ const deliverAdminMessage = async (
   }
 };
 
+const buildFacebookStatusLine = (
+  status: MetaTokenStatus | null,
+  timeZone: string,
+): string => {
+  if (!status) {
+    return "Статус Facebook: ⚪️ неизвестно. Настройте подключение через кнопку ниже.";
+  }
+
+  const expiresAt = status.expires_at ? formatDateTime(status.expires_at, timeZone) : null;
+  const accountLabel = status.account_name || status.account_id || null;
+
+  if (status.status === "missing") {
+    return "Статус Facebook: ⚠️ не подключен. Авторизуйтесь через кнопку ниже.";
+  }
+
+  if (status.status === "expired") {
+    return "Статус Facebook: ⚠️ токен истёк. Пройдите авторизацию заново.";
+  }
+
+  if (!status.ok || status.status === "invalid") {
+    const issues = status.issues && status.issues.length ? ": " + status.issues.join("; ") : ".";
+    return "Статус Facebook: 🚨 требуется внимание" + issues;
+  }
+
+  const icon = status.should_refresh ? "🟡" : "🟢";
+  const parts: string[] = [];
+  parts.push(icon + " Facebook подключён" + (accountLabel ? " — " + accountLabel : ""));
+  if (expiresAt) {
+    parts.push("действителен до " + expiresAt);
+  }
+  if (status.should_refresh) {
+    parts.push("нужно обновить в ближайшее время");
+  }
+  return parts.join(", ");
+};
+
+const countProjectCampaigns = async (
+  env: Record<string, unknown>,
+  projects: ProjectCard[],
+): Promise<number> => {
+  let total = 0;
+  for (const project of projects) {
+    const summaryCount = project.summary?.active_campaigns;
+    if (typeof summaryCount === "number" && Number.isFinite(summaryCount)) {
+      total += summaryCount;
+      continue;
+    }
+    try {
+      const report = await readJsonFromR2<ProjectReport>(env as any, "reports/" + project.id + ".json");
+      if (report && Array.isArray(report.campaigns)) {
+        total += report.campaigns.length;
+      }
+    } catch (_error) {
+      // ignore campaign count errors
+    }
+  }
+  return total;
+};
+
 const sendAdminMenu = async (
   env: Record<string, unknown>,
   chatId: string,
   context: AdminMessageContext = {},
 ): Promise<void> => {
-  const replyMarkup = buildAdminMenuKeyboard(env);
-  await deliverAdminMessage(env, chatId, ADMIN_MENU_MESSAGE, { replyMarkup }, context);
+  let tokenStatus: MetaTokenStatus | null = null;
+  try {
+    tokenStatus = await getFacebookTokenStatus(env as WorkerEnv);
+  } catch (error) {
+    console.warn("Failed to load Facebook token status", { error: (error as Error).message });
+  }
+
+  const projects = await loadProjectCards(env);
+  const totalCampaigns = await countProjectCampaigns(env, projects);
+  const activeProjects = projects.filter((project) => {
+    const status = (project.status || "").toLowerCase();
+    return status.includes("active") || status.includes("running");
+  }).length;
+  const timeZone = getTimeZone(env);
+
+  const statusLine = buildFacebookStatusLine(tokenStatus, timeZone);
+  const campaignsText = Number.isFinite(totalCampaigns) ? String(totalCampaigns) : "нет данных";
+  const projectSummary = projects.length
+    ? `Проекты: ${projects.length}${activeProjects ? ` (активных: ${activeProjects})` : ""} | Кампании: ${campaignsText}`
+    : "Проекты: нет данных. Добавьте проекты через панель.";
+
+  const messageParts = [ADMIN_MENU_MESSAGE, "", statusLine, projectSummary, "", "Используйте кнопки ниже для управления."];
+  const message = messageParts.filter((line) => line !== null && line !== undefined).join("\n").trim();
+
+  const replyMarkup = buildAdminMenuKeyboard(env, {
+    connected: Boolean(tokenStatus && tokenStatus.ok && tokenStatus.status === "ok"),
+  });
+  await deliverAdminMessage(env, chatId, message, { replyMarkup }, context);
 };
 
 const sendAdminProjectsOverview = async (
@@ -625,27 +709,32 @@ const resolveAdminWebUrl = (env: Record<string, unknown>): string | null => {
   return base + "/admin?key=" + encodeURIComponent(key);
 };
 
-const buildAdminMenuKeyboard = (env: Record<string, unknown>): Record<string, unknown> => {
+const buildAdminMenuKeyboard = (
+  env: Record<string, unknown>,
+  options: { connected?: boolean } = {},
+): Record<string, unknown> => {
   const inline_keyboard: Array<Array<Record<string, unknown>>> = [];
   const oauthUrl = buildOAuthUrl(env);
-
-  if (oauthUrl) {
-    inline_keyboard.push([{ text: "🔗 Авторизация Facebook", url: oauthUrl }]);
-  } else {
-    inline_keyboard.push([{ text: "🔗 Авторизация Facebook", callback_data: "admin:fb_auth" }]);
-  }
-
-  inline_keyboard.push([{ text: "🟢 Статус Facebook", callback_data: "admin:fb_status" }]);
-
   const adminUrl = resolveAdminWebUrl(env);
-  if (adminUrl) {
-    inline_keyboard.push([{ text: "🌐 Веб-админка", url: adminUrl }]);
-  }
+  const fbLabel = options.connected ? "🔄 Обновить FB" : "🔗 Авторизация Facebook";
+  const fbButton = oauthUrl
+    ? { text: fbLabel, url: oauthUrl }
+    : { text: fbLabel, callback_data: "admin:fb_auth" };
 
-  inline_keyboard.push([{ text: "📁 Проекты", callback_data: "admin:projects" }]);
-  inline_keyboard.push([{ text: "💳 Оплаты", callback_data: "admin:billing" }]);
-  inline_keyboard.push([{ text: "⚙️ Тех.панель", callback_data: "admin:tech" }]);
-  inline_keyboard.push([{ text: "🔁 Обновить отчёты", callback_data: "admin:refresh_all" }]);
+  inline_keyboard.push([
+    fbButton,
+    adminUrl ? { text: "🌐 Веб-админка", url: adminUrl } : { text: "🌐 Веб-админка", callback_data: "admin:menu" },
+  ]);
+
+  inline_keyboard.push([
+    { text: "📁 Проекты", callback_data: "admin:projects" },
+    { text: "💳 Оплаты", callback_data: "admin:billing" },
+  ]);
+
+  inline_keyboard.push([
+    { text: "⚙️ Тех.панель", callback_data: "admin:tech" },
+    { text: "🔁 Обновить отчёты", callback_data: "admin:refresh_all" },
+  ]);
 
   return { inline_keyboard };
 };

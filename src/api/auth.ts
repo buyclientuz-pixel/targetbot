@@ -7,6 +7,7 @@ import {
 import { WorkerEnv } from "../types";
 import { appendLogEntry } from "../utils/r2";
 import { notifyTelegramAdmins } from "../utils/telegram";
+import { formatDateTime } from "../utils/format";
 
 const extractAdminKey = (request: Request): string | null => {
   const authHeader = request.headers.get("Authorization");
@@ -74,6 +75,7 @@ const renderAuthPage = (title: string, message: string, options: {
   details?: string;
   status?: "success" | "warning" | "error";
   links?: Array<{ href: string; label: string }>;
+  redirect?: string;
 } = {}): string => {
   const tone = options.status || "success";
   const accent = tone === "success" ? "#00b87c" : tone === "warning" ? "#fbbf24" : "#f87171";
@@ -86,12 +88,20 @@ const renderAuthPage = (title: string, message: string, options: {
       "</a>",
     )
     .join("");
+  const redirectMeta = options.redirect ? `<meta http-equiv="refresh" content="2;url=${options.redirect}" />` : "";
+  const redirectNotice = options.redirect
+    ?
+        '<p class="redirect">Через пару секунд откроется Telegram. Если этого не произошло, <a href="' +
+        options.redirect +
+        '" rel="noopener noreferrer" target="_blank">нажмите сюда</a>.</p>'
+    : "";
 
   return `<!DOCTYPE html>
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    ${redirectMeta}
     <title>${title}</title>
     <style>
       :root { color-scheme: dark; }
@@ -148,6 +158,13 @@ const renderAuthPage = (title: string, message: string, options: {
         color: #0f172a;
         background: ${accent};
       }
+      .redirect {
+        margin-top: 16px;
+        color: #94a3b8;
+      }
+      .redirect a {
+        color: ${accent};
+      }
     </style>
   </head>
   <body>
@@ -155,6 +172,7 @@ const renderAuthPage = (title: string, message: string, options: {
       <h1>${title}</h1>
       <p>${message}</p>
       ${options.details ? '<p class="details">' + options.details + "</p>" : ""}
+      ${redirectNotice}
       ${links ? '<div class="actions">' + links + "</div>" : ""}
     </main>
   </body>
@@ -170,6 +188,28 @@ const resolveAdminUrl = (env: WorkerEnv): string | null => {
   const key = typeof env.ADMIN_KEY === "string" && env.ADMIN_KEY.trim() ? env.ADMIN_KEY.trim() : "";
   const search = key ? "?key=" + encodeURIComponent(key) : "";
   return sanitized + "/admin" + search;
+};
+
+const resolveBotUrl = (env: WorkerEnv): string | null => {
+  const runtime = env as Record<string, unknown>;
+  const directKeys = ["BOT_URL", "BOT_LINK", "TELEGRAM_BOT_URL"];
+  for (const key of directKeys) {
+    const value = typeof runtime[key] === "string" ? (runtime[key] as string).trim() : "";
+    if (value) {
+      return value;
+    }
+  }
+
+  const usernameKeys = ["BOT_USERNAME", "TELEGRAM_BOT_USERNAME", "TG_BOT_USERNAME"];
+  for (const key of usernameKeys) {
+    const raw = typeof runtime[key] === "string" ? (runtime[key] as string).trim() : "";
+    if (raw) {
+      const handle = raw.startsWith("@") ? raw.slice(1) : raw;
+      return "https://t.me/" + handle;
+    }
+  }
+
+  return null;
 };
 
 export const handleFacebookLogin = async (request: Request, env: WorkerEnv): Promise<Response> => {
@@ -358,7 +398,7 @@ export const handleFacebookCallback = async (
   };
 
   let heading = "Авторизация Facebook завершена";
-  let message = "✅ Токен успешно сохранён.";
+  let message = "✅ Токен успешно сохранён. Вернитесь в Telegram, чтобы продолжить работу.";
   let details = "";
   let statusTone: "success" | "warning" | "error" = "success";
 
@@ -389,17 +429,37 @@ export const handleFacebookCallback = async (
     details = parts.join("<br />");
   }
 
+  const botUrl = resolveBotUrl(env);
+  const linkTargets: Array<{ href: string; label: string }> = [];
+  if (botUrl) {
+    linkTargets.push({ href: botUrl, label: "Открыть бота" });
+  }
+  if (adminUrl) {
+    linkTargets.push({ href: adminUrl, label: "Открыть админ-панель" });
+  }
+
+  if (status.status === "ok") {
+    const expiresAt = status.expires_at || refreshResult.refresh?.expires_at || null;
+    const expiresText = expiresAt ? formatDateTime(expiresAt, tz) : null;
+    const lines = ["✅ Facebook подключён." ];
+    if (accountName || accountId) {
+      lines.push("Аккаунт: " + (accountName || accountId));
+    }
+    if (expiresText) {
+      lines.push("Действителен до: " + expiresText);
+    }
+    if (status.should_refresh) {
+      lines.push("⚠️ Обновите токен в ближайшие 24 часа.");
+    }
+    lines.push("Откройте /admin для управления проектами.");
+    await notifyTelegramAdmins(env, lines.join("\n"));
+  }
+
   const html = renderAuthPage(heading, message, {
     details,
     status: statusTone,
-    links: adminUrl
-      ? [
-          {
-            href: adminUrl,
-            label: "Открыть админ-панель",
-          },
-        ]
-      : undefined,
+    links: linkTargets.length ? linkTargets : undefined,
+    redirect: botUrl || undefined,
   });
 
   return htmlResponse(html);
