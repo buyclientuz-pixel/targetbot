@@ -6083,10 +6083,20 @@ function renderClientPortalPage({
             return height - paddingBottom - (safe / maxValue) * range;
           };
           const spendPath = points
-            .map((point, index) => `${index === 0 ? 'M' : 'L'}${toX(index)} ${toY(Number(point.spend) || 0)}`)
+            .map((point, index) => {
+              const command = index === 0 ? 'M' : 'L';
+              const x = String(toX(index));
+              const y = String(toY(Number(point.spend) || 0));
+              return command + x + ' ' + y;
+            })
             .join(' ');
           const leadsPath = points
-            .map((point, index) => `${index === 0 ? 'M' : 'L'}${toX(index)} ${toY(Number(point.leads) || 0)}`)
+            .map((point, index) => {
+              const command = index === 0 ? 'M' : 'L';
+              const x = String(toX(index));
+              const y = String(toY(Number(point.leads) || 0));
+              return command + x + ' ' + y;
+            })
             .join(' ');
           const tickCount = 4;
           const grid = Array.from({ length: tickCount + 1 }, (_, index) => {
@@ -6098,38 +6108,86 @@ function renderClientPortalPage({
             }).format(value);
             return (
               '<g>' +
-              `<line x1="${paddingLeft}" y1="${y}" x2="${width - paddingRight}" y2="${y}" stroke="rgba(255,255,255,0.06)" />` +
-              `<text x="${paddingLeft - 12}" y="${y + 4}" text-anchor="end" fill="rgba(255,255,255,0.45)" font-size="11">${escapeText(label)}</text>` +
+              '<line x1="' +
+              paddingLeft +
+              '" y1="' +
+              y +
+              '" x2="' +
+              (width - paddingRight) +
+              '" y2="' +
+              y +
+              '" stroke="rgba(255,255,255,0.06)" />' +
+              '<text x="' +
+              (paddingLeft - 12) +
+              '" y="' +
+              (y + 4) +
+              '" text-anchor="end" fill="rgba(255,255,255,0.45)" font-size="11">' +
+              escapeText(label) +
+              '</text>' +
               '</g>'
             );
           }).join('');
           const xLabels = points
-            .map(
-              (point, index) =>
-                `<text x="${toX(index)}" y="${height - paddingBottom + 18}" text-anchor="middle" fill="rgba(255,255,255,0.55)" font-size="11">${escapeText(
-                  point.label || '',
-                )}</text>`,
-            )
+            .map((point, index) => {
+              const x = toX(index);
+              const y = height - paddingBottom + 18;
+              const text = escapeText(point.label || '');
+              return (
+                '<text x="' +
+                x +
+                '" y="' +
+                y +
+                '" text-anchor="middle" fill="rgba(255,255,255,0.55)" font-size="11">' +
+                text +
+                '</text>'
+              );
+            })
             .join('');
           const spendDots = points
-            .map(
-              (point, index) =>
-                `<circle cx="${toX(index)}" cy="${toY(Number(point.spend) || 0)}" r="3.5" fill="#4a9bff" />`,
-            )
+            .map((point, index) => {
+              const cx = toX(index);
+              const cy = toY(Number(point.spend) || 0);
+              return '<circle cx="' + cx + '" cy="' + cy + '" r="3.5" fill="#4a9bff" />';
+            })
             .join('');
           const leadsDots = points
-            .map(
-              (point, index) =>
-                `<circle cx="${toX(index)}" cy="${toY(Number(point.leads) || 0)}" r="3.5" fill="#8be4a2" />`,
-            )
+            .map((point, index) => {
+              const cx = toX(index);
+              const cy = toY(Number(point.leads) || 0);
+              return '<circle cx="' + cx + '" cy="' + cy + '" r="3.5" fill="#8be4a2" />';
+            })
             .join('');
           campaignModalChart.innerHTML =
-            `<rect width="${width}" height="${height}" fill="transparent"></rect>` +
-            `<line x1="${paddingLeft}" y1="${paddingTop}" x2="${paddingLeft}" y2="${height - paddingBottom}" stroke="rgba(255,255,255,0.1)" />` +
-            `<line x1="${paddingLeft}" y1="${height - paddingBottom}" x2="${width - paddingRight}" y2="${height - paddingBottom}" stroke="rgba(255,255,255,0.1)" />` +
+            '<rect width="' +
+            width +
+            '" height="' +
+            height +
+            '" fill="transparent"></rect>' +
+            '<line x1="' +
+            paddingLeft +
+            '" y1="' +
+            paddingTop +
+            '" x2="' +
+            paddingLeft +
+            '" y2="' +
+            (height - paddingBottom) +
+            '" stroke="rgba(255,255,255,0.1)" />' +
+            '<line x1="' +
+            paddingLeft +
+            '" y1="' +
+            (height - paddingBottom) +
+            '" x2="' +
+            (width - paddingRight) +
+            '" y2="' +
+            (height - paddingBottom) +
+            '" stroke="rgba(255,255,255,0.1)" />' +
             grid +
-            `<path d="${spendPath}" fill="none" stroke="#4a9bff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />` +
-            `<path d="${leadsPath}" fill="none" stroke="#8be4a2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />` +
+            '<path d="' +
+            spendPath +
+            '" fill="none" stroke="#4a9bff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />' +
+            '<path d="' +
+            leadsPath +
+            '" fill="none" stroke="#8be4a2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />' +
             spendDots +
             leadsDots +
             xLabels;
@@ -6141,7 +6199,7 @@ function renderClientPortalPage({
           }
           modalState.open = true;
           campaignModal.removeAttribute('hidden');
-          campaignModalStatus.textContent = item?.statusIcon ? `${item.statusIcon}` : '⌛';
+          campaignModalStatus.textContent = item?.statusIcon ? String(item.statusIcon) : '⌛';
           if (item?.statusLabel) {
             campaignModalStatus.setAttribute('title', item.statusLabel);
           } else {
@@ -6185,12 +6243,17 @@ function renderClientPortalPage({
             { label: 'CTR', value: detail.totals?.ctrText || '—' },
           ];
           campaignModalSummary.innerHTML = summaryMetrics
-            .map(
-              (metric) =>
-                `<div class="campaign-modal__summary-card"><span>${escapeText(metric.label)}</span><strong>${escapeText(
-                  metric.value || '—',
-                )}</strong></div>`,
-            )
+            .map((metric) => {
+              const label = escapeText(metric.label);
+              const value = escapeText(metric.value || '—');
+              return (
+                '<div class="campaign-modal__summary-card"><span>' +
+                label +
+                '</span><strong>' +
+                value +
+                '</strong></div>'
+              );
+            })
             .join('');
           if (detail.campaign) {
             campaignModalStatus.textContent = detail.campaign.statusIcon || '🟢';
@@ -6203,16 +6266,32 @@ function renderClientPortalPage({
           }
           if (Array.isArray(detail.table) && detail.table.length > 0) {
             campaignModalTable.innerHTML = detail.table
-              .map(
-                (row) =>
+              .map((row) => {
+                const label = escapeText(row.label || '');
+                const spend = escapeText(row.spendText || '—');
+                const leads = escapeText(row.leadsText || '—');
+                const cpa = escapeText(row.cpaText || '—');
+                const ctr = escapeText(row.ctrText || '—');
+                return (
                   '<tr>' +
-                  `<td>${escapeText(row.label || '')}</td>` +
-                  `<td>${escapeText(row.spendText || '—')}</td>` +
-                  `<td>${escapeText(row.leadsText || '—')}</td>` +
-                  `<td>${escapeText(row.cpaText || '—')}</td>` +
-                  `<td>${escapeText(row.ctrText || '—')}</td>` +
-                  '</tr>',
-              )
+                  '<td>' +
+                  label +
+                  '</td>' +
+                  '<td>' +
+                  spend +
+                  '</td>' +
+                  '<td>' +
+                  leads +
+                  '</td>' +
+                  '<td>' +
+                  cpa +
+                  '</td>' +
+                  '<td>' +
+                  ctr +
+                  '</td>' +
+                  '</tr>'
+                );
+              })
               .join('');
           } else {
             campaignModalTable.innerHTML =
@@ -6284,7 +6363,7 @@ function renderClientPortalPage({
             ? period.campaigns.find((item) => String(item.id) === campaignId)
             : null;
           showModalLoading(listItem);
-          const cacheKey = `${campaignId}:${state.includeArchived ? '1' : '0'}`;
+          const cacheKey = campaignId + ':' + (state.includeArchived ? '1' : '0');
           if (state.campaignDetails.has(cacheKey)) {
             const cached = state.campaignDetails.get(cacheKey);
             renderModal(cached, listItem);
