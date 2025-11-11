@@ -163,6 +163,7 @@ export interface AdminDashboardData {
   logs: DashboardLogEntry[];
   tokens: TokenStatus[];
   storage: StorageOverview;
+  cron?: CronStatusMap | null;
 }
 
 export interface DashboardLogEntry {
@@ -184,6 +185,17 @@ export interface StorageOverview {
   billing: number;
   kvFallbacks?: number | null;
 }
+
+export interface CronStatusEntry {
+  job: string;
+  last_run: string;
+  ok: boolean;
+  message?: string | null;
+  last_success?: string | null;
+  failure_count?: number;
+}
+
+export type CronStatusMap = Record<string, CronStatusEntry>;
 
 export interface WorkerEnv extends Record<string, unknown> {
   REPORTS_BUCKET?: R2Bucket;

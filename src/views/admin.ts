@@ -1,5 +1,6 @@
 import {
   AdminDashboardData,
+  CronStatusMap,
   DashboardLogEntry,
   MetaAccountInfo,
   ProjectCard,
@@ -526,6 +527,66 @@ const renderStorage = (storage: StorageOverview): string => {
   );
 };
 
+const CRON_LABELS: Record<string, string> = {
+  "projects-refresh": "Обновление отчётов",
+  "meta-token": "Проверка Meta токена",
+};
+
+const renderCronStatus = (cron?: CronStatusMap | null): string => {
+  const entries = cron ? Object.values(cron) : [];
+  if (entries.length === 0) {
+    return (
+      '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-6">' +
+      '<h2 class="text-lg font-semibold">Крон-задачи</h2>' +
+      '<p class="mt-2 text-sm text-slate-500">Отчёты о выполнении крон-задач появятся после первого запуска.</p>' +
+      '</div>'
+    );
+  }
+
+  const rows = entries
+    .sort((a, b) => a.job.localeCompare(b.job))
+    .map((entry) => {
+      const icon = entry.ok ? "🟢" : "🔴";
+      const label = CRON_LABELS[entry.job] || entry.job;
+      const lastRunIso = entry.last_run && entry.last_run !== "1970-01-01T00:00:00.000Z" ? entry.last_run : null;
+      const lastRun = lastRunIso ? formatDateTime(lastRunIso) : "—";
+      const lastSuccess =
+        entry.last_success && entry.last_success !== "1970-01-01T00:00:00.000Z"
+          ? formatDateTime(entry.last_success)
+          : null;
+      const failureBadge = entry.failure_count && entry.failure_count > 0
+        ? '<span class="rounded-full bg-red-900/60 px-2 py-0.5 text-[11px] text-red-200">' +
+          escapeHtml(String(entry.failure_count)) +
+          '× ошибок</span>'
+        : '';
+      const message = entry.message
+        ? '<p class="mt-2 text-xs text-slate-400">' + escapeHtml(entry.message) + '</p>'
+        : '';
+      const lastSuccessRow = lastSuccess
+        ? '<div class="text-xs text-slate-500">Последний успех: ' + escapeHtml(lastSuccess) + '</div>'
+        : '';
+      return (
+        '<div class="rounded-xl border border-slate-800 bg-slate-900 p-4">' +
+        '<div class="flex items-center justify-between">' +
+        '<div class="text-sm font-semibold">' + icon + ' ' + escapeHtml(label) + '</div>' +
+        '<div class="space-x-2 text-xs text-slate-400">' + failureBadge + '</div>' +
+        '</div>' +
+        '<div class="mt-1 text-xs text-slate-400">Последний запуск: ' + escapeHtml(lastRun) + '</div>' +
+        lastSuccessRow +
+        message +
+        '</div>'
+      );
+    })
+    .join("");
+
+  return (
+    '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-6">' +
+    '<h2 class="text-lg font-semibold">Крон-задачи</h2>' +
+    '<div class="mt-4 space-y-3">' + rows + '</div>' +
+    '</div>'
+  );
+};
+
 const renderTechTools = (): string => {
   return (
     '<div class="space-y-4 rounded-2xl border border-slate-800 bg-slate-950 p-6">' +
@@ -577,6 +638,7 @@ const renderTabContent = (dashboard: AdminDashboardData): string => {
     '</section>' +
     '<section data-tab-content="tech" class="tab-panel hidden space-y-5">' +
     renderStorage(dashboard.storage) +
+    renderCronStatus(dashboard.cron) +
     '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-6">' +
     '<h2 class="text-lg font-semibold">Токены и ключи</h2>' +
     '<div class="mt-4">' + renderTokens(dashboard.tokens) + '</div>' +

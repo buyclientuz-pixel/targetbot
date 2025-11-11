@@ -19,6 +19,7 @@ import {
   deleteFromR2,
   deletePrefixFromR2,
   clearFallbackEntries,
+  readCronStatus,
 } from "../utils/r2";
 import {
   AdminDashboardData,
@@ -32,6 +33,7 @@ import {
   BillingInfo,
   MetaTokenStatus,
   WorkerEnv,
+  CronStatusMap,
 } from "../types";
 import { renderAdminPage } from "../views/admin";
 import { refreshAllProjects } from "./projects";
@@ -732,7 +734,7 @@ export const handleAdminSystemApi = async (
     return error;
   }
 
-  const [metaStatus, tokenStatus, tokens, storage, webhook] = await Promise.all([
+  const [metaStatus, tokenStatus, tokens, storage, webhook, cronStatus] = await Promise.all([
     loadMetaStatus(env, { useCache: true }).catch((err) => ({
       ok: false,
       issues: [(err as Error).message],
@@ -750,6 +752,7 @@ export const handleAdminSystemApi = async (
     Promise.resolve(collectTokenStatus(env)),
     loadStorageOverview(env),
     getTelegramWebhookStatus(env as any).catch(() => null),
+    readCronStatus(env as any).catch(() => ({} as CronStatusMap)),
   ]);
 
   return jsonResponse({
@@ -758,6 +761,7 @@ export const handleAdminSystemApi = async (
     tokens,
     storage,
     webhook,
+    cron: cronStatus,
   });
 };
 

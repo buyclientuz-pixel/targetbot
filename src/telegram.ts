@@ -22,6 +22,7 @@ import {
   deleteFromR2,
   deletePrefixFromR2,
   clearFallbackEntries,
+  readCronStatus,
 } from "./utils/r2";
 import { ProjectReport, ProjectCard, BillingInfo, ProjectAlertsConfig } from "./types";
 import {
@@ -823,12 +824,13 @@ const sendAdminTechOverview = async (
   chatId: string,
   context: AdminMessageContext = {},
 ): Promise<void> => {
-  const [reportKeys, projectKeys, billingKeys, alertKeys, fallbackCount] = await Promise.all([
+  const [reportKeys, projectKeys, billingKeys, alertKeys, fallbackCount, cronStatus] = await Promise.all([
     listR2Keys(env as any, "reports/"),
     listR2Keys(env as any, "projects/"),
     listR2Keys(env as any, "billing/"),
     listR2Keys(env as any, "alerts/"),
     countFallbackEntries(env as any),
+    readCronStatus(env as any).catch(() => ({})),
   ]);
 
   const lines: string[] = [
@@ -843,6 +845,27 @@ const sendAdminTechOverview = async (
 
   if (fallbackCount !== null && fallbackCount !== undefined) {
     lines.push("• Fallback KV: " + fallbackCount);
+  }
+
+  const cronEntries = cronStatus && typeof cronStatus === "object" ? Object.values(cronStatus) : [];
+  if (cronEntries.length > 0) {
+    lines.push("", "⏱ Крон-задачи:");
+    for (const entry of cronEntries.sort((a, b) => a.job.localeCompare(b.job))) {
+      const icon = entry.ok ? "🟢" : "🔴";
+      const label = entry.job === "meta-token" ? "Meta токен" : entry.job === "projects-refresh" ? "Обновление отчётов" : entry.job;
+      const runAt =
+        entry.last_run && entry.last_run !== "1970-01-01T00:00:00.000Z"
+          ? formatDateTime(entry.last_run)
+          : "—";
+      const lastSuccess =
+        entry.last_success && entry.last_success !== "1970-01-01T00:00:00.000Z"
+          ? formatDateTime(entry.last_success)
+          : null;
+      const suffix = lastSuccess ? " (успех: " + lastSuccess + ")" : "";
+      const message = entry.message ? " — " + entry.message : "";
+      const failure = entry.failure_count && entry.failure_count > 0 ? " [" + entry.failure_count + "× ошибок]" : "";
+      lines.push("• " + icon + " " + label + ": " + runAt + suffix + failure + message);
+    }
   }
 
   const workerUrl = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";

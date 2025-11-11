@@ -1,4 +1,4 @@
-import { DashboardLogEntry } from "../types";
+import { CronStatusEntry, CronStatusMap, DashboardLogEntry } from "../types";
 
 interface R2Env {
   REPORTS_BUCKET?: R2Bucket;
@@ -81,6 +81,64 @@ export const appendLogEntry = async (
   } catch (_error) {
     await writeFallback(env, fullKey, entry);
   }
+};
+
+const CRON_STATUS_KEY = "meta/system/cron-status.json";
+
+export const readCronStatus = async (env: R2Env): Promise<CronStatusMap> => {
+  const data = await readJsonFromR2<CronStatusMap>(env, CRON_STATUS_KEY);
+  if (!data || typeof data !== "object") {
+    return {};
+  }
+  const entries: CronStatusMap = {};
+  for (const [job, value] of Object.entries(data)) {
+    if (!value || typeof value !== "object") {
+      continue;
+    }
+    const record: CronStatusEntry = {
+      job,
+      last_run: typeof (value as any).last_run === "string" ? (value as any).last_run : new Date(0).toISOString(),
+      ok: Boolean((value as any).ok),
+      message:
+        typeof (value as any).message === "string" && (value as any).message
+          ? (value as any).message
+          : null,
+      last_success:
+        typeof (value as any).last_success === "string" && (value as any).last_success
+          ? (value as any).last_success
+          : null,
+      failure_count:
+        typeof (value as any).failure_count === "number"
+          ? Math.max(0, (value as any).failure_count)
+          : undefined,
+    };
+    entries[job] = record;
+  }
+  return entries;
+};
+
+export const updateCronStatus = async (
+  env: R2Env,
+  job: string,
+  update: { ok: boolean; message?: string | null },
+): Promise<void> => {
+  const jobId = job.trim();
+  if (!jobId) {
+    return;
+  }
+  const now = new Date().toISOString();
+  const current = await readCronStatus(env);
+  const previous = current[jobId];
+  const next: CronStatusEntry = {
+    job: jobId,
+    last_run: now,
+    ok: update.ok,
+    message: update.message || null,
+    last_success: update.ok ? now : previous?.last_success || null,
+    failure_count: update.ok ? 0 : (previous?.failure_count || 0) + 1,
+  };
+  const payload: CronStatusMap = { ...current, [jobId]: next };
+  await writeJsonToR2(env, CRON_STATUS_KEY, payload);
 };
 
 export const deleteFromR2 = async (env: R2Env, key: string): Promise<boolean> => {

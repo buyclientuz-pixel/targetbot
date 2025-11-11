@@ -8,6 +8,7 @@
     "deploy": "npx wrangler@4.46.0 deploy",
     "check:config": "node scripts/check-config.mjs",
     "sync:secrets": "node scripts/sync-secrets.mjs",
-    "test:integration": "node scripts/run-integration.mjs"
+    "test:integration": "node scripts/run-integration.mjs",
+    "validate:postdeploy": "node scripts/postdeploy-validate.mjs"
   }
 }

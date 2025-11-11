@@ -20,11 +20,12 @@ import {
 import { handleTelegramWebhook } from "./telegram";
 import { handleTelegramAlert } from "./api/telegram";
 import { handleManageTelegramWebhook } from "./api/manage";
-import { appendLogEntry } from "./utils/r2";
+import { appendLogEntry, updateCronStatus } from "./utils/r2";
 import { refreshAllProjects } from "./api/projects";
 import { handleFacebookStatusApi, handleFacebookRefreshApi } from "./api/auth";
 import { checkAndRefreshFacebookToken } from "./fb/auth";
 import { WorkerEnv } from "./types";
+import { notifyTelegramAdmins } from "./utils/telegram";
 
 const handleNotFound = (): Response => notFound("Route not found");
 
@@ -193,37 +194,51 @@ export default {
         if (shouldRunProjects) {
           try {
             const result = await refreshAllProjects(env);
+            const message =
+              "Scheduled refresh completed for " + result.refreshed.length + " projects";
             await appendLogEntry(env, {
               level: "info",
-              message: "Scheduled refresh completed for " + result.refreshed.length + " projects",
+              message,
               timestamp: new Date().toISOString(),
             });
+            await updateCronStatus(env, "projects-refresh", { ok: true, message });
           } catch (error) {
+            const message = "Scheduled refresh failed: " + (error as Error).message;
             await appendLogEntry(env, {
               level: "error",
-              message: "Scheduled refresh failed: " + (error as Error).message,
+              message,
               timestamp: new Date().toISOString(),
             });
+            await updateCronStatus(env, "projects-refresh", { ok: false, message });
+            await notifyTelegramAdmins(env, "🚨 Ошибка крон-задачи проектов: " + (error as Error).message);
           }
         }
 
         if (shouldRunTokenCheck) {
           try {
             const result = await checkAndRefreshFacebookToken(env, { notify: true });
+            const message =
+              "Meta token check status: " +
+              result.status.status +
+              (result.refresh && result.refresh.message ? " - " + result.refresh.message : "");
             await appendLogEntry(env, {
               level: result.refresh && result.refresh.ok ? "info" : "warn",
-              message:
-                "Meta token check status: " +
-                result.status.status +
-                (result.refresh && result.refresh.message ? " - " + result.refresh.message : ""),
+              message,
               timestamp: new Date().toISOString(),
+            });
+            await updateCronStatus(env, "meta-token", {
+              ok: result.refresh ? result.refresh.ok : result.status.ok,
+              message,
             });
           } catch (error) {
+            const message = "Meta token scheduled check failed: " + (error as Error).message;
             await appendLogEntry(env, {
               level: "error",
-              message: "Meta token scheduled check failed: " + (error as Error).message,
+              message,
               timestamp: new Date().toISOString(),
             });
+            await updateCronStatus(env, "meta-token", { ok: false, message });
+            await notifyTelegramAdmins(env, "🚨 Ошибка проверки Meta токена: " + (error as Error).message);
           }
         }
       })(),
