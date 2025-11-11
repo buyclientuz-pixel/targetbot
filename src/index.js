@@ -6008,13 +6008,13 @@ function renderClientPortalPage({
                 escapeText(campaignName) +
                 '"</span>' +
                 '<span class="campaign-card__metric">' +
-                escapeText(`${keyLabel}: ${keyText}`) +
+                escapeText(keyLabel + ': ' + keyText) +
                 '</span>' +
                 '<span class="campaign-card__metric">Потрачено: ' +
                 escapeText(spendText) +
                 '</span>' +
                 '<span class="campaign-card__metric">' +
-                escapeText(`${costLabel || 'CPA'}: ${costText}`) +
+                escapeText((costLabel || 'CPA') + ': ' + costText) +
                 '</span>' +
                 '<span class="campaign-card__metric">CTR: ' +
                 escapeText(ctrText) +
