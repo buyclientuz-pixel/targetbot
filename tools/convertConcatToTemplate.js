@@ -248,7 +248,7 @@ function convertConcatenations(content) {
           if (token.type === 'string') {
             template += escapeTemplateText(token.value);
           } else {
-            template += '${' + token.value.trim() + '}';
+            template += `\${${token.value.trim()}}`;
           }
         }
         template += '`';
