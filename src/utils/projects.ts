@@ -5,7 +5,7 @@ import {
   ProjectConfigRecord,
   ProjectReport,
 } from "../types";
-import { listR2Keys, readJsonFromR2 } from "./r2";
+import { listR2Keys, readJsonFromR2, writeJsonToR2 } from "./r2";
 
 const PROJECT_INDEX_KEYS = [
   "meta/projects/index.json",
@@ -218,4 +218,94 @@ export const loadProjectCards = async (env: unknown): Promise<ProjectCard[]> => 
 export const findProjectCard = async (env: unknown, projectId: string): Promise<ProjectCard | null> => {
   const projects = await loadProjectCards(env);
   return projects.find((project) => project.id === projectId) || null;
+};
+
+const PROJECT_CONFIG_PREFIX = "projects/";
+const BILLING_PREFIX = "billing/";
+const ALERTS_PREFIX = "alerts/";
+
+const ensureProjectId = (projectId: string): string => {
+  const id = projectId.trim();
+  if (!id) {
+    throw new Error("Project ID is required");
+  }
+  return id;
+};
+
+export const readProjectConfig = async (
+  env: unknown,
+  projectId: string,
+): Promise<ProjectConfigRecord | null> => {
+  return readJsonFromR2<ProjectConfigRecord>(env as any, PROJECT_CONFIG_PREFIX + ensureProjectId(projectId) + ".json");
+};
+
+export const writeProjectConfig = async (
+  env: unknown,
+  projectId: string,
+  patch: Partial<ProjectConfigRecord>,
+): Promise<ProjectConfigRecord | null> => {
+  const id = ensureProjectId(projectId);
+  const existing = await readProjectConfig(env, id);
+  const base: ProjectConfigRecord = existing
+    ? { ...existing }
+    : {
+        id,
+        name: id,
+      };
+
+  const next: ProjectConfigRecord = {
+    ...base,
+    ...patch,
+    id,
+    name: patch.name && patch.name.trim() ? patch.name : base.name || id,
+  };
+
+  if (patch.kpi) {
+    next.kpi = { ...(base.kpi || {}), ...patch.kpi };
+  }
+
+  if (patch.alerts) {
+    next.alerts = { ...(base.alerts || {}), ...patch.alerts };
+  }
+
+  const success = await writeJsonToR2(env as any, PROJECT_CONFIG_PREFIX + id + ".json", next);
+  return success ? next : null;
+};
+
+export const readBillingInfo = async (
+  env: unknown,
+  projectId: string,
+): Promise<BillingInfo | null> => {
+  return readJsonFromR2<BillingInfo>(env as any, BILLING_PREFIX + ensureProjectId(projectId) + ".json");
+};
+
+export const writeBillingInfo = async (
+  env: unknown,
+  projectId: string,
+  patch: BillingInfo,
+): Promise<BillingInfo | null> => {
+  const id = ensureProjectId(projectId);
+  const existing = await readBillingInfo(env, id);
+  const next: BillingInfo = { ...(existing || {}), ...patch };
+  const success = await writeJsonToR2(env as any, BILLING_PREFIX + id + ".json", next);
+  return success ? next : null;
+};
+
+export const readAlertsConfig = async (
+  env: unknown,
+  projectId: string,
+): Promise<ProjectAlertsConfig | null> => {
+  return readJsonFromR2<ProjectAlertsConfig>(env as any, ALERTS_PREFIX + ensureProjectId(projectId) + ".json");
+};
+
+export const writeAlertsConfig = async (
+  env: unknown,
+  projectId: string,
+  patch: ProjectAlertsConfig,
+): Promise<ProjectAlertsConfig | null> => {
+  const id = ensureProjectId(projectId);
+  const existing = await readAlertsConfig(env, id);
+  const next: ProjectAlertsConfig = { ...(existing || {}), ...patch };
+  const success = await writeJsonToR2(env as any, ALERTS_PREFIX + id + ".json", next);
+  return success ? next : null;
 };

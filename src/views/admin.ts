@@ -92,6 +92,31 @@ const renderProjectCard = (project: ProjectCard): string => {
     silent,
   ]);
 
+  const projectIdAttr = escapeHtml(project.id);
+  const alertsEnabled = project.alerts_enabled === undefined || project.alerts_enabled === null
+    ? true
+    : Boolean(project.alerts_enabled);
+  const silentEnabled = Boolean(project.silent_weekends);
+  const toggleAlertsText = alertsEnabled
+    ? "🔕 Выключить алерты"
+    : "🔔 Включить алерты";
+  const toggleSilentText = silentEnabled
+    ? "🔔 Включить уведомления в выходные"
+    : "😴 Включить тихие выходные";
+  const actions =
+    '<div class="mt-4 flex flex-wrap gap-2 text-xs sm:text-sm">' +
+    '<button type="button" data-admin-action="toggle-alerts" data-project="' + projectIdAttr +
+    '" class="rounded-lg bg-slate-800 px-3 py-1.5 font-semibold text-slate-200 hover:bg-slate-700">' +
+    escapeHtml(toggleAlertsText) +
+    '</button>' +
+    '<button type="button" data-admin-action="toggle-silent" data-project="' + projectIdAttr +
+    '" class="rounded-lg bg-slate-800 px-3 py-1.5 font-semibold text-slate-200 hover:bg-slate-700">' +
+    escapeHtml(toggleSilentText) +
+    '</button>' +
+    '<button type="button" data-admin-action="refresh-project" data-project="' + projectIdAttr +
+    '" class="rounded-lg bg-emerald-500 px-3 py-1.5 font-semibold text-slate-950 hover:bg-emerald-400">🔄 Обновить отчёт</button>' +
+    '</div>';
+
   return (
     '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-5 shadow-lg shadow-slate-950/40">' +
     '<div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">' +
@@ -108,6 +133,7 @@ const renderProjectCard = (project: ProjectCard): string => {
     '</div>' +
     (badgeRow ? '<div class="mt-3 flex flex-wrap gap-2">' + badgeRow + '</div>' : '') +
     summary +
+    actions +
     '</div>'
   );
 };
@@ -379,6 +405,69 @@ const TAB_SCRIPT = `
 })();
 `;
 
+const ACTION_SCRIPT = [
+  "(function(){",
+  "  const params = new URLSearchParams(window.location.search);",
+  "  const adminKey = params.get('key');",
+  "  const buildUrl = function(path){",
+  "    var url = new URL(path, window.location.origin);",
+  "    if (adminKey) {",
+  "      url.searchParams.set('key', adminKey);",
+  "    }",
+  "    return url.toString();",
+  "  };",
+  "  const handleAction = async function(button){",
+  "    var action = button.getAttribute('data-admin-action');",
+  "    var project = button.getAttribute('data-project');",
+  "    if (!action || !project) {",
+  "      return;",
+  "    }",
+  "    button.disabled = true;",
+  "    button.classList.add('opacity-60');",
+  "    try {",
+  "      var endpoint = '';",
+  "      var options = { method: 'POST', headers: {} };",
+  "      var body = null;",
+  "      if (action === 'toggle-alerts') {",
+  "        endpoint = '/api/admin/project/' + project + '/toggle';",
+  "        body = JSON.stringify({ field: 'alerts_enabled' });",
+  "        options.headers['content-type'] = 'application/json';",
+  "      } else if (action === 'toggle-silent') {",
+  "        endpoint = '/api/admin/project/' + project + '/toggle';",
+  "        body = JSON.stringify({ field: 'silent_weekends' });",
+  "        options.headers['content-type'] = 'application/json';",
+  "      } else if (action === 'refresh-project') {",
+  "        endpoint = '/api/project/' + project + '/refresh';",
+  "      } else {",
+  "        return;",
+  "      }",
+  "      if (body !== null) {",
+  "        options.body = body;",
+  "      }",
+  "      var response = await fetch(buildUrl(endpoint), options);",
+  "      if (!response.ok) {",
+  "        var text = await response.text();",
+  "        throw new Error(text || 'Request failed');",
+  "      }",
+  "      window.location.reload();",
+  "    } catch (error) {",
+  "      console.error('Admin action failed', error);",
+  "      alert('Не удалось выполнить действие: ' + (error && error.message ? error.message : 'ошибка'));",
+  "    } finally {",
+  "      button.disabled = false;",
+  "      button.classList.remove('opacity-60');",
+  "    }",
+  "  };",
+  "  document.addEventListener('click', function(event){",
+  "    var target = event.target;",
+  "    if (target instanceof HTMLButtonElement && target.hasAttribute('data-admin-action')) {",
+  "      event.preventDefault();",
+  "      handleAction(target);",
+  "    }",
+  "  });",
+  "})();",
+].join("\n");
+
 export const renderAdminPage = (data: AdminDashboardData): string => {
   const content = joinHtml([
     renderTabs(),
@@ -395,5 +484,7 @@ export const renderAdminPage = (data: AdminDashboardData): string => {
     '</nav>' +
     '</div>';
 
-  return renderLayout(content, { title: "Админ-панель", sidebar, scripts: '<script>' + TAB_SCRIPT + '</script>' });
+  const scripts = '<script>' + TAB_SCRIPT + '</script>' + '<script>' + ACTION_SCRIPT + '</script>';
+
+  return renderLayout(content, { title: "Админ-панель", sidebar, scripts });
 };

@@ -1,8 +1,16 @@
-import { jsonResponse, unauthorized, notFound } from "../utils/http";
+import { jsonResponse, unauthorized, notFound, badRequest } from "../utils/http";
 import { loadMetaStatus } from "./meta";
 import { callGraph } from "../fb/client";
-import { loadProjectCards } from "../utils/projects";
-import { readJsonFromR2, listR2Keys, countFallbackEntries } from "../utils/r2";
+import {
+  loadProjectCards,
+  writeProjectConfig,
+  readProjectConfig,
+  writeBillingInfo,
+  readBillingInfo,
+  writeAlertsConfig,
+  readAlertsConfig,
+} from "../utils/projects";
+import { readJsonFromR2, listR2Keys, countFallbackEntries, appendLogEntry } from "../utils/r2";
 import {
   AdminDashboardData,
   MetaAccountInfo,
@@ -156,6 +164,256 @@ const collectTokenStatus = (env: Record<string, unknown>): TokenStatus[] => {
   ];
 };
 
+const readJsonBody = async (request: Request): Promise<any> => {
+  const text = await request.text();
+  if (!text.trim()) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    return null;
+  }
+};
+
+const coerceString = (value: unknown): string | null => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return null;
+};
+
+const coerceNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const sanitizeProjectPatch = (input: any): Partial<ProjectConfigRecord> => {
+  const patch: Partial<ProjectConfigRecord> = {};
+  const name = coerceString(input?.name);
+  if (name !== null) {
+    patch.name = name;
+  }
+  if ("chat_id" in input) {
+    if (input.chat_id === null) {
+      patch.chat_id = null;
+    } else if (typeof input.chat_id === "string" || typeof input.chat_id === "number") {
+      patch.chat_id = input.chat_id;
+    }
+  }
+  const chatUsername = coerceString(input?.chat_username);
+  if (chatUsername !== null) {
+    patch.chat_username = chatUsername;
+  }
+  if ("chat_username" in input && chatUsername === null && input.chat_username === null) {
+    patch.chat_username = null;
+  }
+  const chatLink = coerceString(input?.chat_link);
+  if (chatLink !== null) {
+    patch.chat_link = chatLink;
+  }
+  if ("chat_link" in input && chatLink === null && input.chat_link === null) {
+    patch.chat_link = null;
+  }
+  const accountId = coerceString(input?.account_id);
+  if (accountId !== null) {
+    patch.account_id = accountId;
+  }
+  if ("account_id" in input && accountId === null && input.account_id === null) {
+    patch.account_id = null;
+  }
+  const accountName = coerceString(input?.account_name);
+  if (accountName !== null) {
+    patch.account_name = accountName;
+  }
+  if ("account_name" in input && accountName === null && input.account_name === null) {
+    patch.account_name = null;
+  }
+  const billingDay = coerceNumber(input?.billing_day);
+  if (billingDay !== null) {
+    patch.billing_day = billingDay;
+  }
+  if ("billing_day" in input && billingDay === null && input.billing_day === null) {
+    patch.billing_day = null;
+  }
+  const status = coerceString(input?.status);
+  if (status !== null) {
+    patch.status = status;
+  }
+  if ("status" in input && status === null && input.status === null) {
+    patch.status = null;
+  }
+  if (typeof input?.alerts_enabled === "boolean") {
+    patch.alerts_enabled = input.alerts_enabled;
+  }
+  if (typeof input?.silent_weekends === "boolean") {
+    patch.silent_weekends = input.silent_weekends;
+  }
+  const manager = coerceString(input?.manager);
+  if (manager !== null) {
+    patch.manager = manager;
+  }
+  if ("manager" in input && manager === null && input.manager === null) {
+    patch.manager = null;
+  }
+  const portalUrl = coerceString(input?.portal_url);
+  if (portalUrl !== null) {
+    patch.portal_url = portalUrl;
+  }
+  if ("portal_url" in input && portalUrl === null && input.portal_url === null) {
+    patch.portal_url = null;
+  }
+  const lastSync = coerceString(input?.last_sync);
+  if (lastSync !== null) {
+    patch.last_sync = lastSync;
+  }
+  if ("last_sync" in input && lastSync === null && input.last_sync === null) {
+    patch.last_sync = null;
+  }
+  return patch;
+};
+
+const sanitizeBillingPatch = (input: any): BillingInfo => {
+  const patch: BillingInfo = {};
+  const amount = coerceNumber(input?.amount);
+  if (amount !== null) {
+    patch.amount = amount;
+  }
+  if ("amount" in input && amount === null && input.amount === null) {
+    patch.amount = null;
+  }
+  const spendLimit = coerceNumber(input?.spend_limit);
+  if (spendLimit !== null) {
+    patch.spend_limit = spendLimit;
+  }
+  if ("spend_limit" in input && spendLimit === null && input.spend_limit === null) {
+    patch.spend_limit = null;
+  }
+  const daysToPay = coerceNumber(input?.days_to_pay);
+  if (daysToPay !== null) {
+    patch.days_to_pay = daysToPay;
+  }
+  if ("days_to_pay" in input && daysToPay === null && input.days_to_pay === null) {
+    patch.days_to_pay = null;
+  }
+  const currency = coerceString(input?.currency);
+  if (currency !== null) {
+    patch.currency = currency;
+  }
+  if ("currency" in input && currency === null && input.currency === null) {
+    patch.currency = null;
+  }
+  const nextPayment = coerceString(input?.next_payment);
+  if (nextPayment !== null) {
+    patch.next_payment = nextPayment;
+  }
+  if ("next_payment" in input && nextPayment === null && input.next_payment === null) {
+    patch.next_payment = null;
+  }
+  const nextPaymentDate = coerceString(input?.next_payment_date);
+  if (nextPaymentDate !== null) {
+    patch.next_payment_date = nextPaymentDate;
+  }
+  if ("next_payment_date" in input && nextPaymentDate === null && input.next_payment_date === null) {
+    patch.next_payment_date = null;
+  }
+  const lastPayment = coerceString(input?.last_payment);
+  if (lastPayment !== null) {
+    patch.last_payment = lastPayment;
+  }
+  if ("last_payment" in input && lastPayment === null && input.last_payment === null) {
+    patch.last_payment = null;
+  }
+  const cardLast4 = coerceString(input?.card_last4);
+  if (cardLast4 !== null) {
+    patch.card_last4 = cardLast4;
+  }
+  if ("card_last4" in input && cardLast4 === null && input.card_last4 === null) {
+    patch.card_last4 = null;
+  }
+  const status = coerceString(input?.status);
+  if (status !== null) {
+    patch.status = status;
+  }
+  if ("status" in input && status === null && input.status === null) {
+    patch.status = null;
+  }
+  return patch;
+};
+
+const sanitizeAlertsPatch = (input: any): ProjectAlertsConfig => {
+  const patch: ProjectAlertsConfig = {};
+  const chatId = coerceString(input?.chat_id);
+  if (chatId !== null) {
+    patch.chat_id = chatId;
+  }
+  if ("chat_id" in input && chatId === null && input.chat_id === null) {
+    patch.chat_id = null;
+  }
+  const adminChatId = coerceString(input?.admin_chat_id);
+  if (adminChatId !== null) {
+    patch.admin_chat_id = adminChatId;
+  }
+  if ("admin_chat_id" in input && adminChatId === null && input.admin_chat_id === null) {
+    patch.admin_chat_id = null;
+  }
+  const cpaThreshold = coerceNumber(input?.cpa_threshold);
+  if (cpaThreshold !== null) {
+    patch.cpa_threshold = cpaThreshold;
+  }
+  if ("cpa_threshold" in input && cpaThreshold === null && input.cpa_threshold === null) {
+    patch.cpa_threshold = null;
+  }
+  const spendLimit = coerceNumber(input?.spend_limit);
+  if (spendLimit !== null) {
+    patch.spend_limit = spendLimit;
+  }
+  if ("spend_limit" in input && spendLimit === null && input.spend_limit === null) {
+    patch.spend_limit = null;
+  }
+  const moderationHours = coerceNumber(input?.moderation_hours);
+  if (moderationHours !== null) {
+    patch.moderation_hours = moderationHours;
+  }
+  if ("moderation_hours" in input && moderationHours === null && input.moderation_hours === null) {
+    patch.moderation_hours = null;
+  }
+  const threadId = coerceNumber(input?.message_thread_id);
+  if (threadId !== null) {
+    patch.message_thread_id = threadId;
+  }
+  if ("message_thread_id" in input && threadId === null && input.message_thread_id === null) {
+    patch.message_thread_id = null;
+  }
+  return patch;
+};
+
+const ensureProjectIdParam = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("Project ID is required");
+  }
+  return trimmed;
+};
+
+const logAdminAction = async (env: unknown, message: string): Promise<void> => {
+  await appendLogEntry(env as any, {
+    level: "info",
+    message,
+    timestamp: new Date().toISOString(),
+  });
+};
+
 export const handleAdminPage = async (request: Request, env: Record<string, unknown>): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -204,21 +462,6 @@ export const handleRefreshAllRequest = async (env: unknown): Promise<Response> =
   });
 };
 
-const loadProjectConfig = async (
-  env: unknown,
-  projectId: string,
-): Promise<ProjectConfigRecord | null> => {
-  return readJsonFromR2<ProjectConfigRecord>(env as any, "projects/" + projectId + ".json");
-};
-
-const loadProjectBilling = async (env: unknown, projectId: string): Promise<BillingInfo | null> => {
-  return readJsonFromR2<BillingInfo>(env as any, "billing/" + projectId + ".json");
-};
-
-const loadProjectAlerts = async (env: unknown, projectId: string): Promise<ProjectAlertsConfig | null> => {
-  return readJsonFromR2<ProjectAlertsConfig>(env as any, "alerts/" + projectId + ".json");
-};
-
 const loadProjectReport = async (env: unknown, projectId: string): Promise<ProjectReport | null> => {
   return readJsonFromR2<ProjectReport>(env as any, "reports/" + projectId + ".json");
 };
@@ -249,9 +492,9 @@ export const handleAdminProjectDetail = async (
   const [card, report, config, billing, alerts] = await Promise.all([
     loadProjectCards(env).then((projects) => projects.find((project) => project.id === projectId) || null),
     loadProjectReport(env, projectId),
-    loadProjectConfig(env, projectId),
-    loadProjectBilling(env, projectId),
-    loadProjectAlerts(env, projectId),
+    readProjectConfig(env, projectId),
+    readBillingInfo(env, projectId),
+    readAlertsConfig(env, projectId),
   ]);
 
   if (!card && !report && !config) {
@@ -266,6 +509,159 @@ export const handleAdminProjectDetail = async (
     billing,
     alerts,
   });
+};
+
+export const handleAdminProjectCreate = async (
+  request: Request,
+  env: Record<string, unknown>,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const payload = await readJsonBody(request);
+  if (payload === null) {
+    return badRequest("Invalid JSON body");
+  }
+
+  const projectIdValue = coerceString(payload?.id);
+  if (!projectIdValue) {
+    return badRequest("Project id is required");
+  }
+
+  const projectId = ensureProjectIdParam(projectIdValue);
+  const patch = sanitizeProjectPatch(payload);
+  if (!patch.name) {
+    patch.name = projectId;
+  }
+
+  const record = await writeProjectConfig(env, projectId, patch);
+  if (!record) {
+    return jsonResponse({ error: "Unable to persist project config" }, { status: 500 });
+  }
+
+  await logAdminAction(env, "Admin saved project config for " + projectId);
+
+  return jsonResponse({ ok: true, project: record });
+};
+
+export const handleAdminProjectUpdate = async (
+  request: Request,
+  env: Record<string, unknown>,
+  projectIdParam: string,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const projectId = ensureProjectIdParam(projectIdParam);
+  const payload = await readJsonBody(request);
+  if (payload === null) {
+    return badRequest("Invalid JSON body");
+  }
+
+  const patch = sanitizeProjectPatch(payload);
+  const record = await writeProjectConfig(env, projectId, patch);
+  if (!record) {
+    return jsonResponse({ error: "Unable to persist project config" }, { status: 500 });
+  }
+
+  await logAdminAction(env, "Admin updated project config for " + projectId);
+
+  return jsonResponse({ ok: true, project: record });
+};
+
+export const handleAdminProjectToggle = async (
+  request: Request,
+  env: Record<string, unknown>,
+  projectIdParam: string,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const projectId = ensureProjectIdParam(projectIdParam);
+  const payload = await readJsonBody(request);
+  if (payload === null) {
+    return badRequest("Invalid JSON body");
+  }
+
+  const field = typeof payload.field === "string" ? payload.field.trim() : "";
+  if (field !== "alerts_enabled" && field !== "silent_weekends") {
+    return badRequest("Unsupported toggle field");
+  }
+
+  const current = await readProjectConfig(env, projectId);
+  const previous = current && typeof (current as any)[field] === "boolean" ? Boolean((current as any)[field]) : false;
+  const nextValue = !previous;
+  const patch: Partial<ProjectConfigRecord> = {};
+  (patch as any)[field] = nextValue;
+
+  const record = await writeProjectConfig(env, projectId, patch);
+  if (!record) {
+    return jsonResponse({ error: "Unable to persist project toggle" }, { status: 500 });
+  }
+
+  await logAdminAction(env, "Admin toggled " + field + " for " + projectId + " => " + String(nextValue));
+
+  return jsonResponse({ ok: true, field, value: nextValue, project: record });
+};
+
+export const handleAdminProjectBillingUpdate = async (
+  request: Request,
+  env: Record<string, unknown>,
+  projectIdParam: string,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const projectId = ensureProjectIdParam(projectIdParam);
+  const payload = await readJsonBody(request);
+  if (payload === null) {
+    return badRequest("Invalid JSON body");
+  }
+
+  const patch = sanitizeBillingPatch(payload);
+  const record = await writeBillingInfo(env, projectId, patch);
+  if (!record) {
+    return jsonResponse({ error: "Unable to persist billing info" }, { status: 500 });
+  }
+
+  await logAdminAction(env, "Admin updated billing info for " + projectId);
+
+  return jsonResponse({ ok: true, billing: record });
+};
+
+export const handleAdminProjectAlertsUpdate = async (
+  request: Request,
+  env: Record<string, unknown>,
+  projectIdParam: string,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const projectId = ensureProjectIdParam(projectIdParam);
+  const payload = await readJsonBody(request);
+  if (payload === null) {
+    return badRequest("Invalid JSON body");
+  }
+
+  const patch = sanitizeAlertsPatch(payload);
+  const record = await writeAlertsConfig(env, projectId, patch);
+  if (!record) {
+    return jsonResponse({ error: "Unable to persist alerts config" }, { status: 500 });
+  }
+
+  await logAdminAction(env, "Admin updated alerts config for " + projectId);
+
+  return jsonResponse({ ok: true, alerts: record });
 };
 
 export const handleAdminLogsApi = async (

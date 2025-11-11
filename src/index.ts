@@ -7,6 +7,11 @@ import {
   handleRefreshAllRequest,
   handleAdminProjectsApi,
   handleAdminProjectDetail,
+  handleAdminProjectCreate,
+  handleAdminProjectUpdate,
+  handleAdminProjectToggle,
+  handleAdminProjectBillingUpdate,
+  handleAdminProjectAlertsUpdate,
   handleAdminLogsApi,
   handleAdminBillingApi,
   handleAdminSystemApi,
@@ -41,8 +46,13 @@ const routeApi = async (request: Request, env: WorkerEnv, segments: string[]): P
     return handleProjectsList(env);
   }
   if (segments[1] === "admin") {
-    if (segments.length === 2 && request.method === "GET") {
-      return handleAdminProjectsApi(request, env);
+    if (segments.length === 2) {
+      if (request.method === "GET") {
+        return handleAdminProjectsApi(request, env);
+      }
+      if (request.method === "POST") {
+        return handleAdminProjectCreate(request, env);
+      }
     }
     if (segments.length === 3) {
       if (segments[2] === "logs" && request.method === "GET") {
@@ -55,8 +65,27 @@ const routeApi = async (request: Request, env: WorkerEnv, segments: string[]): P
         return handleAdminSystemApi(request, env);
       }
     }
-    if (segments.length === 4 && segments[2] === "project" && request.method === "GET") {
-      return handleAdminProjectDetail(request, env, segments[3]);
+    if (segments.length >= 4 && segments[2] === "project") {
+      const projectId = segments[3];
+      if (segments.length === 4) {
+        if (request.method === "GET") {
+          return handleAdminProjectDetail(request, env, projectId);
+        }
+        if (request.method === "POST" || request.method === "PATCH") {
+          return handleAdminProjectUpdate(request, env, projectId);
+        }
+      }
+      if (segments.length === 5) {
+        if (segments[4] === "toggle" && request.method === "POST") {
+          return handleAdminProjectToggle(request, env, projectId);
+        }
+        if (segments[4] === "billing" && request.method === "POST") {
+          return handleAdminProjectBillingUpdate(request, env, projectId);
+        }
+        if (segments[4] === "alerts" && request.method === "POST") {
+          return handleAdminProjectAlertsUpdate(request, env, projectId);
+        }
+      }
     }
   }
   if (segments[1] === "project" && segments.length >= 3) {
