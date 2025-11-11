@@ -139,7 +139,7 @@ const buildSession = (
   kind: AdminSessionKind,
   projectId: string,
   messageId?: number,
-  data?: Record<string, unknown>,
+  data?: Record<string, unknown>
 ): AdminSession => ({
   kind,
   projectId,
@@ -151,7 +151,7 @@ const buildSession = (
 const storeAdminSession = async (
   env: Record<string, unknown>,
   chatId: string,
-  session: AdminSession,
+  session: AdminSession
 ): Promise<void> => {
   await writeAdminSession(env as any, chatId, session);
 };
@@ -159,7 +159,7 @@ const storeAdminSession = async (
 const promptAdminInput = async (
   env: Record<string, unknown>,
   chatId: string,
-  text: string,
+  text: string
 ): Promise<void> => {
   await sendTelegramMessage(env, chatId, text, {
     replyMarkup: { force_reply: true },
@@ -192,7 +192,7 @@ const parseProjectsConfig = (value: unknown): ReportProjectOption[] => {
 
 const hasReportStorage = (env: Record<string, unknown>): boolean =>
   Boolean(
-    env.REPORTS_BUCKET || env.R2_BUCKET || env.BOT_BUCKET || env.STORAGE_BUCKET || env.LOGS_BUCKET,
+    env.REPORTS_BUCKET || env.R2_BUCKET || env.BOT_BUCKET || env.STORAGE_BUCKET || env.LOGS_BUCKET
   );
 
 const getTimeZone = (env: Record<string, unknown>): string => {
@@ -222,23 +222,25 @@ const loadReportProjects = async (env: Record<string, unknown>): Promise<ReportP
 
   const indexed = await readJsonFromR2<ReportProjectOption[]>(env as any, "reports/projects.json");
   if (Array.isArray(indexed)) {
-    indexed
-      .map((item) => ({ id: item.id, name: item.name || item.id }))
-      .forEach(add);
+    indexed.map((item) => ({ id: item.id, name: item.name || item.id })).forEach(add);
   }
 
   const cards = await loadProjectCards(env);
   if (Array.isArray(cards)) {
-    cards
-      .map((card) => ({ id: card.id, name: card.name || card.id }))
-      .forEach(add);
+    cards.map((card) => ({ id: card.id, name: card.name || card.id })).forEach(add);
   }
 
   const projects = Array.from(map.values());
 
   if (!projectSourcesLogEmitted) {
-    console.log("Loaded projects from ENV:", envProjects.map((project) => project.id).join(", ") || "<empty>");
-    console.log("Resolved project list:", projects.map((project) => project.id + `:${project.name}`).join(", ") || "<empty>");
+    console.log(
+      "Loaded projects from ENV:",
+      envProjects.map((project) => project.id).join(", ") || "<empty>"
+    );
+    console.log(
+      "Resolved project list:",
+      projects.map((project) => project.id + `:${project.name}`).join(", ") || "<empty>"
+    );
     if (projects.length === 0) {
       console.warn("⚠️ No projects found in ENV or R2.");
     }
@@ -258,8 +260,12 @@ const deliverAdminMessage = async (
   env: Record<string, unknown>,
   chatId: string,
   text: string,
-  options: { parseMode?: string; replyMarkup?: Record<string, unknown>; disablePreview?: boolean } = {},
-  context: AdminMessageContext = {},
+  options: {
+    parseMode?: string;
+    replyMarkup?: Record<string, unknown>;
+    disablePreview?: boolean;
+  } = {},
+  context: AdminMessageContext = {}
 ): Promise<void> => {
   if (typeof context.messageId === "number") {
     await editTelegramMessage(env, chatId, context.messageId, text, options);
@@ -268,10 +274,7 @@ const deliverAdminMessage = async (
   }
 };
 
-const buildFacebookStatusLine = (
-  status: MetaTokenStatus | null,
-  timeZone: string,
-): string => {
+const buildFacebookStatusLine = (status: MetaTokenStatus | null, timeZone: string): string => {
   if (!status) {
     return "Статус Facebook: ⚪️ неизвестно. Настройте подключение через кнопку ниже.";
   }
@@ -288,13 +291,14 @@ const buildFacebookStatusLine = (
   }
 
   if (!status.ok || status.status === "invalid") {
-    const issues = status.issues && status.issues.length ? `: ${status.issues.join("; ") : "."}`;
+    const issues = status.issues && status.issues.length ? `: ${status.issues.join("; ")}` : ".";
     return `Статус Facebook: 🚨 требуется внимание${issues}`;
   }
 
   const icon = status.should_refresh ? "🟡" : "🟢";
   const parts: string[] = [];
-  parts.push(icon + ` Facebook подключён${(accountLabel ? ` — ${accountLabel : ""}`)}`);
+  const accountSuffix = accountLabel ? ` — ${accountLabel}` : "";
+  parts.push(`${icon} Facebook подключён${accountSuffix}`);
   if (expiresAt) {
     parts.push(`действителен до ${expiresAt}`);
   }
@@ -306,7 +310,7 @@ const buildFacebookStatusLine = (
 
 const countProjectCampaigns = async (
   env: Record<string, unknown>,
-  projects: ProjectCard[],
+  projects: ProjectCard[]
 ): Promise<number> => {
   let total = 0;
   for (const project of projects) {
@@ -342,7 +346,7 @@ const loadMetaAccounts = async (env: Record<string, unknown>): Promise<MetaAccou
 const sendAdminMenu = async (
   env: Record<string, unknown>,
   chatId: string,
-  context: AdminMessageContext = {},
+  context: AdminMessageContext = {}
 ): Promise<void> => {
   let tokenStatus: MetaTokenStatus | null = null;
   try {
@@ -376,7 +380,10 @@ const sendAdminMenu = async (
     : "Рекламные аккаунты: нет данных.";
 
   const messageParts = [ADMIN_MENU_MESSAGE, "", statusLine, projectSummary, accountSummary];
-  const message = messageParts.filter((line) => line !== null && line !== undefined).join("\n").trim();
+  const message = messageParts
+    .filter((line) => line !== null && line !== undefined)
+    .join("\n")
+    .trim();
 
   const replyMarkup = buildAdminMenuKeyboard(env, {
     connected: Boolean(tokenStatus && tokenStatus.ok && tokenStatus.status === "ok"),
@@ -387,7 +394,7 @@ const sendAdminMenu = async (
 const sendAdminProjectsOverview = async (
   env: Record<string, unknown>,
   chatId: string,
-  context: AdminMessageContext = {},
+  context: AdminMessageContext = {}
 ): Promise<void> => {
   const projects = await loadProjectCards(env);
   if (!projects.length) {
@@ -395,14 +402,20 @@ const sendAdminProjectsOverview = async (
       env,
       chatId,
       "⚠️ Список проектов пуст. Добавьте проекты через веб-панель или API.",
-      { replyMarkup: { inline_keyboard: [[{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]] } },
-      context,
+      {
+        replyMarkup: {
+          inline_keyboard: [[{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]],
+        },
+      },
+      context
     );
     return;
   }
 
   const timeZone =
-    typeof env.DEFAULT_TZ === "string" && env.DEFAULT_TZ.trim() ? env.DEFAULT_TZ.trim() : "Asia/Tashkent";
+    typeof env.DEFAULT_TZ === "string" && env.DEFAULT_TZ.trim()
+      ? env.DEFAULT_TZ.trim()
+      : "Asia/Tashkent";
   const limit = Math.min(projects.length, 25);
   const cards: string[] = [];
   const inline_keyboard: Array<Array<Record<string, unknown>>> = [];
@@ -417,7 +430,8 @@ const sendAdminProjectsOverview = async (
     const clicksText = formatNumber(summary?.clicks ?? null);
     const ctrText = formatPercent(summary?.ctr ?? null);
     const summaryExtras = summary as Record<string, unknown> | null;
-    const rawLastActive = summaryExtras && "last_active" in summaryExtras ? summaryExtras.last_active : undefined;
+    const rawLastActive =
+      summaryExtras && "last_active" in summaryExtras ? summaryExtras.last_active : undefined;
     let lastActivityIso: string | null = null;
     if (typeof rawLastActive === "string") {
       lastActivityIso = rawLastActive;
@@ -431,8 +445,8 @@ const sendAdminProjectsOverview = async (
     }
     const lastActivity = formatDate(lastActivityIso, timeZone);
 
-      const cardLines = [
-        `${icon} <b>${escapeHtml(project.name)}</b>`,
+    const cardLines = [
+      `${icon} <b>${escapeHtml(project.name)}</b>`,
       `💰 Потрачено: ${escapeHtml(spendText)}`,
       `📈 Лиды: ${escapeHtml(leadsText)} | Клики: ${escapeHtml(clicksText)} | CTR: ${escapeHtml(ctrText)}`,
       `📆 Последняя активность: ${escapeHtml(lastActivity)}`,
@@ -461,7 +475,7 @@ const sendAdminProjectsOverview = async (
 
   if (projects.length > limit) {
     cards.push(
-      `Показаны первые ${String(limit)} проектов из ${String(projects.length)}. Остальные доступны в веб-панели.`,
+      `Показаны первые ${String(limit)} проектов из ${String(projects.length)}. Остальные доступны в веб-панели.`
     );
   }
 
@@ -485,7 +499,7 @@ const sendAdminProjectsOverview = async (
       parseMode: "HTML",
       disablePreview: true,
     },
-    context,
+    context
   );
 };
 
@@ -494,7 +508,7 @@ const formatAccountOverview = (
   project: ProjectCard | null,
   spendInfo: { value: number | null; label: string | null; currency: string } | null,
   hasChat: boolean,
-  timeZone: string,
+  timeZone: string
 ): string => {
   const lines: string[] = [];
   const icon = hasChat ? metaAccountStatusIcon(account.status) : "🔘";
@@ -531,7 +545,7 @@ const formatAccountOverview = (
 const sendAdminAccountsOverview = async (
   env: Record<string, unknown>,
   chatId: string,
-  context: AdminMessageContext = {},
+  context: AdminMessageContext = {}
 ): Promise<void> => {
   const projects = await loadProjectCards(env);
   const accounts = await loadMetaAccounts(env);
@@ -540,8 +554,12 @@ const sendAdminAccountsOverview = async (
       env,
       chatId,
       "⚠️ Аккаунты Facebook не найдены. Проверьте подключение и обновите статус.",
-      { replyMarkup: { inline_keyboard: [[{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]] } },
-      context,
+      {
+        replyMarkup: {
+          inline_keyboard: [[{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]],
+        },
+      },
+      context
     );
     return;
   }
@@ -557,7 +575,10 @@ const sendAdminAccountsOverview = async (
     cards.push(formatAccountOverview(account, project, spendInfo, hasChat, timeZone));
 
     if (project && hasChat) {
-      const spendBadge = spendInfo && spendInfo.value !== null ? formatCurrency(spendInfo.value, spendInfo.currency) : "—";
+      const spendBadge =
+        spendInfo && spendInfo.value !== null
+          ? formatCurrency(spendInfo.value, spendInfo.currency)
+          : "—";
       inline_keyboard.push([
         {
           text: metaAccountStatusIcon(account.status) + ` ${account.name} | ${spendBadge}`,
@@ -594,7 +615,7 @@ const sendAdminAccountsOverview = async (
       parseMode: "HTML",
       disablePreview: true,
     },
-    context,
+    context
   );
 };
 
@@ -603,7 +624,7 @@ const sendAdminAccountChatSelection = async (
   chatId: string,
   accountId: string,
   accountName: string,
-  context: AdminMessageContext = {},
+  context: AdminMessageContext = {}
 ): Promise<void> => {
   const projects = await loadProjectCards(env);
   const available = listProjectsWithoutAccount(projects);
@@ -615,12 +636,10 @@ const sendAdminAccountChatSelection = async (
       "⚠️ Свободных чат-групп не найдено. Добавьте проект и чат через веб-панель и попробуйте снова.",
       {
         replyMarkup: {
-          inline_keyboard: [
-            [{ text: "⬅️ Назад", callback_data: "admin:accounts" }],
-          ],
+          inline_keyboard: [[{ text: "⬅️ Назад", callback_data: "admin:accounts" }]],
         },
       },
-      context,
+      context
     );
     return;
   }
@@ -634,8 +653,7 @@ const sendAdminAccountChatSelection = async (
 
   buttons.push([{ text: "⬅️ Назад", callback_data: "admin:accounts" }]);
 
-  const message =
-    `Подключение <b>${escapeHtml(accountName)}</b> к чату. Выберите чат-группу клиента:`;
+  const message = `Подключение <b>${escapeHtml(accountName)}</b> к чату. Выберите чат-группу клиента:`;
 
   await deliverAdminMessage(
     env,
@@ -645,7 +663,7 @@ const sendAdminAccountChatSelection = async (
       replyMarkup: { inline_keyboard: buttons },
       parseMode: "HTML",
     },
-    context,
+    context
   );
 };
 
@@ -655,15 +673,14 @@ const sendAdminAccountConfirmation = async (
   accountId: string,
   accountName: string,
   project: ProjectCard,
-  context: AdminMessageContext = {},
+  context: AdminMessageContext = {}
 ): Promise<void> => {
-  const message =
-    `Подвязать <b>${escapeHtml(accountName)}</b> к проекту <b>${escapeHtml(project.name)}</b>?`;
+  const message = `Подвязать <b>${escapeHtml(accountName)}</b> к проекту <b>${escapeHtml(project.name)}</b>?`;
 
   const inline_keyboard = [
     [
-      { text: "🔄 Изменить чат", callback_data: `admin:account_choose:${accountId}`},
-      { text: "✅ Подвязать", callback_data: `admin:account_confirm:${accountId}:${project.id}`},
+      { text: "🔄 Изменить чат", callback_data: `admin:account_choose:${accountId}` },
+      { text: "✅ Подвязать", callback_data: `admin:account_confirm:${accountId}:${project.id}` },
     ],
     [{ text: "⬅️ Отмена", callback_data: "admin:accounts" }],
   ];
@@ -673,7 +690,7 @@ const sendAdminAccountConfirmation = async (
     chatId,
     message,
     { replyMarkup: { inline_keyboard }, parseMode: "HTML" },
-    context,
+    context
   );
 };
 
@@ -681,7 +698,7 @@ const linkAccountToProject = async (
   env: Record<string, unknown>,
   accountId: string,
   accountName: string,
-  project: ProjectCard,
+  project: ProjectCard
 ): Promise<boolean> => {
   const patch = {
     account_id: accountId,
@@ -719,24 +736,31 @@ const formatAdminProjectDetail = (project: ProjectCard, timeZone: string): strin
 
   const billing = project.billing || {};
   if (billing.amount !== undefined || billing.next_payment || billing.next_payment_date) {
-    const amountText = formatCurrency(billing.amount ?? null, billing.currency || project.currency || "USD");
+    const amountText = formatCurrency(
+      billing.amount ?? null,
+      billing.currency || project.currency || "USD"
+    );
     const nextPayment = billing.next_payment || billing.next_payment_date || "—";
-    lines.push(`💳 Оплата: ${escapeHtml(amountText)} | Следующая дата: ${escapeHtml(String(nextPayment))}`);
+    lines.push(
+      `💳 Оплата: ${escapeHtml(amountText)} | Следующая дата: ${escapeHtml(String(nextPayment))}`
+    );
   }
 
   const alertsEnabled = project.alerts_enabled !== false;
   const silentEnabled = Boolean(project.silent_weekends);
-  lines.push(`Алерты: ${(alertsEnabled ? "включены" : "выключены")}`);
-  lines.push(`Тихие выходные: ${(silentEnabled ? "включены" : "выключены")}`);
+  lines.push(`Алерты: ${alertsEnabled ? "включены" : "выключены"}`);
+  lines.push(`Тихие выходные: ${silentEnabled ? "включены" : "выключены"}`);
 
   if (project.summary) {
     lines.push("", "📊 Текущие показатели:");
-    lines.push(`• Потрачено: ${escapeHtml(formatCurrency(project.summary.spend, project.currency || "USD"))}`);
     lines.push(
-      `• Лиды: ${escapeHtml(String(project.summary.leads ?? "—"))} | Клики: ${escapeHtml(String(project.summary.clicks ?? "—"))}`,
+      `• Потрачено: ${escapeHtml(formatCurrency(project.summary.spend, project.currency || "USD"))}`
     );
     lines.push(
-      `• CTR: ${escapeHtml(String(project.summary.ctr ?? "—"))} | CPA: ${escapeHtml(formatCurrency(project.summary.cpa, project.currency || "USD"))}`,
+      `• Лиды: ${escapeHtml(String(project.summary.leads ?? "—"))} | Клики: ${escapeHtml(String(project.summary.clicks ?? "—"))}`
+    );
+    lines.push(
+      `• CTR: ${escapeHtml(String(project.summary.ctr ?? "—"))} | CPA: ${escapeHtml(formatCurrency(project.summary.cpa, project.currency || "USD"))}`
     );
   } else {
     lines.push("", "Нет свежего отчёта для отображения.");
@@ -752,7 +776,7 @@ const formatAdminProjectDetail = (project: ProjectCard, timeZone: string): strin
 
 const buildAdminProjectDetailKeyboard = (
   env: Record<string, unknown>,
-  project: ProjectCard,
+  project: ProjectCard
 ): Record<string, unknown> => {
   const rows: Array<Array<Record<string, unknown>>> = [];
   const alertsEnabled = project.alerts_enabled !== false;
@@ -770,11 +794,11 @@ const buildAdminProjectDetailKeyboard = (
   ]);
 
   rows.push([
-    { text: "💳 Настроить оплату", callback_data: `admin:billing_menu:${project.id}`},
-    { text: "🔔 Настроить алерты", callback_data: `admin:alerts_menu:${project.id}`},
+    { text: "💳 Настроить оплату", callback_data: `admin:billing_menu:${project.id}` },
+    { text: "🔔 Настроить алерты", callback_data: `admin:alerts_menu:${project.id}` },
   ]);
 
-  rows.push([{ text: "🔄 Обновить отчёт", callback_data: `admin:refresh_project:${project.id}`}]);
+  rows.push([{ text: "🔄 Обновить отчёт", callback_data: `admin:refresh_project:${project.id}` }]);
 
   const portal =
     resolvePortalUrl(env, project.id, project.portal_url || undefined) || `/portal/${project.id}`;
@@ -784,8 +808,8 @@ const buildAdminProjectDetailKeyboard = (
   const chatLink = project.chat_link
     ? project.chat_link
     : project.chat_username
-    ? `https://t.me/${project.chat_username.replace(/^@/, "")}`
-    : null;
+      ? `https://t.me/${project.chat_username.replace(/^@/, "")}`
+      : null;
   if (chatLink) {
     rows.push([{ text: "💬 Чат проекта", url: chatLink }]);
   }
@@ -802,7 +826,7 @@ const sendAdminProjectDetail = async (
   env: Record<string, unknown>,
   chatId: string,
   projectId: string,
-  context: AdminMessageContext = {},
+  context: AdminMessageContext = {}
 ): Promise<boolean> => {
   const projects = await loadProjectCards(env);
   const project = projects.find((card) => card.id === projectId);
@@ -811,8 +835,12 @@ const sendAdminProjectDetail = async (
       env,
       chatId,
       "⚠️ Проект не найден. Обновите список и попробуйте снова.",
-      { replyMarkup: { inline_keyboard: [[{ text: "⬅️ К списку", callback_data: "admin:projects" }]] } },
-      context,
+      {
+        replyMarkup: {
+          inline_keyboard: [[{ text: "⬅️ К списку", callback_data: "admin:projects" }]],
+        },
+      },
+      context
     );
     return false;
   }
@@ -820,17 +848,26 @@ const sendAdminProjectDetail = async (
   const message = formatAdminProjectDetail(project, getTimeZone(env));
   const keyboard = buildAdminProjectDetailKeyboard(env, project);
 
-  await deliverAdminMessage(env, chatId, message, { parseMode: "HTML", replyMarkup: keyboard, disablePreview: true }, context);
+  await deliverAdminMessage(
+    env,
+    chatId,
+    message,
+    { parseMode: "HTML", replyMarkup: keyboard, disablePreview: true },
+    context
+  );
   return true;
 };
 
 const toggleProjectField = async (
   env: Record<string, unknown>,
   projectId: string,
-  field: AdminToggleField,
+  field: AdminToggleField
 ): Promise<boolean> => {
   const current = await readProjectConfig(env, projectId);
-  const previous = current && typeof (current as any)[field] === "boolean" ? Boolean((current as any)[field]) : false;
+  const previous =
+    current && typeof (current as any)[field] === "boolean"
+      ? Boolean((current as any)[field])
+      : false;
   const nextValue = !previous;
   const patch: Record<string, unknown> = {};
   (patch as any)[field] = nextValue;
@@ -846,14 +883,16 @@ const toggleProjectField = async (
   return nextValue;
 };
 
-const buildProjectSelectionKeyboard = (projects: ReportProjectOption[]): Record<string, unknown> => ({
+const buildProjectSelectionKeyboard = (
+  projects: ReportProjectOption[]
+): Record<string, unknown> => ({
   inline_keyboard: projects.map((project) => [
-    { text: project.name, callback_data: `report:${project.id}`},
+    { text: project.name, callback_data: `report:${project.id}` },
   ]),
 });
 
 const buildRefreshKeyboard = (projectId: string): Record<string, unknown> => ({
-  inline_keyboard: [[{ text: "🔁 Обновить данные", callback_data: `refresh:${projectId}`}]],
+  inline_keyboard: [[{ text: "🔁 Обновить данные", callback_data: `refresh:${projectId}` }]],
 });
 
 const adminStatusIcon = (status?: string | null): string => {
@@ -864,7 +903,11 @@ const adminStatusIcon = (status?: string | null): string => {
   if (normalized.startsWith("active") || normalized.includes("running")) {
     return "🟢";
   }
-  if (normalized.includes("pend") || normalized.includes("review") || normalized.includes("moderation")) {
+  if (
+    normalized.includes("pend") ||
+    normalized.includes("review") ||
+    normalized.includes("moderation")
+  ) {
     return "🟡";
   }
   if (
@@ -882,7 +925,7 @@ const adminStatusIcon = (status?: string | null): string => {
 type AccountStatusBucket = "active" | "pending" | "disabled" | "other";
 
 const resolveAccountStatusIndicator = (
-  status?: string | null,
+  status?: string | null
 ): { icon: string; bucket: AccountStatusBucket } => {
   const normalized = (status || "").toLowerCase();
   if (!normalized) {
@@ -939,7 +982,7 @@ const resolveAdminWebUrl = (env: Record<string, unknown>): string | null => {
 
 const buildAdminMenuKeyboard = (
   env: Record<string, unknown>,
-  options: { connected?: boolean } = {},
+  options: { connected?: boolean } = {}
 ): Record<string, unknown> => {
   const inline_keyboard: Array<Array<Record<string, unknown>>> = [];
   const oauthUrl = buildOAuthUrl(env);
@@ -951,7 +994,9 @@ const buildAdminMenuKeyboard = (
 
   inline_keyboard.push([
     fbButton,
-    adminUrl ? { text: "🌐 Веб-админка", url: adminUrl } : { text: "🌐 Веб-админка", callback_data: "admin:menu" },
+    adminUrl
+      ? { text: "🌐 Веб-админка", url: adminUrl }
+      : { text: "🌐 Веб-админка", callback_data: "admin:menu" },
     { text: "📁 Проекты", callback_data: "admin:projects" },
   ]);
 
@@ -964,13 +1009,16 @@ const buildAdminMenuKeyboard = (
   return { inline_keyboard };
 };
 
-const sendAdminFacebookAuth = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
+const sendAdminFacebookAuth = async (
+  env: Record<string, unknown>,
+  chatId: string
+): Promise<void> => {
   const url = buildOAuthUrl(env);
   if (!url) {
     await sendTelegramMessage(
       env,
       chatId,
-      "⚠️ Укажите WORKER_URL и FB_APP_ID, чтобы сформировать ссылку авторизации Facebook.",
+      "⚠️ Укажите WORKER_URL и FB_APP_ID, чтобы сформировать ссылку авторизации Facebook."
     );
     return;
   }
@@ -978,16 +1026,23 @@ const sendAdminFacebookAuth = async (env: Record<string, unknown>, chatId: strin
   const message = `👤 Авторизация Facebook
 
 1. Откройте ссылку: ${url}
-2. Подтвердите доступ к рекламе и бизнесу.${redirectBase
+2. Подтвердите доступ к рекламе и бизнесу.${
+    redirectBase
       ? `
 3. После редиректа убедитесь, что страница ${redirectBase.replace(/\/$/, "")}/auth/facebook/callback сообщает об успешном входе.`
-      : ''}`;
+      : ""
+  }`;
   await sendTelegramMessage(env, chatId, message, { disablePreview: true });
 };
 
-const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
+const sendAdminFacebookStatus = async (
+  env: Record<string, unknown>,
+  chatId: string
+): Promise<void> => {
   const timeZone =
-    typeof env.DEFAULT_TZ === "string" && env.DEFAULT_TZ.trim() ? env.DEFAULT_TZ.trim() : "Asia/Tashkent";
+    typeof env.DEFAULT_TZ === "string" && env.DEFAULT_TZ.trim()
+      ? env.DEFAULT_TZ.trim()
+      : "Asia/Tashkent";
 
   try {
     const result = await checkAndRefreshFacebookToken(env as WorkerEnv, { notify: false });
@@ -1008,7 +1063,7 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
       await sendTelegramMessage(
         env,
         chatId,
-        "⚠️ Токен не настроен. Пройдите авторизацию через кнопку «Авторизация Facebook».",
+        "⚠️ Токен не настроен. Пройдите авторизацию через кнопку «Авторизация Facebook»."
       );
       return;
     }
@@ -1019,7 +1074,7 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
     }
 
     if (!status.ok || status.status === "invalid" || status.valid === false) {
-      const issues = status.issues && status.issues.length ? `: ${status.issues.join("; ") : "."}`;
+      const issues = status.issues && status.issues.length ? `: ${status.issues.join("; ")}` : ".";
       await sendTelegramMessage(env, chatId, `🚨 Ошибка при обращении к Facebook API${issues}`);
       return;
     }
@@ -1028,7 +1083,9 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
     if (status.expires_at) {
       expiresAtText = formatDateTime(status.expires_at, timeZone);
     } else if (typeof status.expires_in_hours === "number") {
-      const approximateExpiry = new Date(Date.now() + status.expires_in_hours * 60 * 60 * 1000).toISOString();
+      const approximateExpiry = new Date(
+        Date.now() + status.expires_in_hours * 60 * 60 * 1000
+      ).toISOString();
       expiresAtText = formatDateTime(approximateExpiry, timeZone);
     }
 
@@ -1053,7 +1110,9 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
         detailLines.push(`⏱ Обновлено: ${formatDateTime(metaStatus.updated_at, timeZone)}`);
       }
 
-      const accounts: MetaAccountInfo[] = Array.isArray(metaStatus.accounts) ? metaStatus.accounts : [];
+      const accounts: MetaAccountInfo[] = Array.isArray(metaStatus.accounts)
+        ? metaStatus.accounts
+        : [];
       if (accounts.length > 0) {
         let activeCount = 0;
         let pendingCount = 0;
@@ -1073,7 +1132,7 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
         });
 
         detailLines.push(
-          `📘 Аккаунты Facebook: ${accounts.length} (🟢 ${String(activeCount)} • 🟡 ${String(pendingCount)} • ⚫️ ${String(disabledCount)})`,
+          `📘 Аккаунты Facebook: ${accounts.length} (🟢 ${String(activeCount)} • 🟡 ${String(pendingCount)} • ⚫️ ${String(disabledCount)})`
         );
 
         accounts.slice(0, maxVisible).forEach((account) => {
@@ -1084,10 +1143,14 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
 
           const detailParts: string[] = [];
           if (account.balance !== undefined && account.balance !== null) {
-            detailParts.push(`Баланс: ${formatCurrency(account.balance, account.currency || "USD")}`);
+            detailParts.push(
+              `Баланс: ${formatCurrency(account.balance, account.currency || "USD")}`
+            );
           }
           if (account.spend_cap !== undefined && account.spend_cap !== null) {
-            detailParts.push(`Лимит: ${formatCurrency(account.spend_cap, account.currency || "USD")}`);
+            detailParts.push(
+              `Лимит: ${formatCurrency(account.spend_cap, account.currency || "USD")}`
+            );
           }
           if (account.payment_method) {
             detailParts.push(`Карта: ${account.payment_method}`);
@@ -1106,7 +1169,9 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
         detailLines.push(...accountLines);
 
         if (accounts.length > maxVisible) {
-          detailLines.push(`… и ещё ${(accounts.length - maxVisible)} аккаунтов смотрите в веб-панели.`);
+          detailLines.push(
+            `… и ещё ${accounts.length - maxVisible} аккаунтов смотрите в веб-панели.`
+          );
         }
       } else {
         detailLines.push("⚠️ Не удалось получить список рекламных аккаунтов.");
@@ -1125,12 +1190,15 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
 
     await sendTelegramMessage(env, chatId, lines.join("\n"));
   } catch (error) {
-    const details = error instanceof Error && error.message ? `: ${error.message : "."}`;
+    const details = error instanceof Error && error.message ? `: ${error.message}` : ".";
     await sendTelegramMessage(env, chatId, `🚨 Ошибка при обращении к Facebook API${details}`);
   }
 };
 
-const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
+const sendAdminBillingOverview = async (
+  env: Record<string, unknown>,
+  chatId: string
+): Promise<void> => {
   const projects = await loadProjectCards(env);
   if (projects.length === 0) {
     await sendTelegramMessage(env, chatId, "⚠️ Нет проектов для отображения оплат.");
@@ -1139,9 +1207,10 @@ const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: st
   const lines: string[] = ["💳 Оплаты", ""];
   for (const project of projects) {
     const billing = project.billing || {};
-    const amount = billing.amount !== undefined && billing.amount !== null
-      ? formatCurrency(billing.amount, billing.currency || project.currency || "USD")
-      : "—";
+    const amount =
+      billing.amount !== undefined && billing.amount !== null
+        ? formatCurrency(billing.amount, billing.currency || project.currency || "USD")
+        : "—";
     const nextPayment = billing.next_payment || billing.next_payment_date || "—";
     const status = billing.status || "неизвестно";
     lines.push(
@@ -1149,7 +1218,7 @@ const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: st
         `
   Следующая оплата: ${nextPayment}
   Сумма: ${amount}
-  Статус: ${status}`,
+  Статус: ${status}`
     );
   }
   await sendTelegramMessage(env, chatId, lines.join("\n\n"));
@@ -1157,10 +1226,10 @@ const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: st
 
 const buildBillingActionsKeyboard = (projectId: string): Record<string, unknown> => ({
   inline_keyboard: [
-    [{ text: "💵 Оплатил сегодня", callback_data: `admin:billing_paid:${projectId}`}],
+    [{ text: "💵 Оплатил сегодня", callback_data: `admin:billing_paid:${projectId}` }],
     [
-      { text: "💰 Изменить сумму", callback_data: `admin:billing_amount:${projectId}`},
-      { text: "📆 Изменить дату", callback_data: `admin:billing_date:${projectId}`},
+      { text: "💰 Изменить сумму", callback_data: `admin:billing_amount:${projectId}` },
+      { text: "📆 Изменить дату", callback_data: `admin:billing_date:${projectId}` },
     ],
     [
       { text: "✅ Оплачено", callback_data: `admin:billing_status:${projectId}:paid` },
@@ -1170,14 +1239,14 @@ const buildBillingActionsKeyboard = (projectId: string): Record<string, unknown>
       { text: "⛔ Просрочено", callback_data: `admin:billing_status:${projectId}:overdue` },
       { text: "🚫 Неактивен", callback_data: `admin:billing_status:${projectId}:inactive` },
     ],
-    [{ text: "⬅️ К проекту", callback_data: `admin:project:${projectId}`}],
+    [{ text: "⬅️ К проекту", callback_data: `admin:project:${projectId}` }],
   ],
 });
 
 const sendAdminBillingActions = async (
   env: Record<string, unknown>,
   chatId: string,
-  projectId: string,
+  projectId: string
 ): Promise<void> => {
   const projects = await loadProjectCards(env);
   const project = projects.find((card) => card.id === projectId);
@@ -1210,17 +1279,17 @@ const sendAdminBillingActions = async (
 
 const buildAlertsActionsKeyboard = (projectId: string): Record<string, unknown> => ({
   inline_keyboard: [
-    [{ text: "🎯 Порог CPA", callback_data: `admin:alerts_cpa:${projectId}`}],
-    [{ text: "💸 Лимит расходов", callback_data: `admin:alerts_spend:${projectId}`}],
-    [{ text: "⏱ Модерация (часы)", callback_data: `admin:alerts_moderation:${projectId}`}],
-    [{ text: "⬅️ К проекту", callback_data: `admin:project:${projectId}`}],
+    [{ text: "🎯 Порог CPA", callback_data: `admin:alerts_cpa:${projectId}` }],
+    [{ text: "💸 Лимит расходов", callback_data: `admin:alerts_spend:${projectId}` }],
+    [{ text: "⏱ Модерация (часы)", callback_data: `admin:alerts_moderation:${projectId}` }],
+    [{ text: "⬅️ К проекту", callback_data: `admin:project:${projectId}` }],
   ],
 });
 
 const sendAdminAlertsActions = async (
   env: Record<string, unknown>,
   chatId: string,
-  projectId: string,
+  projectId: string
 ): Promise<void> => {
   const projects = await loadProjectCards(env);
   const project = projects.find((card) => card.id === projectId);
@@ -1230,7 +1299,10 @@ const sendAdminAlertsActions = async (
   }
 
   const alerts: ProjectAlertsConfig = project.alerts || {};
-  const cpa = alerts.cpa_threshold !== undefined && alerts.cpa_threshold !== null ? alerts.cpa_threshold : "—";
+  const cpa =
+    alerts.cpa_threshold !== undefined && alerts.cpa_threshold !== null
+      ? alerts.cpa_threshold
+      : "—";
   const spend =
     alerts.spend_limit !== undefined && alerts.spend_limit !== null ? alerts.spend_limit : "—";
   const moderation =
@@ -1297,7 +1369,7 @@ const updateBillingRecord = async (
   env: Record<string, unknown>,
   projectId: string,
   patch: BillingInfo,
-  message: string,
+  message: string
 ): Promise<BillingInfo | null> => {
   const record = await writeBillingInfo(env, projectId, patch);
   if (record) {
@@ -1314,7 +1386,7 @@ const updateAlertsRecord = async (
   env: Record<string, unknown>,
   projectId: string,
   patch: ProjectAlertsConfig,
-  message: string,
+  message: string
 ): Promise<ProjectAlertsConfig | null> => {
   const record = await writeAlertsConfig(env, projectId, patch);
   if (record) {
@@ -1348,16 +1420,17 @@ const countDistinct = (keys: string[], prefix: string): number => {
 const sendAdminTechOverview = async (
   env: Record<string, unknown>,
   chatId: string,
-  context: AdminMessageContext = {},
+  context: AdminMessageContext = {}
 ): Promise<void> => {
-  const [reportKeys, projectKeys, billingKeys, alertKeys, fallbackCount, cronStatus] = await Promise.all([
-    listR2Keys(env as any, "reports/"),
-    listR2Keys(env as any, "projects/"),
-    listR2Keys(env as any, "billing/"),
-    listR2Keys(env as any, "alerts/"),
-    countFallbackEntries(env as any),
-    readCronStatus(env as any).catch(() => ({})),
-  ]);
+  const [reportKeys, projectKeys, billingKeys, alertKeys, fallbackCount, cronStatus] =
+    await Promise.all([
+      listR2Keys(env as any, "reports/"),
+      listR2Keys(env as any, "projects/"),
+      listR2Keys(env as any, "billing/"),
+      listR2Keys(env as any, "alerts/"),
+      countFallbackEntries(env as any),
+      readCronStatus(env as any).catch(() => ({})),
+    ]);
 
   const lines: string[] = [
     "⚙️ Тех.панель",
@@ -1378,7 +1451,12 @@ const sendAdminTechOverview = async (
     lines.push("", "⏱ Крон-задачи:");
     for (const entry of cronEntries.sort((a, b) => a.job.localeCompare(b.job))) {
       const icon = entry.ok ? "🟢" : "🔴";
-      const label = entry.job === "meta-token" ? "Meta токен" : entry.job === "projects-refresh" ? "Обновление отчётов" : entry.job;
+      const label =
+        entry.job === "meta-token"
+          ? "Meta токен"
+          : entry.job === "projects-refresh"
+            ? "Обновление отчётов"
+            : entry.job;
       const runAt =
         entry.last_run && entry.last_run !== "1970-01-01T00:00:00.000Z"
           ? formatDateTime(entry.last_run)
@@ -1388,21 +1466,26 @@ const sendAdminTechOverview = async (
           ? formatDateTime(entry.last_success)
           : null;
       const suffix = lastSuccess ? ` (успех: ${lastSuccess})` : "";
-      const message = entry.message ? ` — ${entry.message : ""}`;
-      const failure = entry.failure_count && entry.failure_count > 0 ? ` [${entry.failure_count}× ошибок]` : "";
+      const message = entry.message ? ` — ${entry.message}` : "";
+      const failure =
+        entry.failure_count && entry.failure_count > 0 ? ` [${entry.failure_count}× ошибок]` : "";
       lines.push(`• ${icon} ${label}: ${runAt}${suffix}${failure}${message}`);
     }
   }
 
   const workerUrl = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
-  const webhookBase = workerUrl ? (workerUrl.endsWith("/") ? workerUrl.slice(0, -1) : workerUrl) : "";
+  const webhookBase = workerUrl
+    ? workerUrl.endsWith("/")
+      ? workerUrl.slice(0, -1)
+      : workerUrl
+    : "";
   if (webhookBase) {
     lines.push("", `Вебхук: ${webhookBase}/manage/telegram/webhook?action=status&token=<token>`);
   }
 
   lines.push(
     "",
-    "Кнопки ниже помогут очистить кэши, удалить отчёты или проверить вебхук без входа в панель.",
+    "Кнопки ниже помогут очистить кэши, удалить отчёты или проверить вебхук без входа в панель."
   );
 
   await deliverAdminMessage(
@@ -1410,7 +1493,7 @@ const sendAdminTechOverview = async (
     chatId,
     lines.join("\n"),
     { disablePreview: true, replyMarkup: TECH_PANEL_KEYBOARD },
-    context,
+    context
   );
 };
 
@@ -1423,7 +1506,7 @@ interface TechActionResponse {
 const runTechAction = async (
   env: Record<string, unknown>,
   action: string,
-  extra?: string,
+  extra?: string
 ): Promise<TechActionResponse> => {
   const timestamp = new Date().toISOString();
 
@@ -1444,8 +1527,7 @@ const runTechAction = async (
     case "clear_prefix": {
       const prefix = extra && extra.trim() ? extra.trim() : "cache/";
       const removed = await deletePrefixFromR2(env as any, prefix);
-      const message =
-        `🧺 Удалено объектов: ${removed}
+      const message = `🧺 Удалено объектов: ${removed}
 Префикс: ${prefix.replace(/\s+/g, " ")}`;
       await appendLogEntry(env as any, {
         level: "info",
@@ -1457,14 +1539,18 @@ const runTechAction = async (
     case "clear_fallbacks": {
       const removed = await clearFallbackEntries(env as any);
       if (removed === null) {
-        return { toast: "Fallback не настроен", message: "⚠️ Fallback KV не сконфигурирован", alert: true };
+        return {
+          toast: "Fallback не настроен",
+          message: "⚠️ Fallback KV не сконфигурирован",
+          alert: true,
+        };
       }
       await appendLogEntry(env as any, {
         level: "info",
         message: `Telegram admin cleared fallback entries => ${removed}`,
         timestamp,
       });
-      return { toast: `Удалено: ${removed}`, message: `🚨 Fallback очищен: ${removed}`};
+      return { toast: `Удалено: ${removed}`, message: `🚨 Fallback очищен: ${removed}` };
     }
     case "clear_report": {
       const projectId = extra && extra.trim();
@@ -1490,7 +1576,10 @@ const runTechAction = async (
           };
     }
     case "webhook": {
-      const status = await getTelegramWebhookStatus(env as any, extra && extra.trim() ? extra.trim() : undefined);
+      const status = await getTelegramWebhookStatus(
+        env as any,
+        extra && extra.trim() ? extra.trim() : undefined
+      );
       const token = status.token || "—";
       const lines: string[] = ["📡 Статус вебхука", `Токен: ${token}`];
       if (status.webhook && typeof status.webhook === "object") {
@@ -1533,7 +1622,7 @@ const runTechAction = async (
 
 const readProjectReport = async (
   env: Record<string, unknown>,
-  projectId: string,
+  projectId: string
 ): Promise<ProjectReport | null> => {
   return readJsonFromR2<ProjectReport>(env as any, `reports/${projectId}.json`);
 };
@@ -1559,24 +1648,30 @@ const formatReportMessage = (report: ProjectReport, timeZone: string, stale: boo
     lines.push(`📆 Период: ${escapeHtml((report.period_label || report.period || "").toString())}`);
   }
 
-  lines.push(`💰 Потрачено: ${escapeHtml(formatCurrency(summary?.spend ?? null, report.currency))}`);
   lines.push(
-    `📲 Лиды: ${escapeHtml(formatNumber(summary?.leads ?? null))} | Клики: ${escapeHtml(formatNumber(summary?.clicks ?? null))}`,
+    `💰 Потрачено: ${escapeHtml(formatCurrency(summary?.spend ?? null, report.currency))}`
   );
   lines.push(
-    `👁️ Показы: ${escapeHtml(formatNumber(summary?.impressions ?? null))} | Частота: ${escapeHtml(formatFrequency(summary?.frequency ?? null))}`,
+    `📲 Лиды: ${escapeHtml(formatNumber(summary?.leads ?? null))} | Клики: ${escapeHtml(formatNumber(summary?.clicks ?? null))}`
   );
   lines.push(
-    `CPA: ${escapeHtml(formatCurrency(summary?.cpa ?? null, report.currency))} | CPC: ${escapeHtml(formatCurrency(summary?.cpc ?? null, report.currency))} | CTR: ${escapeHtml(formatPercent(summary?.ctr ?? null))}`,
+    `👁️ Показы: ${escapeHtml(formatNumber(summary?.impressions ?? null))} | Частота: ${escapeHtml(formatFrequency(summary?.frequency ?? null))}`
+  );
+  lines.push(
+    `CPA: ${escapeHtml(formatCurrency(summary?.cpa ?? null, report.currency))} | CPC: ${escapeHtml(formatCurrency(summary?.cpc ?? null, report.currency))} | CTR: ${escapeHtml(formatPercent(summary?.ctr ?? null))}`
   );
 
-  if (report.billing && report.billing.days_to_pay !== null && report.billing.days_to_pay !== undefined) {
+  if (
+    report.billing &&
+    report.billing.days_to_pay !== null &&
+    report.billing.days_to_pay !== undefined
+  ) {
     lines.push(
       `💳 Дней до оплаты: ${escapeHtml(
-          typeof report.billing.days_to_pay === "number"
-            ? report.billing.days_to_pay.toString()
-            : String(report.billing.days_to_pay || "—"),
-        )}`,
+        typeof report.billing.days_to_pay === "number"
+          ? report.billing.days_to_pay.toString()
+          : String(report.billing.days_to_pay || "—")
+      )}`
     );
   }
 
@@ -1594,7 +1689,7 @@ const sendProjectReportMessage = async (
   env: Record<string, unknown>,
   chatId: string,
   projectId: string,
-  options: { messageId?: number } = {},
+  options: { messageId?: number } = {}
 ): Promise<void> => {
   const replyMarkup = buildRefreshKeyboard(projectId);
   const timeZone = getTimeZone(env);
@@ -1633,7 +1728,7 @@ const sendProjectReportMessage = async (
 const showProjectSelectionMessage = async (
   env: Record<string, unknown>,
   chatId: string,
-  options: { messageId?: number } = {},
+  options: { messageId?: number } = {}
 ): Promise<void> => {
   const projects = await loadReportProjects(env);
   if (projects.length === 0) {
@@ -1659,11 +1754,10 @@ const showProjectSelectionMessage = async (
 
 const formatSummary = (report: ProjectReport): string => {
   const summary = report.summary;
-  return (
-    `📊 ${report.project_name}
+  return `📊 ${report.project_name}
 Потрачено: ${formatCurrency(summary.spend, report.currency)}
 Лиды: ${formatNumber(summary.leads)} | Клики: ${formatNumber(summary.clicks)}
-CTR: \${formatPercent(summary.ctr)} | CPA: \${formatCurrency(summary.cpa, report.currency)}`);
+CTR: \${formatPercent(summary.ctr)} | CPA: \${formatCurrency(summary.cpa, report.currency)}`;
 };
 
 const formatCampaignList = (report: ProjectReport, limit = 5): string => {
@@ -1671,8 +1765,9 @@ const formatCampaignList = (report: ProjectReport, limit = 5): string => {
   if (campaigns.length === 0) {
     return "Нет кампаний для отображения";
   }
-  const lines = campaigns.map((campaign) =>
-    `• ${campaign.name} — ${formatCurrency(campaign.spend, report.currency)} / Лиды: ${formatNumber(campaign.leads)} / CTR: ${formatPercent(campaign.ctr)}`,
+  const lines = campaigns.map(
+    (campaign) =>
+      `• ${campaign.name} — ${formatCurrency(campaign.spend, report.currency)} / Лиды: ${formatNumber(campaign.leads)} / CTR: ${formatPercent(campaign.ctr)}`
   );
   return lines.join("\n");
 };
@@ -1681,7 +1776,11 @@ const reply = async (
   env: Record<string, unknown>,
   chatId: string,
   text: string,
-  options: { parseMode?: string; replyMarkup?: Record<string, unknown>; disablePreview?: boolean } = {},
+  options: {
+    parseMode?: string;
+    replyMarkup?: Record<string, unknown>;
+    disablePreview?: boolean;
+  } = {}
 ): Promise<void> => {
   await sendTelegramMessage(env, chatId, text, options);
 };
@@ -1689,7 +1788,7 @@ const reply = async (
 const handleReportCommand = async (
   env: Record<string, unknown>,
   chatId: string,
-  args: string[],
+  args: string[]
 ): Promise<void> => {
   if (args.length === 0) {
     await showProjectSelectionMessage(env, chatId);
@@ -1703,20 +1802,25 @@ const handleReportCommand = async (
 const handleProjectCommand = async (
   env: Record<string, unknown>,
   chatId: string,
-  projectId: string,
+  projectId: string
 ): Promise<void> => {
   const report = await ensureProjectReport(env, projectId, { force: false });
   if (!report) {
     await reply(env, chatId, "Проект не найден");
     return;
   }
+  const base = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
+  const normalizedBase = base ? base.replace(/\/$/, "") : "";
+  const portalLink = normalizedBase
+    ? `${normalizedBase}/portal/${projectId}`
+    : `/portal/${projectId}`;
   const lines = [
     `📄 Детали проекта ${report.project_name}`,
-    `Статус: ${(report.status || "—")}`,
+    `Статус: ${report.status || "—"}`,
     `Потрачено: ${formatCurrency(report.summary.spend, report.currency)}`,
     `Лиды: ${formatNumber(report.summary.leads)} / Клики: ${formatNumber(report.summary.clicks)} / Показы: ${formatNumber(report.summary.impressions)}`,
     `CPA: ${formatCurrency(report.summary.cpa, report.currency)} / CPC: ${formatCurrency(report.summary.cpc, report.currency)} / CTR: ${formatPercent(report.summary.ctr)}`,
-    `Портал: ${(env.WORKER_URL ? env.WORKER_URL + `/portal/${projectId : "/portal/"}${projectId}`)}`,
+    `Портал: ${portalLink}`,
   ];
   await reply(env, chatId, lines.join("\n"));
 };
@@ -1724,7 +1828,7 @@ const handleProjectCommand = async (
 const handleCampaignsCommand = async (
   env: Record<string, unknown>,
   chatId: string,
-  projectId: string,
+  projectId: string
 ): Promise<void> => {
   const report = await ensureProjectReport(env, projectId, { force: false });
   if (!report) {
@@ -1732,29 +1836,37 @@ const handleCampaignsCommand = async (
     return;
   }
   const list = formatCampaignList(report, 10);
-  await reply(env, chatId, `📋 Кампании:
-${list}`);
+  await reply(
+    env,
+    chatId,
+    `📋 Кампании:
+${list}`
+  );
 };
 
 const handleRefreshCommand = async (
   env: Record<string, unknown>,
   chatId: string,
-  projectId: string,
+  projectId: string
 ): Promise<void> => {
   const report = await ensureProjectReport(env, projectId, { force: true });
   if (!report) {
     await reply(env, chatId, "Не удалось обновить отчёт");
     return;
   }
-  await reply(env, chatId, `Данные обновлены
-${formatSummary(report)}`);
+  await reply(
+    env,
+    chatId,
+    `Данные обновлены
+${formatSummary(report)}`
+  );
 };
 
 const handleAlertSettings = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
   await reply(
     env,
     chatId,
-    "Настройка алертов пока доступна из админ-панели. Используйте /alertsettings позже для обновления конфигурации.",
+    "Настройка алертов пока доступна из админ-панели. Используйте /alertsettings позже для обновления конфигурации."
   );
 };
 
@@ -1762,7 +1874,7 @@ const handleAdminCallback = async (
   env: Record<string, unknown>,
   callback: TelegramCallbackQuery,
   chatId: string,
-  messageId: number,
+  messageId: number
 ): Promise<boolean> => {
   const data = callback.data || "";
   const parts = data.split(":");
@@ -1795,7 +1907,10 @@ const handleAdminCallback = async (
         return true;
       case "account_link": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Аккаунт не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Аккаунт не найден",
+            showAlert: true,
+          });
           return true;
         }
         const accounts = await loadMetaAccounts(env);
@@ -1804,7 +1919,7 @@ const handleAdminCallback = async (
         await storeAdminSession(
           env,
           chatId,
-          buildSession("link_account_chat", arg, messageId, { accountName }),
+          buildSession("link_account_chat", arg, messageId, { accountName })
         );
         await sendAdminAccountChatSelection(env, chatId, arg, accountName, { messageId });
         await answerCallbackQuery(env, callback.id, { text: "Выберите чат" });
@@ -1812,7 +1927,10 @@ const handleAdminCallback = async (
       }
       case "account_choose": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Аккаунт не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Аккаунт не найден",
+            showAlert: true,
+          });
           return true;
         }
         const accountId = arg;
@@ -1831,7 +1949,7 @@ const handleAdminCallback = async (
           await storeAdminSession(
             env,
             chatId,
-            buildSession("link_account_chat", accountId, messageId, { accountName }),
+            buildSession("link_account_chat", accountId, messageId, { accountName })
           );
           await sendAdminAccountChatSelection(env, chatId, accountId, accountName, { messageId });
           await answerCallbackQuery(env, callback.id, { text: "Выберите чат" });
@@ -1841,22 +1959,30 @@ const handleAdminCallback = async (
         const projects = await loadProjectCards(env);
         const project = projects.find((item) => item.id === projectId);
         if (!project) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
 
         await storeAdminSession(
           env,
           chatId,
-          buildSession("link_account_confirm", accountId, messageId, { accountName, projectId }),
+          buildSession("link_account_confirm", accountId, messageId, { accountName, projectId })
         );
-        await sendAdminAccountConfirmation(env, chatId, accountId, accountName, project, { messageId });
+        await sendAdminAccountConfirmation(env, chatId, accountId, accountName, project, {
+          messageId,
+        });
         await answerCallbackQuery(env, callback.id, { text: "Подтвердите подвязку" });
         return true;
       }
       case "account_confirm": {
         if (!arg || !extra) {
-          await answerCallbackQuery(env, callback.id, { text: "Недостаточно данных", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Недостаточно данных",
+            showAlert: true,
+          });
           return true;
         }
         const accountId = arg;
@@ -1864,7 +1990,10 @@ const handleAdminCallback = async (
         const projects = await loadProjectCards(env);
         const project = projects.find((item) => item.id === projectId);
         if (!project) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         const session = (await readAdminSession(env as any, chatId)) as AdminSession | null;
@@ -1874,7 +2003,10 @@ const handleAdminCallback = async (
             : null) || accountId;
         const success = await linkAccountToProject(env, accountId, accountName, project);
         if (!success) {
-          await answerCallbackQuery(env, callback.id, { text: "Не удалось подвязать", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Не удалось подвязать",
+            showAlert: true,
+          });
           return true;
         }
         await clearAdminSession(env as any, chatId);
@@ -1888,7 +2020,10 @@ const handleAdminCallback = async (
         return true;
       case "project":
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         await sendAdminProjectDetail(env, chatId, arg, { messageId });
@@ -1896,7 +2031,10 @@ const handleAdminCallback = async (
         return true;
       case "toggle_alerts": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         const enabled = await toggleProjectField(env, arg, "alerts_enabled");
@@ -1908,7 +2046,10 @@ const handleAdminCallback = async (
       }
       case "toggle_silent": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         const enabled = await toggleProjectField(env, arg, "silent_weekends");
@@ -1920,13 +2061,16 @@ const handleAdminCallback = async (
       }
       case "refresh_project": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         const report = await ensureProjectReport(env, arg, { force: true });
         await appendLogEntry(env as any, {
           level: "info",
-          message: `Telegram admin refreshed project ${arg}${(report ? "" : " (без отчёта)")}`,
+          message: `Telegram admin refreshed project ${arg}${report ? "" : " (без отчёта)"}`,
           timestamp: new Date().toISOString(),
         });
         await sendAdminProjectDetail(env, chatId, arg, { messageId });
@@ -1935,7 +2079,10 @@ const handleAdminCallback = async (
       }
       case "billing_menu": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         await sendAdminBillingActions(env, chatId, arg);
@@ -1944,35 +2091,40 @@ const handleAdminCallback = async (
       }
       case "billing_amount": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         await storeAdminSession(env, chatId, buildSession("billing_amount", arg, messageId));
-        await promptAdminInput(
-          env,
-          chatId,
-          `Введите сумму оплаты для ${arg}. Пример: 1200000`,
-        );
+        await promptAdminInput(env, chatId, `Введите сумму оплаты для ${arg}. Пример: 1200000`);
         await answerCallbackQuery(env, callback.id, { text: "Введите сумму" });
         return true;
       }
       case "billing_date": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         await storeAdminSession(env, chatId, buildSession("billing_date", arg, messageId));
         await promptAdminInput(
           env,
           chatId,
-          `Введите дату следующей оплаты для ${arg} (формат YYYY-MM-DD или DD.MM.YYYY)`,
+          `Введите дату следующей оплаты для ${arg} (формат YYYY-MM-DD или DD.MM.YYYY)`
         );
         await answerCallbackQuery(env, callback.id, { text: "Введите дату" });
         return true;
       }
       case "billing_paid": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         const today = new Date();
@@ -1989,7 +2141,10 @@ const handleAdminCallback = async (
         }
         const updated = await updateBillingRecord(env, arg, patch, "marked as paid today");
         if (!updated) {
-          await answerCallbackQuery(env, callback.id, { text: "Ошибка обновления", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Ошибка обновления",
+            showAlert: true,
+          });
           return true;
         }
         await sendAdminProjectDetail(env, chatId, arg, { messageId });
@@ -1998,12 +2153,23 @@ const handleAdminCallback = async (
       }
       case "billing_status": {
         if (!arg || !extra) {
-          await answerCallbackQuery(env, callback.id, { text: "Недостаточно данных", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Недостаточно данных",
+            showAlert: true,
+          });
           return true;
         }
-        const updated = await updateBillingRecord(env, arg, { status: extra as BillingInfo["status"] }, `status => ${extra}`);
+        const updated = await updateBillingRecord(
+          env,
+          arg,
+          { status: extra as BillingInfo["status"] },
+          `status => ${extra}`
+        );
         if (!updated) {
-          await answerCallbackQuery(env, callback.id, { text: "Ошибка обновления", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Ошибка обновления",
+            showAlert: true,
+          });
           return true;
         }
         await sendAdminProjectDetail(env, chatId, arg, { messageId });
@@ -2016,7 +2182,10 @@ const handleAdminCallback = async (
         return true;
       case "alerts_menu": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         await sendAdminAlertsActions(env, chatId, arg);
@@ -2025,7 +2194,10 @@ const handleAdminCallback = async (
       }
       case "alerts_cpa": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         await storeAdminSession(env, chatId, buildSession("alerts_cpa", arg, messageId));
@@ -2035,7 +2207,10 @@ const handleAdminCallback = async (
       }
       case "alerts_spend": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         await storeAdminSession(env, chatId, buildSession("alerts_spend", arg, messageId));
@@ -2045,7 +2220,10 @@ const handleAdminCallback = async (
       }
       case "alerts_moderation": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Проект не найден",
+            showAlert: true,
+          });
           return true;
         }
         await storeAdminSession(env, chatId, buildSession("alerts_moderation", arg, messageId));
@@ -2059,7 +2237,10 @@ const handleAdminCallback = async (
         return true;
       case "tech_action": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Неизвестная команда", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Неизвестная команда",
+            showAlert: true,
+          });
           return true;
         }
         const result = await runTechAction(env, arg, extra);
@@ -2076,28 +2257,46 @@ const handleAdminCallback = async (
       }
       case "tech_prompt": {
         if (!arg) {
-          await answerCallbackQuery(env, callback.id, { text: "Команда недоступна", showAlert: true });
+          await answerCallbackQuery(env, callback.id, {
+            text: "Команда недоступна",
+            showAlert: true,
+          });
           return true;
         }
         if (arg === "clear_report") {
-          await storeAdminSession(env, chatId, buildSession("tech_clear_report", "__tech__", messageId));
+          await storeAdminSession(
+            env,
+            chatId,
+            buildSession("tech_clear_report", "__tech__", messageId)
+          );
           await promptAdminInput(env, chatId, "Введите ID проекта для удаления отчёта из R2");
           await answerCallbackQuery(env, callback.id, { text: "Введите ID" });
           return true;
         }
         if (arg === "clear_prefix") {
-          await storeAdminSession(env, chatId, buildSession("tech_clear_prefix", "__tech__", messageId));
+          await storeAdminSession(
+            env,
+            chatId,
+            buildSession("tech_clear_prefix", "__tech__", messageId)
+          );
           await promptAdminInput(env, chatId, "Укажите префикс (по умолчанию cache/)");
           await answerCallbackQuery(env, callback.id, { text: "Введите префикс" });
           return true;
         }
         if (arg === "webhook") {
-          await storeAdminSession(env, chatId, buildSession("tech_webhook_token", "__tech__", messageId));
+          await storeAdminSession(
+            env,
+            chatId,
+            buildSession("tech_webhook_token", "__tech__", messageId)
+          );
           await promptAdminInput(env, chatId, "Укажите токен бота (оставьте пустым для основного)");
           await answerCallbackQuery(env, callback.id, { text: "Введите токен" });
           return true;
         }
-        await answerCallbackQuery(env, callback.id, { text: "Команда недоступна", showAlert: true });
+        await answerCallbackQuery(env, callback.id, {
+          text: "Команда недоступна",
+          showAlert: true,
+        });
         return true;
       }
       case "refresh_all": {
@@ -2106,7 +2305,7 @@ const handleAdminCallback = async (
         await sendTelegramMessage(
           env,
           chatId,
-          `🔁 Обновление отчётов завершено. Обновлено проектов: ${count}`,
+          `🔁 Обновление отчётов завершено. Обновлено проектов: ${count}`
         );
         await answerCallbackQuery(env, callback.id, { text: "Обновление выполнено" });
         return true;
@@ -2120,7 +2319,11 @@ const handleAdminCallback = async (
       message: `Admin callback error: ${(error as Error).message}`,
       timestamp: new Date().toISOString(),
     });
-    await sendTelegramMessage(env, chatId, "⚠️ Не удалось выполнить действие администратора. Попробуйте позже.");
+    await sendTelegramMessage(
+      env,
+      chatId,
+      "⚠️ Не удалось выполнить действие администратора. Попробуйте позже."
+    );
     await answerCallbackQuery(env, callback.id, { text: "Ошибка выполнения", showAlert: true });
     return true;
   }
@@ -2128,7 +2331,7 @@ const handleAdminCallback = async (
 
 const handleCallbackQuery = async (
   env: Record<string, unknown>,
-  callback: TelegramCallbackQuery,
+  callback: TelegramCallbackQuery
 ): Promise<void> => {
   const data = callback.data || "";
   const message = callback.message;
@@ -2172,7 +2375,10 @@ const handleCallbackQuery = async (
     if (data.startsWith("admin:")) {
       const handled = await handleAdminCallback(env, callback, chatId, messageId);
       if (!handled) {
-        await answerCallbackQuery(env, callback.id, { text: "Команда недоступна", showAlert: true });
+        await answerCallbackQuery(env, callback.id, {
+          text: "Команда недоступна",
+          showAlert: true,
+        });
       }
       return;
     }
@@ -2191,7 +2397,7 @@ const handleCallbackQuery = async (
 const handleAdminSessionInput = async (
   env: Record<string, unknown>,
   chatId: string,
-  text: string,
+  text: string
 ): Promise<boolean> => {
   const session = (await readAdminSession(env as any, chatId)) as AdminSession | null;
   if (!session) {
@@ -2222,7 +2428,12 @@ const handleAdminSessionInput = async (
           await sendTelegramMessage(env, chatId, "Введите числовое значение для суммы.");
           return true;
         }
-        const updated = await updateBillingRecord(env, session.projectId, { amount: value }, `amount => ${value}`);
+        const updated = await updateBillingRecord(
+          env,
+          session.projectId,
+          { amount: value },
+          `amount => ${value}`
+        );
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить сумму. Попробуйте позже.");
           return true;
@@ -2231,24 +2442,30 @@ const handleAdminSessionInput = async (
         await sendTelegramMessage(
           env,
           chatId,
-          `✅ Сумма обновлена: ${formatCurrency(value, currency)}`,
+          `✅ Сумма обновлена: ${formatCurrency(value, currency)}`
         );
         if (session.messageId !== undefined) {
-          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+          await sendAdminProjectDetail(env, chatId, session.projectId, {
+            messageId: session.messageId,
+          });
         }
         return true;
       }
       case "billing_date": {
         const nextDate = parseDateInput(trimmed);
         if (!nextDate) {
-          await sendTelegramMessage(env, chatId, "Введите дату в формате YYYY-MM-DD или DD.MM.YYYY.");
+          await sendTelegramMessage(
+            env,
+            chatId,
+            "Введите дату в формате YYYY-MM-DD или DD.MM.YYYY."
+          );
           return true;
         }
         const updated = await updateBillingRecord(
           env,
           session.projectId,
           { next_payment: nextDate, next_payment_date: nextDate },
-          `next_payment => ${nextDate}`,
+          `next_payment => ${nextDate}`
         );
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить дату оплаты.");
@@ -2257,7 +2474,9 @@ const handleAdminSessionInput = async (
         await clearAdminSession(env as any, chatId);
         await sendTelegramMessage(env, chatId, `✅ Дата следующей оплаты: ${nextDate}`);
         if (session.messageId !== undefined) {
-          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+          await sendAdminProjectDetail(env, chatId, session.projectId, {
+            messageId: session.messageId,
+          });
         }
         return true;
       }
@@ -2267,7 +2486,12 @@ const handleAdminSessionInput = async (
           await sendTelegramMessage(env, chatId, "Введите числовой порог CPA.");
           return true;
         }
-        const updated = await updateAlertsRecord(env, session.projectId, { cpa_threshold: value }, `cpa => ${value}`);
+        const updated = await updateAlertsRecord(
+          env,
+          session.projectId,
+          { cpa_threshold: value },
+          `cpa => ${value}`
+        );
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить порог CPA.");
           return true;
@@ -2275,7 +2499,9 @@ const handleAdminSessionInput = async (
         await clearAdminSession(env as any, chatId);
         await sendTelegramMessage(env, chatId, `✅ Порог CPA обновлён: ${value}`);
         if (session.messageId !== undefined) {
-          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+          await sendAdminProjectDetail(env, chatId, session.projectId, {
+            messageId: session.messageId,
+          });
         }
         return true;
       }
@@ -2285,7 +2511,12 @@ const handleAdminSessionInput = async (
           await sendTelegramMessage(env, chatId, "Введите числовой лимит расходов.");
           return true;
         }
-        const updated = await updateAlertsRecord(env, session.projectId, { spend_limit: value }, `spend => ${value}`);
+        const updated = await updateAlertsRecord(
+          env,
+          session.projectId,
+          { spend_limit: value },
+          `spend => ${value}`
+        );
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить лимит расходов.");
           return true;
@@ -2293,7 +2524,9 @@ const handleAdminSessionInput = async (
         await clearAdminSession(env as any, chatId);
         await sendTelegramMessage(env, chatId, `✅ Лимит расходов обновлён: ${value}`);
         if (session.messageId !== undefined) {
-          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+          await sendAdminProjectDetail(env, chatId, session.projectId, {
+            messageId: session.messageId,
+          });
         }
         return true;
       }
@@ -2303,7 +2536,12 @@ const handleAdminSessionInput = async (
           await sendTelegramMessage(env, chatId, "Введите количество часов для модерации.");
           return true;
         }
-        const updated = await updateAlertsRecord(env, session.projectId, { moderation_hours: value }, `moderation => ${value}`);
+        const updated = await updateAlertsRecord(
+          env,
+          session.projectId,
+          { moderation_hours: value },
+          `moderation => ${value}`
+        );
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить параметр модерации.");
           return true;
@@ -2311,7 +2549,9 @@ const handleAdminSessionInput = async (
         await clearAdminSession(env as any, chatId);
         await sendTelegramMessage(env, chatId, `✅ Порог модерации обновлён: ${value} ч.`);
         if (session.messageId !== undefined) {
-          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+          await sendAdminProjectDetail(env, chatId, session.projectId, {
+            messageId: session.messageId,
+          });
         }
         return true;
       }
@@ -2367,7 +2607,7 @@ const handleAdminSessionInput = async (
 
 export const handleTelegramWebhook = async (
   request: Request,
-  env: Record<string, unknown>,
+  env: Record<string, unknown>
 ): Promise<Response> => {
   let update: TelegramUpdate | null = null;
   try {

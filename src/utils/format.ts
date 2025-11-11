@@ -44,7 +44,10 @@ export const formatFrequency = (value: number | null | undefined): string => {
   return smallNumberFormatter.format(value);
 };
 
-export const formatDateTime = (isoDate: string | null | undefined, timeZone = "Asia/Tashkent"): string => {
+export const formatDateTime = (
+  isoDate: string | null | undefined,
+  timeZone = "Asia/Tashkent"
+): string => {
   if (!isoDate) {
     return "—";
   }
@@ -59,7 +62,10 @@ export const formatDateTime = (isoDate: string | null | undefined, timeZone = "A
   }
 };
 
-export const formatDate = (isoDate: string | null | undefined, timeZone = "Asia/Tashkent"): string => {
+export const formatDate = (
+  isoDate: string | null | undefined,
+  timeZone = "Asia/Tashkent"
+): string => {
   if (!isoDate) {
     return "—";
   }

@@ -21,7 +21,7 @@ export interface AdminSessionState {
 
 export const readAdminSession = async (
   env: SessionEnv,
-  chatId: string,
+  chatId: string
 ): Promise<AdminSessionState | null> => {
   const namespace = resolveNamespace(env);
   if (!namespace) {
@@ -46,7 +46,7 @@ export const readAdminSession = async (
 export const writeAdminSession = async (
   env: SessionEnv,
   chatId: string,
-  session: AdminSessionState,
+  session: AdminSessionState
 ): Promise<void> => {
   const namespace = resolveNamespace(env);
   if (!namespace) {

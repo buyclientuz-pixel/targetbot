@@ -36,7 +36,11 @@ import { notifyTelegramAdmins } from "./utils/telegram";
 
 const handleNotFound = (): Response => notFound("Route not found");
 
-const routePortal = async (request: Request, env: WorkerEnv, segments: string[]): Promise<Response> => {
+const routePortal = async (
+  request: Request,
+  env: WorkerEnv,
+  segments: string[]
+): Promise<Response> => {
   if (segments.length === 2) {
     return handlePortalSummary(request, env, segments[1]);
   }
@@ -46,7 +50,11 @@ const routePortal = async (request: Request, env: WorkerEnv, segments: string[])
   return handleNotFound();
 };
 
-const routeApi = async (request: Request, env: WorkerEnv, segments: string[]): Promise<Response> => {
+const routeApi = async (
+  request: Request,
+  env: WorkerEnv,
+  segments: string[]
+): Promise<Response> => {
   if (segments[1] === "ping" && request.method === "GET") {
     return jsonResponse({ pong: true, timestamp: new Date().toISOString() });
   }
@@ -138,16 +146,30 @@ const routeApi = async (request: Request, env: WorkerEnv, segments: string[]): P
       }
     }
   }
-  if (segments[1] === "project" && segments.length >= 3 && segments[2] === "refresh-all" && request.method === "POST") {
+  if (
+    segments[1] === "project" &&
+    segments.length >= 3 &&
+    segments[2] === "refresh-all" &&
+    request.method === "POST"
+  ) {
     return handleRefreshAllRequest(env);
   }
-  if (segments[1] === "tg" && segments.length >= 3 && segments[2] === "alert" && request.method === "POST") {
+  if (
+    segments[1] === "tg" &&
+    segments.length >= 3 &&
+    segments[2] === "alert" &&
+    request.method === "POST"
+  ) {
     return handleTelegramAlert(request, env);
   }
   return handleNotFound();
 };
 
-const routeAuth = async (request: Request, env: WorkerEnv, segments: string[]): Promise<Response> => {
+const routeAuth = async (
+  request: Request,
+  env: WorkerEnv,
+  segments: string[]
+): Promise<Response> => {
   if (segments.length >= 2 && segments[1] === "facebook") {
     if (segments.length === 3 && segments[2] === "login" && request.method === "GET") {
       return handleFacebookLogin(request, env);
@@ -158,14 +180,19 @@ const routeAuth = async (request: Request, env: WorkerEnv, segments: string[]): 
     if (segments.length === 3 && segments[2] === "status" && request.method === "GET") {
       return handleFacebookStatusApi(request, env);
     }
-    if (segments.length === 3 && segments[2] === "refresh" && (request.method === "GET" || request.method === "POST")) {
+    if (
+      segments.length === 3 &&
+      segments[2] === "refresh" &&
+      (request.method === "GET" || request.method === "POST")
+    ) {
       return handleFacebookRefreshApi(request, env);
     }
   }
   return handleNotFound();
 };
 
-const routeAdmin = (request: Request, env: WorkerEnv): Promise<Response> => handleAdminPage(request, env);
+const routeAdmin = (request: Request, env: WorkerEnv): Promise<Response> =>
+  handleAdminPage(request, env);
 
 export default {
   async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
@@ -207,7 +234,10 @@ export default {
         }
       }
 
-      if ((segments[0] === "tg" || segments[0] === "telegram" || segments[0] === "webhook") && request.method === "POST") {
+      if (
+        (segments[0] === "tg" || segments[0] === "telegram" || segments[0] === "webhook") &&
+        request.method === "POST"
+      ) {
         return handleTelegramWebhook(request, env);
       }
 
@@ -226,14 +256,14 @@ export default {
     ctx.waitUntil(
       (async () => {
         const cronExpression = (event as { cron?: string }).cron || "";
-        const shouldRunProjects = !cronExpression || cronExpression === "*/5 * * * *" || cronExpression === "0 3 * * *";
+        const shouldRunProjects =
+          !cronExpression || cronExpression === "*/5 * * * *" || cronExpression === "0 3 * * *";
         const shouldRunTokenCheck = !cronExpression || cronExpression === "0 3 * * *";
 
         if (shouldRunProjects) {
           try {
             const result = await refreshAllProjects(env);
-            const message =
-              `Scheduled refresh completed for ${result.refreshed.length} projects`;
+            const message = `Scheduled refresh completed for ${result.refreshed.length} projects`;
             await appendLogEntry(env, {
               level: "info",
               message,
@@ -248,15 +278,19 @@ export default {
               timestamp: new Date().toISOString(),
             });
             await updateCronStatus(env, "projects-refresh", { ok: false, message });
-            await notifyTelegramAdmins(env, `🚨 Ошибка крон-задачи проектов: ${(error as Error).message}`);
+            await notifyTelegramAdmins(
+              env,
+              `🚨 Ошибка крон-задачи проектов: ${(error as Error).message}`
+            );
           }
         }
 
         if (shouldRunTokenCheck) {
           try {
             const result = await checkAndRefreshFacebookToken(env, { notify: true });
-            const message =
-              `Meta token check status: ${result.status.status}${(result.refresh && result.refresh.message ? ` - ${result.refresh.message : ""}`)}`;
+            const refreshNote =
+              result.refresh && result.refresh.message ? ` - ${result.refresh.message}` : "";
+            const message = `Meta token check status: ${result.status.status}${refreshNote}`;
             await appendLogEntry(env, {
               level: result.refresh && result.refresh.ok ? "info" : "warn",
               message,
@@ -274,10 +308,13 @@ export default {
               timestamp: new Date().toISOString(),
             });
             await updateCronStatus(env, "meta-token", { ok: false, message });
-            await notifyTelegramAdmins(env, `🚨 Ошибка проверки Meta токена: ${(error as Error).message}`);
+            await notifyTelegramAdmins(
+              env,
+              `🚨 Ошибка проверки Meta токена: ${(error as Error).message}`
+            );
           }
         }
-      })(),
+      })()
     );
   },
 };

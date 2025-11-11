@@ -15,7 +15,11 @@ const loadState = async (env: unknown, projectId: string): Promise<ProjectAlertS
   return {};
 };
 
-const saveState = async (env: unknown, projectId: string, state: ProjectAlertState): Promise<void> => {
+const saveState = async (
+  env: unknown,
+  projectId: string,
+  state: ProjectAlertState
+): Promise<void> => {
   await writeJsonToR2(env as any, getStateKey(projectId), state);
 };
 
@@ -51,7 +55,7 @@ const sendAlert = async (
   env: Record<string, unknown>,
   chatId: string,
   message: string,
-  logMessage: string,
+  logMessage: string
 ): Promise<boolean> => {
   try {
     await sendTelegramMessage(env, chatId, message);
@@ -107,7 +111,8 @@ const extractSpendLimit = (project: ProjectCard, report: ProjectReport): number 
 
 const getModerationThresholdHours = (project: ProjectCard): number => {
   const alerts = project.alerts || null;
-  const configured = alerts && alerts.moderation_hours !== undefined ? Number(alerts.moderation_hours) : NaN;
+  const configured =
+    alerts && alerts.moderation_hours !== undefined ? Number(alerts.moderation_hours) : NaN;
   if (Number.isFinite(configured) && configured > 0) {
     return configured;
   }
@@ -116,7 +121,7 @@ const getModerationThresholdHours = (project: ProjectCard): number => {
 
 const pickNewModeration = (
   campaigns: ProjectReport["campaigns"],
-  thresholdHours: number,
+  thresholdHours: number
 ): string[] => {
   const thresholdMs = thresholdHours * 60 * 60 * 1000;
   const now = Date.now();
@@ -145,10 +150,12 @@ const buildModerationMessage = (
   report: ProjectReport,
   overdueIds: string[],
   thresholdHours: number,
-  env: Record<string, unknown>,
+  env: Record<string, unknown>
 ): string => {
   const lines: string[] = [];
-  lines.push(`⏱ Кампании на модерации более ${thresholdHours} ч. для проекта ${report.project_name}`);
+  lines.push(
+    `⏱ Кампании на модерации более ${thresholdHours} ч. для проекта ${report.project_name}`
+  );
   for (const campaign of report.campaigns) {
     if (overdueIds.indexOf(campaign.id) === -1) {
       continue;
@@ -163,7 +170,7 @@ const buildModerationMessage = (
 export const processAutoAlerts = async (
   env: unknown,
   project: ProjectCard,
-  report: ProjectReport,
+  report: ProjectReport
 ): Promise<void> => {
   const runtimeEnv = env as Record<string, unknown>;
   const chatId = resolveChatId(runtimeEnv, project);
@@ -187,7 +194,12 @@ export const processAutoAlerts = async (
         const message = `⚠️ CPA превышен для проекта ${report.project_name}
 Значение: ${formatCurrency(currentCpa, report.currency)} при лимите ${formatCurrency(cpaThreshold, report.currency)}
 Портал: \${portalUrl(runtimeEnv, report.project_id)}`;
-        const delivered = await sendAlert(runtimeEnv, chatId, message, `CPA threshold exceeded for ${project.id}`);
+        const delivered = await sendAlert(
+          runtimeEnv,
+          chatId,
+          message,
+          `CPA threshold exceeded for ${project.id}`
+        );
         if (delivered) {
           nextState.cpa_exceeded = true;
           stateChanged = true;
@@ -207,7 +219,12 @@ export const processAutoAlerts = async (
         const message = `⚠️ Расход превысил лимит для проекта ${report.project_name}
 Потрачено: ${formatCurrency(currentSpend, report.currency)} при лимите ${formatCurrency(spendLimit, report.currency)}
 Портал: \${portalUrl(runtimeEnv, report.project_id)}`;
-        const delivered = await sendAlert(runtimeEnv, chatId, message, `Spend limit exceeded for ${project.id}`);
+        const delivered = await sendAlert(
+          runtimeEnv,
+          chatId,
+          message,
+          `Spend limit exceeded for ${project.id}`
+        );
         if (delivered) {
           nextState.spend_exceeded = true;
           stateChanged = true;
@@ -226,7 +243,12 @@ export const processAutoAlerts = async (
   let moderationSnapshot = previous.slice();
   if (newOnes.length > 0) {
     const message = buildModerationMessage(project, report, newOnes, thresholdHours, runtimeEnv);
-    const delivered = await sendAlert(runtimeEnv, chatId, message, `Moderation delay alert for ${project.id}`);
+    const delivered = await sendAlert(
+      runtimeEnv,
+      chatId,
+      message,
+      `Moderation delay alert for ${project.id}`
+    );
     if (delivered) {
       moderationSnapshot = overdue;
     }

@@ -62,9 +62,7 @@ const loadLogs = async (env: unknown): Promise<DashboardLogEntry[]> => {
       logs.push(...file);
     }
   }
-  return logs.sort((a, b) =>
-    new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  );
+  return logs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 };
 
 const countDistinctRecords = (keys: string[], prefix: string): number => {
@@ -103,7 +101,6 @@ const loadStorageOverview = async (env: unknown): Promise<StorageOverview> => {
   };
 };
 
-
 const ADMIN_KEY_ENV = "ADMIN_KEY";
 
 const extractAdminKey = (request: Request): string | null => {
@@ -128,10 +125,7 @@ const verifyKey = (request: Request, env: Record<string, unknown>): boolean => {
   return provided === configured;
 };
 
-const requireAdminKey = (
-  request: Request,
-  env: Record<string, unknown>,
-): Response | null => {
+const requireAdminKey = (request: Request, env: Record<string, unknown>): Response | null => {
   if (verifyKey(request, env)) {
     return null;
   }
@@ -146,7 +140,9 @@ const collectTokenStatus = (env: Record<string, unknown>): TokenStatus[] => {
   const metaTokenConfigured = hasString(env.META_LONG_TOKEN) || hasString(env.META_ACCESS_TOKEN);
   const manageTokenConfigured = hasString(env.META_MANAGE_TOKEN);
   const adminKeyConfigured = hasString(env.ADMIN_KEY);
-  const r2Configured = Boolean(env.REPORTS_BUCKET || env.R2_BUCKET || env.BOT_BUCKET || env.STORAGE_BUCKET);
+  const r2Configured = Boolean(
+    env.REPORTS_BUCKET || env.R2_BUCKET || env.BOT_BUCKET || env.STORAGE_BUCKET
+  );
 
   return [
     { name: "Telegram Bot Token", configured: telegramConfigured, hint: "BOT_TOKEN" },
@@ -317,7 +313,11 @@ const sanitizeBillingPatch = (input: any): BillingInfo => {
   if (nextPaymentDate !== null) {
     patch.next_payment_date = nextPaymentDate;
   }
-  if ("next_payment_date" in input && nextPaymentDate === null && input.next_payment_date === null) {
+  if (
+    "next_payment_date" in input &&
+    nextPaymentDate === null &&
+    input.next_payment_date === null
+  ) {
     patch.next_payment_date = null;
   }
   const lastPayment = coerceString(input?.last_payment);
@@ -407,7 +407,10 @@ const logAdminAction = async (env: unknown, message: string): Promise<void> => {
   });
 };
 
-export const handleAdminPage = async (request: Request, env: Record<string, unknown>): Promise<Response> => {
+export const handleAdminPage = async (
+  request: Request,
+  env: Record<string, unknown>
+): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
     return error;
@@ -418,16 +421,19 @@ export const handleAdminPage = async (request: Request, env: Record<string, unkn
       ok: false,
       issues: [(error as Error).message],
     })),
-    getFacebookTokenStatus(env as WorkerEnv).catch((error) => ({
-      ok: false,
-      status: "invalid",
-      valid: false,
-      issues: [(error as Error).message],
-      token_snippet: null,
-      account_id: null,
-      account_name: null,
-      refreshed_at: null,
-    }) as MetaTokenStatus),
+    getFacebookTokenStatus(env as WorkerEnv).catch(
+      (error) =>
+        ({
+          ok: false,
+          status: "invalid",
+          valid: false,
+          issues: [(error as Error).message],
+          token_snippet: null,
+          account_id: null,
+          account_name: null,
+          refreshed_at: null,
+        }) as MetaTokenStatus
+    ),
     fetchAdAccounts(env),
     loadProjectCards(env),
     loadLogs(env),
@@ -466,13 +472,16 @@ export const handleRefreshAllRequest = async (env: unknown): Promise<Response> =
   });
 };
 
-const loadProjectReport = async (env: unknown, projectId: string): Promise<ProjectReport | null> => {
+const loadProjectReport = async (
+  env: unknown,
+  projectId: string
+): Promise<ProjectReport | null> => {
   return readJsonFromR2<ProjectReport>(env as any, `reports/${projectId}.json`);
 };
 
 export const handleAdminProjectsApi = async (
   request: Request,
-  env: Record<string, unknown>,
+  env: Record<string, unknown>
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -485,7 +494,7 @@ export const handleAdminProjectsApi = async (
 
 export const handleAdminAccountsApi = async (
   request: Request,
-  env: Record<string, unknown>,
+  env: Record<string, unknown>
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -525,7 +534,7 @@ export const handleAdminAccountsApi = async (
         chat_id: project?.chat_id ? String(project.chat_id) : null,
         has_chat: hasChat,
       };
-    }),
+    })
   );
 
   const availableChats = listProjectsWithoutAccount(projects).map((project) => ({
@@ -547,7 +556,7 @@ export const handleAdminAccountsApi = async (
 export const handleAdminAccountLink = async (
   request: Request,
   env: Record<string, unknown>,
-  accountIdParam: string,
+  accountIdParam: string
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -613,7 +622,7 @@ export const handleAdminAccountLink = async (
 export const handleAdminProjectDetail = async (
   request: Request,
   env: Record<string, unknown>,
-  projectId: string,
+  projectId: string
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -621,7 +630,9 @@ export const handleAdminProjectDetail = async (
   }
 
   const [card, report, config, billing, alerts] = await Promise.all([
-    loadProjectCards(env).then((projects) => projects.find((project) => project.id === projectId) || null),
+    loadProjectCards(env).then(
+      (projects) => projects.find((project) => project.id === projectId) || null
+    ),
     loadProjectReport(env, projectId),
     readProjectConfig(env, projectId),
     readBillingInfo(env, projectId),
@@ -644,7 +655,7 @@ export const handleAdminProjectDetail = async (
 
 export const handleAdminProjectCreate = async (
   request: Request,
-  env: Record<string, unknown>,
+  env: Record<string, unknown>
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -680,7 +691,7 @@ export const handleAdminProjectCreate = async (
 export const handleAdminProjectUpdate = async (
   request: Request,
   env: Record<string, unknown>,
-  projectIdParam: string,
+  projectIdParam: string
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -707,7 +718,7 @@ export const handleAdminProjectUpdate = async (
 export const handleAdminProjectToggle = async (
   request: Request,
   env: Record<string, unknown>,
-  projectIdParam: string,
+  projectIdParam: string
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -726,7 +737,10 @@ export const handleAdminProjectToggle = async (
   }
 
   const current = await readProjectConfig(env, projectId);
-  const previous = current && typeof (current as any)[field] === "boolean" ? Boolean((current as any)[field]) : false;
+  const previous =
+    current && typeof (current as any)[field] === "boolean"
+      ? Boolean((current as any)[field])
+      : false;
   const nextValue = !previous;
   const patch: Partial<ProjectConfigRecord> = {};
   (patch as any)[field] = nextValue;
@@ -744,7 +758,7 @@ export const handleAdminProjectToggle = async (
 export const handleAdminProjectBillingUpdate = async (
   request: Request,
   env: Record<string, unknown>,
-  projectIdParam: string,
+  projectIdParam: string
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -771,7 +785,7 @@ export const handleAdminProjectBillingUpdate = async (
 export const handleAdminProjectAlertsUpdate = async (
   request: Request,
   env: Record<string, unknown>,
-  projectIdParam: string,
+  projectIdParam: string
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -797,7 +811,7 @@ export const handleAdminProjectAlertsUpdate = async (
 
 export const handleAdminLogsApi = async (
   request: Request,
-  env: Record<string, unknown>,
+  env: Record<string, unknown>
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -810,7 +824,7 @@ export const handleAdminLogsApi = async (
 
 export const handleAdminBillingApi = async (
   request: Request,
-  env: Record<string, unknown>,
+  env: Record<string, unknown>
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -833,7 +847,7 @@ export const handleAdminBillingApi = async (
 
 export const handleAdminSystemApi = async (
   request: Request,
-  env: Record<string, unknown>,
+  env: Record<string, unknown>
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -845,20 +859,23 @@ export const handleAdminSystemApi = async (
       ok: false,
       issues: [(err as Error).message],
     })),
-    getFacebookTokenStatus(env as WorkerEnv).catch((error) => ({
-      ok: false,
-      status: "invalid",
-      valid: false,
-      issues: [(error as Error).message],
-      token_snippet: null,
-      account_id: null,
-      account_name: null,
-      refreshed_at: null,
-    }) as MetaTokenStatus),
+    getFacebookTokenStatus(env as WorkerEnv).catch(
+      (error) =>
+        ({
+          ok: false,
+          status: "invalid",
+          valid: false,
+          issues: [(error as Error).message],
+          token_snippet: null,
+          account_id: null,
+          account_name: null,
+          refreshed_at: null,
+        }) as MetaTokenStatus
+    ),
     Promise.resolve(collectTokenStatus(env)),
     loadStorageOverview(env),
     getTelegramWebhookStatus(env as any).catch(() => null),
-    readCronStatus(env as any).catch(() => ({} as CronStatusMap)),
+    readCronStatus(env as any).catch(() => ({}) as CronStatusMap),
   ]);
 
   return jsonResponse({
@@ -873,7 +890,7 @@ export const handleAdminSystemApi = async (
 
 export const handleAdminSystemAction = async (
   request: Request,
-  env: Record<string, unknown>,
+  env: Record<string, unknown>
 ): Promise<Response> => {
   const error = requireAdminKey(request, env);
   if (error) {
@@ -894,15 +911,20 @@ export const handleAdminSystemAction = async (
     const result = await refreshAllProjects(env);
     await logAdminAction(
       env,
-      `Admin triggered refresh-all for ${result.refreshed.length} projects`,
+      `Admin triggered refresh-all for ${result.refreshed.length} projects`
     );
     return jsonResponse({ ok: true, refreshed: result.refreshed });
   }
 
   if (action === "refresh-meta-token") {
-    const outcome = await checkAndRefreshFacebookToken(env as WorkerEnv, { force: true, notify: true });
-    const message =
-      `Admin requested Meta token refresh => ${(outcome.refresh && outcome.refresh.ok ? "success" : "failure")}${(outcome.refresh && outcome.refresh.message ? `: ${outcome.refresh.message : ""}`)}`;
+    const outcome = await checkAndRefreshFacebookToken(env as WorkerEnv, {
+      force: true,
+      notify: true,
+    });
+    const statusLabel = outcome.refresh && outcome.refresh.ok ? "success" : "failure";
+    const messageSuffix =
+      outcome.refresh && outcome.refresh.message ? `: ${outcome.refresh.message}` : "";
+    const message = `Admin requested Meta token refresh => ${statusLabel}${messageSuffix}`;
     await logAdminAction(env, message);
     return jsonResponse(outcome);
   }
@@ -1001,7 +1023,7 @@ export const handleAdminSystemAction = async (
 
     await logAdminAction(
       env,
-      `Admin executed R2 load test: ${writeSuccess}/${iterations} writes, ${readSuccess}/${iterations} reads`,
+      `Admin executed R2 load test: ${writeSuccess}/${iterations} writes, ${readSuccess}/${iterations} reads`
     );
 
     return jsonResponse({ ok: true, summary });
@@ -1009,7 +1031,9 @@ export const handleAdminSystemAction = async (
 
   if (action === "simulate-fallback") {
     const countInput = Number(payload?.count);
-    const count = Number.isFinite(countInput) ? Math.min(Math.max(Math.trunc(countInput), 1), 20) : 3;
+    const count = Number.isFinite(countInput)
+      ? Math.min(Math.max(Math.trunc(countInput), 1), 20)
+      : 3;
     const reason = coerceString(payload?.reason) || "manual_test";
     const prefix = coerceString(payload?.prefix) || "fallback-test";
 
@@ -1027,10 +1051,7 @@ export const handleAdminSystemAction = async (
     }
 
     if (success === 0) {
-      return jsonResponse(
-        { ok: false, error: "Fallback storage not configured" },
-        { status: 503 },
-      );
+      return jsonResponse({ ok: false, error: "Fallback storage not configured" }, { status: 503 });
     }
 
     await logAdminAction(env, `Admin simulated fallback writes => ${success}/${count}`);

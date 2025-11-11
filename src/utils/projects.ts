@@ -43,7 +43,7 @@ const parseIndexEntry = (entry: any): Partial<ProjectConfigRecord> | null => {
 };
 
 const applyConfigToCard = (card: ProjectCard, config: Partial<ProjectConfigRecord>): void => {
-  const coalesce = <T,>(current: T | undefined, next: T | null | undefined): T | undefined =>
+  const coalesce = <T>(current: T | undefined, next: T | null | undefined): T | undefined =>
     next !== undefined && next !== null && next !== "" ? (next as T) : current;
 
   card.name = config.name && config.name.trim() ? config.name : card.name;
@@ -54,8 +54,14 @@ const applyConfigToCard = (card: ProjectCard, config: Partial<ProjectConfigRecor
   card.billing_day = coalesce(card.billing_day, config.billing_day ?? undefined);
   card.account_id = coalesce(card.account_id, config.account_id ?? undefined);
   card.account_name = coalesce(card.account_name, config.account_name ?? undefined);
-  card.alerts_enabled = coalesce(card.alerts_enabled ?? undefined, config.alerts_enabled ?? undefined);
-  card.silent_weekends = coalesce(card.silent_weekends ?? undefined, config.silent_weekends ?? undefined);
+  card.alerts_enabled = coalesce(
+    card.alerts_enabled ?? undefined,
+    config.alerts_enabled ?? undefined
+  );
+  card.silent_weekends = coalesce(
+    card.silent_weekends ?? undefined,
+    config.silent_weekends ?? undefined
+  );
   card.last_sync = coalesce(card.last_sync, config.last_sync ?? undefined);
   card.portal_url = coalesce(card.portal_url, config.portal_url ?? undefined);
   card.manager = coalesce(card.manager, config.manager ?? undefined);
@@ -102,7 +108,7 @@ const applyAlertsToCard = (card: ProjectCard, alerts: ProjectAlertsConfig): void
 export const resolvePortalUrl = (
   env: unknown,
   projectId: string,
-  current?: string | null,
+  current?: string | null
 ): string | null => {
   if (current && current.trim()) {
     return current;
@@ -128,13 +134,14 @@ const ensureCard = (map: Map<string, ProjectCard>, projectId: string): ProjectCa
   return map.get(projectId)!;
 };
 
-const loadConfigsFromIndex = async (
-  env: unknown,
-  map: Map<string, ProjectCard>,
-): Promise<void> => {
+const loadConfigsFromIndex = async (env: unknown, map: Map<string, ProjectCard>): Promise<void> => {
   for (const key of PROJECT_INDEX_KEYS) {
     const data = await readJsonFromR2<any>(env as any, key);
-    const entries = Array.isArray(data) ? data : Array.isArray(data?.projects) ? data.projects : null;
+    const entries = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.projects)
+        ? data.projects
+        : null;
     if (!entries || entries.length === 0) {
       continue;
     }
@@ -152,10 +159,13 @@ const loadConfigsFromIndex = async (
 const loadConfigsFromFiles = async (
   env: unknown,
   map: Map<string, ProjectCard>,
-  ids: Set<string>,
+  ids: Set<string>
 ): Promise<void> => {
   for (const projectId of ids) {
-    const config = await readJsonFromR2<ProjectConfigRecord>(env as any, `projects/${projectId}.json`);
+    const config = await readJsonFromR2<ProjectConfigRecord>(
+      env as any,
+      `projects/${projectId}.json`
+    );
     if (!config) {
       continue;
     }
@@ -205,7 +215,10 @@ export const loadProjectCards = async (env: unknown): Promise<ProjectCard[]> => 
     if (billing) {
       applyBillingToCard(card, billing);
     }
-    const alerts = await readJsonFromR2<ProjectAlertsConfig>(env as any, `alerts/${projectId}.json`);
+    const alerts = await readJsonFromR2<ProjectAlertsConfig>(
+      env as any,
+      `alerts/${projectId}.json`
+    );
     if (alerts) {
       applyAlertsToCard(card, alerts);
     }
@@ -237,7 +250,7 @@ export const hasProjectChat = (project: ProjectCard): boolean => {
 
 export const findProjectForAccount = (
   projects: ProjectCard[],
-  accountId: string | null | undefined,
+  accountId: string | null | undefined
 ): ProjectCard | null => {
   if (!accountId) {
     return null;
@@ -268,7 +281,10 @@ export const listProjectsWithoutAccount = (projects: ProjectCard[]): ProjectCard
   });
 };
 
-export const findProjectCard = async (env: unknown, projectId: string): Promise<ProjectCard | null> => {
+export const findProjectCard = async (
+  env: unknown,
+  projectId: string
+): Promise<ProjectCard | null> => {
   const projects = await loadProjectCards(env);
   return projects.find((project) => project.id === projectId) || null;
 };
@@ -287,15 +303,18 @@ const ensureProjectId = (projectId: string): string => {
 
 export const readProjectConfig = async (
   env: unknown,
-  projectId: string,
+  projectId: string
 ): Promise<ProjectConfigRecord | null> => {
-  return readJsonFromR2<ProjectConfigRecord>(env as any, `${PROJECT_CONFIG_PREFIX}${ensureProjectId(projectId)}.json`);
+  return readJsonFromR2<ProjectConfigRecord>(
+    env as any,
+    `${PROJECT_CONFIG_PREFIX}${ensureProjectId(projectId)}.json`
+  );
 };
 
 export const writeProjectConfig = async (
   env: unknown,
   projectId: string,
-  patch: Partial<ProjectConfigRecord>,
+  patch: Partial<ProjectConfigRecord>
 ): Promise<ProjectConfigRecord | null> => {
   const id = ensureProjectId(projectId);
   const existing = await readProjectConfig(env, id);
@@ -327,15 +346,18 @@ export const writeProjectConfig = async (
 
 export const readBillingInfo = async (
   env: unknown,
-  projectId: string,
+  projectId: string
 ): Promise<BillingInfo | null> => {
-  return readJsonFromR2<BillingInfo>(env as any, `${BILLING_PREFIX}${ensureProjectId(projectId)}.json`);
+  return readJsonFromR2<BillingInfo>(
+    env as any,
+    `${BILLING_PREFIX}${ensureProjectId(projectId)}.json`
+  );
 };
 
 export const writeBillingInfo = async (
   env: unknown,
   projectId: string,
-  patch: BillingInfo,
+  patch: BillingInfo
 ): Promise<BillingInfo | null> => {
   const id = ensureProjectId(projectId);
   const existing = await readBillingInfo(env, id);
@@ -346,15 +368,18 @@ export const writeBillingInfo = async (
 
 export const readAlertsConfig = async (
   env: unknown,
-  projectId: string,
+  projectId: string
 ): Promise<ProjectAlertsConfig | null> => {
-  return readJsonFromR2<ProjectAlertsConfig>(env as any, `${ALERTS_PREFIX}${ensureProjectId(projectId)}.json`);
+  return readJsonFromR2<ProjectAlertsConfig>(
+    env as any,
+    `${ALERTS_PREFIX}${ensureProjectId(projectId)}.json`
+  );
 };
 
 export const writeAlertsConfig = async (
   env: unknown,
   projectId: string,
-  patch: ProjectAlertsConfig,
+  patch: ProjectAlertsConfig
 ): Promise<ProjectAlertsConfig | null> => {
   const id = ensureProjectId(projectId);
   const existing = await readAlertsConfig(env, id);

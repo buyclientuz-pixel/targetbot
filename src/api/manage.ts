@@ -45,7 +45,7 @@ const ensureAuthorized = (request: Request, env: WorkerEnv, token: string): Resp
 const ensureMetaManageAuthorized = (
   request: Request,
   env: WorkerEnv,
-  providedToken: string,
+  providedToken: string
 ): Response | null => {
   const adminKey = typeof env.ADMIN_KEY === "string" ? env.ADMIN_KEY.trim() : "";
   const header = request.headers.get("authorization");
@@ -89,7 +89,7 @@ const collectKnownTokens = (env: WorkerEnv): string[] => {
 const telegramFetch = async (
   token: string,
   method: string,
-  data: Record<string, unknown> | null = null,
+  data: Record<string, unknown> | null = null
 ): Promise<TelegramResponse> => {
   const url = `https://api.telegram.org/bot${token}/${method}`;
   const hasPayload = data !== null && Object.keys(data).length > 0;
@@ -127,7 +127,7 @@ const buildUsageResponse = (): Response => {
 
 export const getTelegramWebhookStatus = async (
   env: WorkerEnv,
-  tokenOverride?: string,
+  tokenOverride?: string
 ): Promise<{ ok: boolean; token?: string; webhook?: unknown; error?: string }> => {
   const knownTokens = collectKnownTokens(env);
   const token = tokenOverride && tokenOverride.trim() ? tokenOverride.trim() : knownTokens[0];
@@ -154,7 +154,7 @@ export const getTelegramWebhookStatus = async (
 
 export const handleManageTelegramWebhook = async (
   request: Request,
-  env: WorkerEnv,
+  env: WorkerEnv
 ): Promise<Response> => {
   if (request.method !== "GET") {
     return badRequest("Method not allowed");
@@ -194,8 +194,12 @@ export const handleManageTelegramWebhook = async (
       const dropResult = await telegramFetch(token, "deleteWebhook");
       if (!dropResult.ok) {
         return jsonResponse(
-          { ok: false, token: maskToken(token), error: dropResult.description || "Failed to delete webhook" },
-          { status: 502 },
+          {
+            ok: false,
+            token: maskToken(token),
+            error: dropResult.description || "Failed to delete webhook",
+          },
+          { status: 502 }
         );
       }
       return jsonResponse({ ok: true, message: "Webhook deleted", token: maskToken(token) });
@@ -211,8 +215,12 @@ export const handleManageTelegramWebhook = async (
       const setResult = await telegramFetch(token, "setWebhook", { url: requestedUrl });
       if (!setResult.ok) {
         return jsonResponse(
-          { ok: false, token: maskToken(token), error: setResult.description || "Failed to set webhook" },
-          { status: 502 },
+          {
+            ok: false,
+            token: maskToken(token),
+            error: setResult.description || "Failed to set webhook",
+          },
+          { status: 502 }
         );
       }
       const info = await telegramFetch(token, "getWebhookInfo");
@@ -227,31 +235,32 @@ export const handleManageTelegramWebhook = async (
     return buildUsageResponse();
   } catch (error) {
     const message = (error as Error).message || "Unknown error";
-    return jsonResponse({
-      ok: false,
-      token: maskToken(token),
-      error: message,
-    }, { status: 500 });
+    return jsonResponse(
+      {
+        ok: false,
+        token: maskToken(token),
+        error: message,
+      },
+      { status: 500 }
+    );
   }
 };
 
 const loadCachedMetaStatus = async (
-  env: WorkerEnv,
-): Promise<(MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[]; cached?: boolean }) | null> => {
-  const cached = await readJsonFromR2<MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[] }>(
-    env,
-    STATUS_CACHE_KEY,
-  );
+  env: WorkerEnv
+): Promise<
+  (MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[]; cached?: boolean }) | null
+> => {
+  const cached = await readJsonFromR2<
+    MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[] }
+  >(env, STATUS_CACHE_KEY);
   if (!cached) {
     return null;
   }
   return { ...cached, cached: true };
 };
 
-export const handleManageMeta = async (
-  request: Request,
-  env: WorkerEnv,
-): Promise<Response> => {
+export const handleManageMeta = async (request: Request, env: WorkerEnv): Promise<Response> => {
   if (request.method !== "GET") {
     return badRequest("Method not allowed");
   }
@@ -277,11 +286,13 @@ export const handleManageMeta = async (
   }
 
   const forceRefresh = action === "refresh" || refreshParam === "1";
-  let status: (MetaAuthStatus & {
-    updated_at?: string | null;
-    accounts?: MetaAccountInfo[];
-    cached?: boolean;
-  }) | null = null;
+  let status:
+    | (MetaAuthStatus & {
+        updated_at?: string | null;
+        accounts?: MetaAccountInfo[];
+        cached?: boolean;
+      })
+    | null = null;
   let errorMessage: string | null = null;
 
   try {

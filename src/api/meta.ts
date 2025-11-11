@@ -20,14 +20,15 @@ const isFresh = (isoDate: string | null | undefined): boolean => {
 
 export const loadMetaStatus = async (
   env: unknown,
-  options: { useCache?: boolean } = {},
-): Promise<MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[]; cached?: boolean }> => {
+  options: { useCache?: boolean } = {}
+): Promise<
+  MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[]; cached?: boolean }
+> => {
   const useCache = options.useCache !== false;
   if (useCache) {
-    const cached = await readJsonFromR2<MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[] }>(
-      env as any,
-      STATUS_CACHE_KEY,
-    );
+    const cached = await readJsonFromR2<
+      MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[] }
+    >(env as any, STATUS_CACHE_KEY);
     if (cached && isFresh(cached.updated_at || cached.last_refresh)) {
       return { ...cached, cached: true };
     }
@@ -50,7 +51,11 @@ export const loadMetaStatus = async (
     }
   }
 
-  const payload: MetaAuthStatus & { updated_at: string; accounts: MetaAccountInfo[]; cached: boolean } = {
+  const payload: MetaAuthStatus & {
+    updated_at: string;
+    accounts: MetaAccountInfo[];
+    cached: boolean;
+  } = {
     ok: true,
     status: "ok",
     account_name: profile && profile.name ? String(profile.name) : undefined,

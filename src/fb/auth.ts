@@ -99,7 +99,12 @@ const sendFacebookErrorLog = async (env: WorkerEnv, message: string): Promise<vo
 export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<MetaTokenStatus> => {
   const record = await readMetaAuth(env);
   if (!record) {
-    return { ok: false, status: "missing", valid: false, issues: ["Meta access token is not configured."] };
+    return {
+      ok: false,
+      status: "missing",
+      valid: false,
+      issues: ["Meta access token is not configured."],
+    };
   }
 
   const token = record.access_token;
@@ -182,7 +187,7 @@ export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<MetaTokenS
   }
 
   if (expired) {
-    issues.push(`Meta access token expired at ${(expiresAtIso || "unknown")}`);
+    issues.push(`Meta access token expired at ${expiresAtIso || "unknown"}`);
   }
 
   return {
@@ -209,7 +214,10 @@ interface RefreshResult {
   token_snippet?: string | null;
 }
 
-const performTokenRefresh = async (env: WorkerEnv, record: MetaAuthRecord): Promise<RefreshResult> => {
+const performTokenRefresh = async (
+  env: WorkerEnv,
+  record: MetaAuthRecord
+): Promise<RefreshResult> => {
   const appId = typeof env.FB_APP_ID === "string" ? env.FB_APP_ID : "";
   const appSecret = typeof env.FB_APP_SECRET === "string" ? env.FB_APP_SECRET : "";
   if (!appId || !appSecret) {
@@ -248,7 +256,8 @@ const performTokenRefresh = async (env: WorkerEnv, record: MetaAuthRecord): Prom
       refreshed_at: refreshedAt,
       account_id: record.account_id || null,
       account_name: record.account_name || null,
-      token_type: typeof payload.token_type === "string" ? payload.token_type : record.token_type || null,
+      token_type:
+        typeof payload.token_type === "string" ? payload.token_type : record.token_type || null,
     };
     await writeMetaAuth(env, newRecord);
     const expiresIso = newRecord.expires_at ? new Date(newRecord.expires_at).toISOString() : null;
@@ -271,7 +280,7 @@ const performTokenRefresh = async (env: WorkerEnv, record: MetaAuthRecord): Prom
 
 export const checkAndRefreshFacebookToken = async (
   env: WorkerEnv,
-  options: { force?: boolean; notify?: boolean } = {},
+  options: { force?: boolean; notify?: boolean } = {}
 ): Promise<{ status: MetaTokenStatus; refresh?: RefreshResult | null }> => {
   const notify = options.notify !== false;
   const forceRefresh = options.force === true;
@@ -280,7 +289,10 @@ export const checkAndRefreshFacebookToken = async (
 
   if (status.status === "missing") {
     if (notify) {
-      await notifyTelegramAdmins(env, "⚠️ Meta токен не настроен. Авторизуйтесь в Facebook кабинете.");
+      await notifyTelegramAdmins(
+        env,
+        "⚠️ Meta токен не настроен. Авторизуйтесь в Facebook кабинете."
+      );
     }
     return { status, refresh: null };
   }
@@ -293,7 +305,7 @@ export const checkAndRefreshFacebookToken = async (
 
   if (status.status === "expired") {
     await deleteMetaAuth(env);
-    const message = `🚨 Meta токен истёк ${(status.expires_at || "ранее")}`;
+    const message = `🚨 Meta токен истёк ${status.expires_at || "ранее"}`;
     await notifyTelegramAdmins(env, message);
     await sendFacebookErrorLog(env, message);
     return { status, refresh: null };
@@ -312,8 +324,8 @@ export const checkAndRefreshFacebookToken = async (
   const refreshResult = await performTokenRefresh(env, record);
 
   if (refreshResult.ok) {
-    const message =
-      `✅ Meta токен обновлён.${(refreshResult.expires_at ? ` Новый срок: ${refreshResult.expires_at : ""}`)}`;
+    const expiryNote = refreshResult.expires_at ? ` Новый срок: ${refreshResult.expires_at}` : "";
+    const message = `✅ Meta токен обновлён.${expiryNote}`;
     if (notify) {
       await notifyTelegramAdmins(env, message);
     }
@@ -332,7 +344,7 @@ export const checkAndRefreshFacebookToken = async (
 };
 
 export const forceRefreshFacebookToken = async (
-  env: WorkerEnv,
+  env: WorkerEnv
 ): Promise<{ status: MetaTokenStatus; refresh?: RefreshResult | null }> => {
   return checkAndRefreshFacebookToken(env, { force: true, notify: true });
 };
@@ -343,7 +355,7 @@ export const readStoredMetaAuth = async (env: WorkerEnv): Promise<MetaAuthRecord
 
 export const storeMetaAuthRecord = async (
   env: WorkerEnv,
-  record: Partial<MetaAuthRecord> & { access_token: string },
+  record: Partial<MetaAuthRecord> & { access_token: string }
 ): Promise<void> => {
   const previous = (await readMetaAuth(env)) || {};
   const next: MetaAuthRecord = {

@@ -16,7 +16,7 @@ const numberOrNull = (value: unknown): number | null => {
 };
 
 export const extractReportSpend = (
-  report: ProjectReport | null,
+  report: ProjectReport | null
 ): { value: number | null; label: string | null } => {
   if (!report || !report.summary) {
     return { value: null, label: null };
@@ -38,17 +38,18 @@ export const extractReportSpend = (
     }
   }
   const spendValue = numberOrNull((summary as any).spend);
-  const periodLabel = typeof report.period_label === "string" && report.period_label.trim()
-    ? report.period_label.trim()
-    : typeof (summary as any).period_label === "string" && (summary as any).period_label.trim()
-    ? ((summary as any).period_label as string).trim()
-    : report.period || null;
+  const periodLabel =
+    typeof report.period_label === "string" && report.period_label.trim()
+      ? report.period_label.trim()
+      : typeof (summary as any).period_label === "string" && (summary as any).period_label.trim()
+        ? ((summary as any).period_label as string).trim()
+        : report.period || null;
   return { value: spendValue, label: periodLabel ? String(periodLabel) : null };
 };
 
 export const resolveAccountSpend = async (
   env: unknown,
-  project: ProjectCard | null,
+  project: ProjectCard | null
 ): Promise<{ value: number | null; label: string | null; currency: string } | null> => {
   if (!project) {
     return null;

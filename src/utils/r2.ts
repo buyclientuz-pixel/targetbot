@@ -60,7 +60,7 @@ export const writeJsonToR2 = async (env: R2Env, key: string, value: unknown): Pr
 export const appendLogEntry = async (
   env: R2Env,
   entry: DashboardLogEntry,
-  dateKey?: string,
+  dateKey?: string
 ): Promise<void> => {
   const bucket = resolveBucket(env);
   const logKey = `${dateKey || new Date().toISOString().slice(0, 10)}.json`;
@@ -97,7 +97,10 @@ export const readCronStatus = async (env: R2Env): Promise<CronStatusMap> => {
     }
     const record: CronStatusEntry = {
       job,
-      last_run: typeof (value as any).last_run === "string" ? (value as any).last_run : new Date(0).toISOString(),
+      last_run:
+        typeof (value as any).last_run === "string"
+          ? (value as any).last_run
+          : new Date(0).toISOString(),
       ok: Boolean((value as any).ok),
       message:
         typeof (value as any).message === "string" && (value as any).message
@@ -120,7 +123,7 @@ export const readCronStatus = async (env: R2Env): Promise<CronStatusMap> => {
 export const updateCronStatus = async (
   env: R2Env,
   job: string,
-  update: { ok: boolean; message?: string | null },
+  update: { ok: boolean; message?: string | null }
 ): Promise<void> => {
   const jobId = job.trim();
   if (!jobId) {
@@ -185,11 +188,7 @@ export const deletePrefixFromR2 = async (env: R2Env, prefix: string): Promise<nu
   return removed;
 };
 
-const writeFallback = async (
-  env: R2Env,
-  key: string,
-  message: unknown,
-): Promise<boolean> => {
+const writeFallback = async (env: R2Env, key: string, message: unknown): Promise<boolean> => {
   const fallback = env.FALLBACK_KV || env.LOGS_NAMESPACE;
   if (!fallback) {
     return false;
@@ -213,7 +212,7 @@ const writeFallback = async (
 export const writeFallbackRecord = async (
   env: R2Env,
   key: string,
-  message: unknown,
+  message: unknown
 ): Promise<boolean> => writeFallback(env, key, message);
 
 export const listR2Keys = async (env: R2Env, prefix: string): Promise<string[]> => {

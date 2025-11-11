@@ -36,7 +36,7 @@ const ensureAdminAuth = (request: Request, env: WorkerEnv): Response | null => {
 
 export const handleFacebookStatusApi = async (
   request: Request,
-  env: WorkerEnv,
+  env: WorkerEnv
 ): Promise<Response> => {
   const authError = ensureAdminAuth(request, env);
   if (authError) {
@@ -49,7 +49,7 @@ export const handleFacebookStatusApi = async (
 
 export const handleFacebookRefreshApi = async (
   request: Request,
-  env: WorkerEnv,
+  env: WorkerEnv
 ): Promise<Response> => {
   const authError = ensureAdminAuth(request, env);
   if (authError) {
@@ -71,23 +71,29 @@ const resolveGraphVersion = (env: WorkerEnv): string => {
   return version || "v18.0";
 };
 
-const renderAuthPage = (title: string, message: string, options: {
-  details?: string;
-  status?: "success" | "warning" | "error";
-  links?: Array<{ href: string; label: string }>;
-  redirect?: string;
-} = {}): string => {
+const renderAuthPage = (
+  title: string,
+  message: string,
+  options: {
+    details?: string;
+    status?: "success" | "warning" | "error";
+    links?: Array<{ href: string; label: string }>;
+    redirect?: string;
+  } = {}
+): string => {
   const tone = options.status || "success";
   const accent = tone === "success" ? "#00b87c" : tone === "warning" ? "#fbbf24" : "#f87171";
   const links = (options.links || [])
-    .map((link) =>
-      `<a class="action" href="${link.href}" rel="noopener noreferrer" target="_blank">${link.label}</a>`,
+    .map(
+      (link) =>
+        `<a class="action" href="${link.href}" rel="noopener noreferrer" target="_blank">${link.label}</a>`
     )
     .join("");
-  const redirectMeta = options.redirect ? `<meta http-equiv="refresh" content="2;url=${options.redirect}" />` : "";
+  const redirectMeta = options.redirect
+    ? `<meta http-equiv="refresh" content="2;url=${options.redirect}" />`
+    : "";
   const redirectNotice = options.redirect
-    ?
-        `<p class="redirect">Через пару секунд откроется Telegram. Если этого не произошло, <a href="${options.redirect}" rel="noopener noreferrer" target="_blank">нажмите сюда</a>.</p>`
+    ? `<p class="redirect">Через пару секунд откроется Telegram. Если этого не произошло, <a href="${options.redirect}" rel="noopener noreferrer" target="_blank">нажмите сюда</a>.</p>`
     : "";
 
   return `<!DOCTYPE html>
@@ -180,7 +186,7 @@ const resolveAdminUrl = (env: WorkerEnv): string | null => {
   }
   const sanitized = base.replace(/\/$/, "");
   const key = typeof env.ADMIN_KEY === "string" && env.ADMIN_KEY.trim() ? env.ADMIN_KEY.trim() : "";
-  const search = key ? `?key=${encodeURIComponent(key) : ""}`;
+  const search = key ? `?key=${encodeURIComponent(key)}` : "";
   return sanitized + `/admin${search}`;
 };
 
@@ -212,7 +218,7 @@ export const handleFacebookLogin = async (request: Request, env: WorkerEnv): Pro
     const html = renderAuthPage(
       "Авторизация Facebook",
       "⚠️ Не указан идентификатор приложения Facebook (FB_APP_ID). Добавьте его в переменные окружения Cloudflare.",
-      { status: "error" },
+      { status: "error" }
     );
     return htmlResponse(html, { status: 500 });
   }
@@ -220,7 +226,8 @@ export const handleFacebookLogin = async (request: Request, env: WorkerEnv): Pro
   const graphVersion = resolveGraphVersion(env);
   const redirectBase = buildRedirectBase(request, env);
   const redirectUri = `${redirectBase}/auth/facebook/callback`;
-  const scope = new URL(request.url).searchParams.get("scope") || "ads_management,business_management";
+  const scope =
+    new URL(request.url).searchParams.get("scope") || "ads_management,business_management";
   const state = new URL(request.url).searchParams.get("state");
 
   const authUrl = new URL(`https://www.facebook.com/${graphVersion}/dialog/oauth`);
@@ -240,14 +247,14 @@ export const handleFacebookLogin = async (request: Request, env: WorkerEnv): Pro
 
 export const handleFacebookCallback = async (
   request: Request,
-  env: WorkerEnv,
+  env: WorkerEnv
 ): Promise<Response> => {
   const url = new URL(request.url);
   const errorReason = url.searchParams.get("error");
   const errorDescription = url.searchParams.get("error_description");
   if (errorReason) {
-    const message =
-      `⚠️ Авторизация Facebook отклонена: ${errorReason}${(errorDescription ? ` — ${errorDescription : ""}`)}`;
+    const descriptionSuffix = errorDescription ? ` — ${errorDescription}` : "";
+    const message = `⚠️ Авторизация Facebook отклонена: ${errorReason}${descriptionSuffix}`;
     await appendLogEntry(env, {
       level: "warn",
       message,
@@ -262,7 +269,7 @@ export const handleFacebookCallback = async (
     const html = renderAuthPage(
       "Ошибка авторизации",
       "⚠️ Не удалось получить код авторизации Facebook. Попробуйте начать процесс заново.",
-      { status: "error" },
+      { status: "error" }
     );
     return htmlResponse(html, { status: 400 });
   }
@@ -273,7 +280,7 @@ export const handleFacebookCallback = async (
     const html = renderAuthPage(
       "Ошибка конфигурации",
       "⚠️ Отсутствуют переменные FB_APP_ID и/или FB_APP_SECRET. Добавьте их в Cloudflare Workers → Variables.",
-      { status: "error" },
+      { status: "error" }
     );
     return htmlResponse(html, { status: 500 });
   }
@@ -306,17 +313,18 @@ export const handleFacebookCallback = async (
     const html = renderAuthPage(
       "Ошибка авторизации",
       `🚨 Не удалось получить токен доступа. Сообщение: ${message}`,
-      { status: "error" },
+      { status: "error" }
     );
     return htmlResponse(html, { status: 500 });
   }
 
-  const accessToken = typeof tokenPayload?.access_token === "string" ? tokenPayload.access_token : null;
+  const accessToken =
+    typeof tokenPayload?.access_token === "string" ? tokenPayload.access_token : null;
   if (!accessToken) {
     const html = renderAuthPage(
       "Ошибка авторизации",
       "🚨 Facebook не вернул access_token. Попробуйте авторизоваться ещё раз.",
-      { status: "error" },
+      { status: "error" }
     );
     return htmlResponse(html, { status: 500 });
   }
@@ -361,8 +369,7 @@ export const handleFacebookCallback = async (
 
   await appendLogEntry(env, {
     level: "info",
-    message:
-      `Meta OAuth callback completed. Account: ${(accountName || accountId || "unknown")}, expires in ${(expiresIn ? `${Math.round(expiresIn / 60)} мин.` : "unknown")}`,
+    message: `Meta OAuth callback completed. Account: ${accountName || accountId || "unknown"}, expires in ${expiresIn ? `${Math.round(expiresIn / 60)} мин.` : "unknown"}`,
     timestamp: new Date().toISOString(),
   });
 
@@ -370,7 +377,9 @@ export const handleFacebookCallback = async (
   const status = refreshResult.status;
   const adminUrl = resolveAdminUrl(env);
   const tz =
-    typeof env.DEFAULT_TZ === "string" && env.DEFAULT_TZ.trim() ? env.DEFAULT_TZ.trim() : "Asia/Tashkent";
+    typeof env.DEFAULT_TZ === "string" && env.DEFAULT_TZ.trim()
+      ? env.DEFAULT_TZ.trim()
+      : "Asia/Tashkent";
   const formatDate = (iso: string | null | undefined): string | null => {
     if (!iso) {
       return null;
@@ -398,7 +407,10 @@ export const handleFacebookCallback = async (
   } else if (!status.ok) {
     heading = "Ошибка проверки токена";
     message = "🚨 Токен сохранён, но проверка Facebook вернула ошибку.";
-    const issues = status.issues && status.issues.length ? status.issues.join("\n") : "Уточните детали в админ-панели.";
+    const issues =
+      status.issues && status.issues.length
+        ? status.issues.join("\n")
+        : "Уточните детали в админ-панели.";
     details = issues;
     statusTone = "error";
   } else {
@@ -406,7 +418,7 @@ export const handleFacebookCallback = async (
     const formattedExpiry = formatDate(expiresAt);
     const parts: string[] = [];
     if (accountName) {
-      parts.push(`👤 Аккаунт: ${accountName}${(accountId ? ` (${accountId})` : "")}`);
+      parts.push(`👤 Аккаунт: ${accountName}${accountId ? ` (${accountId})` : ""}`);
     }
     if (formattedExpiry) {
       parts.push(`⏱ Действителен до: ${formattedExpiry}`);
@@ -430,9 +442,9 @@ export const handleFacebookCallback = async (
   if (status.status === "ok") {
     const expiresAt = status.expires_at || refreshResult.refresh?.expires_at || null;
     const expiresText = expiresAt ? formatDateTime(expiresAt, tz) : null;
-    const lines = ["✅ Facebook подключён." ];
+    const lines = ["✅ Facebook подключён."];
     if (accountName || accountId) {
-      lines.push(`Аккаунт: ${(accountName || accountId)}`);
+      lines.push(`Аккаунт: ${accountName || accountId}`);
     }
     if (expiresText) {
       lines.push(`Действителен до: ${expiresText}`);

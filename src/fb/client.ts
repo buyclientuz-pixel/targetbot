@@ -11,7 +11,7 @@ export const callGraph = async (
   env: GraphEnv,
   path: string,
   params: Record<string, string> = {},
-  init: RequestInit = {},
+  init: RequestInit = {}
 ): Promise<any> => {
   const token = env.META_MANAGE_TOKEN || env.META_LONG_TOKEN || env.META_ACCESS_TOKEN;
   if (!token) {

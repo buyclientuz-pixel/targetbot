@@ -2,13 +2,7 @@ import { callGraph } from "./client";
 import { appendLogEntry, readJsonFromR2, writeJsonToR2 } from "../utils/r2";
 import { findProjectCard } from "../utils/projects";
 import { processAutoAlerts } from "../utils/alerts";
-import {
-  CampaignMetric,
-  ProjectCard,
-  ProjectReport,
-  ProjectSummary,
-  BillingInfo,
-} from "../types";
+import { CampaignMetric, ProjectCard, ProjectReport, ProjectSummary, BillingInfo } from "../types";
 
 const PERIOD_MAP: Record<string, string> = {
   today: "today",
@@ -40,7 +34,10 @@ interface CampaignStatusInfo {
   updated_time: string | null;
 }
 
-const toCampaignMetric = (entry: any, statusMap: Map<string, CampaignStatusInfo>): CampaignMetric => {
+const toCampaignMetric = (
+  entry: any,
+  statusMap: Map<string, CampaignStatusInfo>
+): CampaignMetric => {
   const campaignId = String(entry.campaign_id || "");
   const spend = Number(entry.spend || 0);
   const clicks = Number(entry.clicks || 0);
@@ -97,8 +94,13 @@ const summarizeCampaigns = (campaigns: CampaignMetric[]): ProjectSummary => {
       frequencySum += campaign.frequency;
       frequencyCount += 1;
     }
-    if (campaign.status === "ACTIVE" || campaign.status === "PAUSED" || campaign.status === "PAUSED_DUE_TO_HIGH_CPA") {
-      summary.active_campaigns = (summary.active_campaigns || 0) + (campaign.status === "ACTIVE" ? 1 : 0);
+    if (
+      campaign.status === "ACTIVE" ||
+      campaign.status === "PAUSED" ||
+      campaign.status === "PAUSED_DUE_TO_HIGH_CPA"
+    ) {
+      summary.active_campaigns =
+        (summary.active_campaigns || 0) + (campaign.status === "ACTIVE" ? 1 : 0);
     }
   }
 
@@ -122,7 +124,7 @@ const pickPeriod = (project: ProjectCard | null, override?: string): string => {
 
 const fetchCampaignStatuses = async (
   env: unknown,
-  accountId: string,
+  accountId: string
 ): Promise<Map<string, CampaignStatusInfo>> => {
   try {
     const response = await callGraph(env as any, `${accountId}/campaigns`, {
@@ -157,7 +159,7 @@ const fetchBillingInfo = (account: any): BillingInfo | undefined => {
   }
   const details = account.funding_source_details || {};
   const card = details.display_string || details.card_number_last_four || null;
-  const nextDate = account.next_bill_date || (details.next_bill_date || null);
+  const nextDate = account.next_bill_date || details.next_bill_date || null;
   let daysToPay: number | null = null;
   if (nextDate) {
     const target = new Date(nextDate).getTime();
@@ -168,10 +170,12 @@ const fetchBillingInfo = (account: any): BillingInfo | undefined => {
       }
     }
   }
-  const spendCap = account.spend_cap !== undefined && account.spend_cap !== null
-    ? Number(account.spend_cap)
-    : null;
-  const normalizedSpendCap = typeof spendCap === "number" && Number.isFinite(spendCap) ? spendCap : null;
+  const spendCap =
+    account.spend_cap !== undefined && account.spend_cap !== null
+      ? Number(account.spend_cap)
+      : null;
+  const normalizedSpendCap =
+    typeof spendCap === "number" && Number.isFinite(spendCap) ? spendCap : null;
 
   return {
     card_last4: card ? String(card).slice(-4) : null,
@@ -184,7 +188,7 @@ const fetchBillingInfo = (account: any): BillingInfo | undefined => {
 export const refreshProjectReport = async (
   env: unknown,
   projectId: string,
-  options: { period?: string } = {},
+  options: { period?: string } = {}
 ): Promise<ProjectReport | null> => {
   const project = await findProjectCard(env, projectId);
   if (!project) {
@@ -252,7 +256,10 @@ export const refreshProjectReport = async (
   }
 };
 
-const normalizeStatus = (status: any, disableReason: any): "active" | "pending" | "paused" | "unknown" => {
+const normalizeStatus = (
+  status: any,
+  disableReason: any
+): "active" | "pending" | "paused" | "unknown" => {
   const rawStatus = String(status || "").toUpperCase();
   if (rawStatus.includes("ACTIVE")) {
     return "active";

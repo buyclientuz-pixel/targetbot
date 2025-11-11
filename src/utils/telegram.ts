@@ -33,7 +33,7 @@ const resolveAdminList = (env: Record<string, unknown>): string[] => {
       ...rawAdminIds
         .split(",")
         .map((value) => value.trim())
-        .filter(Boolean),
+        .filter(Boolean)
     );
   }
 
@@ -60,7 +60,7 @@ export const resolveAdminIds = (env: Record<string, unknown>): string[] => resol
 const callTelegramMethod = async (
   env: Record<string, unknown>,
   method: string,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown>
 ): Promise<void> => {
   const token = getBotToken(env);
   if (!token) {
@@ -80,7 +80,7 @@ export const sendTelegramMessage = async (
   env: Record<string, unknown>,
   chatId: string,
   text: string,
-  options: TelegramRequestOptions = {},
+  options: TelegramRequestOptions = {}
 ): Promise<void> => {
   const payload: Record<string, unknown> = { chat_id: chatId, text };
 
@@ -104,7 +104,7 @@ export const editTelegramMessage = async (
   chatId: string,
   messageId: number,
   text: string,
-  options: TelegramRequestOptions = {},
+  options: TelegramRequestOptions = {}
 ): Promise<void> => {
   const payload: Record<string, unknown> = {
     chat_id: chatId,
@@ -130,7 +130,7 @@ export const editTelegramMessage = async (
 export const answerCallbackQuery = async (
   env: Record<string, unknown>,
   callbackId: string,
-  options: { text?: string; showAlert?: boolean } = {},
+  options: { text?: string; showAlert?: boolean } = {}
 ): Promise<void> => {
   const payload: Record<string, unknown> = {
     callback_query_id: callbackId,
@@ -149,7 +149,7 @@ export const answerCallbackQuery = async (
 
 export const notifyTelegramAdmins = async (
   env: Record<string, unknown>,
-  message: string,
+  message: string
 ): Promise<void> => {
   const ids = resolveAdminIds(env);
   if (ids.length === 0) {

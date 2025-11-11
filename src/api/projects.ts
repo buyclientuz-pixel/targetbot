@@ -19,18 +19,22 @@ const isFresh = (isoDate: string | null | undefined): boolean => {
 
 const getReportKey = (projectId: string): string => `reports/${projectId}.json`;
 
-const loadReportFromCache = async (env: unknown, projectId: string): Promise<ProjectReport | null> => {
+const loadReportFromCache = async (
+  env: unknown,
+  projectId: string
+): Promise<ProjectReport | null> => {
   return readJsonFromR2<ProjectReport>(env as any, getReportKey(projectId));
 };
 
 export const getReport = async (
   env: unknown,
   projectId: string,
-  options: { forceRefresh?: boolean; period?: string } = {},
+  options: { forceRefresh?: boolean; period?: string } = {}
 ): Promise<ProjectReport | null> => {
   const cached = await loadReportFromCache(env, projectId);
   const requestedLabel = options.period || null;
-  const labelMismatch = requestedLabel !== null && (!cached || cached.period_label !== requestedLabel);
+  const labelMismatch =
+    requestedLabel !== null && (!cached || cached.period_label !== requestedLabel);
   const forceRefresh = Boolean(options.forceRefresh) || labelMismatch;
   if (!forceRefresh && cached && isFresh(cached.updated_at)) {
     return cached;
@@ -56,7 +60,11 @@ export const handleProjectDetail = async (env: unknown, projectId: string): Prom
   return jsonResponse(report);
 };
 
-export const handleProjectRefresh = async (env: unknown, projectId: string, period?: string): Promise<Response> => {
+export const handleProjectRefresh = async (
+  env: unknown,
+  projectId: string,
+  period?: string
+): Promise<Response> => {
   const refreshed = await refreshProjectReport(env, projectId, { period });
   if (!refreshed) {
     return notFound("Unable to refresh project");
@@ -79,7 +87,7 @@ export const refreshAllProjects = async (env: unknown): Promise<{ refreshed: str
 export const ensureProjectReport = async (
   env: unknown,
   projectId: string,
-  options: { force?: boolean; period?: string } = {},
+  options: { force?: boolean; period?: string } = {}
 ): Promise<ProjectReport | null> => {
   if (options.force) {
     return refreshProjectReport(env, projectId, { period: options.period });
@@ -88,6 +96,9 @@ export const ensureProjectReport = async (
   return getReport(env, projectId, { period: options.period });
 };
 
-export const getProjectCard = async (env: unknown, projectId: string): Promise<ProjectCard | null> => {
+export const getProjectCard = async (
+  env: unknown,
+  projectId: string
+): Promise<ProjectCard | null> => {
   return findProjectCard(env, projectId);
 };

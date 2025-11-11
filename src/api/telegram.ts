@@ -10,7 +10,12 @@ const parsePayload = async (request: Request): Promise<AlertPayload | null> => {
       return null;
     }
     const payload = body as AlertPayload;
-    if (!payload.project_id || !payload.metric || payload.value === undefined || payload.threshold === undefined) {
+    if (
+      !payload.project_id ||
+      !payload.metric ||
+      payload.value === undefined ||
+      payload.threshold === undefined
+    ) {
       return null;
     }
     return payload;
@@ -23,7 +28,8 @@ const formatAlertMessage = (payload: AlertPayload): string => {
   const arrow = payload.direction === "below" ? "↓" : "↑";
   let line = `⚠️ Алерт по проекту ${payload.project_id}
 `;
-  line += payload.metric.toUpperCase() + `: ${payload.value} (${arrow} порога ${payload.threshold})`;
+  line +=
+    payload.metric.toUpperCase() + `: ${payload.value} (${arrow} порога ${payload.threshold})`;
   if (payload.campaign_id) {
     line += `
 Кампания: ${payload.campaign_id}`;
@@ -35,7 +41,10 @@ ${payload.description}`;
   return line;
 };
 
-export const handleTelegramAlert = async (request: Request, env: Record<string, unknown>): Promise<Response> => {
+export const handleTelegramAlert = async (
+  request: Request,
+  env: Record<string, unknown>
+): Promise<Response> => {
   const payload = await parsePayload(request);
   if (!payload) {
     return badRequest("Invalid alert payload");

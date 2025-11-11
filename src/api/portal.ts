@@ -13,7 +13,7 @@ const getTimeZone = (env: Record<string, unknown>): string => {
 export const handlePortalSummary = async (
   request: Request,
   env: Record<string, unknown>,
-  projectId: string,
+  projectId: string
 ): Promise<Response> => {
   const report = await ensureProjectReport(env, projectId, { force: false });
   if (!report) {
@@ -28,7 +28,7 @@ export const handlePortalSummary = async (
 export const handlePortalCampaigns = async (
   request: Request,
   env: Record<string, unknown>,
-  projectId: string,
+  projectId: string
 ): Promise<Response> => {
   const url = new URL(request.url);
   const period = url.searchParams.get("period") || "month";
