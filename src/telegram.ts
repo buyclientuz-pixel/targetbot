@@ -1,4 +1,5 @@
 import { ensureProjectReport, refreshAllProjects } from "./api/projects";
+import { clearMetaStatusCache } from "./api/meta";
 import {
   loadProjectCards,
   readProjectConfig,
@@ -7,12 +8,21 @@ import {
   writeAlertsConfig,
 } from "./utils/projects";
 import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "./utils/telegram";
-import { appendLogEntry, readJsonFromR2, listR2Keys, countFallbackEntries } from "./utils/r2";
+import {
+  appendLogEntry,
+  readJsonFromR2,
+  listR2Keys,
+  countFallbackEntries,
+  deleteFromR2,
+  deletePrefixFromR2,
+  clearFallbackEntries,
+} from "./utils/r2";
 import { ProjectReport, ProjectCard, BillingInfo, ProjectAlertsConfig } from "./types";
 import { formatCurrency, formatNumber, formatPercent, formatFrequency, formatDateTime } from "./utils/format";
 import { escapeHtml } from "./utils/html";
 import { readAdminSession, writeAdminSession, clearAdminSession } from "./utils/session";
 import type { AdminSessionState } from "./utils/session";
+import { getTelegramWebhookStatus } from "./api/manage";
 
 interface TelegramUser {
   id: number | string;
@@ -120,6 +130,23 @@ const ADMIN_MENU_KEYBOARD = {
   ],
 };
 
+const TECH_PANEL_KEYBOARD = {
+  inline_keyboard: [
+    [{ text: "🧹 Очистить Meta-кэш", callback_data: "admin:tech_action:meta_cache" }],
+    [
+      { text: "🧺 Очистить cache/", callback_data: "admin:tech_action:clear_prefix" },
+      { text: "📝 Другой префикс", callback_data: "admin:tech_prompt:clear_prefix" },
+    ],
+    [{ text: "🗑️ Очистить отчёт", callback_data: "admin:tech_prompt:clear_report" }],
+    [{ text: "🚨 Очистить fallback", callback_data: "admin:tech_action:clear_fallbacks" }],
+    [
+      { text: "📡 Проверить вебхук", callback_data: "admin:tech_action:webhook" },
+      { text: "🔑 Свой токен", callback_data: "admin:tech_prompt:webhook" },
+    ],
+    [{ text: "⬅️ Главное меню", callback_data: "admin:menu" }],
+  ],
+};
+
 const REPORT_STALE_THRESHOLD_MS = 30 * 60 * 1000;
 
 type AdminSessionKind =
@@ -127,7 +154,10 @@ type AdminSessionKind =
   | "billing_date"
   | "alerts_cpa"
   | "alerts_spend"
-  | "alerts_moderation";
+  | "alerts_moderation"
+  | "tech_clear_report"
+  | "tech_clear_prefix"
+  | "tech_webhook_token";
 
 type AdminSession = AdminSessionState & { kind: AdminSessionKind; projectId: string };
 
@@ -135,11 +165,13 @@ const buildSession = (
   kind: AdminSessionKind,
   projectId: string,
   messageId?: number,
+  data?: Record<string, unknown>,
 ): AdminSession => ({
   kind,
   projectId,
   messageId,
   createdAt: new Date().toISOString(),
+  data,
 });
 
 const storeAdminSession = async (
@@ -794,7 +826,11 @@ const countDistinct = (keys: string[], prefix: string): number => {
   return set.size;
 };
 
-const sendAdminTechOverview = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
+const sendAdminTechOverview = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  context: AdminMessageContext = {},
+): Promise<void> => {
   const [reportKeys, projectKeys, billingKeys, alertKeys, fallbackCount] = await Promise.all([
     listR2Keys(env as any, "reports/"),
     listR2Keys(env as any, "projects/"),
@@ -825,10 +861,132 @@ const sendAdminTechOverview = async (env: Record<string, unknown>, chatId: strin
 
   lines.push(
     "",
-    "Для обновления отчётов используйте кнопку \"🔁 Обновить данные\" или команду /refresh <id>.",
+    "Кнопки ниже помогут очистить кэши, удалить отчёты или проверить вебхук без входа в панель.",
   );
 
-  await sendTelegramMessage(env, chatId, lines.join("\n"), { disablePreview: true });
+  await deliverAdminMessage(
+    env,
+    chatId,
+    lines.join("\n"),
+    { disablePreview: true, replyMarkup: TECH_PANEL_KEYBOARD },
+    context,
+  );
+};
+
+interface TechActionResponse {
+  toast: string;
+  message?: string;
+  alert?: boolean;
+}
+
+const runTechAction = async (
+  env: Record<string, unknown>,
+  action: string,
+  extra?: string,
+): Promise<TechActionResponse> => {
+  const timestamp = new Date().toISOString();
+
+  switch (action) {
+    case "meta_cache": {
+      const cleared = await clearMetaStatusCache(env as any);
+      const toast = cleared ? "Meta-кэш очищен" : "Кэш уже пуст";
+      const message = cleared
+        ? "🧹 Кэш статуса Facebook очищен."
+        : "ℹ️ Кэш статуса Facebook уже пуст.";
+      await appendLogEntry(env as any, {
+        level: "info",
+        message: "Telegram admin cleared Meta status cache (result: " + toast + ")",
+        timestamp,
+      });
+      return { toast, message };
+    }
+    case "clear_prefix": {
+      const prefix = extra && extra.trim() ? extra.trim() : "cache/";
+      const removed = await deletePrefixFromR2(env as any, prefix);
+      const message =
+        "🧺 Удалено объектов: " + removed + "\nПрефикс: " + prefix.replace(/\s+/g, " ");
+      await appendLogEntry(env as any, {
+        level: "info",
+        message: "Telegram admin cleared prefix " + prefix + " => " + removed,
+        timestamp,
+      });
+      return { toast: "Удалено: " + removed, message };
+    }
+    case "clear_fallbacks": {
+      const removed = await clearFallbackEntries(env as any);
+      if (removed === null) {
+        return { toast: "Fallback не настроен", message: "⚠️ Fallback KV не сконфигурирован", alert: true };
+      }
+      await appendLogEntry(env as any, {
+        level: "info",
+        message: "Telegram admin cleared fallback entries => " + removed,
+        timestamp,
+      });
+      return { toast: "Удалено: " + removed, message: "🚨 Fallback очищен: " + removed };
+    }
+    case "clear_report": {
+      const projectId = extra && extra.trim();
+      if (!projectId) {
+        return { toast: "Укажите проект", alert: true };
+      }
+      const key = "reports/" + projectId + ".json";
+      const deleted = await deleteFromR2(env as any, key);
+      await appendLogEntry(env as any, {
+        level: deleted ? "info" : "warn",
+        message: "Telegram admin cleared report cache for " + projectId + " => " + deleted,
+        timestamp,
+      });
+      return deleted
+        ? {
+            toast: "Отчёт удалён",
+            message: "🗑️ Кэш отчёта проекта " + projectId + " удалён из R2.",
+          }
+        : {
+            toast: "Отчёт не найден",
+            message: "⚠️ Файл отчёта проекта " + projectId + " не найден в R2.",
+            alert: true,
+          };
+    }
+    case "webhook": {
+      const status = await getTelegramWebhookStatus(env as any, extra && extra.trim() ? extra.trim() : undefined);
+      const token = status.token || "—";
+      const lines: string[] = ["📡 Статус вебхука", "Токен: " + token];
+      if (status.webhook && typeof status.webhook === "object") {
+        const webhookInfo = status.webhook as Record<string, unknown>;
+        const url = typeof webhookInfo.url === "string" && webhookInfo.url ? webhookInfo.url : "—";
+        if (url) {
+          lines.push("URL: " + url);
+        }
+        if (typeof webhookInfo.pending_update_count === "number") {
+          lines.push("В очереди: " + webhookInfo.pending_update_count);
+        }
+      } else if (status.webhook) {
+        lines.push("Ответ: " + String(status.webhook));
+      }
+      if (!status.ok) {
+        const error = status.error || "Неизвестная ошибка";
+        lines.push("Ошибка: " + error);
+        await appendLogEntry(env as any, {
+          level: "warn",
+          message: "Telegram admin webhook status error => " + error,
+          timestamp,
+        });
+        return {
+          toast: error.length > 190 ? error.slice(0, 190) + "…" : error,
+          message: lines.join("\n"),
+          alert: true,
+        };
+      }
+      await appendLogEntry(env as any, {
+        level: "info",
+        message: "Telegram admin checked webhook status",
+        timestamp,
+      });
+      return { toast: "Вебхук OK", message: lines.join("\n") };
+    }
+    default:
+      return { toast: "Неизвестное действие", alert: true };
+  }
 };
 
 const readProjectReport = async (
@@ -1274,9 +1432,52 @@ const handleAdminCallback = async (
         return true;
       }
       case "tech":
-        await sendAdminTechOverview(env, chatId);
+        await sendAdminTechOverview(env, chatId, { messageId });
         await answerCallbackQuery(env, callback.id, { text: "Тех.панель" });
         return true;
+      case "tech_action": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Неизвестная команда", showAlert: true });
+          return true;
+        }
+        const result = await runTechAction(env, arg, extra);
+        await sendAdminTechOverview(env, chatId, { messageId });
+        const toast = result.toast && result.toast.length > 0 ? result.toast : "Готово";
+        await answerCallbackQuery(env, callback.id, {
+          text: toast.length > 200 ? toast.slice(0, 200) : toast,
+          showAlert: Boolean(result.alert),
+        });
+        if (result.message) {
+          await sendTelegramMessage(env, chatId, result.message, { disablePreview: true });
+        }
+        return true;
+      }
+      case "tech_prompt": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Команда недоступна", showAlert: true });
+          return true;
+        }
+        if (arg === "clear_report") {
+          await storeAdminSession(env, chatId, buildSession("tech_clear_report", "__tech__", messageId));
+          await promptAdminInput(env, chatId, "Введите ID проекта для удаления отчёта из R2");
+          await answerCallbackQuery(env, callback.id, { text: "Введите ID" });
+          return true;
+        }
+        if (arg === "clear_prefix") {
+          await storeAdminSession(env, chatId, buildSession("tech_clear_prefix", "__tech__", messageId));
+          await promptAdminInput(env, chatId, "Укажите префикс (по умолчанию cache/)");
+          await answerCallbackQuery(env, callback.id, { text: "Введите префикс" });
+          return true;
+        }
+        if (arg === "webhook") {
+          await storeAdminSession(env, chatId, buildSession("tech_webhook_token", "__tech__", messageId));
+          await promptAdminInput(env, chatId, "Укажите токен бота (оставьте пустым для основного)");
+          await answerCallbackQuery(env, callback.id, { text: "Введите токен" });
+          return true;
+        }
+        await answerCallbackQuery(env, callback.id, { text: "Команда недоступна", showAlert: true });
+        return true;
+      }
       case "refresh_all": {
         const result = await refreshAllProjects(env);
         const count = Array.isArray(result?.refreshed) ? result.refreshed.length : 0;
@@ -1489,6 +1690,41 @@ const handleAdminSessionInput = async (
         await sendTelegramMessage(env, chatId, "✅ Порог модерации обновлён: " + value + " ч.");
         if (session.messageId !== undefined) {
           await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+        }
+        return true;
+      }
+      case "tech_clear_report": {
+        const result = await runTechAction(env, "clear_report", trimmed);
+        await clearAdminSession(env as any, chatId);
+        await sendTelegramMessage(env, chatId, result.message || result.toast || "Готово", {
+          disablePreview: true,
+        });
+        if (session.messageId !== undefined) {
+          await sendAdminTechOverview(env, chatId, { messageId: session.messageId });
+        }
+        return true;
+      }
+      case "tech_clear_prefix": {
+        const prefix = trimmed || "cache/";
+        const result = await runTechAction(env, "clear_prefix", prefix);
+        await clearAdminSession(env as any, chatId);
+        await sendTelegramMessage(env, chatId, result.message || result.toast || "Готово", {
+          disablePreview: true,
+        });
+        if (session.messageId !== undefined) {
+          await sendAdminTechOverview(env, chatId, { messageId: session.messageId });
+        }
+        return true;
+      }
+      case "tech_webhook_token": {
+        const token = trimmed;
+        const result = await runTechAction(env, "webhook", token);
+        await clearAdminSession(env as any, chatId);
+        await sendTelegramMessage(env, chatId, result.message || result.toast || "Готово", {
+          disablePreview: true,
+        });
+        if (session.messageId !== undefined) {
+          await sendAdminTechOverview(env, chatId, { messageId: session.messageId });
         }
         return true;
       }
