@@ -171,6 +171,7 @@ export interface WorkerEnv extends Record<string, unknown> {
   FALLBACK_KV?: KVNamespace;
   LOGS_NAMESPACE?: KVNamespace;
   SESSION_NAMESPACE?: KVNamespace;
+  DB?: KVNamespace;
   META_MANAGE_TOKEN?: string;
   META_LONG_TOKEN?: string;
   META_ACCESS_TOKEN?: string;

@@ -1,10 +1,18 @@
 import { ensureProjectReport, refreshAllProjects } from "./api/projects";
-import { loadProjectCards, readProjectConfig, writeProjectConfig } from "./utils/projects";
+import {
+  loadProjectCards,
+  readProjectConfig,
+  writeProjectConfig,
+  writeBillingInfo,
+  writeAlertsConfig,
+} from "./utils/projects";
 import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "./utils/telegram";
 import { appendLogEntry, readJsonFromR2, listR2Keys, countFallbackEntries } from "./utils/r2";
-import { ProjectReport, ProjectCard } from "./types";
+import { ProjectReport, ProjectCard, BillingInfo, ProjectAlertsConfig } from "./types";
 import { formatCurrency, formatNumber, formatPercent, formatFrequency, formatDateTime } from "./utils/format";
 import { escapeHtml } from "./utils/html";
+import { readAdminSession, writeAdminSession, clearAdminSession } from "./utils/session";
+import type { AdminSessionState } from "./utils/session";
 
 interface TelegramUser {
   id: number | string;
@@ -113,6 +121,44 @@ const ADMIN_MENU_KEYBOARD = {
 };
 
 const REPORT_STALE_THRESHOLD_MS = 30 * 60 * 1000;
+
+type AdminSessionKind =
+  | "billing_amount"
+  | "billing_date"
+  | "alerts_cpa"
+  | "alerts_spend"
+  | "alerts_moderation";
+
+type AdminSession = AdminSessionState & { kind: AdminSessionKind; projectId: string };
+
+const buildSession = (
+  kind: AdminSessionKind,
+  projectId: string,
+  messageId?: number,
+): AdminSession => ({
+  kind,
+  projectId,
+  messageId,
+  createdAt: new Date().toISOString(),
+});
+
+const storeAdminSession = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  session: AdminSession,
+): Promise<void> => {
+  await writeAdminSession(env as any, chatId, session);
+};
+
+const promptAdminInput = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  text: string,
+): Promise<void> => {
+  await sendTelegramMessage(env, chatId, text, {
+    replyMarkup: { force_reply: true },
+  });
+};
 
 interface ReportProjectOption {
   id: string;
@@ -357,6 +403,11 @@ const buildAdminProjectDetailKeyboard = (
     },
   ]);
 
+  rows.push([
+    { text: "💳 Настроить оплату", callback_data: "admin:billing_menu:" + project.id },
+    { text: "🔔 Настроить алерты", callback_data: "admin:alerts_menu:" + project.id },
+  ]);
+
   rows.push([{ text: "🔄 Обновить отчёт", callback_data: "admin:refresh_project:" + project.id }]);
 
   const portal = resolvePortalLink(env, project.id, project.portal_url || undefined);
@@ -535,6 +586,178 @@ const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: st
     );
   }
   await sendTelegramMessage(env, chatId, lines.join("\n\n"));
+};
+
+const buildBillingActionsKeyboard = (projectId: string): Record<string, unknown> => ({
+  inline_keyboard: [
+    [{ text: "💵 Оплатил сегодня", callback_data: "admin:billing_paid:" + projectId }],
+    [
+      { text: "💰 Изменить сумму", callback_data: "admin:billing_amount:" + projectId },
+      { text: "📆 Изменить дату", callback_data: "admin:billing_date:" + projectId },
+    ],
+    [
+      { text: "✅ Оплачено", callback_data: "admin:billing_status:" + projectId + ":paid" },
+      { text: "⚠️ Требуется оплата", callback_data: "admin:billing_status:" + projectId + ":due" },
+    ],
+    [
+      { text: "⛔ Просрочено", callback_data: "admin:billing_status:" + projectId + ":overdue" },
+      { text: "🚫 Неактивен", callback_data: "admin:billing_status:" + projectId + ":inactive" },
+    ],
+    [{ text: "⬅️ К проекту", callback_data: "admin:project:" + projectId }],
+  ],
+});
+
+const sendAdminBillingActions = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  projectId: string,
+): Promise<void> => {
+  const projects = await loadProjectCards(env);
+  const project = projects.find((card) => card.id === projectId);
+  if (!project) {
+    await sendTelegramMessage(env, chatId, "⚠️ Проект не найден. Обновите список проектов.");
+    return;
+  }
+
+  const billing = project.billing || {};
+  const amount =
+    billing.amount !== undefined && billing.amount !== null
+      ? formatCurrency(billing.amount, billing.currency || project.currency || "USD")
+      : "—";
+  const nextPayment = billing.next_payment_date || billing.next_payment || "—";
+  const lastPayment = billing.last_payment || "—";
+  const status = billing.status || "неизвестно";
+
+  const lines: string[] = [
+    "💳 Управление оплатой — " + project.name,
+    "Сумма: " + amount,
+    "Следующая оплата: " + nextPayment,
+    "Последняя оплата: " + lastPayment,
+    "Статус: " + status,
+  ];
+
+  await sendTelegramMessage(env, chatId, lines.join("\n"), {
+    replyMarkup: buildBillingActionsKeyboard(projectId),
+  });
+};
+
+const buildAlertsActionsKeyboard = (projectId: string): Record<string, unknown> => ({
+  inline_keyboard: [
+    [{ text: "🎯 Порог CPA", callback_data: "admin:alerts_cpa:" + projectId }],
+    [{ text: "💸 Лимит расходов", callback_data: "admin:alerts_spend:" + projectId }],
+    [{ text: "⏱ Модерация (часы)", callback_data: "admin:alerts_moderation:" + projectId }],
+    [{ text: "⬅️ К проекту", callback_data: "admin:project:" + projectId }],
+  ],
+});
+
+const sendAdminAlertsActions = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  projectId: string,
+): Promise<void> => {
+  const projects = await loadProjectCards(env);
+  const project = projects.find((card) => card.id === projectId);
+  if (!project) {
+    await sendTelegramMessage(env, chatId, "⚠️ Проект не найден. Обновите список проектов.");
+    return;
+  }
+
+  const alerts: ProjectAlertsConfig = project.alerts || {};
+  const cpa = alerts.cpa_threshold !== undefined && alerts.cpa_threshold !== null ? alerts.cpa_threshold : "—";
+  const spend =
+    alerts.spend_limit !== undefined && alerts.spend_limit !== null ? alerts.spend_limit : "—";
+  const moderation =
+    alerts.moderation_hours !== undefined && alerts.moderation_hours !== null
+      ? alerts.moderation_hours
+      : "—";
+
+  const lines: string[] = [
+    "🔔 Настройка алертов — " + project.name,
+    "CPA порог: " + cpa,
+    "Лимит расходов: " + spend,
+    "Модерация, часов: " + moderation,
+  ];
+
+  await sendTelegramMessage(env, chatId, lines.join("\n"), {
+    replyMarkup: buildAlertsActionsKeyboard(projectId),
+  });
+};
+
+const toIsoDate = (date: Date): string => date.toISOString().slice(0, 10);
+
+const parseDateInput = (text: string): string | null => {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    return trimmed;
+  }
+  const dotMatch = trimmed.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if (dotMatch) {
+    return dotMatch[3] + "-" + dotMatch[2] + "-" + dotMatch[1];
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return toIsoDate(parsed);
+};
+
+const parseNumberInput = (text: string): number | null => {
+  const normalized = text.replace(/[^0-9,.-]+/g, "").replace(/,/g, ".");
+  if (!normalized.trim()) {
+    return null;
+  }
+  const value = Number(normalized);
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return value;
+};
+
+const nextBillingDate = (billingDay: number, from: Date = new Date()): string => {
+  const day = Math.max(1, Math.min(28, Math.floor(billingDay)));
+  const current = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), day));
+  if (from.getUTCDate() >= day) {
+    current.setUTCMonth(current.getUTCMonth() + 1);
+  }
+  return toIsoDate(current);
+};
+
+const updateBillingRecord = async (
+  env: Record<string, unknown>,
+  projectId: string,
+  patch: BillingInfo,
+  message: string,
+): Promise<BillingInfo | null> => {
+  const record = await writeBillingInfo(env, projectId, patch);
+  if (record) {
+    await appendLogEntry(env as any, {
+      level: "info",
+      message: "Telegram admin billing update for " + projectId + ": " + message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+  return record;
+};
+
+const updateAlertsRecord = async (
+  env: Record<string, unknown>,
+  projectId: string,
+  patch: ProjectAlertsConfig,
+  message: string,
+): Promise<ProjectAlertsConfig | null> => {
+  const record = await writeAlertsConfig(env, projectId, patch);
+  if (record) {
+    await appendLogEntry(env as any, {
+      level: "info",
+      message: "Telegram admin alerts update for " + projectId + ": " + message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+  return record;
 };
 
 const resolvePortalLink = (
@@ -861,7 +1084,9 @@ const handleAdminCallback = async (
   const data = callback.data || "";
   const parts = data.split(":");
   const action = parts[1] || "";
-  const arg = parts[2] || "";
+  const args = parts.slice(2);
+  const arg = args[0] || "";
+  const extra = args[1] || "";
 
   if (!action) {
     return false;
@@ -928,10 +1153,126 @@ const handleAdminCallback = async (
         await answerCallbackQuery(env, callback.id, { text: "Отчёт обновлён" });
         return true;
       }
+      case "billing_menu": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        await sendAdminBillingActions(env, chatId, arg);
+        await answerCallbackQuery(env, callback.id, { text: "Оплата" });
+        return true;
+      }
+      case "billing_amount": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        await storeAdminSession(env, chatId, buildSession("billing_amount", arg, messageId));
+        await promptAdminInput(
+          env,
+          chatId,
+          "Введите сумму оплаты для " + arg + ". Пример: 1200000",
+        );
+        await answerCallbackQuery(env, callback.id, { text: "Введите сумму" });
+        return true;
+      }
+      case "billing_date": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        await storeAdminSession(env, chatId, buildSession("billing_date", arg, messageId));
+        await promptAdminInput(
+          env,
+          chatId,
+          "Введите дату следующей оплаты для " + arg + " (формат YYYY-MM-DD или DD.MM.YYYY)",
+        );
+        await answerCallbackQuery(env, callback.id, { text: "Введите дату" });
+        return true;
+      }
+      case "billing_paid": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        const today = new Date();
+        const cards = await loadProjectCards(env);
+        const project = cards.find((card) => card.id === arg);
+        const patch: BillingInfo = {
+          last_payment: toIsoDate(today),
+          status: "paid",
+        };
+        if (project?.billing_day) {
+          const nextDate = nextBillingDate(Number(project.billing_day), today);
+          patch.next_payment = nextDate;
+          patch.next_payment_date = nextDate;
+        }
+        const updated = await updateBillingRecord(env, arg, patch, "marked as paid today");
+        if (!updated) {
+          await answerCallbackQuery(env, callback.id, { text: "Ошибка обновления", showAlert: true });
+          return true;
+        }
+        await sendAdminProjectDetail(env, chatId, arg, { messageId });
+        await answerCallbackQuery(env, callback.id, { text: "Оплата отмечена" });
+        return true;
+      }
+      case "billing_status": {
+        if (!arg || !extra) {
+          await answerCallbackQuery(env, callback.id, { text: "Недостаточно данных", showAlert: true });
+          return true;
+        }
+        const updated = await updateBillingRecord(env, arg, { status: extra as BillingInfo["status"] }, "status => " + extra);
+        if (!updated) {
+          await answerCallbackQuery(env, callback.id, { text: "Ошибка обновления", showAlert: true });
+          return true;
+        }
+        await sendAdminProjectDetail(env, chatId, arg, { messageId });
+        await answerCallbackQuery(env, callback.id, { text: "Статус обновлён" });
+        return true;
+      }
       case "billing":
         await sendAdminBillingOverview(env, chatId);
         await answerCallbackQuery(env, callback.id, { text: "Оплаты" });
         return true;
+      case "alerts_menu": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        await sendAdminAlertsActions(env, chatId, arg);
+        await answerCallbackQuery(env, callback.id, { text: "Алерты" });
+        return true;
+      }
+      case "alerts_cpa": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        await storeAdminSession(env, chatId, buildSession("alerts_cpa", arg, messageId));
+        await promptAdminInput(env, chatId, "Введите порог CPA для " + arg + " (число)");
+        await answerCallbackQuery(env, callback.id, { text: "Введите значение" });
+        return true;
+      }
+      case "alerts_spend": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        await storeAdminSession(env, chatId, buildSession("alerts_spend", arg, messageId));
+        await promptAdminInput(env, chatId, "Введите лимит расходов для " + arg + " (число)");
+        await answerCallbackQuery(env, callback.id, { text: "Введите значение" });
+        return true;
+      }
+      case "alerts_moderation": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        await storeAdminSession(env, chatId, buildSession("alerts_moderation", arg, messageId));
+        await promptAdminInput(env, chatId, "Введите порог модерации (часы) для " + arg);
+        await answerCallbackQuery(env, callback.id, { text: "Введите значение" });
+        return true;
+      }
       case "tech":
         await sendAdminTechOverview(env, chatId);
         await answerCallbackQuery(env, callback.id, { text: "Тех.панель" });
@@ -1024,6 +1365,148 @@ const handleCallbackQuery = async (
   }
 };
 
+const handleAdminSessionInput = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  text: string,
+): Promise<boolean> => {
+  const session = (await readAdminSession(env as any, chatId)) as AdminSession | null;
+  if (!session) {
+    return false;
+  }
+
+  const trimmed = text.trim();
+  if (!trimmed) {
+    await sendTelegramMessage(env, chatId, "Введите значение или /cancel для отмены.");
+    return true;
+  }
+
+  if (trimmed.toLowerCase() === "/cancel") {
+    await clearAdminSession(env as any, chatId);
+    await sendTelegramMessage(env, chatId, "Действие отменено.");
+    return true;
+  }
+
+  const projects = await loadProjectCards(env);
+  const project = projects.find((card) => card.id === session.projectId);
+  const currency = project?.billing?.currency || project?.currency || "USD";
+
+  try {
+    switch (session.kind) {
+      case "billing_amount": {
+        const value = parseNumberInput(trimmed);
+        if (value === null) {
+          await sendTelegramMessage(env, chatId, "Введите числовое значение для суммы.");
+          return true;
+        }
+        const updated = await updateBillingRecord(env, session.projectId, { amount: value }, "amount => " + value);
+        if (!updated) {
+          await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить сумму. Попробуйте позже.");
+          return true;
+        }
+        await clearAdminSession(env as any, chatId);
+        await sendTelegramMessage(
+          env,
+          chatId,
+          "✅ Сумма обновлена: " + formatCurrency(value, currency),
+        );
+        if (session.messageId !== undefined) {
+          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+        }
+        return true;
+      }
+      case "billing_date": {
+        const nextDate = parseDateInput(trimmed);
+        if (!nextDate) {
+          await sendTelegramMessage(env, chatId, "Введите дату в формате YYYY-MM-DD или DD.MM.YYYY.");
+          return true;
+        }
+        const updated = await updateBillingRecord(
+          env,
+          session.projectId,
+          { next_payment: nextDate, next_payment_date: nextDate },
+          "next_payment => " + nextDate,
+        );
+        if (!updated) {
+          await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить дату оплаты.");
+          return true;
+        }
+        await clearAdminSession(env as any, chatId);
+        await sendTelegramMessage(env, chatId, "✅ Дата следующей оплаты: " + nextDate);
+        if (session.messageId !== undefined) {
+          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+        }
+        return true;
+      }
+      case "alerts_cpa": {
+        const value = parseNumberInput(trimmed);
+        if (value === null) {
+          await sendTelegramMessage(env, chatId, "Введите числовой порог CPA.");
+          return true;
+        }
+        const updated = await updateAlertsRecord(env, session.projectId, { cpa_threshold: value }, "cpa => " + value);
+        if (!updated) {
+          await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить порог CPA.");
+          return true;
+        }
+        await clearAdminSession(env as any, chatId);
+        await sendTelegramMessage(env, chatId, "✅ Порог CPA обновлён: " + value);
+        if (session.messageId !== undefined) {
+          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+        }
+        return true;
+      }
+      case "alerts_spend": {
+        const value = parseNumberInput(trimmed);
+        if (value === null) {
+          await sendTelegramMessage(env, chatId, "Введите числовой лимит расходов.");
+          return true;
+        }
+        const updated = await updateAlertsRecord(env, session.projectId, { spend_limit: value }, "spend => " + value);
+        if (!updated) {
+          await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить лимит расходов.");
+          return true;
+        }
+        await clearAdminSession(env as any, chatId);
+        await sendTelegramMessage(env, chatId, "✅ Лимит расходов обновлён: " + value);
+        if (session.messageId !== undefined) {
+          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+        }
+        return true;
+      }
+      case "alerts_moderation": {
+        const value = parseNumberInput(trimmed);
+        if (value === null) {
+          await sendTelegramMessage(env, chatId, "Введите количество часов для модерации.");
+          return true;
+        }
+        const updated = await updateAlertsRecord(env, session.projectId, { moderation_hours: value }, "moderation => " + value);
+        if (!updated) {
+          await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить параметр модерации.");
+          return true;
+        }
+        await clearAdminSession(env as any, chatId);
+        await sendTelegramMessage(env, chatId, "✅ Порог модерации обновлён: " + value + " ч.");
+        if (session.messageId !== undefined) {
+          await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
+  } catch (error) {
+    await appendLogEntry(env as any, {
+      level: "error",
+      message: "Admin session input failed: " + (error as Error).message,
+      timestamp: new Date().toISOString(),
+    });
+    await sendTelegramMessage(env, chatId, "⚠️ Ошибка обработки ввода. Попробуйте позже.");
+    await clearAdminSession(env as any, chatId);
+    return true;
+  }
+};
+
 export const handleTelegramWebhook = async (
   request: Request,
   env: Record<string, unknown>,
@@ -1053,9 +1536,17 @@ export const handleTelegramWebhook = async (
     return new Response("ok");
   }
 
-  const commandData = parseCommand(message.text);
   const chatId = String(message.chat.id);
   const adminIds = getAdminIds(env);
+
+  if (adminIds.includes(chatId)) {
+    const sessionHandled = await handleAdminSessionInput(env, chatId, message.text);
+    if (sessionHandled) {
+      return new Response("ok");
+    }
+  }
+
+  const commandData = parseCommand(message.text);
 
   if (!commandData) {
     return new Response("ok");
