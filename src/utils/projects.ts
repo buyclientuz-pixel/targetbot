@@ -99,7 +99,11 @@ const applyAlertsToCard = (card: ProjectCard, alerts: ProjectAlertsConfig): void
   card.alerts = { ...(card.alerts || {}), ...alerts };
 };
 
-const resolvePortalUrl = (env: unknown, projectId: string, current?: string | null): string | null => {
+export const resolvePortalUrl = (
+  env: unknown,
+  projectId: string,
+  current?: string | null,
+): string | null => {
   if (current && current.trim()) {
     return current;
   }

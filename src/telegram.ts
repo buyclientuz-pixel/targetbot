@@ -6,6 +6,7 @@ import {
   writeProjectConfig,
   writeBillingInfo,
   writeAlertsConfig,
+  resolvePortalUrl,
 } from "./utils/projects";
 import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "./utils/telegram";
 import {
@@ -368,7 +369,8 @@ const sendAdminProjectsOverview = async (
     ];
     cards.push(cardLines.join("\n"));
 
-    const portalUrl = resolvePortalLink(env, project.id, project.portal_url || undefined);
+    const portalUrl = resolvePortalUrl(env, project.id, project.portal_url || undefined) ||
+      ("/portal/" + project.id);
     const chatLink =
       project.chat_link ||
       (project.chat_username ? "https://t.me/" + project.chat_username.replace(/^@/, "") : null);
@@ -500,7 +502,8 @@ const buildAdminProjectDetailKeyboard = (
 
   rows.push([{ text: "🔄 Обновить отчёт", callback_data: "admin:refresh_project:" + project.id }]);
 
-  const portal = resolvePortalLink(env, project.id, project.portal_url || undefined);
+  const portal =
+    resolvePortalUrl(env, project.id, project.portal_url || undefined) || "/portal/" + project.id;
   if (portal) {
     rows.push([{ text: "🌐 Открыть портал", url: portal }]);
   }
@@ -833,22 +836,6 @@ const updateAlertsRecord = async (
     });
   }
   return record;
-};
-
-const resolvePortalLink = (
-  env: Record<string, unknown>,
-  projectId: string,
-  preferred?: string | null,
-): string => {
-  if (preferred && preferred.trim()) {
-    return preferred;
-  }
-  const base = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
-  if (!base) {
-    return "/portal/" + projectId;
-  }
-  const normalized = base.endsWith("/") ? base.slice(0, -1) : base;
-  return normalized + "/portal/" + projectId;
 };
 
 const countDistinct = (keys: string[], prefix: string): number => {
