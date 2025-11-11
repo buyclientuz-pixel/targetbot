@@ -285,6 +285,8 @@ admin:lastsync    — timestamp последней синхронизации
 /api/admin/logs
 /api/admin/billing
 /api/admin/system
+/auth/facebook/status
+/auth/facebook/refresh
 /auth/facebook/login
 /auth/facebook/callback
 ```

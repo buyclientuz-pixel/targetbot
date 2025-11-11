@@ -144,6 +144,12 @@ const routeAuth = async (request: Request, env: WorkerEnv, segments: string[]): 
     if (segments.length === 3 && segments[2] === "callback" && request.method === "GET") {
       return handleFacebookCallback(request, env);
     }
+    if (segments.length === 3 && segments[2] === "status" && request.method === "GET") {
+      return handleFacebookStatusApi(request, env);
+    }
+    if (segments.length === 3 && segments[2] === "refresh" && (request.method === "GET" || request.method === "POST")) {
+      return handleFacebookRefreshApi(request, env);
+    }
   }
   return handleNotFound();
 };
