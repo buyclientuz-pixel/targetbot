@@ -8,7 +8,12 @@ import {
   writeAlertsConfig,
   resolvePortalUrl,
 } from "./utils/projects";
-import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "./utils/telegram";
+import {
+  sendTelegramMessage,
+  editTelegramMessage,
+  answerCallbackQuery,
+  resolveAdminIds,
+} from "./utils/telegram";
 import {
   appendLogEntry,
   readJsonFromR2,
@@ -65,49 +70,6 @@ const parseCommand = (text: string): { command: string; args: string[] } | null 
   const command = parts[0].split("@")[0].toLowerCase();
   const args = parts.slice(1);
   return { command, args };
-};
-
-const DEFAULT_ADMIN_ID = "7623982602";
-
-let adminIdsLogEmitted = false;
-
-const getAdminIds = (env: Record<string, unknown>): string[] => {
-  const ids: string[] = [];
-  const rawAdminIds = typeof env.ADMIN_IDS === "string" ? env.ADMIN_IDS : "";
-
-  if (!adminIdsLogEmitted) {
-    if (rawAdminIds) {
-      console.log("Loaded ADMIN_IDS:", rawAdminIds);
-    } else {
-      console.warn("⚠️ ADMIN_IDS missing in environment variables.");
-    }
-  }
-
-  if (rawAdminIds.trim()) {
-    ids.push(
-      ...rawAdminIds
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean),
-    );
-  }
-
-  if (typeof env.ADMIN_CHAT_ID === "string" && env.ADMIN_CHAT_ID.trim()) {
-    ids.push(env.ADMIN_CHAT_ID.trim());
-  }
-
-  const uniqueIds = Array.from(new Set(ids.map((value) => value.trim()).filter(Boolean)));
-
-  if (!uniqueIds.includes(DEFAULT_ADMIN_ID)) {
-    uniqueIds.push(DEFAULT_ADMIN_ID);
-  }
-
-  if (!adminIdsLogEmitted) {
-    console.log("Resolved ADMIN_IDS list:", uniqueIds.join(", ") || "<empty>");
-    adminIdsLogEmitted = true;
-  }
-
-  return uniqueIds;
 };
 
 const START_MESSAGE =
@@ -1803,7 +1765,7 @@ export const handleTelegramWebhook = async (
   }
 
   const chatId = String(message.chat.id);
-  const adminIds = getAdminIds(env);
+  const adminIds = resolveAdminIds(env);
 
   if (adminIds.includes(chatId)) {
     const sessionHandled = await handleAdminSessionInput(env, chatId, message.text);

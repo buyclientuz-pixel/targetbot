@@ -22,6 +22,8 @@ import { handleTelegramAlert } from "./api/telegram";
 import { handleManageTelegramWebhook } from "./api/manage";
 import { appendLogEntry } from "./utils/r2";
 import { refreshAllProjects } from "./api/projects";
+import { handleFacebookStatusApi, handleFacebookRefreshApi } from "./api/auth";
+import { checkAndRefreshFacebookToken } from "./fb/auth";
 import { WorkerEnv } from "./types";
 
 const handleNotFound = (): Response => notFound("Route not found");
@@ -42,6 +44,14 @@ const routeApi = async (request: Request, env: WorkerEnv, segments: string[]): P
   }
   if (segments[1] === "meta" && segments[2] === "status" && request.method === "GET") {
     return handleMetaStatus(env);
+  }
+  if (segments[1] === "auth" && segments.length >= 4 && segments[2] === "facebook") {
+    if (segments[3] === "status" && request.method === "GET") {
+      return handleFacebookStatusApi(request, env);
+    }
+    if (segments[3] === "refresh" && (request.method === "POST" || request.method === "GET")) {
+      return handleFacebookRefreshApi(request, env);
+    }
   }
   if (segments[1] === "projects" && request.method === "GET") {
     return handleProjectsList(env);
@@ -176,19 +186,45 @@ export default {
   async scheduled(event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
       (async () => {
-        try {
-          const result = await refreshAllProjects(env);
-          await appendLogEntry(env, {
-            level: "info",
-            message: "Scheduled refresh completed for " + result.refreshed.length + " projects",
-            timestamp: new Date().toISOString(),
-          });
-        } catch (error) {
-          await appendLogEntry(env, {
-            level: "error",
-            message: "Scheduled refresh failed: " + (error as Error).message,
-            timestamp: new Date().toISOString(),
-          });
+        const cronExpression = (event as { cron?: string }).cron || "";
+        const shouldRunProjects = !cronExpression || cronExpression === "*/5 * * * *" || cronExpression === "0 3 * * *";
+        const shouldRunTokenCheck = !cronExpression || cronExpression === "0 3 * * *";
+
+        if (shouldRunProjects) {
+          try {
+            const result = await refreshAllProjects(env);
+            await appendLogEntry(env, {
+              level: "info",
+              message: "Scheduled refresh completed for " + result.refreshed.length + " projects",
+              timestamp: new Date().toISOString(),
+            });
+          } catch (error) {
+            await appendLogEntry(env, {
+              level: "error",
+              message: "Scheduled refresh failed: " + (error as Error).message,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+
+        if (shouldRunTokenCheck) {
+          try {
+            const result = await checkAndRefreshFacebookToken(env, { notify: true });
+            await appendLogEntry(env, {
+              level: result.refresh && result.refresh.ok ? "info" : "warn",
+              message:
+                "Meta token check status: " +
+                result.status.status +
+                (result.refresh && result.refresh.message ? " - " + result.refresh.message : ""),
+              timestamp: new Date().toISOString(),
+            });
+          } catch (error) {
+            await appendLogEntry(env, {
+              level: "error",
+              message: "Meta token scheduled check failed: " + (error as Error).message,
+              timestamp: new Date().toISOString(),
+            });
+          }
         }
       })(),
     );

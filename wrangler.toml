@@ -25,4 +25,4 @@ bucket_name = "botbucket"
 preview_bucket_name = "botbucket"
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "0 3 * * *"]
