@@ -21,8 +21,7 @@ const isFresh = (isoDate: string | null | undefined): boolean => {
 export const loadMetaStatus = async (
   env: unknown,
   options: { useCache?: boolean } = {},
-): Promise<MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[]; cached?: boolean }>
-=> {
+): Promise<MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[]; cached?: boolean }> => {
   const useCache = options.useCache !== false;
   if (useCache) {
     const cached = await readJsonFromR2<MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[] }>(
