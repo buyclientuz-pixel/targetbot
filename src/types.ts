@@ -11,6 +11,7 @@ export interface CampaignMetric {
   ctr: number | null;
   frequency?: number | null;
   last_active?: string | null;
+  status_updated_at?: string | null;
 }
 
 export interface ProjectSummary {
@@ -29,6 +30,21 @@ export interface BillingInfo {
   card_last4?: string | null;
   next_payment_date?: string | null;
   days_to_pay?: number | null;
+  spend_limit?: number | null;
+}
+
+export interface ProjectKpiTargets {
+  target_cpa?: number | null;
+  target_ctr?: number | null;
+  planned_spend?: number | null;
+}
+
+export interface ProjectAlertsConfig {
+  chat_id?: string | null;
+  admin_chat_id?: string | null;
+  cpa_threshold?: number | null;
+  spend_limit?: number | null;
+  moderation_hours?: number | null;
 }
 
 export interface ProjectReport {
@@ -43,6 +59,8 @@ export interface ProjectReport {
   campaigns: CampaignMetric[];
   billing?: BillingInfo;
   chat_link?: string | null;
+  kpi?: ProjectKpiTargets | null;
+  alerts?: ProjectAlertsConfig | null;
 }
 
 export interface MetaAuthStatus {
@@ -76,6 +94,8 @@ export interface ProjectCard {
   ad_account_id?: string | null;
   default_period?: string | null;
   billing?: BillingInfo;
+  kpi?: ProjectKpiTargets | null;
+  alerts?: ProjectAlertsConfig | null;
 }
 
 export interface AdminDashboardData {
@@ -106,4 +126,11 @@ export interface AlertPayload {
   threshold: number;
   direction: "above" | "below";
   description?: string;
+}
+
+export interface ProjectAlertState {
+  cpa_exceeded?: boolean;
+  spend_exceeded?: boolean;
+  moderation_alerts?: string[];
+  updated_at?: string;
 }

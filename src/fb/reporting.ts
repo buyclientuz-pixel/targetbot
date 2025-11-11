@@ -1,6 +1,7 @@
 import { callGraph } from "./client";
 import { appendLogEntry, readJsonFromR2, writeJsonToR2 } from "../utils/r2";
 import { findProjectCard } from "../utils/projects";
+import { processAutoAlerts } from "../utils/alerts";
 import {
   CampaignMetric,
   ProjectCard,
@@ -34,8 +35,13 @@ const parseLeads = (actions: any[]): number => {
   return total;
 };
 
-const toCampaignMetric = (entry: any, statusMap: Map<string, string>): CampaignMetric => {
-  const campaignId = String(entry.campaign_id || entry.campaign_id || "");
+interface CampaignStatusInfo {
+  status: string;
+  updated_time: string | null;
+}
+
+const toCampaignMetric = (entry: any, statusMap: Map<string, CampaignStatusInfo>): CampaignMetric => {
+  const campaignId = String(entry.campaign_id || "");
   const spend = Number(entry.spend || 0);
   const clicks = Number(entry.clicks || 0);
   const impressions = Number(entry.impressions || 0);
@@ -45,7 +51,9 @@ const toCampaignMetric = (entry: any, statusMap: Map<string, string>): CampaignM
   const cpc = clicks > 0 ? spend / clicks : null;
   const frequency = entry.frequency ? Number(entry.frequency) : null;
   const lastActive = entry.date_stop ? entry.date_stop : entry.date_start;
-  const status = statusMap.get(campaignId) || "UNKNOWN";
+  const statusInfo = statusMap.get(campaignId);
+  const status = statusInfo ? statusInfo.status : "UNKNOWN";
+  const statusUpdated = statusInfo ? statusInfo.updated_time : null;
 
   return {
     id: campaignId,
@@ -60,6 +68,7 @@ const toCampaignMetric = (entry: any, statusMap: Map<string, string>): CampaignM
     cpc,
     frequency,
     last_active: lastActive || null,
+    status_updated_at: statusUpdated,
   };
 };
 
@@ -111,19 +120,26 @@ const pickPeriod = (project: ProjectCard | null, override?: string): string => {
   return DEFAULT_PERIOD;
 };
 
-const fetchCampaignStatuses = async (env: unknown, accountId: string): Promise<Map<string, string>> => {
+const fetchCampaignStatuses = async (
+  env: unknown,
+  accountId: string,
+): Promise<Map<string, CampaignStatusInfo>> => {
   try {
     const response = await callGraph(env as any, accountId + "/campaigns", {
       fields: "id,status,effective_status,updated_time",
       limit: "500",
     });
-    const map = new Map<string, string>();
+    const map = new Map<string, CampaignStatusInfo>();
     if (response && Array.isArray(response.data)) {
       for (const item of response.data) {
         const id = String(item.id || "");
         const status = String(item.effective_status || item.status || "UNKNOWN");
+        const updated = item.updated_time ? String(item.updated_time) : null;
         if (id) {
-          map.set(id, status.toUpperCase());
+          map.set(id, {
+            status: status.toUpperCase(),
+            updated_time: updated,
+          });
         }
       }
     }
@@ -152,10 +168,16 @@ const fetchBillingInfo = (account: any): BillingInfo | undefined => {
       }
     }
   }
+  const spendCap = account.spend_cap !== undefined && account.spend_cap !== null
+    ? Number(account.spend_cap)
+    : null;
+  const normalizedSpendCap = typeof spendCap === "number" && Number.isFinite(spendCap) ? spendCap : null;
+
   return {
     card_last4: card ? String(card).slice(-4) : null,
     next_payment_date: nextDate || null,
     days_to_pay: daysToPay,
+    spend_limit: normalizedSpendCap,
   };
 };
 
@@ -213,9 +235,12 @@ export const refreshProjectReport = async (
       campaigns,
       billing: fetchBillingInfo(accountDetails),
       chat_link: project.chat_link || null,
+      kpi: project.kpi || null,
+      alerts: project.alerts || null,
     };
 
     await writeJsonToR2(env as any, "reports/" + projectId + ".json", report);
+    await processAutoAlerts(env, project, report);
     return report;
   } catch (error) {
     await appendLogEntry(env as any, {

@@ -478,6 +478,7 @@ npm run deploy -- --env production
 - [ ] Add inline report formatting
 - [ ] Command `/report`, `/project`, `/campaigns`
 - [ ] Auto-alerts for thresholds
+ - [x] Auto-alerts for thresholds
 
 ### Phase 5 – UI/UX polish
 - [ ] Dark theme, responsive layout

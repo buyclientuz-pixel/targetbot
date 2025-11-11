@@ -87,7 +87,7 @@ const renderTable = (campaigns: CampaignMetric[], currency: string): string => {
         '<td class="px-4 py-3 text-right">' + formatCurrency(campaign.cpa, currency) + '</td>' +
         '<td class="px-4 py-3 text-right">' + formatCurrency(campaign.cpc, currency) + '</td>' +
         '<td class="px-4 py-3 text-right">' + formatPercent(campaign.ctr) + '</td>' +
-        '<td class="px-4 py-3 text-right">' + formatDate(campaign.last_active) + '</td>' +
+        '<td class="px-4 py-3 text-right">' + formatDate(campaign.last_active || campaign.status_updated_at || null) + '</td>' +
         '</tr>'
       );
     })
