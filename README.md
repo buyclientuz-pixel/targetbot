@@ -676,6 +676,9 @@ npm run deploy -- --env production
 - [x] KV fallback simulation
 - [x] Deploy confirmation
 
+#### npm install shim
+- [x] Added npm command shim to coerce `npm ci`/`npm clean-install` into `npm install --force --legacy-peer-deps` during Cloudflare builds.
+
 ---
 
 ## ⚙️ DEVELOPER TIPS
