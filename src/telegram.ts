@@ -1,5 +1,5 @@
 import { ensureProjectReport, refreshAllProjects } from "./api/projects";
-import { clearMetaStatusCache } from "./api/meta";
+import { clearMetaStatusCache, loadMetaStatus } from "./api/meta";
 import { checkAndRefreshFacebookToken } from "./fb/auth";
 import {
   loadProjectCards,
@@ -25,7 +25,14 @@ import {
   clearFallbackEntries,
   readCronStatus,
 } from "./utils/r2";
-import { ProjectReport, ProjectCard, BillingInfo, ProjectAlertsConfig, WorkerEnv } from "./types";
+import {
+  ProjectReport,
+  ProjectCard,
+  BillingInfo,
+  ProjectAlertsConfig,
+  WorkerEnv,
+  MetaAccountInfo,
+} from "./types";
 import {
   formatCurrency,
   formatNumber,
@@ -560,6 +567,38 @@ const adminStatusIcon = (status?: string | null): string => {
   return "⚪️";
 };
 
+type AccountStatusBucket = "active" | "pending" | "disabled" | "other";
+
+const resolveAccountStatusIndicator = (
+  status?: string | null,
+): { icon: string; bucket: AccountStatusBucket } => {
+  const normalized = (status || "").toLowerCase();
+  if (!normalized) {
+    return { icon: "⚪️", bucket: "other" };
+  }
+  if (normalized.includes("active")) {
+    return { icon: "🟢", bucket: "active" };
+  }
+  if (
+    normalized.includes("pend") ||
+    normalized.includes("review") ||
+    normalized.includes("moderation") ||
+    normalized.includes("processing")
+  ) {
+    return { icon: "🟡", bucket: "pending" };
+  }
+  if (
+    normalized.includes("disable") ||
+    normalized.includes("suspend") ||
+    normalized.includes("block") ||
+    normalized.includes("close") ||
+    normalized.includes("inactive")
+  ) {
+    return { icon: "⚫️", bucket: "disabled" };
+  }
+  return { icon: "⚪️", bucket: "other" };
+};
+
 const buildOAuthUrl = (env: Record<string, unknown>): string | null => {
   const appId = typeof env.FB_APP_ID === "string" ? env.FB_APP_ID.trim() : "";
   const base = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
@@ -639,6 +678,16 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
 
   try {
     const result = await checkAndRefreshFacebookToken(env as WorkerEnv, { notify: false });
+    type MetaStatusPayload = Awaited<ReturnType<typeof loadMetaStatus>>;
+    let metaStatus: MetaStatusPayload | null = null;
+    let metaStatusError: string | null = null;
+
+    try {
+      metaStatus = await loadMetaStatus(env as WorkerEnv, { useCache: true });
+    } catch (error) {
+      metaStatusError = (error as Error).message || "Не удалось загрузить статус Meta.";
+    }
+
     const status = result.status;
     const refresh = result.refresh;
 
@@ -682,6 +731,91 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
       } else if (refresh.message) {
         lines.push("⚠️ Не удалось обновить токен: " + refresh.message);
       }
+    }
+
+    const detailLines: string[] = [];
+
+    if (metaStatus) {
+      if (metaStatus.updated_at) {
+        detailLines.push("⏱ Обновлено: " + formatDateTime(metaStatus.updated_at, timeZone));
+      }
+
+      const accounts: MetaAccountInfo[] = Array.isArray(metaStatus.accounts) ? metaStatus.accounts : [];
+      if (accounts.length > 0) {
+        let activeCount = 0;
+        let pendingCount = 0;
+        let disabledCount = 0;
+        const maxVisible = 5;
+        const accountLines: string[] = [];
+
+        accounts.forEach((account) => {
+          const indicator = resolveAccountStatusIndicator(account.status);
+          if (indicator.bucket === "active") {
+            activeCount += 1;
+          } else if (indicator.bucket === "pending") {
+            pendingCount += 1;
+          } else if (indicator.bucket === "disabled") {
+            disabledCount += 1;
+          }
+        });
+
+        detailLines.push(
+          "📘 Аккаунты Facebook: " +
+            accounts.length +
+            " (🟢 " +
+            String(activeCount) +
+            " • 🟡 " +
+            String(pendingCount) +
+            " • ⚫️ " +
+            String(disabledCount) +
+            ")",
+        );
+
+        accounts.slice(0, maxVisible).forEach((account) => {
+          const indicator = resolveAccountStatusIndicator(account.status);
+          const name = account.name || account.id;
+          const statusLabel = account.status ? account.status : "статус неизвестен";
+          accountLines.push(indicator.icon + " " + name + " — " + statusLabel);
+
+          const detailParts: string[] = [];
+          if (account.balance !== undefined && account.balance !== null) {
+            detailParts.push("Баланс: " + formatCurrency(account.balance, account.currency || "USD"));
+          }
+          if (account.spend_cap !== undefined && account.spend_cap !== null) {
+            detailParts.push("Лимит: " + formatCurrency(account.spend_cap, account.currency || "USD"));
+          }
+          if (account.payment_method) {
+            detailParts.push("Карта: " + account.payment_method);
+          }
+          if (account.last_update) {
+            detailParts.push("Обновлено: " + formatDateTime(account.last_update, timeZone));
+          }
+          if (detailParts.length) {
+            accountLines.push("   " + detailParts.join(" • "));
+          }
+          if (Array.isArray(account.issues) && account.issues.length) {
+            accountLines.push("   ⚠️ " + account.issues.join("; "));
+          }
+        });
+
+        detailLines.push(...accountLines);
+
+        if (accounts.length > maxVisible) {
+          detailLines.push("… и ещё " + (accounts.length - maxVisible) + " аккаунтов смотрите в веб-панели.");
+        }
+      } else {
+        detailLines.push("⚠️ Не удалось получить список рекламных аккаунтов.");
+      }
+
+      if (metaStatus.cached) {
+        detailLines.push("ℹ️ Используются кешированные данные Meta.");
+      }
+    } else if (metaStatusError) {
+      detailLines.push("⚠️ Не удалось загрузить статус Meta: " + metaStatusError);
+    }
+
+    if (detailLines.length) {
+      lines.push("", ...detailLines);
     }
 
     await sendTelegramMessage(env, chatId, lines.join("\n"));
