@@ -5994,7 +5994,7 @@ function renderClientPortalPage({
                 '" data-campaign-id="' +
                 escapeText(item.id || '') +
                 '" aria-label="' +
-                escapeText(`Подробнее о кампании ${campaignName}`) +
+                escapeText('Подробнее о кампании ' + campaignName) +
                 '">' +
                 '<div class="campaign-card__line">' +
                 '<span class="campaign-card__status" data-tone="' +
