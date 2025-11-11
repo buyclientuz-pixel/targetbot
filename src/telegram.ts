@@ -41,12 +41,23 @@ const parseCommand = (text: string): { command: string; args: string[] } | null 
   return { command, args };
 };
 
+let adminIdsLogEmitted = false;
+
 const getAdminIds = (env: Record<string, unknown>): string[] => {
   const ids: string[] = [];
+  const rawAdminIds = typeof env.ADMIN_IDS === "string" ? env.ADMIN_IDS : "";
 
-  if (typeof env.ADMIN_IDS === "string" && env.ADMIN_IDS.trim()) {
+  if (!adminIdsLogEmitted) {
+    if (rawAdminIds) {
+      console.log("Loaded ADMIN_IDS:", rawAdminIds);
+    } else {
+      console.warn("⚠️ ADMIN_IDS missing in environment variables.");
+    }
+  }
+
+  if (rawAdminIds.trim()) {
     ids.push(
-      ...env.ADMIN_IDS
+      ...rawAdminIds
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean),
@@ -57,7 +68,14 @@ const getAdminIds = (env: Record<string, unknown>): string[] => {
     ids.push(env.ADMIN_CHAT_ID.trim());
   }
 
-  return Array.from(new Set(ids));
+  const uniqueIds = Array.from(new Set(ids.map((value) => value.trim()).filter(Boolean)));
+
+  if (!adminIdsLogEmitted) {
+    console.log("Resolved ADMIN_IDS list:", uniqueIds.join(", ") || "<empty>");
+    adminIdsLogEmitted = true;
+  }
+
+  return uniqueIds;
 };
 
 const START_MESSAGE =
@@ -105,13 +123,13 @@ const parseProjectsConfig = (value: unknown): ReportProjectOption[] => {
   return value
     .split(",")
     .map((entry) => {
-      const [idPart, ...nameParts] = entry.split(":");
-      const id = idPart.trim();
-      const name = nameParts.join(":").trim();
-      if (!id) {
+      const [idPart, namePart] = entry.split(":");
+      const id = idPart?.trim();
+      const name = namePart?.trim();
+      if (!id || !name) {
         return null;
       }
-      return { id, name: name || id };
+      return { id, name };
     })
     .filter((entry): entry is ReportProjectOption => Boolean(entry));
 };
@@ -128,6 +146,8 @@ const getTimeZone = (env: Record<string, unknown>): string => {
   return "Asia/Tashkent";
 };
 
+let projectSourcesLogEmitted = false;
+
 const loadReportProjects = async (env: Record<string, unknown>): Promise<ReportProjectOption[]> => {
   const map = new Map<string, ReportProjectOption>();
   const add = (option: ReportProjectOption | null | undefined): void => {
@@ -141,7 +161,8 @@ const loadReportProjects = async (env: Record<string, unknown>): Promise<ReportP
     }
   };
 
-  parseProjectsConfig(env.PROJECTS).forEach(add);
+  const envProjects = parseProjectsConfig(env.PROJECTS);
+  envProjects.forEach(add);
 
   const indexed = await readJsonFromR2<ReportProjectOption[]>(env as any, "reports/projects.json");
   if (Array.isArray(indexed)) {
@@ -157,7 +178,18 @@ const loadReportProjects = async (env: Record<string, unknown>): Promise<ReportP
       .forEach(add);
   }
 
-  return Array.from(map.values());
+  const projects = Array.from(map.values());
+
+  if (!projectSourcesLogEmitted) {
+    console.log("Loaded projects from ENV:", envProjects.map((project) => project.id).join(", ") || "<empty>");
+    console.log("Resolved project list:", projects.map((project) => project.id + ":" + project.name).join(", ") || "<empty>");
+    if (projects.length === 0) {
+      console.warn("⚠️ No projects found in ENV or R2.");
+    }
+    projectSourcesLogEmitted = true;
+  }
+
+  return projects;
 };
 
 const buildProjectSelectionKeyboard = (projects: ReportProjectOption[]): Record<string, unknown> => ({
@@ -288,7 +320,8 @@ const showProjectSelectionMessage = async (
 ): Promise<void> => {
   const projects = await loadReportProjects(env);
   if (projects.length === 0) {
-    const text = "Нет подключенных проектов";
+    const text = "⚠️ Нет подключённых проектов. Проверьте настройки.";
+    console.warn("⚠️ Нет подключённых проектов. Проверьте значение PROJECTS и R2 индекс.");
     if (typeof options.messageId === "number") {
       await editTelegramMessage(env, chatId, options.messageId, text);
     } else {
