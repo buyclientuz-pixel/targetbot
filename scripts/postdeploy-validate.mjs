@@ -49,7 +49,7 @@ function parseProjects(value) {
 function maskToken(token = '') {
   if (!token) return '';
   if (token.length <= 8) return token;
-  return token.slice(0, 5) + '****' + token.slice(-2);
+  return `${token.slice(0, 5)}****${token.slice(-2)}`;
 }
 
 function normalizeBaseUrl(value) {
@@ -57,7 +57,7 @@ function normalizeBaseUrl(value) {
   let url = value.trim();
   if (!url) return '';
   if (!/^https?:\/\//i.test(url)) {
-    url = 'https://' + url;
+    url = `https://${url}`;
   }
   if (url.endsWith('/')) {
     url = url.slice(0, -1);
