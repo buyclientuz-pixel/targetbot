@@ -1,8 +1,8 @@
 import { ensureProjectReport, refreshAllProjects } from "./api/projects";
-import { loadProjectCards } from "./utils/projects";
+import { loadProjectCards, readProjectConfig, writeProjectConfig } from "./utils/projects";
 import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "./utils/telegram";
 import { appendLogEntry, readJsonFromR2, listR2Keys, countFallbackEntries } from "./utils/r2";
-import { ProjectReport } from "./types";
+import { ProjectReport, ProjectCard } from "./types";
 import { formatCurrency, formatNumber, formatPercent, formatFrequency, formatDateTime } from "./utils/format";
 import { escapeHtml } from "./utils/html";
 
@@ -108,6 +108,7 @@ const ADMIN_MENU_KEYBOARD = {
     [{ text: "📁 Проекты", callback_data: "admin:projects" }],
     [{ text: "💳 Оплаты", callback_data: "admin:billing" }],
     [{ text: "⚙️ Тех.панель", callback_data: "admin:tech" }],
+    [{ text: "🔁 Обновить отчёты", callback_data: "admin:refresh_all" }],
   ],
 };
 
@@ -193,6 +194,238 @@ const loadReportProjects = async (env: Record<string, unknown>): Promise<ReportP
   }
 
   return projects;
+};
+
+interface AdminMessageContext {
+  messageId?: number;
+}
+
+type AdminToggleField = "alerts_enabled" | "silent_weekends";
+
+const deliverAdminMessage = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  text: string,
+  options: { parseMode?: string; replyMarkup?: Record<string, unknown>; disablePreview?: boolean } = {},
+  context: AdminMessageContext = {},
+): Promise<void> => {
+  if (typeof context.messageId === "number") {
+    await editTelegramMessage(env, chatId, context.messageId, text, options);
+  } else {
+    await sendTelegramMessage(env, chatId, text, options);
+  }
+};
+
+const truncateLabel = (value: string, limit = 28): string => {
+  if (value.length <= limit) {
+    return value;
+  }
+  return value.slice(0, Math.max(0, limit - 1)) + "…";
+};
+
+const buildAdminProjectListKeyboard = (projects: ProjectCard[]): Record<string, unknown> => {
+  const inline_keyboard: Array<Array<Record<string, unknown>>> = [];
+  const limit = Math.min(projects.length, 25);
+  for (let index = 0; index < limit; index += 1) {
+    const project = projects[index];
+    const icon = adminStatusIcon(project.status);
+    const label = truncateLabel(icon + " " + project.name, 30);
+    inline_keyboard.push([{ text: label, callback_data: "admin:project:" + project.id }]);
+  }
+  inline_keyboard.push([{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]);
+  return { inline_keyboard };
+};
+
+const sendAdminMenu = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  context: AdminMessageContext = {},
+): Promise<void> => {
+  await deliverAdminMessage(env, chatId, ADMIN_MENU_MESSAGE, { replyMarkup: ADMIN_MENU_KEYBOARD }, context);
+};
+
+const sendAdminProjectsOverview = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  context: AdminMessageContext = {},
+): Promise<void> => {
+  const projects = await loadProjectCards(env);
+  if (!projects.length) {
+    await deliverAdminMessage(
+      env,
+      chatId,
+      "⚠️ Список проектов пуст. Добавьте проекты через веб-панель или API.",
+      { replyMarkup: { inline_keyboard: [[{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]] } },
+      context,
+    );
+    return;
+  }
+
+  const lines: string[] = [
+    "📁 Управление проектами",
+    "",
+    "Выберите проект, чтобы переключать алерты, настроить оплату или обновить отчёт.",
+    "Для расширенных настроек используйте веб-панель /admin.",
+  ];
+
+  if (projects.length > 25) {
+    lines.push("", "Показаны первые 25 проектов из " + String(projects.length) + ".");
+  }
+
+  await deliverAdminMessage(
+    env,
+    chatId,
+    lines.join("\n"),
+    { replyMarkup: buildAdminProjectListKeyboard(projects), disablePreview: true },
+    context,
+  );
+};
+
+const formatAdminProjectDetail = (project: ProjectCard, timeZone: string): string => {
+  const lines: string[] = [];
+  const icon = adminStatusIcon(project.status);
+  lines.push(icon + " <b>" + escapeHtml(project.name) + "</b>");
+  lines.push("ID: <code>" + escapeHtml(project.id) + "</code>");
+
+  if (project.status) {
+    lines.push("Статус: " + escapeHtml(project.status));
+  }
+
+  if (project.account_name) {
+    lines.push("Аккаунт: " + escapeHtml(project.account_name));
+  }
+
+  if (project.manager) {
+    lines.push("Менеджер: " + escapeHtml(project.manager));
+  }
+
+  const billing = project.billing || {};
+  if (billing.amount !== undefined || billing.next_payment || billing.next_payment_date) {
+    const amountText = formatCurrency(billing.amount ?? null, billing.currency || project.currency || "USD");
+    const nextPayment = billing.next_payment || billing.next_payment_date || "—";
+    lines.push("💳 Оплата: " + escapeHtml(amountText) + " | Следующая дата: " + escapeHtml(String(nextPayment)));
+  }
+
+  const alertsEnabled = project.alerts_enabled !== false;
+  const silentEnabled = Boolean(project.silent_weekends);
+  lines.push("Алерты: " + (alertsEnabled ? "включены" : "выключены"));
+  lines.push("Тихие выходные: " + (silentEnabled ? "включены" : "выключены"));
+
+  if (project.summary) {
+    lines.push("", "📊 Текущие показатели:");
+    lines.push("• Потрачено: " + escapeHtml(formatCurrency(project.summary.spend, project.currency || "USD")));
+    lines.push(
+      "• Лиды: " +
+        escapeHtml(String(project.summary.leads ?? "—")) +
+        " | Клики: " +
+        escapeHtml(String(project.summary.clicks ?? "—")),
+    );
+    lines.push(
+      "• CTR: " +
+        escapeHtml(String(project.summary.ctr ?? "—")) +
+        " | CPA: " +
+        escapeHtml(formatCurrency(project.summary.cpa, project.currency || "USD")),
+    );
+  } else {
+    lines.push("", "Нет свежего отчёта для отображения.");
+  }
+
+  const updatedAt = project.updated_at || project.last_sync || null;
+  if (updatedAt) {
+    lines.push("", "⏱ Обновлено: " + escapeHtml(formatDateTime(updatedAt, timeZone)));
+  }
+
+  return lines.join("\n");
+};
+
+const buildAdminProjectDetailKeyboard = (
+  env: Record<string, unknown>,
+  project: ProjectCard,
+): Record<string, unknown> => {
+  const rows: Array<Array<Record<string, unknown>>> = [];
+  const alertsEnabled = project.alerts_enabled !== false;
+  const silentEnabled = Boolean(project.silent_weekends);
+
+  rows.push([
+    {
+      text: alertsEnabled ? "🔕 Выключить алерты" : "🔔 Включить алерты",
+      callback_data: "admin:toggle_alerts:" + project.id,
+    },
+    {
+      text: silentEnabled ? "🔔 Вернуть уведомления" : "😴 Тихие выходные",
+      callback_data: "admin:toggle_silent:" + project.id,
+    },
+  ]);
+
+  rows.push([{ text: "🔄 Обновить отчёт", callback_data: "admin:refresh_project:" + project.id }]);
+
+  const portal = resolvePortalLink(env, project.id, project.portal_url || undefined);
+  if (portal) {
+    rows.push([{ text: "🌐 Открыть портал", url: portal }]);
+  }
+  const chatLink = project.chat_link
+    ? project.chat_link
+    : project.chat_username
+    ? "https://t.me/" + project.chat_username.replace(/^@/, "")
+    : null;
+  if (chatLink) {
+    rows.push([{ text: "💬 Чат проекта", url: chatLink }]);
+  }
+
+  rows.push([
+    { text: "⬅️ К списку", callback_data: "admin:projects" },
+    { text: "🏠 Меню", callback_data: "admin:menu" },
+  ]);
+
+  return { inline_keyboard: rows };
+};
+
+const sendAdminProjectDetail = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  projectId: string,
+  context: AdminMessageContext = {},
+): Promise<boolean> => {
+  const projects = await loadProjectCards(env);
+  const project = projects.find((card) => card.id === projectId);
+  if (!project) {
+    await deliverAdminMessage(
+      env,
+      chatId,
+      "⚠️ Проект не найден. Обновите список и попробуйте снова.",
+      { replyMarkup: { inline_keyboard: [[{ text: "⬅️ К списку", callback_data: "admin:projects" }]] } },
+      context,
+    );
+    return false;
+  }
+
+  const message = formatAdminProjectDetail(project, getTimeZone(env));
+  const keyboard = buildAdminProjectDetailKeyboard(env, project);
+
+  await deliverAdminMessage(env, chatId, message, { parseMode: "HTML", replyMarkup: keyboard, disablePreview: true }, context);
+  return true;
+};
+
+const toggleProjectField = async (
+  env: Record<string, unknown>,
+  projectId: string,
+  field: AdminToggleField,
+): Promise<boolean> => {
+  const current = await readProjectConfig(env, projectId);
+  const previous = current && typeof (current as any)[field] === "boolean" ? Boolean((current as any)[field]) : false;
+  const nextValue = !previous;
+  const patch: Record<string, unknown> = {};
+  (patch as any)[field] = nextValue;
+  const record = await writeProjectConfig(env, projectId, patch as any);
+  if (!record) {
+    throw new Error("Не удалось обновить конфигурацию проекта");
+  }
+  await appendLogEntry(env as any, {
+    level: "info",
+    message: "Telegram admin toggled " + field + " for " + projectId + " => " + String(nextValue),
+    timestamp: new Date().toISOString(),
+  });
+  return nextValue;
 };
 
 const buildProjectSelectionKeyboard = (projects: ReportProjectOption[]): Record<string, unknown> => ({
@@ -623,9 +856,12 @@ const handleAdminCallback = async (
   env: Record<string, unknown>,
   callback: TelegramCallbackQuery,
   chatId: string,
+  messageId: number,
 ): Promise<boolean> => {
   const data = callback.data || "";
-  const [, action = ""] = data.split(":");
+  const parts = data.split(":");
+  const action = parts[1] || "";
+  const arg = parts[2] || "";
 
   if (!action) {
     return false;
@@ -638,9 +874,60 @@ const handleAdminCallback = async (
         await answerCallbackQuery(env, callback.id, { text: "Ссылка отправлена" });
         return true;
       case "projects":
-        await sendAdminProjectsOverview(env, chatId);
+        await sendAdminProjectsOverview(env, chatId, { messageId });
         await answerCallbackQuery(env, callback.id, { text: "Проекты" });
         return true;
+      case "menu":
+        await sendAdminMenu(env, chatId, { messageId });
+        await answerCallbackQuery(env, callback.id, { text: "Главное меню" });
+        return true;
+      case "project":
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        await sendAdminProjectDetail(env, chatId, arg, { messageId });
+        await answerCallbackQuery(env, callback.id, { text: "Проект открыт" });
+        return true;
+      case "toggle_alerts": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        const enabled = await toggleProjectField(env, arg, "alerts_enabled");
+        await sendAdminProjectDetail(env, chatId, arg, { messageId });
+        await answerCallbackQuery(env, callback.id, {
+          text: enabled ? "Алерты включены" : "Алерты выключены",
+        });
+        return true;
+      }
+      case "toggle_silent": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        const enabled = await toggleProjectField(env, arg, "silent_weekends");
+        await sendAdminProjectDetail(env, chatId, arg, { messageId });
+        await answerCallbackQuery(env, callback.id, {
+          text: enabled ? "Тихие выходные включены" : "Уведомления вернулись",
+        });
+        return true;
+      }
+      case "refresh_project": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        const report = await ensureProjectReport(env, arg, { force: true });
+        await appendLogEntry(env as any, {
+          level: "info",
+          message: "Telegram admin refreshed project " + arg + (report ? "" : " (без отчёта)"),
+          timestamp: new Date().toISOString(),
+        });
+        await sendAdminProjectDetail(env, chatId, arg, { messageId });
+        await answerCallbackQuery(env, callback.id, { text: "Отчёт обновлён" });
+        return true;
+      }
       case "billing":
         await sendAdminBillingOverview(env, chatId);
         await answerCallbackQuery(env, callback.id, { text: "Оплаты" });
@@ -719,7 +1006,7 @@ const handleCallbackQuery = async (
     }
 
     if (data.startsWith("admin:")) {
-      const handled = await handleAdminCallback(env, callback, chatId);
+      const handled = await handleAdminCallback(env, callback, chatId, messageId);
       if (!handled) {
         await answerCallbackQuery(env, callback.id, { text: "Команда недоступна", showAlert: true });
       }

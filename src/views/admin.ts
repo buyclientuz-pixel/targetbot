@@ -32,6 +32,14 @@ const safe = (value: string | null | undefined, fallback = "—"): string => {
   return text ? escapeHtml(text) : fallback;
 };
 
+const inputValue = (value: string | number | null | undefined): string => {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  const text = String(value).trim();
+  return text ? escapeHtml(text) : "";
+};
+
 const renderProjectCard = (project: ProjectCard): string => {
   const icon = statusIcon(project.status);
   const chatLink = project.chat_link
@@ -103,6 +111,8 @@ const renderProjectCard = (project: ProjectCard): string => {
   const toggleSilentText = silentEnabled
     ? "🔔 Включить уведомления в выходные"
     : "😴 Включить тихие выходные";
+  const formInputClass =
+    "rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none";
   const actions =
     '<div class="mt-4 flex flex-wrap gap-2 text-xs sm:text-sm">' +
     '<button type="button" data-admin-action="toggle-alerts" data-project="' + projectIdAttr +
@@ -113,12 +123,85 @@ const renderProjectCard = (project: ProjectCard): string => {
     '" class="rounded-lg bg-slate-800 px-3 py-1.5 font-semibold text-slate-200 hover:bg-slate-700">' +
     escapeHtml(toggleSilentText) +
     '</button>' +
+    '<button type="button" data-admin-action="edit-project" data-project="' + projectIdAttr +
+    '" class="rounded-lg bg-slate-800 px-3 py-1.5 font-semibold text-slate-200 hover:bg-slate-700">✏️ Редактировать</button>' +
+    '<button type="button" data-admin-action="edit-billing" data-project="' + projectIdAttr +
+    '" class="rounded-lg bg-slate-800 px-3 py-1.5 font-semibold text-slate-200 hover:bg-slate-700">💳 Настроить оплату</button>' +
     '<button type="button" data-admin-action="refresh-project" data-project="' + projectIdAttr +
     '" class="rounded-lg bg-emerald-500 px-3 py-1.5 font-semibold text-slate-950 hover:bg-emerald-400">🔄 Обновить отчёт</button>' +
     '</div>';
 
+  const editForm =
+    '<form data-admin-form="update-project" data-project="' + projectIdAttr +
+    '" data-admin-form-section="project" class="mt-4 hidden space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4">' +
+    '<div class="grid gap-3 sm:grid-cols-2">' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Название<input name="name" type="text" value="' +
+    inputValue(project.name) +
+    '" class="' + formInputClass + '" placeholder="Название проекта"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Статус<input name="status" type="text" value="' +
+    inputValue(project.status || "") +
+    '" class="' + formInputClass + '" placeholder="active"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Chat ID<input name="chat_id" type="text" value="' +
+    inputValue(project.chat_id || "") +
+    '" class="' + formInputClass + '" placeholder="-100123456"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Telegram<input name="chat_username" type="text" value="' +
+    inputValue(project.chat_username || "") +
+    '" class="' + formInputClass + '" placeholder="@username"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Ссылка на чат<input name="chat_link" type="text" value="' +
+    inputValue(project.chat_link || "") +
+    '" class="' + formInputClass + '" placeholder="https://t.me/..."></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Аккаунт Facebook<input name="account_name" type="text" value="' +
+    inputValue(project.account_name || "") +
+    '" class="' + formInputClass + '" placeholder="Ad Account"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">День оплаты<input name="billing_day" type="number" value="' +
+    inputValue(project.billing_day ?? "") +
+    '" class="' + formInputClass + '" min="1" max="31"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Менеджер<input name="manager" type="text" value="' +
+    inputValue(project.manager || "") +
+    '" class="' + formInputClass + '" placeholder="Имя менеджера"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Портал<input name="portal_url" type="text" value="' +
+    inputValue(project.portal_url || "") +
+    '" class="' + formInputClass + '" placeholder="https://.../portal"></label>' +
+    '</div>' +
+    '<div class="flex flex-wrap gap-2">' +
+    '<button type="submit" class="rounded-lg bg-emerald-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-emerald-400">💾 Сохранить</button>' +
+    '<button type="button" data-admin-action="cancel-edit" data-project="' + projectIdAttr +
+    '" class="rounded-lg bg-slate-800 px-3 py-1.5 text-sm font-semibold text-slate-200 hover:bg-slate-700">Отмена</button>' +
+    '</div>' +
+    '</form>';
+
+  const billing = project.billing || {};
+  const billingForm =
+    '<form data-admin-form="update-billing" data-project="' + projectIdAttr +
+    '" data-admin-form-section="billing" class="mt-4 hidden space-y-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4">' +
+    '<div class="grid gap-3 sm:grid-cols-2">' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Сумма<input name="amount" type="number" step="0.01" value="' +
+    inputValue(billing.amount ?? "") +
+    '" class="' + formInputClass + '" placeholder="1200000"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Валюта<input name="currency" type="text" value="' +
+    inputValue(billing.currency || project.currency || "") +
+    '" class="' + formInputClass + '" placeholder="USD"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Последняя оплата<input name="last_payment" type="date" value="' +
+    inputValue(billing.last_payment || "") +
+    '" class="' + formInputClass + '"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Следующая оплата<input name="next_payment" type="date" value="' +
+    inputValue(billing.next_payment || billing.next_payment_date || "") +
+    '" class="' + formInputClass + '"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Статус<input name="status" type="text" value="' +
+    inputValue(billing.status || "") +
+    '" class="' + formInputClass + '" placeholder="paid"></label>' +
+    '</div>' +
+    '<div class="flex flex-wrap gap-2">' +
+    '<button type="submit" class="rounded-lg bg-emerald-500 px-3 py-1.5 text-sm font-semibold text-slate-950 hover:bg-emerald-400">💾 Сохранить оплату</button>' +
+    '<button type="button" data-admin-action="cancel-edit" data-project="' + projectIdAttr +
+    '" class="rounded-lg bg-slate-800 px-3 py-1.5 text-sm font-semibold text-slate-200 hover:bg-slate-700">Отмена</button>' +
+    '</div>' +
+    '</form>';
+
   return (
-    '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-5 shadow-lg shadow-slate-950/40">' +
+    '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-5 shadow-lg shadow-slate-950/40" data-project-card="' +
+    projectIdAttr +
+    '">' +
     '<div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">' +
     '<div>' +
     '<h3 class="text-xl font-semibold">' + escapeHtml(project.name) + '</h3>' +
@@ -134,15 +217,56 @@ const renderProjectCard = (project: ProjectCard): string => {
     (badgeRow ? '<div class="mt-3 flex flex-wrap gap-2">' + badgeRow + '</div>' : '') +
     summary +
     actions +
+    editForm +
+    billingForm +
+    '</div>'
+  );
+};
+
+const renderCreateProjectForm = (): string => {
+  const inputClass =
+    "rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-emerald-500 focus:outline-none";
+  return (
+    '<div class="mb-6 rounded-2xl border border-slate-800 bg-slate-950 p-6 shadow-lg shadow-slate-950/30">' +
+    '<h3 class="text-lg font-semibold text-slate-100">Добавить проект</h3>' +
+    '<p class="mt-2 text-sm text-slate-400">Укажите основные параметры проекта. Остальные настройки можно обновить позже из карточки проекта.</p>' +
+    '<form data-admin-form="create-project" class="mt-4 space-y-4">' +
+    '<div class="grid gap-3 sm:grid-cols-2">' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">ID проекта<input name="id" type="text" required class="' +
+    inputClass +
+    '" placeholder="beznds"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Название<input name="name" type="text" class="' +
+    inputClass +
+    '" placeholder="Без НДС"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Chat ID<input name="chat_id" type="text" class="' +
+    inputClass +
+    '" placeholder="-100123456"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Telegram<input name="chat_username" type="text" class="' +
+    inputClass +
+    '" placeholder="@username"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Аккаунт Facebook<input name="account_name" type="text" class="' +
+    inputClass +
+    '" placeholder="Ad Account"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">День оплаты<input name="billing_day" type="number" min="1" max="31" class="' +
+    inputClass +
+    '" placeholder="11"></label>' +
+    '<label class="flex flex-col gap-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Менеджер<input name="manager" type="text" class="' +
+    inputClass +
+    '" placeholder="Имя менеджера"></label>' +
+    '</div>' +
+    '<div class="flex flex-wrap gap-2">' +
+    '<button type="submit" class="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400">➕ Создать проект</button>' +
+    '</div>' +
+    '</form>' +
     '</div>'
   );
 };
 
 const renderProjectsTab = (projects: ProjectCard[]): string => {
-  if (!projects.length) {
-    return '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-8 text-center text-slate-400">Проекты не найдены.</div>';
-  }
-  return '<div class="grid gap-5 lg:grid-cols-2">' + projects.map(renderProjectCard).join("") + '</div>';
+  const list = projects.length
+    ? '<div class="grid gap-5 lg:grid-cols-2">' + projects.map(renderProjectCard).join("") + '</div>'
+    : '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-8 text-center text-slate-400">Проекты не найдены.</div>';
+  return renderCreateProjectForm() + list;
 };
 
 const renderBillingRow = (project: ProjectCard): string => {
@@ -416,31 +540,56 @@ const ACTION_SCRIPT = [
   "    }",
   "    return url.toString();",
   "  };",
+  "  const toggleForm = function(card, selector){",
+  "    if (!card) { return; }",
+  "    var target = card.querySelector(selector);",
+  "    card.querySelectorAll('form[data-admin-form]').forEach(function(form){",
+  "      if (form !== target) { form.classList.add('hidden'); }",
+  "    });",
+  "    if (target) {",
+  "      target.classList.toggle('hidden');",
+  "    }",
+  "  };",
   "  const handleAction = async function(button){",
   "    var action = button.getAttribute('data-admin-action');",
+  "    if (!action) {",
+  "      return;",
+  "    }",
+  "    if (action === 'edit-project' || action === 'edit-billing') {",
+  "      var card = button.closest('[data-project-card]');",
+  "      toggleForm(card, action === 'edit-project' ? 'form[data-admin-form="update-project"]' : 'form[data-admin-form="update-billing"]');",
+  "      return;",
+  "    }",
+  "    if (action === 'cancel-edit') {",
+  "      var cancelCard = button.closest('[data-project-card]');",
+  "      if (cancelCard) {",
+  "        cancelCard.querySelectorAll('form[data-admin-form]').forEach(function(form){ form.classList.add('hidden'); });",
+  "      }",
+  "      return;",
+  "    }",
   "    var project = button.getAttribute('data-project');",
-  "    if (!action || !project) {",
+  "    if (!project) {",
+  "      return;",
+  "    }",
+  "    var endpoint = '';",
+  "    var options = { method: 'POST', headers: {} };",
+  "    var body = null;",
+  "    if (action === 'toggle-alerts') {",
+  "      endpoint = '/api/admin/project/' + project + '/toggle';",
+  "      body = JSON.stringify({ field: 'alerts_enabled' });",
+  "      options.headers['content-type'] = 'application/json';",
+  "    } else if (action === 'toggle-silent') {",
+  "      endpoint = '/api/admin/project/' + project + '/toggle';",
+  "      body = JSON.stringify({ field: 'silent_weekends' });",
+  "      options.headers['content-type'] = 'application/json';",
+  "    } else if (action === 'refresh-project') {",
+  "      endpoint = '/api/project/' + project + '/refresh';",
+  "    } else {",
   "      return;",
   "    }",
   "    button.disabled = true;",
   "    button.classList.add('opacity-60');",
   "    try {",
-  "      var endpoint = '';",
-  "      var options = { method: 'POST', headers: {} };",
-  "      var body = null;",
-  "      if (action === 'toggle-alerts') {",
-  "        endpoint = '/api/admin/project/' + project + '/toggle';",
-  "        body = JSON.stringify({ field: 'alerts_enabled' });",
-  "        options.headers['content-type'] = 'application/json';",
-  "      } else if (action === 'toggle-silent') {",
-  "        endpoint = '/api/admin/project/' + project + '/toggle';",
-  "        body = JSON.stringify({ field: 'silent_weekends' });",
-  "        options.headers['content-type'] = 'application/json';",
-  "      } else if (action === 'refresh-project') {",
-  "        endpoint = '/api/project/' + project + '/refresh';",
-  "      } else {",
-  "        return;",
-  "      }",
   "      if (body !== null) {",
   "        options.body = body;",
   "      }",
@@ -458,11 +607,76 @@ const ACTION_SCRIPT = [
   "      button.classList.remove('opacity-60');",
   "    }",
   "  };",
+  "  const handleFormSubmit = async function(form){",
+  "    var type = form.getAttribute('data-admin-form');",
+  "    if (!type) {",
+  "      return;",
+  "    }",
+  "    var project = form.getAttribute('data-project') || '';",
+  "    var endpoint = '';",
+  "    if (type === 'create-project') {",
+  "      endpoint = '/api/admin';",
+  "    } else if (type === 'update-project') {",
+  "      if (!project) { alert('Не выбран проект'); return; }",
+  "      endpoint = '/api/admin/project/' + project;",
+  "    } else if (type === 'update-billing') {",
+  "      if (!project) { alert('Не выбран проект'); return; }",
+  "      endpoint = '/api/admin/project/' + project + '/billing';",
+  "    } else {",
+  "      return;",
+  "    }",
+  "    var data = {};",
+  "    var formData = new FormData(form);",
+  "    formData.forEach(function(value, key){",
+  "      if (typeof value === 'string') {",
+  "        var trimmed = value.trim();",
+  "        if (trimmed) {",
+  "          data[key] = trimmed;",
+  "        }",
+  "      }",
+  "    });",
+  "    if (type === 'create-project' && !data.id) {",
+  "      alert('Укажите ID проекта');",
+  "      return;",
+  "    }",
+  "    var submitButton = form.querySelector('button[type="submit"]');",
+  "    if (submitButton) {",
+  "      submitButton.disabled = true;",
+  "      submitButton.classList.add('opacity-60');",
+  "    }",
+  "    try {",
+  "      var response = await fetch(buildUrl(endpoint), {",
+  "        method: 'POST',",
+  "        headers: { 'content-type': 'application/json' },",
+  "        body: JSON.stringify(data)",
+  "      });",
+  "      if (!response.ok) {",
+  "        var text = await response.text();",
+  "        throw new Error(text || 'Request failed');",
+  "      }",
+  "      window.location.reload();",
+  "    } catch (error) {",
+  "      console.error('Admin form submission failed', error);",
+  "      alert('Не удалось сохранить изменения: ' + (error && error.message ? error.message : 'ошибка'));",
+  "    } finally {",
+  "      if (submitButton) {",
+  "        submitButton.disabled = false;",
+  "        submitButton.classList.remove('opacity-60');",
+  "      }",
+  "    }",
+  "  };",
   "  document.addEventListener('click', function(event){",
   "    var target = event.target;",
   "    if (target instanceof HTMLButtonElement && target.hasAttribute('data-admin-action')) {",
   "      event.preventDefault();",
   "      handleAction(target);",
+  "    }",
+  "  });",
+  "  document.addEventListener('submit', function(event){",
+  "    var form = event.target;",
+  "    if (form instanceof HTMLFormElement && form.hasAttribute('data-admin-form')) {",
+  "      event.preventDefault();",
+  "      handleFormSubmit(form);",
   "    }",
   "  });",
   "})();",
