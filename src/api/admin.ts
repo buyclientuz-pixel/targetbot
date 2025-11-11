@@ -1,9 +1,19 @@
-import { jsonResponse, unauthorized } from "../utils/http";
+import { jsonResponse, unauthorized, notFound } from "../utils/http";
 import { loadMetaStatus } from "./meta";
 import { callGraph } from "../fb/client";
 import { loadProjectCards } from "../utils/projects";
 import { readJsonFromR2, listR2Keys, countFallbackEntries } from "../utils/r2";
-import { AdminDashboardData, MetaAccountInfo, DashboardLogEntry, TokenStatus, StorageOverview } from "../types";
+import {
+  AdminDashboardData,
+  MetaAccountInfo,
+  DashboardLogEntry,
+  TokenStatus,
+  StorageOverview,
+  ProjectConfigRecord,
+  ProjectReport,
+  ProjectAlertsConfig,
+  BillingInfo,
+} from "../types";
 import { renderAdminPage } from "../views/admin";
 import { refreshAllProjects } from "./projects";
 
@@ -95,14 +105,36 @@ const loadStorageOverview = async (env: unknown): Promise<StorageOverview> => {
 
 const ADMIN_KEY_ENV = "ADMIN_KEY";
 
-const verifyKey = (request: Request, env: Record<string, unknown>): boolean => {
+const extractAdminKey = (request: Request): string | null => {
+  const authHeader = request.headers.get("Authorization");
+  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
+    const token = authHeader.slice(7).trim();
+    if (token) {
+      return token;
+    }
+  }
   const url = new URL(request.url);
   const key = url.searchParams.get("key");
+  return key && key.trim() ? key.trim() : null;
+};
+
+const verifyKey = (request: Request, env: Record<string, unknown>): boolean => {
   const configured = String(env[ADMIN_KEY_ENV] || "");
   if (!configured) {
     return true;
   }
-  return key === configured;
+  const provided = extractAdminKey(request);
+  return provided === configured;
+};
+
+const requireAdminKey = (
+  request: Request,
+  env: Record<string, unknown>,
+): Response | null => {
+  if (verifyKey(request, env)) {
+    return null;
+  }
+  return unauthorized("Invalid admin key");
 };
 
 const hasString = (value: unknown): boolean => typeof value === "string" && value.trim().length > 0;
@@ -125,8 +157,9 @@ const collectTokenStatus = (env: Record<string, unknown>): TokenStatus[] => {
 };
 
 export const handleAdminPage = async (request: Request, env: Record<string, unknown>): Promise<Response> => {
-  if (!verifyKey(request, env)) {
-    return unauthorized("Invalid admin key");
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
   }
 
   const [metaStatus, accounts, projects, logs, storage] = await Promise.all([
@@ -168,5 +201,130 @@ export const handleRefreshAllRequest = async (env: unknown): Promise<Response> =
       Location: "/admin",
       "x-refreshed-projects": result.refreshed.join(","),
     },
+  });
+};
+
+const loadProjectConfig = async (
+  env: unknown,
+  projectId: string,
+): Promise<ProjectConfigRecord | null> => {
+  return readJsonFromR2<ProjectConfigRecord>(env as any, "projects/" + projectId + ".json");
+};
+
+const loadProjectBilling = async (env: unknown, projectId: string): Promise<BillingInfo | null> => {
+  return readJsonFromR2<BillingInfo>(env as any, "billing/" + projectId + ".json");
+};
+
+const loadProjectAlerts = async (env: unknown, projectId: string): Promise<ProjectAlertsConfig | null> => {
+  return readJsonFromR2<ProjectAlertsConfig>(env as any, "alerts/" + projectId + ".json");
+};
+
+const loadProjectReport = async (env: unknown, projectId: string): Promise<ProjectReport | null> => {
+  return readJsonFromR2<ProjectReport>(env as any, "reports/" + projectId + ".json");
+};
+
+export const handleAdminProjectsApi = async (
+  request: Request,
+  env: Record<string, unknown>,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const projects = await loadProjectCards(env);
+  return jsonResponse({ projects });
+};
+
+export const handleAdminProjectDetail = async (
+  request: Request,
+  env: Record<string, unknown>,
+  projectId: string,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const [card, report, config, billing, alerts] = await Promise.all([
+    loadProjectCards(env).then((projects) => projects.find((project) => project.id === projectId) || null),
+    loadProjectReport(env, projectId),
+    loadProjectConfig(env, projectId),
+    loadProjectBilling(env, projectId),
+    loadProjectAlerts(env, projectId),
+  ]);
+
+  if (!card && !report && !config) {
+    return notFound("Project not found");
+  }
+
+  return jsonResponse({
+    id: projectId,
+    card,
+    report,
+    config,
+    billing,
+    alerts,
+  });
+};
+
+export const handleAdminLogsApi = async (
+  request: Request,
+  env: Record<string, unknown>,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const logs = await loadLogs(env);
+  return jsonResponse({ logs });
+};
+
+export const handleAdminBillingApi = async (
+  request: Request,
+  env: Record<string, unknown>,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const projects = await loadProjectCards(env);
+  const billing = projects
+    .map((project) => ({
+      id: project.id,
+      name: project.name,
+      billing: project.billing || null,
+      billing_day: project.billing_day ?? null,
+      status: project.status || null,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+  return jsonResponse({ billing });
+};
+
+export const handleAdminSystemApi = async (
+  request: Request,
+  env: Record<string, unknown>,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const [metaStatus, tokens, storage] = await Promise.all([
+    loadMetaStatus(env, { useCache: true }).catch((err) => ({
+      ok: false,
+      issues: [(err as Error).message],
+    })),
+    Promise.resolve(collectTokenStatus(env)),
+    loadStorageOverview(env),
+  ]);
+
+  return jsonResponse({
+    meta: metaStatus,
+    tokens,
+    storage,
   });
 };

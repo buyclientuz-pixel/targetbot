@@ -289,6 +289,16 @@ admin:lastsync    — timestamp последней синхронизации
 /auth/facebook/callback
 ```
 
+> 🔐 **Авторизация API.** Все эндпоинты `/api/admin/**` требуют `ADMIN_KEY`. Передавайте его через заголовок `Authorization: Bearer <ADMIN_KEY>` либо параметр `?key=`. При отключённом `ADMIN_KEY` проверки пропускаются.
+
+Форматы ответов:
+
+* `GET /api/admin/projects` → `{ "projects": ProjectCard[] }`
+* `GET /api/admin/project/{id}` → `{ id, card, report, config, billing, alerts }`
+* `GET /api/admin/logs` → `{ "logs": DashboardLogEntry[] }`
+* `GET /api/admin/billing` → `{ "billing": { id, name, billing, billing_day, status }[] }`
+* `GET /api/admin/system` → `{ "meta": MetaAuthStatus, "tokens": TokenStatus[], "storage": StorageOverview }`
+
 ### 🔹 9. UX и автоматизация
 
 * Ответы бота редактируются через `editMessageText`, используются эмодзи.

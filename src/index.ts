@@ -2,7 +2,15 @@ import { jsonResponse, textResponse, notFound, serverError } from "./utils/http"
 import { handleProjectsList, handleProjectDetail, handleProjectRefresh } from "./api/projects";
 import { handleMetaStatus } from "./api/meta";
 import { handlePortalSummary, handlePortalCampaigns } from "./api/portal";
-import { handleAdminPage, handleRefreshAllRequest } from "./api/admin";
+import {
+  handleAdminPage,
+  handleRefreshAllRequest,
+  handleAdminProjectsApi,
+  handleAdminProjectDetail,
+  handleAdminLogsApi,
+  handleAdminBillingApi,
+  handleAdminSystemApi,
+} from "./api/admin";
 import { handleTelegramWebhook } from "./telegram";
 import { handleTelegramAlert } from "./api/telegram";
 import { handleManageTelegramWebhook } from "./api/manage";
@@ -31,6 +39,25 @@ const routeApi = async (request: Request, env: WorkerEnv, segments: string[]): P
   }
   if (segments[1] === "projects" && request.method === "GET") {
     return handleProjectsList(env);
+  }
+  if (segments[1] === "admin") {
+    if (segments.length === 2 && request.method === "GET") {
+      return handleAdminProjectsApi(request, env);
+    }
+    if (segments.length === 3) {
+      if (segments[2] === "logs" && request.method === "GET") {
+        return handleAdminLogsApi(request, env);
+      }
+      if (segments[2] === "billing" && request.method === "GET") {
+        return handleAdminBillingApi(request, env);
+      }
+      if (segments[2] === "system" && request.method === "GET") {
+        return handleAdminSystemApi(request, env);
+      }
+    }
+    if (segments.length === 4 && segments[2] === "project" && request.method === "GET") {
+      return handleAdminProjectDetail(request, env, segments[3]);
+    }
   }
   if (segments[1] === "project" && segments.length >= 3) {
     const projectId = segments[2];
