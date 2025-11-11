@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { mkdirSync, existsSync, copyFileSync, writeFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, glob } from 'node:fs/promises';
 import path from 'node:path';
-import { glob } from 'glob';
 
 const APPLY = process.argv.includes('--apply');
 const PROJECT_ROOT = process.cwd();
@@ -287,7 +286,10 @@ async function processFile(filePath) {
 
 async function main() {
   ensureLogFile();
-  const files = await glob('src/**/*.{js,ts,tsx}', { cwd: PROJECT_ROOT, nodir: true, dot: false });
+  const files = [];
+  for await (const match of glob('src/**/*.{js,ts,tsx}', { cwd: PROJECT_ROOT, nodir: true, dot: false })) {
+    files.push(match);
+  }
   let scanned = 0;
   let replacements = 0;
 
