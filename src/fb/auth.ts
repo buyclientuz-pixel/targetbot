@@ -2,7 +2,7 @@ import { appendLogEntry } from "../utils/r2";
 import { notifyTelegramAdmins } from "../utils/telegram";
 import { WorkerEnv, MetaTokenStatus } from "../types";
 
-interface MetaAuthRecord {
+export interface MetaAuthRecord {
   access_token: string;
   issued_at?: number;
   expires_at?: number;
@@ -339,4 +339,17 @@ export const forceRefreshFacebookToken = async (
 
 export const readStoredMetaAuth = async (env: WorkerEnv): Promise<MetaAuthRecord | null> => {
   return readMetaAuth(env);
+};
+
+export const storeMetaAuthRecord = async (
+  env: WorkerEnv,
+  record: Partial<MetaAuthRecord> & { access_token: string },
+): Promise<void> => {
+  const previous = (await readMetaAuth(env)) || {};
+  const next: MetaAuthRecord = {
+    ...previous,
+    ...record,
+    access_token: record.access_token,
+  };
+  await writeMetaAuth(env, next);
 };

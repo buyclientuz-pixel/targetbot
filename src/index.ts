@@ -22,7 +22,12 @@ import { handleTelegramAlert } from "./api/telegram";
 import { handleManageTelegramWebhook } from "./api/manage";
 import { appendLogEntry, updateCronStatus } from "./utils/r2";
 import { refreshAllProjects } from "./api/projects";
-import { handleFacebookStatusApi, handleFacebookRefreshApi } from "./api/auth";
+import {
+  handleFacebookStatusApi,
+  handleFacebookRefreshApi,
+  handleFacebookLogin,
+  handleFacebookCallback,
+} from "./api/auth";
 import { checkAndRefreshFacebookToken } from "./fb/auth";
 import { WorkerEnv } from "./types";
 import { notifyTelegramAdmins } from "./utils/telegram";
@@ -131,6 +136,18 @@ const routeApi = async (request: Request, env: WorkerEnv, segments: string[]): P
   return handleNotFound();
 };
 
+const routeAuth = async (request: Request, env: WorkerEnv, segments: string[]): Promise<Response> => {
+  if (segments.length >= 2 && segments[1] === "facebook") {
+    if (segments.length === 3 && segments[2] === "login" && request.method === "GET") {
+      return handleFacebookLogin(request, env);
+    }
+    if (segments.length === 3 && segments[2] === "callback" && request.method === "GET") {
+      return handleFacebookCallback(request, env);
+    }
+  }
+  return handleNotFound();
+};
+
 const routeAdmin = (request: Request, env: WorkerEnv): Promise<Response> => handleAdminPage(request, env);
 
 export default {
@@ -154,6 +171,10 @@ export default {
 
       if (segments[0] === "admin") {
         return routeAdmin(request, env);
+      }
+
+      if (segments[0] === "auth") {
+        return routeAuth(request, env, segments);
       }
 
       if (segments[0] === "api") {
