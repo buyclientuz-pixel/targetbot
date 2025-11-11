@@ -1,5 +1,5 @@
 import { jsonResponse, unauthorized, notFound, badRequest } from "../utils/http";
-import { loadMetaStatus } from "./meta";
+import { loadMetaStatus, STATUS_CACHE_KEY, clearMetaStatusCache } from "./meta";
 import { callGraph } from "../fb/client";
 import {
   loadProjectCards,
@@ -10,7 +10,15 @@ import {
   writeAlertsConfig,
   readAlertsConfig,
 } from "../utils/projects";
-import { readJsonFromR2, listR2Keys, countFallbackEntries, appendLogEntry } from "../utils/r2";
+import {
+  readJsonFromR2,
+  listR2Keys,
+  countFallbackEntries,
+  appendLogEntry,
+  deleteFromR2,
+  deletePrefixFromR2,
+  clearFallbackEntries,
+} from "../utils/r2";
 import {
   AdminDashboardData,
   MetaAccountInfo,
@@ -24,6 +32,7 @@ import {
 } from "../types";
 import { renderAdminPage } from "../views/admin";
 import { refreshAllProjects } from "./projects";
+import { getTelegramWebhookStatus } from "./manage";
 
 const LOG_KEYS = ((): string[] => {
   const today = new Date();
@@ -709,18 +718,98 @@ export const handleAdminSystemApi = async (
     return error;
   }
 
-  const [metaStatus, tokens, storage] = await Promise.all([
+  const [metaStatus, tokens, storage, webhook] = await Promise.all([
     loadMetaStatus(env, { useCache: true }).catch((err) => ({
       ok: false,
       issues: [(err as Error).message],
     })),
     Promise.resolve(collectTokenStatus(env)),
     loadStorageOverview(env),
+    getTelegramWebhookStatus(env as any).catch(() => null),
   ]);
 
   return jsonResponse({
     meta: metaStatus,
     tokens,
     storage,
+    webhook,
   });
+};
+
+export const handleAdminSystemAction = async (
+  request: Request,
+  env: Record<string, unknown>,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const payload = await readJsonBody(request);
+  if (payload === null) {
+    return badRequest("Invalid JSON body");
+  }
+
+  const action = coerceString(payload?.action);
+  if (!action) {
+    return badRequest("Action is required");
+  }
+
+  if (action === "refresh-all") {
+    const result = await refreshAllProjects(env);
+    await logAdminAction(
+      env,
+      "Admin triggered refresh-all for " + result.refreshed.length + " projects",
+    );
+    return jsonResponse({ ok: true, refreshed: result.refreshed });
+  }
+
+  if (action === "clear-meta-cache") {
+    const cleared = await clearMetaStatusCache(env);
+    if (cleared) {
+      await logAdminAction(env, "Admin cleared Facebook status cache");
+    }
+    return jsonResponse({ ok: Boolean(cleared), key: STATUS_CACHE_KEY });
+  }
+
+  if (action === "clear-cache-prefix") {
+    const prefix = coerceString(payload?.prefix) || "cache/";
+    if (!prefix) {
+      return badRequest("Prefix is required");
+    }
+    const removed = await deletePrefixFromR2(env as any, prefix);
+    await logAdminAction(env, "Admin cleared cache prefix " + prefix + " => " + removed + " items");
+    return jsonResponse({ ok: true, prefix, removed });
+  }
+
+  if (action === "clear-project-report") {
+    const projectIdValue = coerceString(payload?.project_id);
+    if (!projectIdValue) {
+      return badRequest("Project ID is required");
+    }
+    const projectId = ensureProjectIdParam(projectIdValue);
+    const key = "reports/" + projectId + ".json";
+    const deleted = await deleteFromR2(env as any, key);
+    if (deleted) {
+      await logAdminAction(env, "Admin removed cached report for " + projectId);
+    }
+    return jsonResponse({ ok: Boolean(deleted), project: projectId, key });
+  }
+
+  if (action === "clear-fallbacks") {
+    const removed = await clearFallbackEntries(env as any);
+    if (removed !== null) {
+      await logAdminAction(env, "Admin cleared fallback entries => " + removed);
+      return jsonResponse({ ok: true, removed });
+    }
+    return jsonResponse({ ok: false, error: "Fallback storage not configured" }, { status: 503 });
+  }
+
+  if (action === "check-telegram-webhook") {
+    const token = coerceString(payload?.token) || undefined;
+    const status = await getTelegramWebhookStatus(env as any, token);
+    return jsonResponse(status, { status: status.ok ? 200 : 502 });
+  }
+
+  return badRequest("Unsupported system action");
 };

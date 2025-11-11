@@ -15,6 +15,7 @@ import {
   handleAdminLogsApi,
   handleAdminBillingApi,
   handleAdminSystemApi,
+  handleAdminSystemAction,
 } from "./api/admin";
 import { handleTelegramWebhook } from "./telegram";
 import { handleTelegramAlert } from "./api/telegram";
@@ -61,8 +62,13 @@ const routeApi = async (request: Request, env: WorkerEnv, segments: string[]): P
       if (segments[2] === "billing" && request.method === "GET") {
         return handleAdminBillingApi(request, env);
       }
-      if (segments[2] === "system" && request.method === "GET") {
-        return handleAdminSystemApi(request, env);
+      if (segments[2] === "system") {
+        if (request.method === "GET") {
+          return handleAdminSystemApi(request, env);
+        }
+        if (request.method === "POST") {
+          return handleAdminSystemAction(request, env);
+        }
       }
     }
     if (segments.length >= 4 && segments[2] === "project") {

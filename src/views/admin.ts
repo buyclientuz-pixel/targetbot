@@ -447,6 +447,26 @@ const renderStorage = (storage: StorageOverview): string => {
   );
 };
 
+const renderTechTools = (): string => {
+  return (
+    '<div class="space-y-4 rounded-2xl border border-slate-800 bg-slate-950 p-6">' +
+    '<div>' +
+    '<h2 class="text-lg font-semibold">Системные инструменты</h2>' +
+    '<p class="mt-2 text-sm text-slate-400">Действия техподдержки: очистка кэшей, проверка вебхуков и массовые обновления.</p>' +
+    '</div>' +
+    '<div class="flex flex-wrap gap-2">' +
+    '<button type="button" data-tech-action="refresh-all" data-confirm="Запустить обновление всех отчётов? Это может занять несколько минут." class="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/30 hover:bg-emerald-400">🔄 Обновить все отчёты</button>' +
+    '<button type="button" data-tech-action="clear-meta-cache" data-confirm="Очистить кэш статуса Facebook?" class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">🧹 Очистить кэш Facebook</button>' +
+    '<button type="button" data-tech-action="clear-cache-prefix" data-confirm="Удалить объекты с указанным префиксом? Действие необратимо." data-prompt="Укажите префикс для очистки" data-prompt-field="prefix" data-prompt-default="cache/" class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">🗂 Очистить cache/*</button>' +
+    '<button type="button" data-tech-action="clear-fallbacks" data-confirm="Очистить fallback-записи из KV?" class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">♻️ Очистить fallback</button>' +
+    '<button type="button" data-tech-action="clear-project-report" data-confirm="Удалить кэш отчёта выбранного проекта?" data-prompt="Введите ID проекта для очистки отчёта" data-prompt-field="project_id" class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">🧽 Очистить отчёт проекта</button>' +
+    '<button type="button" data-tech-action="check-telegram-webhook" data-prompt="Укажите токен бота (опционально) для проверки" data-prompt-field="token" data-prompt-optional="true" class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">🤖 Проверить вебхук Telegram</button>' +
+    '</div>' +
+    '<pre data-tech-output class="hidden whitespace-pre-wrap rounded-lg border border-slate-800 bg-slate-900/80 p-3 text-xs text-slate-200"></pre>' +
+    '</div>'
+  );
+};
+
 const TAB_CONFIG = [
   { id: "projects", label: "Проекты" },
   { id: "billing", label: "Оплаты" },
@@ -482,13 +502,10 @@ const renderTabContent = (dashboard: AdminDashboardData): string => {
     '<h2 class="text-lg font-semibold">Токены и ключи</h2>' +
     '<div class="mt-4">' + renderTokens(dashboard.tokens) + '</div>' +
     '</div>' +
+    renderTechTools() +
     '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-6">' +
-    '<div class="flex items-center justify-between">' +
     '<h2 class="text-lg font-semibold">Логи</h2>' +
-    '<form method="post" action="/api/project/refresh-all">' +
-    '<button class="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400">Refresh All</button>' +
-    '</form>' +
-    '</div>' +
+    '<p class="mt-1 text-xs text-slate-500">Сводка последних событий воркера.</p>' +
     '<div class="mt-4 space-y-3">' + renderLogs(dashboard.logs) + '</div>' +
     '</div>' +
     '</section>' +
@@ -540,6 +557,35 @@ const ACTION_SCRIPT = [
   "    }",
   "    return url.toString();",
   "  };",
+  "  const techOutput = document.querySelector('[data-tech-output]');",
+  "  const updateTechOutput = function(data, isError){",
+  "    if (!techOutput) { return; }",
+  "    techOutput.classList.remove('hidden');",
+  "    ['border-emerald-600','text-emerald-200','border-red-600','text-red-300'].forEach(function(cls){ techOutput.classList.remove(cls); });",
+  "    var content = '';",
+  "    if (typeof data === 'string') {",
+  "      content = data;",
+  "    } else if (data) {",
+  "      try {",
+  "        content = JSON.stringify(data, null, 2);",
+  "      } catch (_error) {",
+  "        content = String(data);",
+  "      }",
+  "    } else {",
+  "      content = isError ? 'Ошибка' : 'Операция выполнена';",
+  "    }",
+  "    techOutput.textContent = content;",
+  "    var classes = isError ? ['border-red-600','text-red-300'] : ['border-emerald-600','text-emerald-200'];",
+  "    classes.forEach(function(cls){ techOutput.classList.add(cls); });",
+  "  };",
+  "  const parseJsonSafe = function(text){",
+  "    if (!text) { return null; }",
+  "    try {",
+  "      return JSON.parse(text);",
+  "    } catch (_error) {",
+  "      return { raw: text };",
+  "    }",
+  "  };",
   "  const toggleForm = function(card, selector){",
   "    if (!card) { return; }",
   "    var target = card.querySelector(selector);",
@@ -550,6 +596,65 @@ const ACTION_SCRIPT = [
   "      target.classList.toggle('hidden');",
   "    }",
   "  };",
+  "  const handleTechAction = async function(button){",
+  "    var action = button.getAttribute('data-tech-action');",
+  "    if (!action) {",
+  "      return;",
+  "    }",
+  "    var confirmMessage = button.getAttribute('data-confirm');",
+  "    if (confirmMessage && !window.confirm(confirmMessage)) {",
+  "      return;",
+  "    }",
+  "    var payload = { action: action };",
+  "    var promptField = button.getAttribute('data-prompt-field');",
+  "    if (promptField) {",
+  "      var promptMessage = button.getAttribute('data-prompt') || '';",
+  "      var promptDefault = button.getAttribute('data-prompt-default') || '';",
+  "      var optional = button.getAttribute('data-prompt-optional') === 'true';",
+  "      var response = window.prompt(promptMessage || 'Введите значение', promptDefault);",
+  "      if (response === null) {",
+  "        return;",
+  "      }",
+  "      var trimmed = response.trim();",
+  "      if (!trimmed) {",
+  "        if (promptDefault && !optional) {",
+  "          payload[promptField] = promptDefault.trim();",
+  "        } else if (!optional) {",
+  "          alert('Значение не указано');",
+  "          return;",
+  "        }",
+  "      } else {",
+  "        payload[promptField] = trimmed;",
+  "      }",
+  "    }",
+  "    button.disabled = true;",
+  "    button.classList.add('opacity-60');",
+  "    try {",
+  "      var response = await fetch(buildUrl('/api/admin/system'), {",
+  "        method: 'POST',",
+  "        headers: { 'content-type': 'application/json' },",
+  "        body: JSON.stringify(payload)",
+  "      });",
+  "      var text = await response.text();",
+  "      var data = parseJsonSafe(text);",
+  "      if (!response.ok) {",
+  "        updateTechOutput(data || text || 'Ошибка', true);",
+  "        throw new Error(data && data.error ? data.error : (text || 'Request failed'));",
+  "      }",
+  "      updateTechOutput(data || { ok: true }, false);",
+  "      if (action === 'refresh-all') {",
+  "        window.setTimeout(function(){ window.location.reload(); }, 1500);",
+  "      }",
+  "    } catch (error) {",
+  "      console.error('Tech action failed', error);",
+  "      if (!techOutput) {",
+  "        alert('Ошибка: ' + (error && error.message ? error.message : 'неизвестная ошибка'));",
+  "      }",
+  "    } finally {",
+  "      button.disabled = false;",
+  "      button.classList.remove('opacity-60');",
+  "    }",
+  "  };",
   "  const handleAction = async function(button){",
   "    var action = button.getAttribute('data-admin-action');",
   "    if (!action) {",
@@ -557,7 +662,7 @@ const ACTION_SCRIPT = [
   "    }",
   "    if (action === 'edit-project' || action === 'edit-billing') {",
   "      var card = button.closest('[data-project-card]');",
-  "      toggleForm(card, action === 'edit-project' ? 'form[data-admin-form="update-project"]' : 'form[data-admin-form="update-billing"]');",
+  "      toggleForm(card, action === 'edit-project' ? 'form[data-admin-form=\"update-project\"]' : 'form[data-admin-form=\"update-billing\"]');",
   "      return;",
   "    }",
   "    if (action === 'cancel-edit') {",
@@ -639,7 +744,7 @@ const ACTION_SCRIPT = [
   "      alert('Укажите ID проекта');",
   "      return;",
   "    }",
-  "    var submitButton = form.querySelector('button[type="submit"]');",
+  "    var submitButton = form.querySelector('button[type=\"submit\"]');",
   "    if (submitButton) {",
   "      submitButton.disabled = true;",
   "      submitButton.classList.add('opacity-60');",
@@ -666,8 +771,16 @@ const ACTION_SCRIPT = [
   "    }",
   "  };",
   "  document.addEventListener('click', function(event){",
-  "    var target = event.target;",
-  "    if (target instanceof HTMLButtonElement && target.hasAttribute('data-admin-action')) {",
+  "    var target = event.target instanceof HTMLElement ? event.target.closest('button') : null;",
+  "    if (!target) {",
+  "      return;",
+  "    }",
+  "    if (target.hasAttribute('data-tech-action')) {",
+  "      event.preventDefault();",
+  "      handleTechAction(target);",
+  "      return;",
+  "    }",
+  "    if (target.hasAttribute('data-admin-action')) {",
   "      event.preventDefault();",
   "      handleAction(target);",
   "    }",
@@ -679,7 +792,7 @@ const ACTION_SCRIPT = [
   "      handleFormSubmit(form);",
   "    }",
   "  });",
-  "})();",
+  "})();"
 ].join("\n");
 
 export const renderAdminPage = (data: AdminDashboardData): string => {

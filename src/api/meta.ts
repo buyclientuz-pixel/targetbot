@@ -1,9 +1,9 @@
 import { jsonResponse } from "../utils/http";
-import { readJsonFromR2, writeJsonToR2 } from "../utils/r2";
+import { readJsonFromR2, writeJsonToR2, deleteFromR2 } from "../utils/r2";
 import { MetaAuthStatus } from "../types";
 import { callGraph } from "../fb/client";
 
-const STATUS_CACHE_KEY = "cache/fb_status.json";
+export const STATUS_CACHE_KEY = "cache/fb_status.json";
 const STATUS_TTL_MS = 30 * 60 * 1000;
 
 const isFresh = (isoDate: string | null | undefined): boolean => {
@@ -70,4 +70,9 @@ export const handleMetaStatus = async (env: unknown): Promise<Response> => {
     };
     return jsonResponse(payload, { status: 503 });
   }
+};
+
+export const clearMetaStatusCache = async (env: unknown): Promise<boolean> => {
+  const deleted = await deleteFromR2(env as any, STATUS_CACHE_KEY);
+  return deleted;
 };

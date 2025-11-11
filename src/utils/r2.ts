@@ -83,6 +83,50 @@ export const appendLogEntry = async (
   }
 };
 
+export const deleteFromR2 = async (env: R2Env, key: string): Promise<boolean> => {
+  const bucket = resolveBucket(env);
+  if (!bucket) {
+    return false;
+  }
+
+  try {
+    await bucket.delete(key);
+    return true;
+  } catch (_error) {
+    await writeFallback(env, key, { reason: "delete_error" });
+    return false;
+  }
+};
+
+export const deletePrefixFromR2 = async (env: R2Env, prefix: string): Promise<number> => {
+  const bucket = resolveBucket(env);
+  if (!bucket || typeof bucket.list !== "function") {
+    return 0;
+  }
+
+  let removed = 0;
+  let cursor: string | undefined = undefined;
+
+  try {
+    do {
+      const result = await bucket.list({ prefix, cursor });
+      if (Array.isArray(result.objects)) {
+        for (const object of result.objects) {
+          if (object?.key) {
+            await bucket.delete(object.key);
+            removed += 1;
+          }
+        }
+      }
+      cursor = result.truncated ? result.cursor : undefined;
+    } while (cursor);
+  } catch (_error) {
+    await writeFallback(env, prefix + ":delete", { reason: "delete_prefix_error" });
+  }
+
+  return removed;
+};
+
 const writeFallback = async (
   env: R2Env,
   key: string,
@@ -146,4 +190,33 @@ export const countFallbackEntries = async (env: R2Env): Promise<number | null> =
   } catch (_error) {
     return null;
   }
+};
+
+export const clearFallbackEntries = async (env: R2Env): Promise<number | null> => {
+  const fallback = env.FALLBACK_KV || env.LOGS_NAMESPACE;
+  if (!fallback || typeof fallback.list !== "function") {
+    return null;
+  }
+
+  let removed = 0;
+  let cursor: string | undefined = undefined;
+
+  try {
+    do {
+      const result = await fallback.list({ prefix: "fallback:", cursor });
+      if (Array.isArray(result.keys)) {
+        for (const key of result.keys) {
+          if (key?.name) {
+            await fallback.delete(key.name);
+            removed += 1;
+          }
+        }
+      }
+      cursor = result.list_complete ? undefined : result.cursor;
+    } while (cursor);
+  } catch (_error) {
+    return null;
+  }
+
+  return removed;
 };

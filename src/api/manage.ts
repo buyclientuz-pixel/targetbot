@@ -92,6 +92,33 @@ const buildUsageResponse = (): Response => {
   });
 };
 
+export const getTelegramWebhookStatus = async (
+  env: WorkerEnv,
+  tokenOverride?: string,
+): Promise<{ ok: boolean; token?: string; webhook?: unknown; error?: string }> => {
+  const knownTokens = collectKnownTokens(env);
+  const token = tokenOverride && tokenOverride.trim() ? tokenOverride.trim() : knownTokens[0];
+
+  if (!token) {
+    return { ok: false, error: "Bot token is not configured" };
+  }
+
+  if (!knownTokens.includes(token)) {
+    return { ok: false, token: maskToken(token), error: "Provided token is not allowed" };
+  }
+
+  try {
+    const info = await telegramFetch(token, "getWebhookInfo");
+    return { ok: true, token: maskToken(token), webhook: info.result ?? info };
+  } catch (error) {
+    return {
+      ok: false,
+      token: maskToken(token),
+      error: (error as Error).message || "Telegram API request failed",
+    };
+  }
+};
+
 export const handleManageTelegramWebhook = async (
   request: Request,
   env: WorkerEnv,
