@@ -18,7 +18,14 @@ import {
   clearFallbackEntries,
 } from "./utils/r2";
 import { ProjectReport, ProjectCard, BillingInfo, ProjectAlertsConfig } from "./types";
-import { formatCurrency, formatNumber, formatPercent, formatFrequency, formatDateTime } from "./utils/format";
+import {
+  formatCurrency,
+  formatNumber,
+  formatPercent,
+  formatFrequency,
+  formatDateTime,
+  formatDate,
+} from "./utils/format";
 import { escapeHtml } from "./utils/html";
 import { readAdminSession, writeAdminSession, clearAdminSession } from "./utils/session";
 import type { AdminSessionState } from "./utils/session";
@@ -294,26 +301,6 @@ const deliverAdminMessage = async (
   }
 };
 
-const truncateLabel = (value: string, limit = 28): string => {
-  if (value.length <= limit) {
-    return value;
-  }
-  return value.slice(0, Math.max(0, limit - 1)) + "…";
-};
-
-const buildAdminProjectListKeyboard = (projects: ProjectCard[]): Record<string, unknown> => {
-  const inline_keyboard: Array<Array<Record<string, unknown>>> = [];
-  const limit = Math.min(projects.length, 25);
-  for (let index = 0; index < limit; index += 1) {
-    const project = projects[index];
-    const icon = adminStatusIcon(project.status);
-    const label = truncateLabel(icon + " " + project.name, 30);
-    inline_keyboard.push([{ text: label, callback_data: "admin:project:" + project.id }]);
-  }
-  inline_keyboard.push([{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]);
-  return { inline_keyboard };
-};
-
 const sendAdminMenu = async (
   env: Record<string, unknown>,
   chatId: string,
@@ -339,22 +326,93 @@ const sendAdminProjectsOverview = async (
     return;
   }
 
-  const lines: string[] = [
+  const timeZone =
+    typeof env.DEFAULT_TZ === "string" && env.DEFAULT_TZ.trim() ? env.DEFAULT_TZ.trim() : "Asia/Tashkent";
+  const limit = Math.min(projects.length, 25);
+  const cards: string[] = [];
+  const inline_keyboard: Array<Array<Record<string, unknown>>> = [];
+
+  for (let index = 0; index < limit; index += 1) {
+    const project = projects[index];
+    const icon = adminStatusIcon(project.status);
+    const summary = project.summary || null;
+    const currency = project.currency || project.billing?.currency || "USD";
+    const spendText = formatCurrency(summary?.spend ?? null, currency);
+    const leadsText = formatNumber(summary?.leads ?? null);
+    const clicksText = formatNumber(summary?.clicks ?? null);
+    const ctrText = formatPercent(summary?.ctr ?? null);
+    const summaryExtras = summary as Record<string, unknown> | null;
+    const rawLastActive = summaryExtras && "last_active" in summaryExtras ? summaryExtras.last_active : undefined;
+    let lastActivityIso: string | null = null;
+    if (typeof rawLastActive === "string") {
+      lastActivityIso = rawLastActive;
+    } else if (typeof rawLastActive === "number") {
+      lastActivityIso = String(rawLastActive);
+    } else if (rawLastActive instanceof Date) {
+      lastActivityIso = rawLastActive.toISOString();
+    }
+    if (!lastActivityIso) {
+      lastActivityIso = project.updated_at || project.last_sync || null;
+    }
+    const lastActivity = formatDate(lastActivityIso, timeZone);
+
+    const cardLines = [
+      icon + " <b>" + escapeHtml(project.name) + "</b>",
+      "💰 Потрачено: " + escapeHtml(spendText),
+      "📈 Лиды: " + escapeHtml(leadsText) +
+        " | Клики: " +
+        escapeHtml(clicksText) +
+        " | CTR: " +
+        escapeHtml(ctrText),
+      "📆 Последняя активность: " + escapeHtml(lastActivity),
+    ];
+    cards.push(cardLines.join("\n"));
+
+    const portalUrl = resolvePortalLink(env, project.id, project.portal_url || undefined);
+    const chatLink =
+      project.chat_link ||
+      (project.chat_username ? "https://t.me/" + project.chat_username.replace(/^@/, "") : null);
+
+    const buttonRow: Array<Record<string, unknown>> = [
+      { text: "⚙️ Управление", callback_data: "admin:project:" + project.id },
+      { text: "📊 Отчёт", url: portalUrl },
+    ];
+
+    if (chatLink) {
+      buttonRow.push({ text: "✉️ Чат проекта", url: chatLink });
+    } else {
+      buttonRow.push({ text: "✉️ Чат проекта", callback_data: "admin:project:" + project.id });
+    }
+
+    inline_keyboard.push(buttonRow);
+  }
+
+  if (projects.length > limit) {
+    cards.push(
+      "Показаны первые " + String(limit) + " проектов из " + String(projects.length) + ". Остальные доступны в веб-панели.",
+    );
+  }
+
+  inline_keyboard.push([{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]);
+
+  const header = [
     "📁 Управление проектами",
     "",
-    "Выберите проект, чтобы переключать алерты, настроить оплату или обновить отчёт.",
-    "Для расширенных настроек используйте веб-панель /admin.",
+    "Просматривайте ключевые показатели и переходите в портал или чат из карточек ниже.",
+    "",
   ];
 
-  if (projects.length > 25) {
-    lines.push("", "Показаны первые 25 проектов из " + String(projects.length) + ".");
-  }
+  const message = header.concat(cards).join("\n\n").trim();
 
   await deliverAdminMessage(
     env,
     chatId,
-    lines.join("\n"),
-    { replyMarkup: buildAdminProjectListKeyboard(projects), disablePreview: true },
+    message,
+    {
+      replyMarkup: { inline_keyboard },
+      parseMode: "HTML",
+      disablePreview: true,
+    },
     context,
   );
 };
@@ -523,17 +581,23 @@ const buildRefreshKeyboard = (projectId: string): Record<string, unknown> => ({
 
 const adminStatusIcon = (status?: string | null): string => {
   const normalized = (status || "").toLowerCase();
-  if (normalized.startsWith("active")) {
-    return "🟢";
-  }
-  if (normalized.startsWith("pend") || normalized.includes("review")) {
-    return "🟡";
-  }
   if (!normalized) {
     return "⚪️";
   }
-  if (normalized.includes("pause") || normalized.includes("stop")) {
-    return "⚪️";
+  if (normalized.startsWith("active") || normalized.includes("running")) {
+    return "🟢";
+  }
+  if (normalized.includes("pend") || normalized.includes("review") || normalized.includes("moderation")) {
+    return "🟡";
+  }
+  if (
+    normalized.includes("pause") ||
+    normalized.includes("stop") ||
+    normalized.includes("inactive") ||
+    normalized.includes("disable") ||
+    normalized.includes("off")
+  ) {
+    return "⚫️";
   }
   return "⚪️";
 };
@@ -573,27 +637,6 @@ const sendAdminFacebookAuth = async (env: Record<string, unknown>, chatId: strin
         "/auth/facebook/callback сообщает об успешном входе."
       : "");
   await sendTelegramMessage(env, chatId, message, { disablePreview: true });
-};
-
-const sendAdminProjectsOverview = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
-  const projects = await loadProjectCards(env);
-  if (projects.length === 0) {
-    await sendTelegramMessage(env, chatId, "⚠️ Список проектов пуст. Добавьте проекты через панель /admin.");
-    return;
-  }
-  const lines: string[] = ["📁 Проекты", ""];
-  for (const project of projects) {
-    const icon = adminStatusIcon(project.status);
-    const portal = resolvePortalLink(env, project.id, project.portal_url);
-    const payment = project.billing?.next_payment || project.billing?.next_payment_date || "—";
-    lines.push(
-      icon + " " + project.name +
-        "\n  Статус: " + (project.status || "—") +
-        "\n  Оплата: " + payment +
-        "\n  Портал: " + portal,
-    );
-  }
-  await sendTelegramMessage(env, chatId, lines.join("\n\n"), { disablePreview: true });
 };
 
 const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
