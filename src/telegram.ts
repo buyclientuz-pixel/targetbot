@@ -1892,7 +1892,7 @@ export const handleTelegramWebhook = async (
       case "/admin":
         console.log("Admin check:", { chatId, ADMIN_IDS: adminIds });
         if (adminIds.includes(chatId)) {
-          await reply(env, chatId, ADMIN_MENU_MESSAGE, { replyMarkup: ADMIN_MENU_KEYBOARD });
+          await sendAdminMenu(env, chatId);
         } else {
           await reply(env, chatId, "⛔ У вас нет доступа к админ-панели.");
         }
