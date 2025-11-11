@@ -1,6 +1,6 @@
 import { ensureProjectReport, refreshAllProjects } from "./api/projects";
 import { clearMetaStatusCache } from "./api/meta";
-import { getFacebookTokenStatus } from "./fb/auth";
+import { checkAndRefreshFacebookToken } from "./fb/auth";
 import {
   loadProjectCards,
   readProjectConfig,
@@ -638,7 +638,9 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
     typeof env.DEFAULT_TZ === "string" && env.DEFAULT_TZ.trim() ? env.DEFAULT_TZ.trim() : "Asia/Tashkent";
 
   try {
-    const status = await getFacebookTokenStatus(env as WorkerEnv);
+    const result = await checkAndRefreshFacebookToken(env as WorkerEnv, { notify: false });
+    const status = result.status;
+    const refresh = result.refresh;
 
     if (status.status === "missing") {
       await sendTelegramMessage(
@@ -668,11 +670,21 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
       expiresAtText = formatDateTime(approximateExpiry, timeZone);
     }
 
-    const message = expiresAtText
-      ? "🟢 Facebook-токен активен (действителен до " + expiresAtText + ")"
-      : "🟢 Facebook-токен активен.";
+    const lines = [
+      expiresAtText
+        ? "🟢 Facebook-токен активен (действителен до " + expiresAtText + ")"
+        : "🟢 Facebook-токен активен.",
+    ];
 
-    await sendTelegramMessage(env, chatId, message);
+    if (refresh && typeof refresh === "object") {
+      if (refresh.ok) {
+        lines.push("🔄 Токен проверен и актуализирован.");
+      } else if (refresh.message) {
+        lines.push("⚠️ Не удалось обновить токен: " + refresh.message);
+      }
+    }
+
+    await sendTelegramMessage(env, chatId, lines.join("\n"));
   } catch (error) {
     const details = error instanceof Error && error.message ? ": " + error.message : ".";
     await sendTelegramMessage(env, chatId, "🚨 Ошибка при обращении к Facebook API" + details);

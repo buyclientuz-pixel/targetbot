@@ -629,32 +629,31 @@ npm run deploy -- --env production
 ## ✅ DEVELOPER CHECKLIST (PHASED IMPLEMENTATION)
 
 ### Phase 1 – Backend Core (R2 migration)
-- [ ] Replace all KV report storage with R2
-- [ ] Implement `getReport(project_id)` + TTL caching
-- [ ] Add global error + fallback handler
+- [x] Replace all KV report storage with R2
+- [x] Implement `getReport(project_id)` + TTL caching
+- [x] Add global error + fallback handler
 
 ### Phase 2 – API & Portal
-- [ ] Add `/portal/:id` and `/portal/:id/campaigns`
-- [ ] Create `/api/meta/status`, `/api/project/:id`, `/api/projects`
-- [ ] Integrate R2 data fetching + caching
+- [x] Add `/portal/:id` and `/portal/:id/campaigns`
+- [x] Create `/api/meta/status`, `/api/project/:id`, `/api/projects`
+- [x] Integrate R2 data fetching + caching
 
 ### Phase 3 – Admin Interface
-- [ ] Build `/admin` panel layout (Tailwind)
-- [ ] Facebook connection section
-- [ ] Project overview + Refresh buttons
-- [ ] Log viewer from R2
+- [x] Build `/admin` panel layout (Tailwind)
+- [x] Facebook connection section
+- [x] Project overview + Refresh buttons
+- [x] Log viewer from R2
 
 ### Phase 4 – Telegram sync
-- [ ] Add inline report formatting
-- [ ] Command `/report`, `/project`, `/campaigns`
-- [ ] Auto-alerts for thresholds
- - [x] Auto-alerts for thresholds
+- [x] Add inline report formatting
+- [x] Command `/report`, `/project`, `/campaigns`
+- [x] Auto-alerts for thresholds
 
 ### Phase 5 – UI/UX polish
-- [ ] Dark theme, responsive layout
-- [ ] Russian metric names
-- [ ] Status colors and progress bar
-- [ ] Buttons for “Все кампании” and “Чат клиента”
+- [x] Dark theme, responsive layout
+- [x] Russian metric names
+- [x] Status colors and progress bar
+- [x] Buttons for “Все кампании” and “Чат клиента”
 
 ### Phase 6 – Testing & Optimization
 - [ ] Integration tests for `/portal/:id`
