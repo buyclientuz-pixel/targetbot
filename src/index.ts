@@ -1,195 +1,139 @@
-interface Env {
-  REPORTS_NAMESPACE: KVNamespace;
-  BILLING_NAMESPACE: KVNamespace;
-  LOGS_NAMESPACE: KVNamespace;
+import { jsonResponse, textResponse, notFound, serverError } from "./utils/http";
+import { handleProjectsList, handleProjectDetail, handleProjectRefresh } from "./api/projects";
+import { handleMetaStatus } from "./api/meta";
+import { handlePortalSummary, handlePortalCampaigns } from "./api/portal";
+import { handleAdminPage, handleRefreshAllRequest } from "./api/admin";
+import { handleTelegramWebhook } from "./telegram";
+import { handleTelegramAlert } from "./api/telegram";
+import { appendLogEntry } from "./utils/r2";
+import { refreshAllProjects } from "./api/projects";
+
+interface Env extends Record<string, unknown> {
+  REPORTS_BUCKET?: R2Bucket;
+  R2_BUCKET?: R2Bucket;
+  LOGS_BUCKET?: R2Bucket;
+  FALLBACK_KV?: KVNamespace;
+  LOGS_NAMESPACE?: KVNamespace;
+  SESSION_NAMESPACE?: KVNamespace;
+  META_MANAGE_TOKEN?: string;
+  META_LONG_TOKEN?: string;
+  META_ACCESS_TOKEN?: string;
+  FB_GRAPH_VERSION?: string;
+  BOT_TOKEN?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TG_API_TOKEN?: string;
+  ADMIN_KEY?: string;
+  DEFAULT_TZ?: string;
+  WORKER_URL?: string;
 }
 
-export default {
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
+const handleNotFound = (): Response => notFound("Route not found");
 
-    if (url.pathname === "/") {
-      return new Response("ok");
-    }
-
-    if (url.pathname === "/reports") {
-      return handleGetReports(env);
-    }
-
-    if (url.pathname === "/billing") {
-      return handleGetBilling(env);
-    }
-
-    if (url.pathname === "/billing/update") {
-      return handleUpdateBilling(env);
-    }
-
-    if (url.pathname === "/billing/set_limit") {
-      return handleSetBillingLimit(request, env);
-    }
-
-    if (url.pathname.startsWith("/webhook")) {
-      return handleWebhook(request, env);
-    }
-
-    if (url.pathname === "/billing/balance") {
-      return handleBalance(env);
-    }
-
-    if (url.pathname === "/logs") {
-      return handleGetLogs(env);
-    }
-
-    return new Response("not found", { status: 404 });
-  },
+const routePortal = async (request: Request, env: Env, segments: string[]): Promise<Response> => {
+  if (segments.length === 2) {
+    return handlePortalSummary(request, env, segments[1]);
+  }
+  if (segments.length === 3 && segments[2] === "campaigns") {
+    return handlePortalCampaigns(request, env, segments[1]);
+  }
+  return handleNotFound();
 };
 
-async function handleGetReports(env: Env): Promise<Response> {
-  const reports = await loadReports(env);
-  return jsonResponse(reports);
-}
-
-async function loadReports(env: Env): Promise<(string | null)[]> {
-  const namespace = env.REPORTS_NAMESPACE;
-  const list = await namespace.list();
-
-  return Promise.all(list.keys.map((key) => namespace.get(key.name)));
-}
-
-async function handleGetBilling(env: Env): Promise<Response> {
-  const billing = await loadBillingData(env);
-  return jsonResponse(billing);
-}
-
-async function loadBillingData(env: Env): Promise<{ limit: number; spent: number }> {
-  const namespace = env.BILLING_NAMESPACE;
-  const [limit, spent] = await Promise.all([
-    namespace.get("limit"),
-    namespace.get("spent"),
-  ]);
-
-  return {
-    limit: Number(limit ?? 0),
-    spent: Number(spent ?? 0),
-  };
-}
-
-async function handleUpdateBilling(env: Env): Promise<Response> {
-  const namespace = env.BILLING_NAMESPACE;
-  await namespace.put("spent", "0");
-  return new Response("ok");
-}
-
-async function handleSetBillingLimit(request: Request, env: Env): Promise<Response> {
-  const allowedMethods = new Set(["POST", "PUT", "PATCH"]);
-  const method = typeof request.method === "string" ? request.method.toUpperCase() : "GET";
-  if (!allowedMethods.has(method)) {
-    return new Response("method not allowed", {
-      status: 405,
-      headers: { Allow: Array.from(allowedMethods).join(", ") },
-    });
+const routeApi = async (request: Request, env: Env, segments: string[]): Promise<Response> => {
+  if (segments[1] === "meta" && segments[2] === "status" && request.method === "GET") {
+    return handleMetaStatus(env);
   }
-
-  const limitResult = await extractLimitFromRequest(request);
-  if (limitResult.error) {
-    return new Response(limitResult.error, { status: limitResult.status });
+  if (segments[1] === "projects" && request.method === "GET") {
+    return handleProjectsList(env);
   }
-
-  const namespace = env.BILLING_NAMESPACE;
-  await namespace.put("limit", String(limitResult.limit));
-  return new Response("ok");
-}
-
-async function extractLimitFromRequest(
-  request: Request,
-): Promise<{ limit: number; error?: undefined; status?: undefined } | { error: string; status: number; limit?: undefined }> {
-  const url = new URL(request.url);
-  const queryValue = url.searchParams.get("limit");
-  if (queryValue !== null) {
-    return normalizeLimit(queryValue);
-  }
-
-  const contentType = request.headers.get("content-type") ?? "";
-  try {
-    if (contentType.includes("application/json")) {
-      const body = await request.json();
-      const limitValue =
-        body && typeof body === "object" ? (body as Record<string, unknown>).limit : undefined;
-      return normalizeLimit(limitValue);
+  if (segments[1] === "project" && segments.length >= 3) {
+    const projectId = segments[2];
+    if (segments.length === 3 && request.method === "GET") {
+      return handleProjectDetail(env, projectId);
     }
-
-    if (contentType.includes("application/x-www-form-urlencoded")) {
-      const formData = await request.formData();
-      const entry = formData.get("limit");
-      if (entry && typeof entry === "object" && "text" in entry && typeof (entry as any).text === "function") {
-        const textValue = await (entry as any).text();
-        return normalizeLimit(textValue);
-      }
-      return normalizeLimit(entry);
+    if (segments.length === 3 && request.method === "POST") {
+      const url = new URL(request.url);
+      const period = url.searchParams.get("period") || undefined;
+      return handleProjectRefresh(env, projectId, period || undefined);
     }
-
-    if (contentType.includes("text/plain")) {
-      const text = (await request.text()).trim();
-      if (text) {
-        return normalizeLimit(text);
+    if (segments.length === 4 && segments[3] === "refresh") {
+      const periodParam = new URL(request.url).searchParams.get("period") || undefined;
+      if (request.method === "POST" || request.method === "GET") {
+        return handleProjectRefresh(env, projectId, periodParam);
       }
     }
+  }
+  if (segments[1] === "project" && segments.length >= 3 && segments[2] === "refresh-all" && request.method === "POST") {
+    return handleRefreshAllRequest(env);
+  }
+  if (segments[1] === "tg" && segments.length >= 3 && segments[2] === "alert" && request.method === "POST") {
+    return handleTelegramAlert(request, env);
+  }
+  return handleNotFound();
+};
 
-    if (!contentType) {
-      const text = (await request.text()).trim();
-      if (text) {
-        return normalizeLimit(text);
+const routeAdmin = (request: Request, env: Env): Promise<Response> => handleAdminPage(request, env);
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    const pathname = url.pathname;
+    const segments = pathname.split("/").filter(Boolean);
+
+    try {
+      if (pathname === "/" && request.method === "GET") {
+        return textResponse("ok");
       }
+
+      if (pathname === "/health") {
+        return jsonResponse({ ok: true, timestamp: new Date().toISOString() });
+      }
+
+      if (segments[0] === "portal") {
+        return routePortal(request, env, segments);
+      }
+
+      if (segments[0] === "admin") {
+        return routeAdmin(request, env);
+      }
+
+      if (segments[0] === "api") {
+        return routeApi(request, env, segments);
+      }
+
+      if ((segments[0] === "tg" || segments[0] === "telegram" || segments[0] === "webhook") && request.method === "POST") {
+        return handleTelegramWebhook(request, env);
+      }
+
+      return handleNotFound();
+    } catch (error) {
+      await appendLogEntry(env, {
+        level: "error",
+        message: "Unhandled error: " + (error as Error).message,
+        timestamp: new Date().toISOString(),
+      });
+      return serverError("Internal error");
     }
-  } catch (error) {
-    return { error: "invalid request body", status: 400 };
-  }
+  },
 
-  return { error: "limit is required", status: 400 };
-}
-
-function normalizeLimit(value: unknown): { limit: number } | { error: string; status: number } {
-  let normalized = value;
-  if (typeof normalized === "string") {
-    normalized = normalized.trim();
-  }
-
-  if (normalized === null || normalized === undefined || normalized === "") {
-    return { error: "limit is required", status: 400 };
-  }
-
-  const amount = Number(normalized);
-  if (!Number.isFinite(amount) || amount < 0) {
-    return { error: "invalid limit", status: 400 };
-  }
-
-  return { limit: amount };
-}
-
-async function handleWebhook(request: Request, env: Env): Promise<Response> {
-  const payload = await request.json<any>();
-  const namespace = env.LOGS_NAMESPACE;
-  const id = typeof payload?.id === "string" ? payload.id : crypto.randomUUID();
-
-  await namespace.put(id, JSON.stringify(payload));
-  return new Response("ok");
-}
-
-async function handleBalance(env: Env): Promise<Response> {
-  const { limit, spent } = await loadBillingData(env);
-  const balance = limit - spent;
-  return jsonResponse({ balance });
-}
-
-async function handleGetLogs(env: Env): Promise<Response> {
-  const namespace = env.LOGS_NAMESPACE;
-  const list = await namespace.list({ limit: 10, reverse: true });
-  const logs = await Promise.all(list.keys.map((key) => namespace.get(key.name)));
-  return jsonResponse(logs);
-}
-
-function jsonResponse(value: unknown): Response {
-  return new Response(JSON.stringify(value), {
-    headers: { "content-type": "application/json" },
-  });
-}
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(
+      (async () => {
+        try {
+          const result = await refreshAllProjects(env);
+          await appendLogEntry(env, {
+            level: "info",
+            message: "Scheduled refresh completed for " + result.refreshed.length + " projects",
+            timestamp: new Date().toISOString(),
+          });
+        } catch (error) {
+          await appendLogEntry(env, {
+            level: "error",
+            message: "Scheduled refresh failed: " + (error as Error).message,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      })(),
+    );
+  },
+};
