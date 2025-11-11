@@ -104,10 +104,10 @@ function resolveDefaultWebhookUrl(config, { origin = '' } = {}) {
   const token = typeof config?.botToken === 'string' ? config.botToken : '';
   const shortToken = token.split(':')[0];
   if (shortToken) {
-    return `${base}/telegram/${shortToken}`;
+    return base + '/telegram/' + shortToken;
   }
 
-  return `${base}/telegram`;
+  return base + '/telegram';
 }
 
 function formatUsd(value, { digitsBelowOne = 2, digitsAboveOne = 2 } = {}) {
@@ -128,11 +128,11 @@ function formatUsd(value, { digitsBelowOne = 2, digitsAboveOne = 2 } = {}) {
   }).format(amount);
 
   if (absAmount >= 1 && digitsAboveOne === 0) {
-    formatted = formatted.replace(/,(\d*?)0+$/, (match, digits) => (digits ? `,${digits}` : ''));
+    formatted = formatted.replace(/,(\d*?)0+$/, (match, digits) => (digits ? ',' + digits : ''));
     formatted = formatted.replace(/,$/, '');
   }
 
-  return `${formatted}$`;
+  return formatted + '$';
 }
 
 function formatCpaRange(minValue, maxValue, campaigns = []) {
@@ -185,7 +185,7 @@ function formatCpaRange(minValue, maxValue, campaigns = []) {
   }
 
   const maxText = formatUsd(max, { digitsBelowOne: 2, digitsAboveOne: 0 });
-  return `${minText} / ${maxText}`;
+  return minText + ' / ' + maxText;
 }
 
 function generatePortalToken({ size = 24 } = {}) {
@@ -242,7 +242,7 @@ function formatDaysUntil(target, { now = new Date(), showSign = true } = {}) {
   const absolute = Math.abs(days);
   const prefix = overdue && showSign ? '−' : '';
   const value = overdue ? absolute : days;
-  const label = overdue ? `${prefix}${absolute}д` : `${value}д`;
+  const label = overdue ? prefix + absolute + 'д' : String(value) + 'д';
   return { label, value: days, overdue };
 }
 
@@ -300,7 +300,7 @@ function buildTelegramTopicUrl(chatId, threadId) {
     return '';
   }
 
-  return `https://t.me/c/${normalized}/${thread}`;
+  return 'https://t.me/c/' + normalized + '/' + thread;
 }
 
 function deepEqualObjects(first, second) {
@@ -383,7 +383,7 @@ function normalizeAdAccountInput(value) {
   }
 
   const numericId = match[1];
-  return { ok: true, accountId: `act_${numericId}`, numericId };
+  return { ok: true, accountId: 'act_' + numericId, numericId };
 }
 
 function normalizeAccountKey(accountId) {
@@ -439,7 +439,7 @@ function buildChatKey(chatId, threadId) {
   }
 
   const thread = threadId === undefined || threadId === null ? '' : String(threadId).trim();
-  return `${id}:${thread}`;
+  return id + ':' + thread;
 }
 
 function normalizeThreadIdValue(value) {
@@ -456,7 +456,7 @@ function buildChatRegistryStorageKey(chatId, threadId) {
     return '';
   }
 
-  return `${CHAT_KEY_PREFIX}${chatKey}`;
+  return CHAT_KEY_PREFIX + chatKey;
 }
 
 function truncateLabel(value, maxLength = 32) {
@@ -469,7 +469,7 @@ function truncateLabel(value, maxLength = 32) {
     return text;
   }
 
-  return `${text.slice(0, Math.max(1, maxLength - 1))}…`;
+  return text.slice(0, Math.max(1, maxLength - 1)) + '…';
 }
 
 function chunkArray(list, size) {
@@ -1007,7 +1007,7 @@ function parseKpiFormInput(text) {
 
     const numeric = normalizeDecimalInput(rawValue);
     if (!Number.isFinite(numeric)) {
-      errors.push(`Поле ${key} должно быть числом.`);
+      errors.push('Поле ' + key + ' должно быть числом.');
       continue;
     }
 
@@ -1089,7 +1089,7 @@ function normalizeTimeToken(token) {
     const hours = Number.parseInt(hoursRaw, 10);
     const minutes = Number.parseInt(minutesRaw, 10);
     if (Number.isFinite(hours) && Number.isFinite(minutes) && hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
-      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+      return String(hours).padStart(2, '0') + ':' + String(minutes).padStart(2, '0');
     }
   }
 
@@ -1098,7 +1098,7 @@ function normalizeTimeToken(token) {
     const hours = Number.parseInt(padded.slice(0, 2), 10);
     const minutes = Number.parseInt(padded.slice(2), 10);
     if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
-      return `${padded.slice(0, 2)}:${padded.slice(2)}`;
+      return padded.slice(0, 2) + ':' + padded.slice(2);
     }
   }
 
@@ -1151,12 +1151,12 @@ function formatChangePercent(change, { digits = 0 } = {}) {
   }).format(percent);
 
   if (change > 0) {
-    return `+${formatted}%`;
+    return '+' + formatted + '%';
   }
   if (change < 0) {
-    return `−${formatted}%`;
+    return '−' + formatted + '%';
   }
-  return `${formatted}%`;
+  return formatted + '%';
 }
 
 function formatDateIsoInTimeZone(date, timezone) {
@@ -1170,7 +1170,7 @@ function formatDateIsoInTimeZone(date, timezone) {
   try {
     const parts = new Intl.DateTimeFormat('en-CA', options).formatToParts(target);
     const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-    return `${lookup.year}-${lookup.month}-${lookup.day}`;
+    return lookup.year + '-' + lookup.month + '-' + lookup.day;
   } catch (error) {
     console.warn('Failed to format date in timezone', timezone, error);
     return target.toISOString().slice(0, 10);
@@ -1207,7 +1207,7 @@ function resolveTimezoneSnapshot(date, timezone) {
       minute,
       minutes: hour * 60 + minute,
       weekday: weekdayMap[weekdayToken] ?? null,
-      dateIso: `${lookup.year}-${lookup.month}-${lookup.day}`,
+      dateIso: lookup.year + '-' + lookup.month + '-' + lookup.day,
       timezone: options.timeZone,
     };
   } catch (error) {
@@ -1325,7 +1325,7 @@ function parseScheduleFormInput(text) {
       for (const token of tokens) {
         const time = normalizeTimeToken(token);
         if (!time) {
-          errors.push(`Некорректное время: ${token}`);
+          errors.push('Некорректное время: ' + token);
         } else if (!normalized.includes(time)) {
           normalized.push(time);
         }
@@ -1429,7 +1429,7 @@ function describeAccountStatus(code) {
     case 202:
       return 'Мошенничество: отключен';
     default:
-      return code ? `Статус ${code}` : 'Неизвестно';
+      return code ? 'Статус ' + code : 'Неизвестно';
   }
 }
 
@@ -1460,7 +1460,7 @@ function describeDisableReason(code) {
     case 17:
       return 'Требуется подтверждение оплаты';
     default:
-      return code ? `Отключено (код ${code})` : '';
+      return code ? 'Отключено (код ' + code + ')' : '';
   }
 }
 
@@ -1700,7 +1700,7 @@ function normalizeCampaignSummary(campaign) {
   }
 
   const id = campaign.id || '';
-  const name = campaign.name || `Campaign ${id}`;
+  const name = campaign.name || 'Campaign ' + id;
   const status = String(campaign.effective_status || campaign.status || '').toUpperCase();
   const insightEntries = Array.isArray(campaign?.insights?.data) ? campaign.insights.data : [];
 
@@ -1821,7 +1821,7 @@ function normalizeInsightEntry(entry) {
   }
 
   const id = entry.campaign_id || entry.campaignId || entry.id || '';
-  const name = entry.campaign_name || entry.campaignName || entry.name || `Campaign ${id}`;
+  const name = entry.campaign_name || entry.campaignName || entry.name || 'Campaign ' + id;
   const effectiveStatus = entry.campaign_effective_status || entry.effective_status || entry.status;
   const dateStart = entry.date_start || entry.dateStart || null;
   const dateStop = entry.date_stop || entry.dateStop || null;
@@ -1858,10 +1858,11 @@ function formatPercentage(value, { digits = 1 } = {}) {
   if (!Number.isFinite(value)) {
     return '—';
   }
-  return `${new Intl.NumberFormat('ru-RU', {
+  const formatted = new Intl.NumberFormat('ru-RU', {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
-  }).format(value)}%`;
+  }).format(value);
+  return formatted + '%';
 }
 
 function formatDateLabel(value, { timezone } = {}) {
@@ -1947,22 +1948,22 @@ function formatKpiLines(kpi) {
 
   const lines = [];
   if (kpi.objective) {
-    lines.push(`Цель: <b>${escapeHtml(String(kpi.objective).toUpperCase())}</b>`);
+    lines.push('Цель: <b>' + escapeHtml(String(kpi.objective).toUpperCase()) + '</b>');
   }
 
   if (Number.isFinite(kpi.cpa)) {
-    lines.push(`CPA: <b>${formatUsd(kpi.cpa, { digitsBelowOne: 2, digitsAboveOne: 0 })}</b>`);
+    lines.push('CPA: <b>' + formatUsd(kpi.cpa, { digitsBelowOne: 2, digitsAboveOne: 0 }) + '</b>');
   } else if (Number.isFinite(kpi.cpl)) {
-    lines.push(`CPL: <b>${formatUsd(kpi.cpl, { digitsBelowOne: 2, digitsAboveOne: 0 })}</b>`);
+    lines.push('CPL: <b>' + formatUsd(kpi.cpl, { digitsBelowOne: 2, digitsAboveOne: 0 }) + '</b>');
   }
 
   if (Number.isFinite(kpi.leadsPerDay)) {
-    lines.push(`Лидов в день: <b>${formatInteger(kpi.leadsPerDay)}</b>`);
+    lines.push('Лидов в день: <b>' + formatInteger(kpi.leadsPerDay) + '</b>');
   }
 
   if (Number.isFinite(kpi.dailyBudget)) {
-    const suffix = kpi.currency ? ` ${escapeHtml(kpi.currency)}` : '';
-    lines.push(`Бюджет/день: <b>${formatInteger(kpi.dailyBudget)}</b>${suffix}`);
+    const suffix = kpi.currency ? ' ' + escapeHtml(kpi.currency) : '';
+    lines.push('Бюджет/день: <b>' + formatInteger(kpi.dailyBudget) + '</b>' + suffix);
   }
 
   if (lines.length === 0) {
@@ -2215,27 +2216,27 @@ function formatClientBillingLines(billing, { timezone } = {}) {
       ? status.toUpperCase()
       : 'Требует отметки';
 
-  lines.push(`Статус: ${emoji} ${escapeHtml(statusLabel)}`);
+  lines.push('Статус: ' + emoji + ' ' + escapeHtml(statusLabel));
 
   if (billing.lastPaymentAt) {
     const label = formatDateLabel(billing.lastPaymentAt, { timezone }) || billing.lastPaymentAt;
-    lines.push(`Последняя оплата: ${escapeHtml(label)}`);
+    lines.push('Последняя оплата: ' + escapeHtml(label));
   } else {
     lines.push('Последняя оплата: —');
   }
 
   if (billing.nextPaymentAt) {
     const label = formatDateLabel(billing.nextPaymentAt, { timezone }) || billing.nextPaymentAt;
-    lines.push(`Следующий контроль: ${escapeHtml(label)}`);
+    lines.push('Следующий контроль: ' + escapeHtml(label));
   }
 
   if (billing.declinedAt) {
     const label = formatDateLabel(billing.declinedAt, { timezone }) || billing.declinedAt;
-    lines.push(`Отключено: ${escapeHtml(label)}`);
+    lines.push('Отключено: ' + escapeHtml(label));
   }
 
   if (billing.note) {
-    lines.push(`Комментарий: ${escapeHtml(billing.note)}`);
+    lines.push('Комментарий: ' + escapeHtml(billing.note));
   }
 
   return lines;
@@ -2258,14 +2259,18 @@ function formatScheduleLines(schedule, { timezone } = {}) {
     : 'по расписанию';
 
   if (schedule.periods && schedule.periods.length > 0) {
-    lines.push(`Периоды: ${schedule.periods.map((period) => escapeHtml(String(period))).join(', ')}`);
+    lines.push(
+      'Периоды: ' + schedule.periods.map((period) => escapeHtml(String(period))).join(', ')
+    );
   }
 
   if (schedule.times && schedule.times.length > 0) {
-    lines.push(`Время: ${schedule.times.map((time) => escapeHtml(String(time))).join(', ')}`);
+    lines.push(
+      'Время: ' + schedule.times.map((time) => escapeHtml(String(time))).join(', ')
+    );
   }
 
-  lines.push(`Частота: <b>${escapeHtml(cadenceLabel)}</b>`);
+  lines.push('Частота: <b>' + escapeHtml(cadenceLabel) + '</b>');
 
   if (schedule.quietWeekends) {
     lines.push('Тихие выходные: <b>включены</b>');
@@ -2274,7 +2279,7 @@ function formatScheduleLines(schedule, { timezone } = {}) {
   }
 
   if (schedule.timezone || timezone) {
-    lines.push(`Таймзона: <code>${escapeHtml(schedule.timezone || timezone)}</code>`);
+    lines.push('Таймзона: <code>' + escapeHtml(schedule.timezone || timezone) + '</code>');
   }
 
   return lines;
@@ -2337,7 +2342,7 @@ function normalizeKpiDraft(source, { suggestion } = {}) {
 
 function formatKpiDraftValue(field, value, { currency } = {}) {
   if (!['cpa', 'cpl', 'leadsPerDay', 'dailyBudget'].includes(field)) {
-    return value ? `<b>${escapeHtml(String(value))}</b>` : '—';
+    return value ? '<b>' + escapeHtml(String(value)) + '</b>' : '—';
   }
 
   if (!Number.isFinite(value)) {
@@ -2346,26 +2351,30 @@ function formatKpiDraftValue(field, value, { currency } = {}) {
 
   const config = KPI_FIELD_CONFIG[field];
   if (!config) {
-    return `<b>${escapeHtml(String(value))}</b>`;
+    return '<b>' + escapeHtml(String(value)) + '</b>';
   }
 
   if (config.type === 'money') {
-    return `<b>${formatUsd(value, { digitsBelowOne: 2, digitsAboveOne: 0 })}</b>`;
+    return '<b>' + formatUsd(value, { digitsBelowOne: 2, digitsAboveOne: 0 }) + '</b>';
   }
 
-  const suffix = field === 'dailyBudget' && currency ? ` ${escapeHtml(currency)}` : '';
-  return `<b>${formatInteger(value)}</b>${suffix}`;
+  const suffix = field === 'dailyBudget' && currency ? ' ' + escapeHtml(currency) : '';
+  return '<b>' + formatInteger(value) + '</b>' + suffix;
 }
 
 function describeKpiDraft(draft) {
   const currency = draft.currency || null;
   const lines = [];
-  lines.push(`Цель: ${draft.objective ? `<b>${escapeHtml(String(draft.objective))}</b>` : '—'}`);
-  lines.push(`CPA: ${formatKpiDraftValue('cpa', draft.cpa)}`);
-  lines.push(`CPL: ${formatKpiDraftValue('cpl', draft.cpl)}`);
-  lines.push(`Лидов/день: ${formatKpiDraftValue('leadsPerDay', draft.leadsPerDay)}`);
-  lines.push(`Бюджет/день: ${formatKpiDraftValue('dailyBudget', draft.dailyBudget, { currency })}`);
-  lines.push(`Валюта: ${currency ? `<b>${escapeHtml(currency)}</b>` : '—'}`);
+  lines.push(
+    'Цель: ' + (draft.objective ? '<b>' + escapeHtml(String(draft.objective)) + '</b>' : '—')
+  );
+  lines.push('CPA: ' + formatKpiDraftValue('cpa', draft.cpa));
+  lines.push('CPL: ' + formatKpiDraftValue('cpl', draft.cpl));
+  lines.push('Лидов/день: ' + formatKpiDraftValue('leadsPerDay', draft.leadsPerDay));
+  lines.push(
+    'Бюджет/день: ' + formatKpiDraftValue('dailyBudget', draft.dailyBudget, { currency })
+  );
+  lines.push('Валюта: ' + (currency ? '<b>' + escapeHtml(currency) + '</b>' : '—'));
   return lines;
 }
 
@@ -2480,7 +2489,7 @@ function formatStepLabel(step) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
-  return `${sign}${formatted}`;
+  return sign + formatted;
 }
 
 function shouldRunScheduleToday(schedule, weekday) {
@@ -2593,12 +2602,12 @@ function formatAlertLines(alerts, { account, campaigns }) {
 
   if (zeroSpendActive) {
     const checkTime = alerts?.zeroSpend?.time || alerts?.zeroSpend?.hour || '12:00';
-    lines.push(`⏰ Нулевой расход: напоминание в ${escapeHtml(String(checkTime))}`);
+    lines.push('⏰ Нулевой расход: напоминание в ' + escapeHtml(String(checkTime)));
   }
 
   if (billingActive) {
     const times = alerts?.billing?.times || alerts?.billing?.hours || ['10:00', '14:00', '18:00'];
-    lines.push(`💳 Биллинг: контроль в ${times.map((time) => escapeHtml(String(time))).join(', ')}`);
+    lines.push('💳 Биллинг: контроль в ' + times.map((time) => escapeHtml(String(time))).join(', '));
   }
 
   if (anomaliesActive) {
@@ -2624,16 +2633,16 @@ function formatAlertLines(alerts, { account, campaigns }) {
     : [];
 
   if (campaignFatigue.length > 0) {
-    lines.push(
-      `🧩 Усталость креативов: ${campaignFatigue
-        .slice(0, 3)
-        .map((campaign) => escapeHtml(campaign.name))
-        .join(', ')}${campaignFatigue.length > 3 ? '…' : ''}`,
-    );
+    const names = campaignFatigue
+      .slice(0, 3)
+      .map((campaign) => escapeHtml(campaign.name))
+      .join(', ');
+    const more = campaignFatigue.length > 3 ? '…' : '';
+    lines.push('🧩 Усталость креативов: ' + names + more);
   }
 
   if (account?.paymentIssues?.length) {
-    lines.push(`⚠️ Оплата: ${escapeHtml(account.paymentIssues.join(' • '))}`);
+    lines.push('⚠️ Оплата: ' + escapeHtml(account.paymentIssues.join(' • ')));
   }
 
   if (
@@ -2672,12 +2681,24 @@ function buildAlertSettingsKeyboard(base, alerts = {}) {
 
   const keyboard = [
     [
-      { text: `${zeroSpendActive ? '✅' : '⚪️'} Нулевой расход`, callback_data: `${base}:alerts:toggle:zero` },
-      { text: `${billingActive ? '✅' : '⚪️'} Биллинг`, callback_data: `${base}:alerts:toggle:billing` },
+      {
+        text: (zeroSpendActive ? '✅' : '⚪️') + ' Нулевой расход',
+        callback_data: base + ':alerts:toggle:zero',
+      },
+      {
+        text: (billingActive ? '✅' : '⚪️') + ' Биллинг',
+        callback_data: base + ':alerts:toggle:billing',
+      },
     ],
     [
-      { text: `${anomaliesActive ? '✅' : '⚪️'} Аномалии`, callback_data: `${base}:alerts:toggle:anomalies` },
-      { text: `${creativesActive ? '✅' : '⚪️'} Креативы`, callback_data: `${base}:alerts:toggle:creatives` },
+      {
+        text: (anomaliesActive ? '✅' : '⚪️') + ' Аномалии',
+        callback_data: base + ':alerts:toggle:anomalies',
+      },
+      {
+        text: (creativesActive ? '✅' : '⚪️') + ' Креативы',
+        callback_data: base + ':alerts:toggle:creatives',
+      },
     ],
   ];
 
@@ -2686,8 +2707,8 @@ function buildAlertSettingsKeyboard(base, alerts = {}) {
     let zeroRow = [];
     for (const time of options) {
       zeroRow.push({
-        text: `${time === zeroTime ? '• ' : ''}${time}`,
-        callback_data: `${base}:alerts:zero:time:${time.replace(':', '.')}`,
+        text: (time === zeroTime ? '• ' : '') + time,
+        callback_data: base + ':alerts:zero:time:' + time.replace(':', '.'),
       });
       if (zeroRow.length === 3) {
         keyboard.push(zeroRow);
@@ -2704,8 +2725,8 @@ function buildAlertSettingsKeyboard(base, alerts = {}) {
     const selectedSet = new Set((billingTimesRaw || []).map((time) => normalizeTimeToken(time)).filter(Boolean));
     for (const time of billingTimes) {
       row.push({
-        text: `${selectedSet.has(time) ? '✅' : '⚪️'} ${time}`,
-        callback_data: `${base}:alerts:billing:time:${time.replace(':', '.')}`,
+        text: (selectedSet.has(time) ? '✅' : '⚪️') + ' ' + time,
+        callback_data: base + ':alerts:billing:time:' + time.replace(':', '.'),
       });
       if (row.length === 3) {
         keyboard.push(row);
@@ -2715,10 +2736,10 @@ function buildAlertSettingsKeyboard(base, alerts = {}) {
     if (row.length > 0) {
       keyboard.push(row);
     }
-    keyboard.push([{ text: '♻️ Сбросить часы', callback_data: `${base}:alerts:billing:reset` }]);
+    keyboard.push([{ text: '♻️ Сбросить часы', callback_data: base + ':alerts:billing:reset' }]);
   }
 
-  keyboard.push([{ text: '⬅️ К проекту', callback_data: `${base}:open` }]);
+  keyboard.push([{ text: '⬅️ К проекту', callback_data: base + ':open' }]);
 
   return { inline_keyboard: keyboard };
 }
@@ -2805,11 +2826,11 @@ function buildAlertKeyboard(base, extraRows = []) {
   }
 
   inline_keyboard.push([
-    { text: '📊 Сегодня', callback_data: `${base}:report:today` },
-    { text: '⚙️ Настройки', callback_data: `${base}:settings` },
+    { text: '📊 Сегодня', callback_data: base + ':report:today' },
+    { text: '⚙️ Настройки', callback_data: base + ':settings' },
   ]);
   inline_keyboard.push([
-    { text: 'Открыть проект', callback_data: `${base}:open` },
+    { text: 'Открыть проект', callback_data: base + ':open' },
     { text: 'Закрыть', callback_data: 'admin:alert:dismiss' },
   ]);
 
@@ -2841,7 +2862,7 @@ function detectCampaignAnomalies(seriesList, { kpiTarget } = {}) {
       const latestText = Number.isFinite(latestCpa)
         ? formatUsd(latestCpa, { digitsBelowOne: 2, digitsAboveOne: 0 })
         : '—';
-      reasons.push(`CPL/CPA вырос на ${changeText} (до ${latestText})`);
+      reasons.push('CPL/CPA вырос на ' + changeText + ' (до ' + latestText + ')');
     }
 
     if (Number.isFinite(ctrChange) && ctrChange <= -0.4) {
@@ -2849,16 +2870,18 @@ function detectCampaignAnomalies(seriesList, { kpiTarget } = {}) {
       const latestText = Number.isFinite(latest.ctr)
         ? formatPercentage(latest.ctr, { digits: 1 })
         : '—';
-      reasons.push(`CTR упал на ${changeText} (сейчас ${latestText})`);
+      reasons.push('CTR упал на ' + changeText + ' (сейчас ' + latestText + ')');
     }
 
     if (Number.isFinite(impressionsChange) && impressionsChange <= -0.5) {
       const changeText = formatChangePercent(impressionsChange, { digits: 0 }) || '−50%';
-      reasons.push(`Показы сократились на ${changeText}`);
+      reasons.push('Показы сократились на ' + changeText);
     }
 
     if (Number.isFinite(latest.frequency) && latest.frequency > ALERT_FREQUENCY_THRESHOLD) {
-      reasons.push(`Частота ${latest.frequency.toFixed(1)} (> ${ALERT_FREQUENCY_THRESHOLD})`);
+      reasons.push(
+        'Частота ' + latest.frequency.toFixed(1) + ' (> ' + ALERT_FREQUENCY_THRESHOLD + ')'
+      );
     }
 
     if (reasons.length === 0) {
@@ -2953,17 +2976,17 @@ function buildCampaignLines(campaigns, { limit = 6 } = {}) {
     );
     const metricParts = [];
     if (metrics.label) {
-      metricParts.push(`${metrics.label}: ${metrics.valueText}`);
+      metricParts.push(metrics.label + ': ' + metrics.valueText);
     }
     if (metrics.costLabel) {
-      metricParts.push(`${metrics.costLabel}: ${metrics.costText}`);
+      metricParts.push(metrics.costLabel + ': ' + metrics.costText);
     }
     if (metrics.extraParts?.length) {
       metricParts.push(...metrics.extraParts);
     }
     const metricLine = metricParts.length > 0 ? metricParts.join(' | ') : '—';
     const title = campaign.name || campaign.campaign_name || campaign.campaignName || 'Кампания';
-    lines.push(`${statusVisual.icon} <b>${escapeHtml(title)}</b> — ${spendText}`, metricLine);
+    lines.push(statusVisual.icon + ' <b>' + escapeHtml(title) + '</b> — ' + spendText, metricLine);
     lines.push('');
   }
 
@@ -2972,7 +2995,7 @@ function buildCampaignLines(campaigns, { limit = 6 } = {}) {
   }
 
   if (campaigns.length > limit) {
-    lines.push(`… и ещё ${formatInteger(campaigns.length - limit)} кампаний`);
+    lines.push('… и ещё ' + formatInteger(campaigns.length - limit) + ' кампаний');
   }
 
   return lines;
@@ -2984,29 +3007,29 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
   const projectCode = project?.code ? String(project.code) : '';
   const projectId = !projectCode && project?.id ? String(project.id) : '';
 
-  lines.push(`<b>${escapeHtml(title)}</b>`);
+  lines.push('<b>' + escapeHtml(title) + '</b>');
   if (projectCode) {
-    lines.push(`Код: <code>${escapeHtml(projectCode)}</code>`);
+    lines.push('Код: <code>' + escapeHtml(projectCode) + '</code>');
   } else if (projectId) {
-    lines.push(`ID: <code>${escapeHtml(projectId)}</code>`);
+    lines.push('ID: <code>' + escapeHtml(projectId) + '</code>');
   }
 
   if (project?.chatTitle) {
-    lines.push(`Чат: ${escapeHtml(project.chatTitle)}`);
+    lines.push('Чат: ' + escapeHtml(project.chatTitle));
   }
 
   lines.push('', '<b>Статус Meta</b>');
   const billingCountdown = formatDaysUntil(account?.billingNextAt || project?.billingNextAt);
   const statusEmoji = determineAccountSignal(account, { daysUntilDue: billingCountdown });
   const statusLabel = account?.paymentStatusLabel || account?.statusLabel || account?.status || '—';
-  lines.push(`${statusEmoji} ${escapeHtml(statusLabel)}`);
+  lines.push(statusEmoji + ' ' + escapeHtml(statusLabel));
   if (account?.billingDueLabel) {
-    lines.push(`До оплаты: ${escapeHtml(account.billingDueLabel)}`);
+    lines.push('До оплаты: ' + escapeHtml(account.billingDueLabel));
   } else if (billingCountdown?.label && billingCountdown.label !== '—') {
-    lines.push(`До оплаты: ${escapeHtml(billingCountdown.label)}`);
+    lines.push('До оплаты: ' + escapeHtml(billingCountdown.label));
   }
   if (account?.paymentIssues?.length) {
-    lines.push(`Проблемы: ${escapeHtml(account.paymentIssues.join(' • '))}`);
+    lines.push('Проблемы: ' + escapeHtml(account.paymentIssues.join(' • ')));
   }
 
   lines.push('', '<b>Финансы</b>');
@@ -3016,20 +3039,27 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
     ? project.metrics.spendTodayUsd
     : null;
   lines.push(
-    `Потрачено сегодня: <b>${
-      Number.isFinite(spendToday) ? formatUsd(spendToday, { digitsBelowOne: 2, digitsAboveOne: 2 }) : '—'
-    }</b>`,
+    'Потрачено сегодня: <b>' +
+      (Number.isFinite(spendToday)
+        ? formatUsd(spendToday, { digitsBelowOne: 2, digitsAboveOne: 2 })
+        : '—') +
+      '</b>'
   );
 
   const nextPayment = account?.billingNextAt || project?.billingNextAt || null;
   const nextPaymentLabel = formatDateLabel(nextPayment, { timezone });
   if (nextPaymentLabel) {
-    const countdownLabel = billingCountdown?.label && billingCountdown.label !== '—' ? ` (${billingCountdown.label})` : '';
-    lines.push(`Дата следующей оплаты: ${escapeHtml(nextPaymentLabel)}${countdownLabel}`);
+    const countdownLabel =
+      billingCountdown?.label && billingCountdown.label !== '—'
+        ? ' (' + billingCountdown.label + ')'
+        : '';
+    lines.push('Дата следующей оплаты: ' + escapeHtml(nextPaymentLabel) + countdownLabel);
   }
 
   if (Number.isFinite(account?.debtUsd) && account.debtUsd !== 0) {
-    lines.push(`Долг: <b>${formatUsd(account.debtUsd, { digitsBelowOne: 2, digitsAboveOne: 2 })}</b>`);
+    lines.push(
+      'Долг: <b>' + formatUsd(account.debtUsd, { digitsBelowOne: 2, digitsAboveOne: 2 }) + '</b>'
+    );
   }
 
   const last4 =
@@ -3039,7 +3069,7 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
     account?.paymentMethodLast4 ||
     null;
   if (last4) {
-    lines.push(`Карта по умолчанию: 💳 ****${escapeHtml(String(last4))}`);
+    lines.push('Карта по умолчанию: 💳 ****' + escapeHtml(String(last4)));
   }
 
   lines.push('', '<b>Оплата клиента</b>');
@@ -3048,8 +3078,8 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
 
   const portalEmoji = project?.portalEnabled ? '🟢' : '🔴';
   const portalLine = project?.portalEnabled
-    ? `${portalEmoji} Портал активен — ссылка доступна в меню.`
-    : `${portalEmoji} Портал отключён. Откройте «🌐 Портал», чтобы включить доступ.`;
+    ? portalEmoji + ' Портал активен — ссылка доступна в меню.'
+    : portalEmoji + ' Портал отключён. Откройте «🌐 Портал», чтобы включить доступ.';
   lines.push('', portalLine);
 
   lines.push('', '<b>Актуальные кампании</b>');
@@ -3065,7 +3095,7 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
       const rawId =
         entry.id || entry.campaign_id || entry.campaignId || entry.account_campaign_id || entry.accountCampaignId || '';
       const normalizedId = rawId ? String(rawId).replace(/^cmp_/, '') : '';
-      const fallbackKey = entry.name ? `name:${entry.name}` : null;
+      const fallbackKey = entry.name ? 'name:' + entry.name : null;
       const key = normalizedId || fallbackKey;
       if (!key) {
         continue;
@@ -3109,7 +3139,7 @@ function buildProjectDetailMessage({ project, account, rawProject, timezone }) {
   lines.push(...buildCampaignLines(campaigns));
 
   const cpaRange = formatCpaRange(account?.cpaMinUsd, account?.cpaMaxUsd, campaigns);
-  lines.push(`CPA (7д): ${cpaRange || 'данных нет'}`);
+  lines.push('CPA (7д): ' + (cpaRange || 'данных нет'));
 
   const kpi = extractProjectKpi(rawProject);
   lines.push('', '<b>KPI</b>', ...formatKpiLines(kpi));
@@ -3148,9 +3178,11 @@ function resolveReportRange(preset, { since, until, timezone } = {}) {
   if (since && until) {
     range.since = formatDateIsoInTimeZone(since, timezone);
     range.until = formatDateIsoInTimeZone(until, timezone);
-    range.label = `${formatDateLabel(range.since, { timezone })} — ${formatDateLabel(range.until, {
-      timezone,
-    })}`.replace(/\s+—\s+$/, '');
+    range.label = (
+      formatDateLabel(range.since, { timezone }) +
+      ' — ' +
+      formatDateLabel(range.until, { timezone })
+    ).replace(/\s+—\s+$/, '');
     return range;
   }
 
@@ -3179,7 +3211,7 @@ function parseCustomDateRangeInput(text, { timezone } = {}) {
     }
     if (/^\d{2}-\d{2}-\d{4}$/.test(cleaned)) {
       const [day, month, year] = cleaned.split('-');
-      return `${year}-${month}-${day}`;
+      return year + '-' + month + '-' + day;
     }
     return null;
   };
@@ -3207,7 +3239,8 @@ function parseCustomDateRangeInput(text, { timezone } = {}) {
   }
 
   const range = resolveReportRange(null, { since: sinceIso, until: untilIso, timezone });
-  range.label = `${formatDateLabel(sinceIso, { timezone })} — ${formatDateLabel(untilIso, { timezone })}`;
+  range.label =
+    formatDateLabel(sinceIso, { timezone }) + ' — ' + formatDateLabel(untilIso, { timezone });
   range.since = sinceIso;
   range.until = untilIso;
   return { errors, range };
@@ -3225,26 +3258,28 @@ function buildReportKpiLine(kpi, { totalSpend, totalLeads, totalDailyBudget }) {
     const actual = Number.isFinite(totalLeads) && totalLeads > 0 ? totalSpend / totalLeads : null;
     const ok = Number.isFinite(actual) ? actual <= target : false;
     const emoji = ok ? '✅' : '⚠️';
-    parts.push(`${label}≤${formatUsd(target, { digitsBelowOne: 2, digitsAboveOne: 0 })} ${emoji}`);
+    parts.push(
+      label + '≤' + formatUsd(target, { digitsBelowOne: 2, digitsAboveOne: 0 }) + ' ' + emoji
+    );
   }
 
   if (Number.isFinite(kpi.leadsPerDay)) {
     const ok = Number.isFinite(totalLeads) ? totalLeads >= kpi.leadsPerDay : false;
     const emoji = ok ? '✅' : '⚠️';
-    parts.push(`Л/д≥${formatInteger(kpi.leadsPerDay)} ${emoji}`);
+    parts.push('Л/д≥' + formatInteger(kpi.leadsPerDay) + ' ' + emoji);
   }
 
   if (Number.isFinite(kpi.dailyBudget)) {
     const ok = Number.isFinite(totalDailyBudget) ? totalDailyBudget <= kpi.dailyBudget : true;
     const emoji = ok ? '✅' : '⚠️';
-    parts.push(`Бюд/д≤${formatInteger(kpi.dailyBudget)} ${emoji}`);
+    parts.push('Бюд/д≤' + formatInteger(kpi.dailyBudget) + ' ' + emoji);
   }
 
   if (parts.length === 0) {
     return null;
   }
 
-  return `KPI: ${parts.join(' | ')}`;
+  return 'KPI: ' + parts.join(' | ');
 }
 
 function describeCampaignPrimaryMetrics(campaign, { objective } = {}) {
