@@ -31,6 +31,11 @@ export interface BillingInfo {
   next_payment_date?: string | null;
   days_to_pay?: number | null;
   spend_limit?: number | null;
+  last_payment?: string | null;
+  next_payment?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  status?: "paid" | "due" | "overdue" | "inactive" | string | null;
 }
 
 export interface ProjectKpiTargets {
@@ -45,6 +50,27 @@ export interface ProjectAlertsConfig {
   cpa_threshold?: number | null;
   spend_limit?: number | null;
   moderation_hours?: number | null;
+  message_thread_id?: number | null;
+}
+
+export interface ProjectConfigRecord {
+  id: string;
+  name: string;
+  chat_id?: number | string | null;
+  chat_username?: string | null;
+  chat_link?: string | null;
+  account_id?: string | null;
+  account_name?: string | null;
+  billing_day?: number | null;
+  status?: string | null;
+  alerts_enabled?: boolean;
+  silent_weekends?: boolean;
+  last_sync?: string | null;
+  portal_url?: string | null;
+  manager?: string | null;
+  threads?: Record<string, number> | null;
+  kpi?: ProjectKpiTargets | null;
+  alerts?: ProjectAlertsConfig | null;
 }
 
 export interface ProjectReport {
@@ -61,6 +87,7 @@ export interface ProjectReport {
   chat_link?: string | null;
   kpi?: ProjectKpiTargets | null;
   alerts?: ProjectAlertsConfig | null;
+  portal_url?: string | null;
 }
 
 export interface MetaAuthStatus {
@@ -87,8 +114,12 @@ export interface ProjectCard {
   id: string;
   name: string;
   chat_link?: string | null;
+  chat_id?: string | number | null;
+  chat_username?: string | null;
   status?: string;
   currency?: string;
+  account_name?: string | null;
+  account_id?: string | null;
   summary?: ProjectSummary | null;
   updated_at?: string | null;
   ad_account_id?: string | null;
@@ -96,6 +127,12 @@ export interface ProjectCard {
   billing?: BillingInfo;
   kpi?: ProjectKpiTargets | null;
   alerts?: ProjectAlertsConfig | null;
+  billing_day?: number | null;
+  alerts_enabled?: boolean | null;
+  silent_weekends?: boolean | null;
+  last_sync?: string | null;
+  portal_url?: string | null;
+  manager?: string | null;
 }
 
 export interface AdminDashboardData {
@@ -104,6 +141,7 @@ export interface AdminDashboardData {
   projects: ProjectCard[];
   logs: DashboardLogEntry[];
   tokens: TokenStatus[];
+  storage: StorageOverview;
 }
 
 export interface DashboardLogEntry {
@@ -116,6 +154,14 @@ export interface TokenStatus {
   name: string;
   configured: boolean;
   hint?: string;
+}
+
+export interface StorageOverview {
+  reports: number;
+  projects: number;
+  alerts: number;
+  billing: number;
+  kvFallbacks?: number | null;
 }
 
 export interface WorkerEnv extends Record<string, unknown> {

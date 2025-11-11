@@ -106,3 +106,44 @@ const writeFallback = async (
     // ignore
   }
 };
+
+export const listR2Keys = async (env: R2Env, prefix: string): Promise<string[]> => {
+  const bucket = resolveBucket(env);
+  if (!bucket || typeof bucket.list !== "function") {
+    return [];
+  }
+
+  const keys: string[] = [];
+  let cursor: string | undefined = undefined;
+
+  try {
+    do {
+      const result = await bucket.list({ prefix, cursor });
+      for (const object of result.objects) {
+        if (object?.key) {
+          keys.push(object.key);
+        }
+      }
+      cursor = result.truncated ? result.cursor : undefined;
+    } while (cursor);
+  } catch (_error) {
+    await writeFallback(env, prefix + ":list", { reason: "list_error" });
+    return [];
+  }
+
+  return keys;
+};
+
+export const countFallbackEntries = async (env: R2Env): Promise<number | null> => {
+  const fallback = env.FALLBACK_KV || env.LOGS_NAMESPACE;
+  if (!fallback || typeof fallback.list !== "function") {
+    return null;
+  }
+
+  try {
+    const result = await fallback.list({ prefix: "fallback:" });
+    return result.keys.length;
+  } catch (_error) {
+    return null;
+  }
+};

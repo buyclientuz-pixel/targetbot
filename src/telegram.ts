@@ -1,7 +1,7 @@
 import { ensureProjectReport, refreshAllProjects } from "./api/projects";
 import { loadProjectCards } from "./utils/projects";
 import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "./utils/telegram";
-import { appendLogEntry, readJsonFromR2 } from "./utils/r2";
+import { appendLogEntry, readJsonFromR2, listR2Keys, countFallbackEntries } from "./utils/r2";
 import { ProjectReport } from "./types";
 import { formatCurrency, formatNumber, formatPercent, formatFrequency, formatDateTime } from "./utils/format";
 import { escapeHtml } from "./utils/html";
@@ -94,17 +94,14 @@ const HELP_MESSAGE =
 
 const ADMIN_MENU_MESSAGE =
   "⚙️ Панель администратора\n\n" +
-  "📊 Отчёты\n" +
-  "🔁 Обновить все данные\n" +
-  "🧾 Просмотр R2 логов\n" +
-  "🚀 Проверить подключение Facebook";
+  "Выберите раздел, чтобы открыть быстрые действия:";
 
 const ADMIN_MENU_KEYBOARD = {
   inline_keyboard: [
-    [{ text: "📊 Отчёты", callback_data: "admin:reports" }],
-    [{ text: "🔁 Обновить все данные", callback_data: "admin:refresh_all" }],
-    [{ text: "🧾 Просмотр R2 логов", callback_data: "admin:logs" }],
-    [{ text: "🚀 Проверить подключение Facebook", callback_data: "admin:fb_status" }],
+    [{ text: "👤 Авторизация Facebook", callback_data: "admin:fb_auth" }],
+    [{ text: "📁 Проекты", callback_data: "admin:projects" }],
+    [{ text: "💳 Оплаты", callback_data: "admin:billing" }],
+    [{ text: "⚙️ Тех.панель", callback_data: "admin:tech" }],
   ],
 };
 
@@ -201,6 +198,176 @@ const buildProjectSelectionKeyboard = (projects: ReportProjectOption[]): Record<
 const buildRefreshKeyboard = (projectId: string): Record<string, unknown> => ({
   inline_keyboard: [[{ text: "🔁 Обновить данные", callback_data: "refresh:" + projectId }]],
 });
+
+const adminStatusIcon = (status?: string | null): string => {
+  const normalized = (status || "").toLowerCase();
+  if (normalized.startsWith("active")) {
+    return "🟢";
+  }
+  if (normalized.startsWith("pend") || normalized.includes("review")) {
+    return "🟡";
+  }
+  if (!normalized) {
+    return "⚪️";
+  }
+  if (normalized.includes("pause") || normalized.includes("stop")) {
+    return "⚪️";
+  }
+  return "⚪️";
+};
+
+const buildOAuthUrl = (env: Record<string, unknown>): string | null => {
+  const appId = typeof env.FB_APP_ID === "string" ? env.FB_APP_ID.trim() : "";
+  const base = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
+  if (!appId || !base) {
+    return null;
+  }
+  const redirectBase = base.endsWith("/") ? base.slice(0, -1) : base;
+  const redirectUri = redirectBase + "/auth/facebook/callback";
+  const url = new URL("https://www.facebook.com/v18.0/dialog/oauth");
+  url.searchParams.set("client_id", appId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("scope", "ads_management,business_management");
+  return url.toString();
+};
+
+const sendAdminFacebookAuth = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
+  const url = buildOAuthUrl(env);
+  if (!url) {
+    await sendTelegramMessage(
+      env,
+      chatId,
+      "⚠️ Укажите WORKER_URL и FB_APP_ID, чтобы сформировать ссылку авторизации Facebook.",
+    );
+    return;
+  }
+  const redirectBase = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
+  const message =
+    "👤 Авторизация Facebook\n\n" +
+    "1. Откройте ссылку: " + url +
+    "\n2. Подтвердите доступ к рекламе и бизнесу." +
+    (redirectBase
+      ? "\n3. После редиректа убедитесь, что страница " + redirectBase.replace(/\/$/, "") +
+        "/auth/facebook/callback сообщает об успешном входе."
+      : "");
+  await sendTelegramMessage(env, chatId, message, { disablePreview: true });
+};
+
+const sendAdminProjectsOverview = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
+  const projects = await loadProjectCards(env);
+  if (projects.length === 0) {
+    await sendTelegramMessage(env, chatId, "⚠️ Список проектов пуст. Добавьте проекты через панель /admin.");
+    return;
+  }
+  const lines: string[] = ["📁 Проекты", ""];
+  for (const project of projects) {
+    const icon = adminStatusIcon(project.status);
+    const portal = resolvePortalLink(env, project.id, project.portal_url);
+    const payment = project.billing?.next_payment || project.billing?.next_payment_date || "—";
+    lines.push(
+      icon + " " + project.name +
+        "\n  Статус: " + (project.status || "—") +
+        "\n  Оплата: " + payment +
+        "\n  Портал: " + portal,
+    );
+  }
+  await sendTelegramMessage(env, chatId, lines.join("\n\n"), { disablePreview: true });
+};
+
+const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
+  const projects = await loadProjectCards(env);
+  if (projects.length === 0) {
+    await sendTelegramMessage(env, chatId, "⚠️ Нет проектов для отображения оплат.");
+    return;
+  }
+  const lines: string[] = ["💳 Оплаты", ""];
+  for (const project of projects) {
+    const billing = project.billing || {};
+    const amount = billing.amount !== undefined && billing.amount !== null
+      ? formatCurrency(billing.amount, billing.currency || project.currency || "USD")
+      : "—";
+    const nextPayment = billing.next_payment || billing.next_payment_date || "—";
+    const status = billing.status || "неизвестно";
+    lines.push(
+      project.name +
+        "\n  Следующая оплата: " + nextPayment +
+        "\n  Сумма: " + amount +
+        "\n  Статус: " + status,
+    );
+  }
+  await sendTelegramMessage(env, chatId, lines.join("\n\n"));
+};
+
+const resolvePortalLink = (
+  env: Record<string, unknown>,
+  projectId: string,
+  preferred?: string | null,
+): string => {
+  if (preferred && preferred.trim()) {
+    return preferred;
+  }
+  const base = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
+  if (!base) {
+    return "/portal/" + projectId;
+  }
+  const normalized = base.endsWith("/") ? base.slice(0, -1) : base;
+  return normalized + "/portal/" + projectId;
+};
+
+const countDistinct = (keys: string[], prefix: string): number => {
+  const set = new Set<string>();
+  for (const key of keys) {
+    if (!key.startsWith(prefix) || !key.endsWith(".json")) {
+      continue;
+    }
+    const trimmed = key.slice(prefix.length).replace(/\.json$/, "");
+    if (!trimmed || trimmed.includes("/")) {
+      continue;
+    }
+    if (trimmed === "index" || trimmed === "projects") {
+      continue;
+    }
+    set.add(trimmed);
+  }
+  return set.size;
+};
+
+const sendAdminTechOverview = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
+  const [reportKeys, projectKeys, billingKeys, alertKeys, fallbackCount] = await Promise.all([
+    listR2Keys(env as any, "reports/"),
+    listR2Keys(env as any, "projects/"),
+    listR2Keys(env as any, "billing/"),
+    listR2Keys(env as any, "alerts/"),
+    countFallbackEntries(env as any),
+  ]);
+
+  const lines: string[] = [
+    "⚙️ Тех.панель",
+    "",
+    "R2:",
+    "• Отчёты: " + countDistinct(reportKeys, "reports/"),
+    "• Проекты: " + countDistinct(projectKeys, "projects/"),
+    "• Оплаты: " + countDistinct(billingKeys, "billing/"),
+    "• Алерты: " + countDistinct(alertKeys, "alerts/"),
+  ];
+
+  if (fallbackCount !== null && fallbackCount !== undefined) {
+    lines.push("• Fallback KV: " + fallbackCount);
+  }
+
+  const workerUrl = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
+  const webhookBase = workerUrl ? (workerUrl.endsWith("/") ? workerUrl.slice(0, -1) : workerUrl) : "";
+  if (webhookBase) {
+    lines.push("", "Вебхук: " + webhookBase + "/manage/telegram/webhook?action=status&token=<token>");
+  }
+
+  lines.push(
+    "",
+    "Для обновления отчётов используйте кнопку \"🔁 Обновить данные\" или команду /refresh <id>.",
+  );
+
+  await sendTelegramMessage(env, chatId, lines.join("\n"), { disablePreview: true });
+};
 
 const readProjectReport = async (
   env: Record<string, unknown>,
@@ -460,9 +627,21 @@ const handleAdminCallback = async (
 
   try {
     switch (action) {
-      case "reports":
-        await sendTelegramMessage(env, chatId, "Откройте портал /admin для просмотра подробных отчётов.");
-        await answerCallbackQuery(env, callback.id);
+      case "fb_auth":
+        await sendAdminFacebookAuth(env, chatId);
+        await answerCallbackQuery(env, callback.id, { text: "Ссылка отправлена" });
+        return true;
+      case "projects":
+        await sendAdminProjectsOverview(env, chatId);
+        await answerCallbackQuery(env, callback.id, { text: "Проекты" });
+        return true;
+      case "billing":
+        await sendAdminBillingOverview(env, chatId);
+        await answerCallbackQuery(env, callback.id, { text: "Оплаты" });
+        return true;
+      case "tech":
+        await sendAdminTechOverview(env, chatId);
+        await answerCallbackQuery(env, callback.id, { text: "Тех.панель" });
         return true;
       case "refresh_all": {
         const result = await refreshAllProjects(env);
@@ -475,18 +654,6 @@ const handleAdminCallback = async (
         await answerCallbackQuery(env, callback.id, { text: "Обновление выполнено" });
         return true;
       }
-      case "logs":
-        await sendTelegramMessage(env, chatId, "Логи доступны в панели /admin в разделе Logs.");
-        await answerCallbackQuery(env, callback.id);
-        return true;
-      case "fb_status":
-        await sendTelegramMessage(
-          env,
-          chatId,
-          "Статус подключения Facebook доступен в панели /admin → Facebook.",
-        );
-        await answerCallbackQuery(env, callback.id);
-        return true;
       default:
         return false;
     }

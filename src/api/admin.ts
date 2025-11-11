@@ -2,8 +2,8 @@ import { jsonResponse, unauthorized } from "../utils/http";
 import { loadMetaStatus } from "./meta";
 import { callGraph } from "../fb/client";
 import { loadProjectCards } from "../utils/projects";
-import { readJsonFromR2 } from "../utils/r2";
-import { AdminDashboardData, MetaAccountInfo, DashboardLogEntry, TokenStatus } from "../types";
+import { readJsonFromR2, listR2Keys, countFallbackEntries } from "../utils/r2";
+import { AdminDashboardData, MetaAccountInfo, DashboardLogEntry, TokenStatus, StorageOverview } from "../types";
 import { renderAdminPage } from "../views/admin";
 import { refreshAllProjects } from "./projects";
 
@@ -57,6 +57,42 @@ const loadLogs = async (env: unknown): Promise<DashboardLogEntry[]> => {
   );
 };
 
+const countDistinctRecords = (keys: string[], prefix: string): number => {
+  const seen = new Set<string>();
+  for (const key of keys) {
+    if (!key.startsWith(prefix) || !key.endsWith(".json")) {
+      continue;
+    }
+    const trimmed = key.slice(prefix.length).replace(/\.json$/, "");
+    if (!trimmed || trimmed.includes("/")) {
+      continue;
+    }
+    if (trimmed === "index" || trimmed === "projects") {
+      continue;
+    }
+    seen.add(trimmed);
+  }
+  return seen.size;
+};
+
+const loadStorageOverview = async (env: unknown): Promise<StorageOverview> => {
+  const [reportKeys, projectKeys, billingKeys, alertKeys, fallbackCount] = await Promise.all([
+    listR2Keys(env as any, "reports/"),
+    listR2Keys(env as any, "projects/"),
+    listR2Keys(env as any, "billing/"),
+    listR2Keys(env as any, "alerts/"),
+    countFallbackEntries(env as any),
+  ]);
+
+  return {
+    reports: countDistinctRecords(reportKeys, "reports/"),
+    projects: countDistinctRecords(projectKeys, "projects/"),
+    billing: countDistinctRecords(billingKeys, "billing/"),
+    alerts: countDistinctRecords(alertKeys, "alerts/"),
+    kvFallbacks: fallbackCount,
+  };
+};
+
 const ADMIN_KEY_ENV = "ADMIN_KEY";
 
 const verifyKey = (request: Request, env: Record<string, unknown>): boolean => {
@@ -93,7 +129,7 @@ export const handleAdminPage = async (request: Request, env: Record<string, unkn
     return unauthorized("Invalid admin key");
   }
 
-  const [metaStatus, accounts, projects, logs] = await Promise.all([
+  const [metaStatus, accounts, projects, logs, storage] = await Promise.all([
     loadMetaStatus(env, { useCache: true }).catch((error) => ({
       ok: false,
       issues: [(error as Error).message],
@@ -101,6 +137,7 @@ export const handleAdminPage = async (request: Request, env: Record<string, unkn
     loadAccounts(env),
     loadProjectCards(env),
     loadLogs(env),
+    loadStorageOverview(env),
   ]);
 
   const dashboard: AdminDashboardData = {
@@ -109,6 +146,7 @@ export const handleAdminPage = async (request: Request, env: Record<string, unkn
     projects,
     logs,
     tokens: collectTokenStatus(env),
+    storage,
   };
 
   const html = renderAdminPage(dashboard);
