@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "npx wrangler@4.46.0 dev",
+    "preinstall": "node scripts/preinstall-redirect.cjs",
     "lint": "eslint 'src/**/*.{js,ts,tsx}' --quiet",
     "format": "prettier --write 'src/**/*.{js,ts,tsx,json,html,css}'",
     "lint:api": "node scripts/lint-api.mjs",
