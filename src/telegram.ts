@@ -1,5 +1,6 @@
 import { ensureProjectReport, refreshAllProjects } from "./api/projects";
 import { clearMetaStatusCache } from "./api/meta";
+import { getFacebookTokenStatus } from "./fb/auth";
 import {
   loadProjectCards,
   readProjectConfig,
@@ -24,7 +25,7 @@ import {
   clearFallbackEntries,
   readCronStatus,
 } from "./utils/r2";
-import { ProjectReport, ProjectCard, BillingInfo, ProjectAlertsConfig } from "./types";
+import { ProjectReport, ProjectCard, BillingInfo, ProjectAlertsConfig, WorkerEnv } from "./types";
 import {
   formatCurrency,
   formatNumber,
@@ -89,17 +90,7 @@ const HELP_MESSAGE =
 
 const ADMIN_MENU_MESSAGE =
   "⚙️ Панель администратора\n\n" +
-  "Выберите раздел, чтобы открыть быстрые действия:";
-
-const ADMIN_MENU_KEYBOARD = {
-  inline_keyboard: [
-    [{ text: "👤 Авторизация Facebook", callback_data: "admin:fb_auth" }],
-    [{ text: "📁 Проекты", callback_data: "admin:projects" }],
-    [{ text: "💳 Оплаты", callback_data: "admin:billing" }],
-    [{ text: "⚙️ Тех.панель", callback_data: "admin:tech" }],
-    [{ text: "🔁 Обновить отчёты", callback_data: "admin:refresh_all" }],
-  ],
-};
+  "Выберите действие с помощью кнопок ниже:";
 
 const TECH_PANEL_KEYBOARD = {
   inline_keyboard: [
@@ -270,7 +261,8 @@ const sendAdminMenu = async (
   chatId: string,
   context: AdminMessageContext = {},
 ): Promise<void> => {
-  await deliverAdminMessage(env, chatId, ADMIN_MENU_MESSAGE, { replyMarkup: ADMIN_MENU_KEYBOARD }, context);
+  const replyMarkup = buildAdminMenuKeyboard(env);
+  await deliverAdminMessage(env, chatId, ADMIN_MENU_MESSAGE, { replyMarkup }, context);
 };
 
 const sendAdminProjectsOverview = async (
@@ -583,6 +575,42 @@ const buildOAuthUrl = (env: Record<string, unknown>): string | null => {
   return url.toString();
 };
 
+const resolveAdminWebUrl = (env: Record<string, unknown>): string | null => {
+  const baseRaw = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
+  const base = baseRaw ? baseRaw.replace(/\/$/, "") : "https://th-reports.buyclientuz.workers.dev";
+  const keyRaw = typeof env.ADMIN_KEY === "string" ? env.ADMIN_KEY.trim() : "";
+  const key = keyRaw || "!Lyas123";
+  if (!base) {
+    return null;
+  }
+  return base + "/admin?key=" + encodeURIComponent(key);
+};
+
+const buildAdminMenuKeyboard = (env: Record<string, unknown>): Record<string, unknown> => {
+  const inline_keyboard: Array<Array<Record<string, unknown>>> = [];
+  const oauthUrl = buildOAuthUrl(env);
+
+  if (oauthUrl) {
+    inline_keyboard.push([{ text: "🔗 Авторизация Facebook", url: oauthUrl }]);
+  } else {
+    inline_keyboard.push([{ text: "🔗 Авторизация Facebook", callback_data: "admin:fb_auth" }]);
+  }
+
+  inline_keyboard.push([{ text: "🟢 Статус Facebook", callback_data: "admin:fb_status" }]);
+
+  const adminUrl = resolveAdminWebUrl(env);
+  if (adminUrl) {
+    inline_keyboard.push([{ text: "🌐 Веб-админка", url: adminUrl }]);
+  }
+
+  inline_keyboard.push([{ text: "📁 Проекты", callback_data: "admin:projects" }]);
+  inline_keyboard.push([{ text: "💳 Оплаты", callback_data: "admin:billing" }]);
+  inline_keyboard.push([{ text: "⚙️ Тех.панель", callback_data: "admin:tech" }]);
+  inline_keyboard.push([{ text: "🔁 Обновить отчёты", callback_data: "admin:refresh_all" }]);
+
+  return { inline_keyboard };
+};
+
 const sendAdminFacebookAuth = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
   const url = buildOAuthUrl(env);
   if (!url) {
@@ -603,6 +631,52 @@ const sendAdminFacebookAuth = async (env: Record<string, unknown>, chatId: strin
         "/auth/facebook/callback сообщает об успешном входе."
       : "");
   await sendTelegramMessage(env, chatId, message, { disablePreview: true });
+};
+
+const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
+  const timeZone =
+    typeof env.DEFAULT_TZ === "string" && env.DEFAULT_TZ.trim() ? env.DEFAULT_TZ.trim() : "Asia/Tashkent";
+
+  try {
+    const status = await getFacebookTokenStatus(env as WorkerEnv);
+
+    if (status.status === "missing") {
+      await sendTelegramMessage(
+        env,
+        chatId,
+        "⚠️ Токен не настроен. Пройдите авторизацию через кнопку «Авторизация Facebook».",
+      );
+      return;
+    }
+
+    if (status.status === "expired") {
+      await sendTelegramMessage(env, chatId, "⚠️ Токен истёк, требуется повторная авторизация.");
+      return;
+    }
+
+    if (!status.ok || status.status === "invalid" || status.valid === false) {
+      const issues = status.issues && status.issues.length ? ": " + status.issues.join("; ") : ".";
+      await sendTelegramMessage(env, chatId, "🚨 Ошибка при обращении к Facebook API" + issues);
+      return;
+    }
+
+    let expiresAtText: string | null = null;
+    if (status.expires_at) {
+      expiresAtText = formatDateTime(status.expires_at, timeZone);
+    } else if (typeof status.expires_in_hours === "number") {
+      const approximateExpiry = new Date(Date.now() + status.expires_in_hours * 60 * 60 * 1000).toISOString();
+      expiresAtText = formatDateTime(approximateExpiry, timeZone);
+    }
+
+    const message = expiresAtText
+      ? "🟢 Facebook-токен активен (действителен до " + expiresAtText + ")"
+      : "🟢 Facebook-токен активен.";
+
+    await sendTelegramMessage(env, chatId, message);
+  } catch (error) {
+    const details = error instanceof Error && error.message ? ": " + error.message : ".";
+    await sendTelegramMessage(env, chatId, "🚨 Ошибка при обращении к Facebook API" + details);
+  }
 };
 
 const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
@@ -1270,6 +1344,10 @@ const handleAdminCallback = async (
       case "fb_auth":
         await sendAdminFacebookAuth(env, chatId);
         await answerCallbackQuery(env, callback.id, { text: "Ссылка отправлена" });
+        return true;
+      case "fb_status":
+        await sendAdminFacebookStatus(env, chatId);
+        await answerCallbackQuery(env, callback.id, { text: "Статус обновлён" });
         return true;
       case "projects":
         await sendAdminProjectsOverview(env, chatId, { messageId });
