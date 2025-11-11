@@ -189,10 +189,10 @@ const writeFallback = async (
   env: R2Env,
   key: string,
   message: unknown,
-): Promise<void> => {
+): Promise<boolean> => {
   const fallback = env.FALLBACK_KV || env.LOGS_NAMESPACE;
   if (!fallback) {
-    return;
+    return false;
   }
 
   try {
@@ -204,10 +204,17 @@ const writeFallback = async (
       _fallback: true,
     };
     await fallback.put("fallback:" + key + ":" + now, JSON.stringify(payload));
+    return true;
   } catch (_error) {
-    // ignore
+    return false;
   }
 };
+
+export const writeFallbackRecord = async (
+  env: R2Env,
+  key: string,
+  message: unknown,
+): Promise<boolean> => writeFallback(env, key, message);
 
 export const listR2Keys = async (env: R2Env, prefix: string): Promise<string[]> => {
   const bucket = resolveBucket(env);

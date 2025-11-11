@@ -211,6 +211,49 @@ async function testClientPortal({ baseUrl, portalCode, portalSig, refresh }) {
   };
 }
 
+async function testPortalById({ baseUrl, projectId, refresh }) {
+  if (!projectId) {
+    return {
+      status: 'skipped',
+      message: 'ID проекта для портала не указан — пропуск',
+    };
+  }
+
+  const path = `/portal/${encodeURIComponent(projectId)}`;
+  const url = new URL(path, baseUrl);
+  if (refresh) {
+    url.searchParams.set('refresh', '1');
+  }
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      accept: 'text/html,application/xhtml+xml',
+    },
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`portal/${projectId} вернул HTTP ${response.status}: ${text.slice(0, 160)}`);
+  }
+
+  if (!/<!DOCTYPE html>/i.test(text) && !/<html/i.test(text)) {
+    throw new Error('portal/:id ответил не HTML (ожидалась страница клиента)');
+  }
+
+  const hasTitle = new RegExp(projectId, 'i').test(text);
+  const hasMetrics = /Потрачено|Лиды|Клики|CPA|CTR/i.test(text);
+
+  return {
+    status: 'success',
+    details: [
+      `length: ${text.length} символов`,
+      hasTitle ? 'найден заголовок с ID/названием проекта' : '⚠️ заголовок проекта не найден',
+      hasMetrics ? 'найдены основные метрики' : '⚠️ метрики не обнаружены',
+    ],
+  };
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const baseUrl = resolveSetting({
@@ -243,6 +286,12 @@ async function main() {
     env: ['INTEGRATION_PORTAL_SIG', 'PORTAL_TEST_SIG'],
   });
 
+  const portalProjectId = resolveSetting({
+    args,
+    names: ['project-id', 'portal-id'],
+    env: ['INTEGRATION_PROJECT_ID', 'PORTAL_TEST_PROJECT'],
+  });
+
   const wantsRefresh = /^1|true|yes|on$/i.test(resolveSetting({
     args,
     names: ['refresh-portal'],
@@ -264,6 +313,10 @@ async function main() {
     {
       name: 'Client portal render',
       fn: () => testClientPortal({ baseUrl, portalCode, portalSig, refresh: wantsRefresh }),
+    },
+    {
+      name: 'Portal by project ID',
+      fn: () => testPortalById({ baseUrl, projectId: portalProjectId, refresh: wantsRefresh }),
     },
   ];
 

@@ -23,6 +23,8 @@ import {
   deletePrefixFromR2,
   clearFallbackEntries,
   readCronStatus,
+  writeJsonToR2,
+  writeFallbackRecord,
 } from "../utils/r2";
 import { formatCurrency, metaAccountStatusIcon } from "../utils/format";
 import { resolveAccountSpend, buildChatLabel } from "../utils/accounts";
@@ -946,6 +948,96 @@ export const handleAdminSystemAction = async (
       return jsonResponse({ ok: true, removed });
     }
     return jsonResponse({ ok: false, error: "Fallback storage not configured" }, { status: 503 });
+  }
+
+  if (action === "r2-load-test") {
+    const iterationsInput = Number(payload?.iterations);
+    const iterations = Number.isFinite(iterationsInput)
+      ? Math.min(Math.max(Math.trunc(iterationsInput), 1), 25)
+      : 5;
+    const prefix = coerceString(payload?.prefix) || "reports/__loadtest";
+    const seed = Math.random().toString(16).slice(2, 10);
+
+    const writeDurations: number[] = [];
+    const readDurations: number[] = [];
+    let writeSuccess = 0;
+    let readSuccess = 0;
+
+    for (let index = 0; index < iterations; index += 1) {
+      const key = `${prefix}/${seed}-${Date.now()}-${index}.json`;
+      const payloadData = {
+        iteration: index,
+        timestamp: new Date().toISOString(),
+        seed,
+      };
+
+      const startWrite = Date.now();
+      const wrote = await writeJsonToR2(env as any, key, payloadData);
+      writeDurations.push(Date.now() - startWrite);
+      if (wrote) {
+        writeSuccess += 1;
+        const startRead = Date.now();
+        const read = await readJsonFromR2(env as any, key);
+        readDurations.push(Date.now() - startRead);
+        if (read) {
+          readSuccess += 1;
+        }
+      }
+
+      await deleteFromR2(env as any, key);
+    }
+
+    const avg = (values: number[]): number | null => {
+      if (!values.length) {
+        return null;
+      }
+      return values.reduce((sum, value) => sum + value, 0) / values.length;
+    };
+
+    const summary = {
+      iterations,
+      writes: { ok: writeSuccess, avg_ms: avg(writeDurations) },
+      reads: { ok: readSuccess, avg_ms: avg(readDurations) },
+      prefix,
+    };
+
+    await logAdminAction(
+      env,
+      `Admin executed R2 load test: ${writeSuccess}/${iterations} writes, ${readSuccess}/${iterations} reads`,
+    );
+
+    return jsonResponse({ ok: true, summary });
+  }
+
+  if (action === "simulate-fallback") {
+    const countInput = Number(payload?.count);
+    const count = Number.isFinite(countInput) ? Math.min(Math.max(Math.trunc(countInput), 1), 20) : 3;
+    const reason = coerceString(payload?.reason) || "manual_test";
+    const prefix = coerceString(payload?.prefix) || "fallback-test";
+
+    let success = 0;
+    for (let index = 0; index < count; index += 1) {
+      const key = `${prefix}/${Date.now()}-${index}`;
+      const ok = await writeFallbackRecord(env as any, key, {
+        reason,
+        created_at: new Date().toISOString(),
+        index,
+      });
+      if (ok) {
+        success += 1;
+      }
+    }
+
+    if (success === 0) {
+      return jsonResponse(
+        { ok: false, error: "Fallback storage not configured" },
+        { status: 503 },
+      );
+    }
+
+    await logAdminAction(env, `Admin simulated fallback writes => ${success}/${count}`);
+
+    return jsonResponse({ ok: true, written: success, requested: count, reason, prefix });
   }
 
   if (action === "check-telegram-webhook") {
