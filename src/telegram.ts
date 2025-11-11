@@ -27,6 +27,44 @@ const parseCommand = (text: string): { command: string; args: string[] } | null 
   return { command, args };
 };
 
+const getAdminIds = (env: Record<string, unknown>): string[] => {
+  const values = new Set<string>();
+
+  if (typeof env.ADMIN_IDS === "string" && env.ADMIN_IDS.trim()) {
+    env.ADMIN_IDS
+      .split(/[,\s]+/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .forEach((value) => values.add(value));
+  }
+
+  if (typeof env.ADMIN_CHAT_ID === "string" && env.ADMIN_CHAT_ID.trim()) {
+    values.add(env.ADMIN_CHAT_ID.trim());
+  }
+
+  return Array.from(values);
+};
+
+const START_MESSAGE =
+  "👋 Привет! Этот бот показывает статистику по рекламе.\n\n" +
+  "Доступные команды:\n" +
+  "/help — список команд\n" +
+  "/report — текущие показатели\n" +
+  "/admin — панель администратора";
+
+const HELP_MESSAGE =
+  "📋 Команды:\n" +
+  "/start — начать\n" +
+  "/help — помощь\n" +
+  "/report — отчёт\n" +
+  "/admin — панель администратора";
+
+const ADMIN_MENU_MESSAGE =
+  "🔐 Админ-панель:\n" +
+  "• Проверить статус Facebook\n" +
+  "• Обновить отчёт\n" +
+  "• Просмотреть логи";
+
 const formatSummary = (report: ProjectReport): string => {
   const summary = report.summary;
   return (
@@ -156,6 +194,14 @@ export const handleTelegramWebhook = async (
     return new Response("bad request", { status: 400 });
   }
 
+  if (update) {
+    try {
+      console.log("telegram update", JSON.stringify(update));
+    } catch (_error) {
+      console.log("telegram update received");
+    }
+  }
+
   const message = update && update.message;
   if (!message || !message.text) {
     return new Response("ok");
@@ -163,6 +209,7 @@ export const handleTelegramWebhook = async (
 
   const commandData = parseCommand(message.text);
   const chatId = String(message.chat.id);
+  const adminIds = getAdminIds(env);
 
   if (!commandData) {
     return new Response("ok");
@@ -170,6 +217,19 @@ export const handleTelegramWebhook = async (
 
   try {
     switch (commandData.command) {
+      case "/start":
+        await reply(env, chatId, START_MESSAGE);
+        break;
+      case "/help":
+        await reply(env, chatId, HELP_MESSAGE);
+        break;
+      case "/admin":
+        if (adminIds.includes(chatId)) {
+          await reply(env, chatId, ADMIN_MENU_MESSAGE);
+        } else {
+          await reply(env, chatId, "⛔ У вас нет доступа к админ-панели.");
+        }
+        break;
       case "/report":
         await handleReportCommand(env, chatId, commandData.args);
         break;
