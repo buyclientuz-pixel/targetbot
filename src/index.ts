@@ -19,7 +19,7 @@ import {
 } from "./api/admin";
 import { handleTelegramWebhook } from "./telegram";
 import { handleTelegramAlert } from "./api/telegram";
-import { handleManageTelegramWebhook } from "./api/manage";
+import { handleManageTelegramWebhook, handleManageMeta } from "./api/manage";
 import { appendLogEntry, updateCronStatus } from "./utils/r2";
 import { refreshAllProjects } from "./api/projects";
 import {
@@ -187,13 +187,13 @@ export default {
         return routeApi(request, env, segments);
       }
 
-      if (
-        segments[0] === "manage" &&
-        segments.length >= 3 &&
-        segments[1] === "telegram" &&
-        segments[2] === "webhook"
-      ) {
-        return handleManageTelegramWebhook(request, env);
+      if (segments[0] === "manage") {
+        if (segments.length >= 3 && segments[1] === "telegram" && segments[2] === "webhook") {
+          return handleManageTelegramWebhook(request, env);
+        }
+        if (segments.length >= 2 && segments[1] === "meta") {
+          return handleManageMeta(request, env);
+        }
       }
 
       if ((segments[0] === "tg" || segments[0] === "telegram" || segments[0] === "webhook") && request.method === "POST") {

@@ -1,6 +1,6 @@
 import { jsonResponse, unauthorized, notFound, badRequest } from "../utils/http";
 import { loadMetaStatus, STATUS_CACHE_KEY, clearMetaStatusCache } from "./meta";
-import { callGraph } from "../fb/client";
+import { fetchAdAccounts } from "../fb/accounts";
 import { getFacebookTokenStatus, checkAndRefreshFacebookToken } from "../fb/auth";
 import {
   loadProjectCards,
@@ -45,36 +45,6 @@ const LOG_KEYS = ((): string[] => {
   const format = (date: Date) => date.toISOString().slice(0, 10);
   return ["logs/" + format(today) + ".json", "logs/" + format(yesterday) + ".json"];
 })();
-
-const toAccountInfo = (account: any): MetaAccountInfo => {
-  return {
-    id: String(account.id || ""),
-    name: String(account.name || "Без названия"),
-    currency: String(account.currency || "USD"),
-    spend_cap: account.spend_cap !== undefined ? Number(account.spend_cap) : null,
-    balance: account.balance !== undefined ? Number(account.balance) : null,
-    status: account.account_status ? String(account.account_status) : undefined,
-    payment_method: account.funding_source_details ? account.funding_source_details.display_string : undefined,
-    last_update: account.last_used_time || undefined,
-    issues: account.disable_reason ? [String(account.disable_reason)] : undefined,
-  };
-};
-
-const loadAccounts = async (env: unknown): Promise<MetaAccountInfo[]> => {
-  try {
-    const response = await callGraph(env as any, "me/adaccounts", {
-      fields:
-        "id,name,currency,account_status,balance,spend_cap,funding_source_details,last_used_time,disable_reason",
-      limit: "50",
-    });
-    if (!response || !Array.isArray(response.data)) {
-      return [];
-    }
-    return response.data.map(toAccountInfo);
-  } catch (_error) {
-    return [];
-  }
-};
 
 const loadLogs = async (env: unknown): Promise<DashboardLogEntry[]> => {
   const logs: DashboardLogEntry[] = [];
@@ -449,7 +419,7 @@ export const handleAdminPage = async (request: Request, env: Record<string, unkn
       account_name: null,
       refreshed_at: null,
     }) as MetaTokenStatus),
-    loadAccounts(env),
+    fetchAdAccounts(env),
     loadProjectCards(env),
     loadLogs(env),
     loadStorageOverview(env),

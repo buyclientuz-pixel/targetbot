@@ -102,6 +102,9 @@ export interface MetaAuthStatus {
   token_snippet?: string | null;
   expires_in_hours?: number | null;
   should_refresh?: boolean | null;
+  updated_at?: string | null;
+  accounts?: MetaAccountInfo[];
+  cached?: boolean | null;
 }
 
 export interface MetaTokenStatus {

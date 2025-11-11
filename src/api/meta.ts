@@ -1,7 +1,8 @@
 import { jsonResponse } from "../utils/http";
 import { readJsonFromR2, writeJsonToR2, deleteFromR2 } from "../utils/r2";
-import { MetaAuthStatus } from "../types";
+import { MetaAuthStatus, MetaAccountInfo } from "../types";
 import { callGraph } from "../fb/client";
+import { fetchAdAccounts } from "../fb/accounts";
 
 export const STATUS_CACHE_KEY = "cache/fb_status.json";
 const STATUS_TTL_MS = 30 * 60 * 1000;
@@ -17,25 +18,40 @@ const isFresh = (isoDate: string | null | undefined): boolean => {
   return Date.now() - parsed <= STATUS_TTL_MS;
 };
 
-export const loadMetaStatus = async (env: unknown, options: { useCache?: boolean } = {}): Promise<
-  MetaAuthStatus & { updated_at?: string }
-> => {
+export const loadMetaStatus = async (
+  env: unknown,
+  options: { useCache?: boolean } = {},
+): Promise<MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[]; cached?: boolean }>
+=> {
   const useCache = options.useCache !== false;
   if (useCache) {
-    const cached = await readJsonFromR2<MetaAuthStatus & { updated_at?: string }>(env as any, STATUS_CACHE_KEY);
+    const cached = await readJsonFromR2<MetaAuthStatus & { updated_at?: string; accounts?: MetaAccountInfo[] }>(
+      env as any,
+      STATUS_CACHE_KEY,
+    );
     if (cached && isFresh(cached.updated_at || cached.last_refresh)) {
-      return cached;
+      return { ...cached, cached: true };
     }
   }
 
-  const profile = await callGraph(env as any, "me", { fields: "id,name" });
-  const accounts = await callGraph(env as any, "me/adaccounts", {
-    fields: "id,name,account_status,balance,currency",
-    limit: "50",
-  });
+  const [profile, accounts] = await Promise.all([
+    callGraph(env as any, "me", { fields: "id,name" }),
+    fetchAdAccounts(env),
+  ]);
 
   const now = new Date().toISOString();
-  const payload: MetaAuthStatus & { updated_at: string } = {
+  const issues: string[] = [];
+  for (const account of accounts) {
+    const status = String(account.status || "").toLowerCase();
+    if (status && !status.includes("active")) {
+      issues.push(`Account ${account.id} status ${account.status}`);
+    }
+    if (Array.isArray(account.issues) && account.issues.length) {
+      issues.push(...account.issues.map((issue) => `Account ${account.id}: ${issue}`));
+    }
+  }
+
+  const payload: MetaAuthStatus & { updated_at: string; accounts: MetaAccountInfo[]; cached: boolean } = {
     ok: true,
     status: "ok",
     account_name: profile && profile.name ? String(profile.name) : undefined,
@@ -43,20 +59,10 @@ export const loadMetaStatus = async (env: unknown, options: { useCache?: boolean
     last_refresh: now,
     updated_at: now,
     refreshed_at: now,
-    issues: [],
+    issues,
+    accounts,
+    cached: false,
   };
-
-  if (accounts && Array.isArray(accounts.data)) {
-    const blocked = accounts.data.filter((item: any) => {
-      const status = String(item.account_status || "");
-      return !status.includes("ACTIVE");
-    });
-    if (blocked.length > 0) {
-      payload.issues = blocked.map((item: any) =>
-        "Account " + item.id + " status " + item.account_status,
-      );
-    }
-  }
 
   await writeJsonToR2(env as any, STATUS_CACHE_KEY, payload);
   return payload;
