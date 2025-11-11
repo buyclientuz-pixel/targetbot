@@ -239,7 +239,7 @@ const loadReportProjects = async (env: Record<string, unknown>): Promise<ReportP
     );
     console.log(
       "Resolved project list:",
-      projects.map((project) => project.id + `:${project.name}`).join(", ") || "<empty>"
+      projects.map((project) => `${project.id}:${project.name}`).join(", ") || "<empty>"
     );
     if (projects.length === 0) {
       console.warn("⚠️ No projects found in ENV or R2.");
@@ -375,8 +375,7 @@ const sendAdminMenu = async (
   }).length;
   const availableChats = listProjectsWithoutAccount(projects).length;
   const accountSummary = accounts.length
-    ? `Рекламные аккаунты: ${linkedAccounts} из ${accounts.length} подключены` +
-      (availableChats ? ` | свободно: ${availableChats}` : "")
+    ? `Рекламные аккаунты: ${linkedAccounts} из ${accounts.length} подключены${availableChats ? ` | свободно: ${availableChats}` : ""}`
     : "Рекламные аккаунты: нет данных.";
 
   const messageParts = [ADMIN_MENU_MESSAGE, "", statusLine, projectSummary, accountSummary];
@@ -512,7 +511,7 @@ const formatAccountOverview = (
 ): string => {
   const lines: string[] = [];
   const icon = hasChat ? metaAccountStatusIcon(account.status) : "🔘";
-  lines.push(icon + ` <b>${escapeHtml(account.name || account.id)}</b>`);
+  lines.push(`${icon} <b>${escapeHtml(account.name || account.id)}</b>`);
   lines.push(`ID: <code>${escapeHtml(account.id)}</code>`);
   if (account.status) {
     lines.push(`Статус: ${escapeHtml(String(account.status))}`);
@@ -533,7 +532,7 @@ const formatAccountOverview = (
   if (spendInfo && spendInfo.value !== null) {
     const spendText = formatCurrency(spendInfo.value, spendInfo.currency);
     const suffix = spendInfo.label ? ` (${spendInfo.label})` : "";
-    lines.push(`💰 Потрачено: ${escapeHtml(spendText + suffix)}`);
+    lines.push(`💰 Потрачено: ${escapeHtml(`${spendText}${suffix}`)}`);
   } else {
     lines.push("💰 Потрачено: —");
   }
@@ -581,7 +580,7 @@ const sendAdminAccountsOverview = async (
           : "—";
       inline_keyboard.push([
         {
-          text: metaAccountStatusIcon(account.status) + ` ${account.name} | ${spendBadge}`,
+          text: `${metaAccountStatusIcon(account.status)} ${account.name} | ${spendBadge}`,
           callback_data: `admin:project:${project.id}`,
         },
       ]);
@@ -719,7 +718,7 @@ const linkAccountToProject = async (
 const formatAdminProjectDetail = (project: ProjectCard, timeZone: string): string => {
   const lines: string[] = [];
   const icon = adminStatusIcon(project.status);
-  lines.push(icon + ` <b>${escapeHtml(project.name)}</b>`);
+  lines.push(`${icon} <b>${escapeHtml(project.name)}</b>`);
   lines.push(`ID: <code>${escapeHtml(project.id)}</code>`);
 
   if (project.status) {
@@ -977,7 +976,7 @@ const resolveAdminWebUrl = (env: Record<string, unknown>): string | null => {
   if (!base) {
     return null;
   }
-  return base + `/admin?key=${encodeURIComponent(key)}`;
+  return `${base}/admin?key=${encodeURIComponent(key)}`;
 };
 
 const buildAdminMenuKeyboard = (
@@ -1139,7 +1138,7 @@ const sendAdminFacebookStatus = async (
           const indicator = resolveAccountStatusIndicator(account.status);
           const name = account.name || account.id;
           const statusLabel = account.status ? account.status : "статус неизвестен";
-          accountLines.push(indicator.icon + ` ${name} — ${statusLabel}`);
+          accountLines.push(`${indicator.icon} ${name} — ${statusLabel}`);
 
           const detailParts: string[] = [];
           if (account.balance !== undefined && account.balance !== null) {
@@ -1214,8 +1213,7 @@ const sendAdminBillingOverview = async (
     const nextPayment = billing.next_payment || billing.next_payment_date || "—";
     const status = billing.status || "неизвестно";
     lines.push(
-      project.name +
-        `
+      `${project.name}
   Следующая оплата: ${nextPayment}
   Сумма: ${amount}
   Статус: ${status}`
@@ -1335,7 +1333,7 @@ const parseDateInput = (text: string): string | null => {
   }
   const dotMatch = trimmed.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
   if (dotMatch) {
-    return dotMatch[3] + `-${dotMatch[2]}-${dotMatch[1]}`;
+    return `${dotMatch[3]}-${dotMatch[2]}-${dotMatch[1]}`;
   }
   const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) {

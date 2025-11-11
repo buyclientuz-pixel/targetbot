@@ -32,7 +32,7 @@ const maskToken = (token: string): string => {
   }
   const start = token.slice(0, 5);
   const end = token.slice(-2);
-  return start + `****${end}`;
+  return `${start}****${end}`;
 };
 
 const readMetaAuth = async (env: MetaNamespaceEnv): Promise<MetaAuthRecord | null> => {
@@ -127,7 +127,7 @@ export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<MetaTokenS
 
   const debugUrl = buildGraphUrl("debug_token", {
     input_token: token,
-    access_token: appId + `|${appSecret}`,
+    access_token: `${appId}|${appSecret}`,
   });
 
   let debugResponse: any = null;

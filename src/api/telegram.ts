@@ -26,19 +26,17 @@ const parsePayload = async (request: Request): Promise<AlertPayload | null> => {
 
 const formatAlertMessage = (payload: AlertPayload): string => {
   const arrow = payload.direction === "below" ? "↓" : "↑";
-  let line = `⚠️ Алерт по проекту ${payload.project_id}
-`;
-  line +=
-    payload.metric.toUpperCase() + `: ${payload.value} (${arrow} порога ${payload.threshold})`;
+  const lines = [
+    `⚠️ Алерт по проекту ${payload.project_id}`,
+    `${payload.metric.toUpperCase()}: ${payload.value} (${arrow} порога ${payload.threshold})`,
+  ];
   if (payload.campaign_id) {
-    line += `
-Кампания: ${payload.campaign_id}`;
+    lines.push(`Кампания: ${payload.campaign_id}`);
   }
   if (payload.description) {
-    line += `
-${payload.description}`;
+    lines.push(payload.description);
   }
-  return line;
+  return lines.join("\n");
 };
 
 export const handleTelegramAlert = async (

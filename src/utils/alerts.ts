@@ -46,7 +46,7 @@ const portalUrl = (env: Record<string, unknown>, projectId: string): string => {
   const base = typeof env.WORKER_URL === "string" ? env.WORKER_URL : "";
   if (base) {
     const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
-    return trimmed + `/portal/${projectId}`;
+    return `${trimmed}/portal/${projectId}`;
   }
   return `/portal/${projectId}`;
 };

@@ -17,7 +17,7 @@ const maskToken = (token: string): string => {
   }
   const head = token.slice(0, 5);
   const tail = token.slice(-4);
-  return head + `****${tail}`;
+  return `${head}****${tail}`;
 };
 
 const ensureAuthorized = (request: Request, env: WorkerEnv, token: string): Response | null => {

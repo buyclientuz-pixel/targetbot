@@ -187,7 +187,7 @@ const resolveAdminUrl = (env: WorkerEnv): string | null => {
   const sanitized = base.replace(/\/$/, "");
   const key = typeof env.ADMIN_KEY === "string" && env.ADMIN_KEY.trim() ? env.ADMIN_KEY.trim() : "";
   const search = key ? `?key=${encodeURIComponent(key)}` : "";
-  return sanitized + `/admin${search}`;
+  return `${sanitized}/admin${search}`;
 };
 
 const resolveBotUrl = (env: WorkerEnv): string | null => {

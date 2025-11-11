@@ -119,7 +119,7 @@ export const resolvePortalUrl = (
     return `/portal/${projectId}`;
   }
   const normalized = base.endsWith("/") ? base.slice(0, -1) : base;
-  return normalized + `/portal/${projectId}`;
+  return `${normalized}/portal/${projectId}`;
 };
 
 const ensureCard = (map: Map<string, ProjectCard>, projectId: string): ProjectCard => {
