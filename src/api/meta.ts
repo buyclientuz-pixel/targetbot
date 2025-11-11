@@ -4,7 +4,7 @@ import { MetaAuthStatus } from "../types";
 import { callGraph } from "../fb/client";
 
 const STATUS_CACHE_KEY = "cache/fb_status.json";
-const STATUS_TTL_MS = 10 * 60 * 1000;
+const STATUS_TTL_MS = 30 * 60 * 1000;
 
 const isFresh = (isoDate: string | null | undefined): boolean => {
   if (!isoDate) {

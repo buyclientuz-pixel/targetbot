@@ -3,7 +3,7 @@ import { loadMetaStatus } from "./meta";
 import { callGraph } from "../fb/client";
 import { loadProjectCards } from "../utils/projects";
 import { readJsonFromR2 } from "../utils/r2";
-import { AdminDashboardData, MetaAccountInfo, DashboardLogEntry } from "../types";
+import { AdminDashboardData, MetaAccountInfo, DashboardLogEntry, TokenStatus } from "../types";
 import { renderAdminPage } from "../views/admin";
 import { refreshAllProjects } from "./projects";
 
@@ -69,6 +69,25 @@ const verifyKey = (request: Request, env: Record<string, unknown>): boolean => {
   return key === configured;
 };
 
+const hasString = (value: unknown): boolean => typeof value === "string" && value.trim().length > 0;
+
+const collectTokenStatus = (env: Record<string, unknown>): TokenStatus[] => {
+  const telegramConfigured =
+    hasString(env.BOT_TOKEN) || hasString(env.TELEGRAM_BOT_TOKEN) || hasString(env.TG_API_TOKEN);
+  const metaTokenConfigured = hasString(env.META_LONG_TOKEN) || hasString(env.META_ACCESS_TOKEN);
+  const manageTokenConfigured = hasString(env.META_MANAGE_TOKEN);
+  const adminKeyConfigured = hasString(env.ADMIN_KEY);
+  const r2Configured = Boolean(env.REPORTS_BUCKET || env.R2_BUCKET || env.BOT_BUCKET || env.STORAGE_BUCKET);
+
+  return [
+    { name: "Telegram Bot Token", configured: telegramConfigured, hint: "BOT_TOKEN" },
+    { name: "Meta Access Token", configured: metaTokenConfigured, hint: "META_LONG_TOKEN" },
+    { name: "Meta Manage Token", configured: manageTokenConfigured, hint: "META_MANAGE_TOKEN" },
+    { name: "Admin Key", configured: adminKeyConfigured, hint: "ADMIN_KEY" },
+    { name: "R2 Bucket", configured: r2Configured, hint: "R2_BUCKET" },
+  ];
+};
+
 export const handleAdminPage = async (request: Request, env: Record<string, unknown>): Promise<Response> => {
   if (!verifyKey(request, env)) {
     return unauthorized("Invalid admin key");
@@ -89,6 +108,7 @@ export const handleAdminPage = async (request: Request, env: Record<string, unkn
     accounts,
     projects,
     logs,
+    tokens: collectTokenStatus(env),
   };
 
   const html = renderAdminPage(dashboard);

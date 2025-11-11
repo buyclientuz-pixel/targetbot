@@ -83,12 +83,19 @@ export interface AdminDashboardData {
   accounts: MetaAccountInfo[];
   projects: ProjectCard[];
   logs: DashboardLogEntry[];
+  tokens: TokenStatus[];
 }
 
 export interface DashboardLogEntry {
   level: "info" | "warn" | "error";
   message: string;
   timestamp: string;
+}
+
+export interface TokenStatus {
+  name: string;
+  configured: boolean;
+  hint?: string;
 }
 
 export interface AlertPayload {

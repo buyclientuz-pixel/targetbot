@@ -1,13 +1,14 @@
-import { AdminDashboardData, ProjectCard, MetaAccountInfo, DashboardLogEntry } from "../types";
+import { AdminDashboardData, ProjectCard, MetaAccountInfo, DashboardLogEntry, TokenStatus } from "../types";
 import { escapeHtml, joinHtml } from "../utils/html";
 import { renderLayout } from "./layout";
 import { formatCurrency, formatDateTime } from "../utils/format";
 
 const renderMetaStatus = (status: AdminDashboardData["meta_status"]): string => {
-  const icon = status.ok ? "🟢" : "🔴";
-  const issues = status.issues && status.issues.length > 0
+  const hasIssues = Boolean(status.issues && status.issues.length > 0);
+  const icon = !status.ok ? "🔴" : hasIssues ? "🟡" : "🟢";
+  const issues = hasIssues
     ? '<ul class="mt-2 space-y-1 text-sm text-red-400">' +
-      status.issues.map((issue) => '<li>• ' + escapeHtml(issue) + '</li>').join("") +
+      status.issues!.map((issue) => '<li>• ' + escapeHtml(issue) + '</li>').join("") +
       '</ul>'
     : '<p class="mt-2 text-sm text-slate-400">Подключение стабильно</p>';
 
@@ -73,6 +74,24 @@ const renderAccounts = (accounts: MetaAccountInfo[]): string => {
 };
 
 const renderProjectCard = (project: ProjectCard): string => {
+  const summaryBlock = project.summary
+    ? '<div class="mt-4 grid grid-cols-3 gap-3 text-sm">' +
+      '<div><div class="text-slate-400">Потрачено</div><div class="font-semibold">' +
+      formatCurrency(project.summary.spend, project.currency || 'USD') +
+      '</div></div>' +
+      '<div><div class="text-slate-400">Лиды</div><div class="font-semibold">' +
+      escapeHtml(String(project.summary.leads)) +
+      '</div></div>' +
+      '<div><div class="text-slate-400">CTR</div><div class="font-semibold">' +
+      escapeHtml(String(project.summary.ctr || '—')) +
+      '</div></div>' +
+      '</div>'
+    : '<p class="mt-4 text-sm text-slate-500">Нет свежей сводки</p>';
+
+  const chatLink = project.chat_link
+    ? '<a href="' + escapeHtml(project.chat_link) + '" class="text-emerald-400 hover:text-emerald-300">Чат</a>'
+    : '';
+
   return (
     '<div class="rounded-xl border border-slate-800 bg-slate-950 p-4">' +
     '<div class="flex items-center justify-between">' +
@@ -82,31 +101,17 @@ const renderProjectCard = (project: ProjectCard): string => {
     '</div>' +
     '<a href="/portal/' + escapeHtml(project.id) + '" class="rounded-lg border border-emerald-500 px-3 py-2 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/10">Открыть портал</a>' +
     '</div>' +
-    (project.summary
-      ? '<div class="mt-4 grid grid-cols-3 gap-3 text-sm">' +
-        '<div><div class="text-slate-400">Потрачено</div><div class="font-semibold">' +
-        formatCurrency(project.summary.spend, project.currency || 'USD') +
-        '</div></div>' +
-        '<div><div class="text-slate-400">Лиды</div><div class="font-semibold">' +
-        escapeHtml(String(project.summary.leads)) +
-        '</div></div>' +
-        '<div><div class="text-slate-400">CTR</div><div class="font-semibold">' +
-        escapeHtml(String(project.summary.ctr || '—')) +
-        '</div></div>' +
-        '</div>'
-      : '<p class="mt-4 text-sm text-slate-500">Нет свежей сводки</p>') +
+    summaryBlock +
     '<div class="mt-4 flex flex-wrap gap-2 text-xs text-slate-400">' +
     '<span>Обновлено: ' + escapeHtml(project.updated_at || '—') + '</span>' +
-    (project.chat_link
-      ? '<a href="' + escapeHtml(project.chat_link) + '" class="text-emerald-400 hover:text-emerald-300">Чат</a>'
-      : '') +
+    chatLink +
     '</div>' +
     '</div>'
   );
 };
 
 const renderProjects = (projects: ProjectCard[]): string => {
-  const cards = projects.map(renderProjectCard).join('');
+  const cards = projects.map(renderProjectCard).join("");
   return (
     '<section class="rounded-xl border border-slate-800 bg-slate-950 p-6">' +
     '<div class="flex items-center justify-between">' +
@@ -147,6 +152,34 @@ const renderLogs = (logs: DashboardLogEntry[]): string => {
   );
 };
 
+const renderTokens = (tokens: TokenStatus[]): string => {
+  const rows = tokens
+    .map((token) => {
+      const icon = token.configured ? "🟢" : "🔴";
+      const statusText = token.configured ? "Настроено" : "Отсутствует";
+      const hint = token.hint ? '<span class="text-slate-500">(' + escapeHtml(token.hint) + ')</span>' : '';
+      return (
+        '<div class="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900 px-3 py-2">' +
+        '<div class="flex flex-col">' +
+        '<span class="text-sm font-medium">' + icon + ' ' + escapeHtml(token.name) + '</span>' +
+        hint +
+        '</div>' +
+        '<span class="text-sm ' + (token.configured ? 'text-emerald-400' : 'text-red-400') + '">' + statusText + '</span>' +
+        '</div>'
+      );
+    })
+    .join("");
+
+  return (
+    '<section class="rounded-xl border border-slate-800 bg-slate-950 p-6">' +
+    '<h2 class="text-lg font-semibold">Токены и ключи</h2>' +
+    '<div class="mt-4 space-y-2">' +
+    (rows || '<p class="text-sm text-slate-400">Нет данных</p>') +
+    '</div>' +
+    '</section>'
+  );
+};
+
 export const renderAdminPage = (data: AdminDashboardData): string => {
   const content = joinHtml([
     '<div class="space-y-6">',
@@ -154,6 +187,7 @@ export const renderAdminPage = (data: AdminDashboardData): string => {
     renderAccounts(data.accounts),
     renderProjects(data.projects),
     renderLogs(data.logs),
+    renderTokens(data.tokens),
     '</div>',
   ]);
 
