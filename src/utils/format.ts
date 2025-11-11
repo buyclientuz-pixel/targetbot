@@ -83,3 +83,38 @@ export const kFormatter = (value: number | null | undefined): string => {
   }
   return smallNumberFormatter.format(value / 1000) + "K";
 };
+
+const normalizeStatus = (status: string | null | undefined): string => {
+  if (!status) {
+    return "";
+  }
+  return String(status).trim().toLowerCase();
+};
+
+export const metaAccountStatusIcon = (status: string | null | undefined): string => {
+  const normalized = normalizeStatus(status);
+  if (!normalized) {
+    return "⚪️";
+  }
+  if (normalized === "1" || normalized.includes("active") || normalized.includes("approved")) {
+    return "🟢";
+  }
+  if (
+    normalized.includes("pending") ||
+    normalized.includes("review") ||
+    normalized.includes("await") ||
+    normalized === "0"
+  ) {
+    return "🟡";
+  }
+  if (
+    normalized === "2" ||
+    normalized === "3" ||
+    normalized.includes("disable") ||
+    normalized.includes("suspend") ||
+    normalized.includes("closed")
+  ) {
+    return "⚫️";
+  }
+  return "⚪️";
+};

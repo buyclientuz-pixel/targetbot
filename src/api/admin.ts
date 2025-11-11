@@ -10,6 +10,9 @@ import {
   readBillingInfo,
   writeAlertsConfig,
   readAlertsConfig,
+  findProjectForAccount,
+  listProjectsWithoutAccount,
+  hasProjectChat,
 } from "../utils/projects";
 import {
   readJsonFromR2,
@@ -21,6 +24,8 @@ import {
   clearFallbackEntries,
   readCronStatus,
 } from "../utils/r2";
+import { formatCurrency, metaAccountStatusIcon } from "../utils/format";
+import { resolveAccountSpend, buildChatLabel } from "../utils/accounts";
 import {
   AdminDashboardData,
   MetaAccountInfo,
@@ -28,6 +33,7 @@ import {
   TokenStatus,
   StorageOverview,
   ProjectConfigRecord,
+  ProjectCard,
   ProjectReport,
   ProjectAlertsConfig,
   BillingInfo,
@@ -94,6 +100,7 @@ const loadStorageOverview = async (env: unknown): Promise<StorageOverview> => {
     kvFallbacks: fallbackCount,
   };
 };
+
 
 const ADMIN_KEY_ENV = "ADMIN_KEY";
 
@@ -472,6 +479,133 @@ export const handleAdminProjectsApi = async (
 
   const projects = await loadProjectCards(env);
   return jsonResponse({ projects });
+};
+
+export const handleAdminAccountsApi = async (
+  request: Request,
+  env: Record<string, unknown>,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const [projects, accounts] = await Promise.all([loadProjectCards(env), fetchAdAccounts(env)]);
+
+  const accountPayloads = await Promise.all(
+    accounts.map(async (account) => {
+      const project = findProjectForAccount(projects, account.id);
+      const spendInfo = await resolveAccountSpend(env, project);
+      const hasChat = project ? hasProjectChat(project) : false;
+      const formattedSpend =
+        spendInfo && spendInfo.value !== null
+          ? formatCurrency(spendInfo.value, spendInfo.currency)
+          : "—";
+
+      return {
+        id: account.id,
+        name: account.name,
+        status: account.status || null,
+        status_icon: metaAccountStatusIcon(account.status),
+        currency: spendInfo ? spendInfo.currency : account.currency || "USD",
+        spend_value: spendInfo ? spendInfo.value : null,
+        spend_label: spendInfo ? spendInfo.label : null,
+        spend_formatted: formattedSpend,
+        balance: account.balance ?? null,
+        spend_cap: account.spend_cap ?? null,
+        payment_method: account.payment_method || null,
+        last_update: account.last_update || null,
+        project_id: project ? project.id : null,
+        project_name: project ? project.name : null,
+        project_chat: hasChat ? buildChatLabel(project) : null,
+        chat_link: project?.chat_link || null,
+        chat_username: project?.chat_username || null,
+        chat_id: project?.chat_id ? String(project.chat_id) : null,
+        has_chat: hasChat,
+      };
+    }),
+  );
+
+  const availableChats = listProjectsWithoutAccount(projects).map((project) => ({
+    id: project.id,
+    name: project.name,
+    chat_label: buildChatLabel(project),
+    chat_link: project.chat_link || null,
+    chat_username: project.chat_username || null,
+    chat_id: project.chat_id ? String(project.chat_id) : null,
+  }));
+
+  return jsonResponse({
+    accounts: accountPayloads,
+    available_chats: availableChats,
+    updated_at: new Date().toISOString(),
+  });
+};
+
+export const handleAdminAccountLink = async (
+  request: Request,
+  env: Record<string, unknown>,
+  accountIdParam: string,
+): Promise<Response> => {
+  const error = requireAdminKey(request, env);
+  if (error) {
+    return error;
+  }
+
+  const accountIdValue = coerceString(accountIdParam);
+  if (!accountIdValue) {
+    return badRequest("Account id is required");
+  }
+
+  const payload = await readJsonBody(request);
+  if (payload === null) {
+    return badRequest("Invalid JSON body");
+  }
+
+  const projectIdValue = coerceString(payload?.project_id);
+  if (!projectIdValue) {
+    return badRequest("Project id is required");
+  }
+
+  const [projects, accounts] = await Promise.all([loadProjectCards(env), fetchAdAccounts(env)]);
+  const project = projects.find((item) => item.id === projectIdValue) || null;
+  if (!project) {
+    return notFound("Project not found");
+  }
+
+  const existing = findProjectForAccount(projects, accountIdValue);
+  if (existing && existing.id !== project.id) {
+    return badRequest("Account already linked to another project");
+  }
+
+  const account = accounts.find((item) => item.id === accountIdValue) || null;
+  const accountName =
+    coerceString(payload?.account_name) ||
+    coerceString(payload?.name) ||
+    (account && account.name ? account.name : null) ||
+    accountIdValue;
+
+  const patch: Partial<ProjectConfigRecord> = {
+    account_id: accountIdValue,
+    account_name: accountName,
+  };
+
+  const record = await writeProjectConfig(env, project.id, patch);
+  if (!record) {
+    return jsonResponse({ error: "Unable to persist project config" }, { status: 500 });
+  }
+
+  await logAdminAction(env, "Admin linked account " + accountIdValue + " to project " + project.id);
+
+  if (!hasProjectChat(project)) {
+    await appendLogEntry(env, {
+      level: "warn",
+      message: "Account " + accountIdValue + " linked to project " + project.id + " without chat binding",
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  return jsonResponse({ ok: true, project: record });
 };
 
 export const handleAdminProjectDetail = async (

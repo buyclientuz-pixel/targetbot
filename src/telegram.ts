@@ -8,6 +8,9 @@ import {
   writeBillingInfo,
   writeAlertsConfig,
   resolvePortalUrl,
+  listProjectsWithoutAccount,
+  findProjectForAccount,
+  hasProjectChat,
 } from "./utils/projects";
 import {
   sendTelegramMessage,
@@ -41,11 +44,13 @@ import {
   formatFrequency,
   formatDateTime,
   formatDate,
+  metaAccountStatusIcon,
 } from "./utils/format";
 import { escapeHtml } from "./utils/html";
 import { readAdminSession, writeAdminSession, clearAdminSession } from "./utils/session";
 import type { AdminSessionState } from "./utils/session";
 import { getTelegramWebhookStatus } from "./api/manage";
+import { resolveAccountSpend, buildChatLabel } from "./utils/accounts";
 
 interface TelegramUser {
   id: number | string;
@@ -125,7 +130,9 @@ type AdminSessionKind =
   | "alerts_moderation"
   | "tech_clear_report"
   | "tech_clear_prefix"
-  | "tech_webhook_token";
+  | "tech_webhook_token"
+  | "link_account_chat"
+  | "link_account_confirm";
 
 type AdminSession = AdminSessionState & { kind: AdminSessionKind; projectId: string };
 
@@ -321,6 +328,18 @@ const countProjectCampaigns = async (
   return total;
 };
 
+const loadMetaAccounts = async (env: Record<string, unknown>): Promise<MetaAccountInfo[]> => {
+  try {
+    const status = await loadMetaStatus(env as WorkerEnv, { useCache: true });
+    if (status && Array.isArray(status.accounts)) {
+      return status.accounts;
+    }
+  } catch (error) {
+    console.warn("Failed to load Meta accounts", { error: (error as Error).message });
+  }
+  return [];
+};
+
 const sendAdminMenu = async (
   env: Record<string, unknown>,
   chatId: string,
@@ -334,6 +353,7 @@ const sendAdminMenu = async (
   }
 
   const projects = await loadProjectCards(env);
+  const accounts = await loadMetaAccounts(env);
   const totalCampaigns = await countProjectCampaigns(env, projects);
   const activeProjects = projects.filter((project) => {
     const status = (project.status || "").toLowerCase();
@@ -346,8 +366,17 @@ const sendAdminMenu = async (
   const projectSummary = projects.length
     ? `Проекты: ${projects.length}${activeProjects ? ` (активных: ${activeProjects})` : ""} | Кампании: ${campaignsText}`
     : "Проекты: нет данных. Добавьте проекты через панель.";
+  const linkedAccounts = accounts.filter((account) => {
+    const project = findProjectForAccount(projects, account.id);
+    return project && hasProjectChat(project);
+  }).length;
+  const availableChats = listProjectsWithoutAccount(projects).length;
+  const accountSummary = accounts.length
+    ? `Рекламные аккаунты: ${linkedAccounts} из ${accounts.length} подключены` +
+      (availableChats ? ` | свободно: ${availableChats}` : "")
+    : "Рекламные аккаунты: нет данных.";
 
-  const messageParts = [ADMIN_MENU_MESSAGE, "", statusLine, projectSummary, "", "Используйте кнопки ниже для управления."];
+  const messageParts = [ADMIN_MENU_MESSAGE, "", statusLine, projectSummary, accountSummary];
   const message = messageParts.filter((line) => line !== null && line !== undefined).join("\n").trim();
 
   const replyMarkup = buildAdminMenuKeyboard(env, {
@@ -463,6 +492,222 @@ const sendAdminProjectsOverview = async (
     },
     context,
   );
+};
+
+const formatAccountOverview = (
+  account: MetaAccountInfo,
+  project: ProjectCard | null,
+  spendInfo: { value: number | null; label: string | null; currency: string } | null,
+  hasChat: boolean,
+  timeZone: string,
+): string => {
+  const lines: string[] = [];
+  const icon = hasChat ? metaAccountStatusIcon(account.status) : "🔘";
+  lines.push(icon + " <b>" + escapeHtml(account.name || account.id) + "</b>");
+  lines.push("ID: <code>" + escapeHtml(account.id) + "</code>");
+  if (account.status) {
+    lines.push("Статус: " + escapeHtml(String(account.status)));
+  }
+  if (project) {
+    lines.push("Проект: " + escapeHtml(project.name));
+    if (!hasChat) {
+      lines.push("Чат: не подключён");
+    } else {
+      const label = buildChatLabel(project);
+      if (label) {
+        lines.push("Чат: " + escapeHtml(label));
+      }
+    }
+  } else {
+    lines.push("Проект: не подключён");
+  }
+  if (spendInfo && spendInfo.value !== null) {
+    const spendText = formatCurrency(spendInfo.value, spendInfo.currency);
+    const suffix = spendInfo.label ? " (" + spendInfo.label + ")" : "";
+    lines.push("💰 Потрачено: " + escapeHtml(spendText + suffix));
+  } else {
+    lines.push("💰 Потрачено: —");
+  }
+  const lastActivity = project?.updated_at || project?.last_sync || account.last_update || null;
+  lines.push("📆 Последняя активность: " + escapeHtml(formatDateTime(lastActivity, timeZone)));
+  return lines.join("\n");
+};
+
+const sendAdminAccountsOverview = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  context: AdminMessageContext = {},
+): Promise<void> => {
+  const projects = await loadProjectCards(env);
+  const accounts = await loadMetaAccounts(env);
+  if (!accounts.length) {
+    await deliverAdminMessage(
+      env,
+      chatId,
+      "⚠️ Аккаунты Facebook не найдены. Проверьте подключение и обновите статус.",
+      { replyMarkup: { inline_keyboard: [[{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]] } },
+      context,
+    );
+    return;
+  }
+
+  const timeZone = getTimeZone(env);
+  const cards: string[] = [];
+  const inline_keyboard: Array<Array<Record<string, unknown>>> = [];
+
+  for (const account of accounts) {
+    const project = findProjectForAccount(projects, account.id);
+    const hasChat = project ? hasProjectChat(project) : false;
+    const spendInfo = await resolveAccountSpend(env, project);
+    cards.push(formatAccountOverview(account, project, spendInfo, hasChat, timeZone));
+
+    if (project && hasChat) {
+      const spendBadge = spendInfo && spendInfo.value !== null ? formatCurrency(spendInfo.value, spendInfo.currency) : "—";
+      inline_keyboard.push([
+        {
+          text: metaAccountStatusIcon(account.status) + " " + account.name + " | " + spendBadge,
+          callback_data: "admin:project:" + project.id,
+        },
+      ]);
+    } else {
+      inline_keyboard.push([
+        {
+          text: "🔘 " + account.name + " | Подключить",
+          callback_data: "admin:account_link:" + account.id,
+        },
+      ]);
+    }
+  }
+
+  inline_keyboard.push([{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]);
+
+  const header = [
+    "📣 Рекламные аккаунты",
+    "",
+    "Выберите аккаунт, чтобы открыть проект или привязать его к чат-группе.",
+    "",
+  ];
+
+  const message = header.concat(cards).join("\n\n").trim();
+
+  await deliverAdminMessage(
+    env,
+    chatId,
+    message,
+    {
+      replyMarkup: { inline_keyboard },
+      parseMode: "HTML",
+      disablePreview: true,
+    },
+    context,
+  );
+};
+
+const sendAdminAccountChatSelection = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  accountId: string,
+  accountName: string,
+  context: AdminMessageContext = {},
+): Promise<void> => {
+  const projects = await loadProjectCards(env);
+  const available = listProjectsWithoutAccount(projects);
+
+  if (!available.length) {
+    await deliverAdminMessage(
+      env,
+      chatId,
+      "⚠️ Свободных чат-групп не найдено. Добавьте проект и чат через веб-панель и попробуйте снова.",
+      {
+        replyMarkup: {
+          inline_keyboard: [
+            [{ text: "⬅️ Назад", callback_data: "admin:accounts" }],
+          ],
+        },
+      },
+      context,
+    );
+    return;
+  }
+
+  const buttons = available.map((project) => [
+    {
+      text: project.name,
+      callback_data: "admin:account_choose:" + accountId + ":" + project.id,
+    },
+  ]);
+
+  buttons.push([{ text: "⬅️ Назад", callback_data: "admin:accounts" }]);
+
+  const message =
+    "Подключение <b>" +
+    escapeHtml(accountName) +
+    "</b> к чату. Выберите чат-группу клиента:";
+
+  await deliverAdminMessage(
+    env,
+    chatId,
+    message,
+    {
+      replyMarkup: { inline_keyboard: buttons },
+      parseMode: "HTML",
+    },
+    context,
+  );
+};
+
+const sendAdminAccountConfirmation = async (
+  env: Record<string, unknown>,
+  chatId: string,
+  accountId: string,
+  accountName: string,
+  project: ProjectCard,
+  context: AdminMessageContext = {},
+): Promise<void> => {
+  const message =
+    "Подвязать <b>" +
+    escapeHtml(accountName) +
+    "</b> к проекту <b>" +
+    escapeHtml(project.name) +
+    "</b>?";
+
+  const inline_keyboard = [
+    [
+      { text: "🔄 Изменить чат", callback_data: "admin:account_choose:" + accountId },
+      { text: "✅ Подвязать", callback_data: "admin:account_confirm:" + accountId + ":" + project.id },
+    ],
+    [{ text: "⬅️ Отмена", callback_data: "admin:accounts" }],
+  ];
+
+  await deliverAdminMessage(
+    env,
+    chatId,
+    message,
+    { replyMarkup: { inline_keyboard }, parseMode: "HTML" },
+    context,
+  );
+};
+
+const linkAccountToProject = async (
+  env: Record<string, unknown>,
+  accountId: string,
+  accountName: string,
+  project: ProjectCard,
+): Promise<boolean> => {
+  const patch = {
+    account_id: accountId,
+    account_name: accountName,
+  };
+  const record = await writeProjectConfig(env, project.id, patch);
+  if (!record) {
+    return false;
+  }
+  await appendLogEntry(env as any, {
+    level: "info",
+    message: "Telegram admin linked account " + accountId + " to project " + project.id,
+    timestamp: new Date().toISOString(),
+  });
+  return true;
 };
 
 const formatAdminProjectDetail = (project: ProjectCard, timeZone: string): string => {
@@ -724,16 +969,13 @@ const buildAdminMenuKeyboard = (
   inline_keyboard.push([
     fbButton,
     adminUrl ? { text: "🌐 Веб-админка", url: adminUrl } : { text: "🌐 Веб-админка", callback_data: "admin:menu" },
-  ]);
-
-  inline_keyboard.push([
     { text: "📁 Проекты", callback_data: "admin:projects" },
-    { text: "💳 Оплаты", callback_data: "admin:billing" },
   ]);
 
   inline_keyboard.push([
+    { text: "📣 Рекламные аккаунты", callback_data: "admin:accounts" },
+    { text: "💳 Оплаты", callback_data: "admin:billing" },
     { text: "⚙️ Тех.панель", callback_data: "admin:tech" },
-    { text: "🔁 Обновить отчёты", callback_data: "admin:refresh_all" },
   ]);
 
   return { inline_keyboard };
@@ -1588,6 +1830,99 @@ const handleAdminCallback = async (
         await sendAdminProjectsOverview(env, chatId, { messageId });
         await answerCallbackQuery(env, callback.id, { text: "Проекты" });
         return true;
+      case "accounts":
+        await sendAdminAccountsOverview(env, chatId, { messageId });
+        await answerCallbackQuery(env, callback.id, { text: "Аккаунты" });
+        return true;
+      case "account_link": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Аккаунт не найден", showAlert: true });
+          return true;
+        }
+        const accounts = await loadMetaAccounts(env);
+        const account = accounts.find((item) => item.id === arg);
+        const accountName = account?.name || arg;
+        await storeAdminSession(
+          env,
+          chatId,
+          buildSession("link_account_chat", arg, messageId, { accountName }),
+        );
+        await sendAdminAccountChatSelection(env, chatId, arg, accountName, { messageId });
+        await answerCallbackQuery(env, callback.id, { text: "Выберите чат" });
+        return true;
+      }
+      case "account_choose": {
+        if (!arg) {
+          await answerCallbackQuery(env, callback.id, { text: "Аккаунт не найден", showAlert: true });
+          return true;
+        }
+        const accountId = arg;
+        const projectId = extra || "";
+        const session = (await readAdminSession(env as any, chatId)) as AdminSession | null;
+        let accountName = accountId;
+        if (session && session.kind.startsWith("link_account") && session.projectId === accountId) {
+          accountName = (session.data?.accountName as string) || accountName;
+        } else {
+          const accounts = await loadMetaAccounts(env);
+          const account = accounts.find((item) => item.id === accountId);
+          accountName = account?.name || accountName;
+        }
+
+        if (!projectId) {
+          await storeAdminSession(
+            env,
+            chatId,
+            buildSession("link_account_chat", accountId, messageId, { accountName }),
+          );
+          await sendAdminAccountChatSelection(env, chatId, accountId, accountName, { messageId });
+          await answerCallbackQuery(env, callback.id, { text: "Выберите чат" });
+          return true;
+        }
+
+        const projects = await loadProjectCards(env);
+        const project = projects.find((item) => item.id === projectId);
+        if (!project) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+
+        await storeAdminSession(
+          env,
+          chatId,
+          buildSession("link_account_confirm", accountId, messageId, { accountName, projectId }),
+        );
+        await sendAdminAccountConfirmation(env, chatId, accountId, accountName, project, { messageId });
+        await answerCallbackQuery(env, callback.id, { text: "Подтвердите подвязку" });
+        return true;
+      }
+      case "account_confirm": {
+        if (!arg || !extra) {
+          await answerCallbackQuery(env, callback.id, { text: "Недостаточно данных", showAlert: true });
+          return true;
+        }
+        const accountId = arg;
+        const projectId = extra;
+        const projects = await loadProjectCards(env);
+        const project = projects.find((item) => item.id === projectId);
+        if (!project) {
+          await answerCallbackQuery(env, callback.id, { text: "Проект не найден", showAlert: true });
+          return true;
+        }
+        const session = (await readAdminSession(env as any, chatId)) as AdminSession | null;
+        const accountName =
+          (session && session.kind.startsWith("link_account") && session.projectId === accountId
+            ? (session.data?.accountName as string)
+            : null) || accountId;
+        const success = await linkAccountToProject(env, accountId, accountName, project);
+        if (!success) {
+          await answerCallbackQuery(env, callback.id, { text: "Не удалось подвязать", showAlert: true });
+          return true;
+        }
+        await clearAdminSession(env as any, chatId);
+        await sendAdminProjectDetail(env, chatId, project.id, { messageId });
+        await answerCallbackQuery(env, callback.id, { text: "Аккаунт подключён" });
+        return true;
+      }
       case "menu":
         await sendAdminMenu(env, chatId, { messageId });
         await answerCallbackQuery(env, callback.id, { text: "Главное меню" });

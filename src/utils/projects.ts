@@ -219,6 +219,55 @@ export const loadProjectCards = async (env: unknown): Promise<ProjectCard[]> => 
   return cards.sort((a, b) => a.name.localeCompare(b.name, "ru"));
 };
 
+export const hasProjectChat = (project: ProjectCard): boolean => {
+  if (!project) {
+    return false;
+  }
+  if (project.chat_link && project.chat_link.trim()) {
+    return true;
+  }
+  if (project.chat_username && project.chat_username.trim()) {
+    return true;
+  }
+  if (project.chat_id !== null && project.chat_id !== undefined && String(project.chat_id).trim()) {
+    return true;
+  }
+  return false;
+};
+
+export const findProjectForAccount = (
+  projects: ProjectCard[],
+  accountId: string | null | undefined,
+): ProjectCard | null => {
+  if (!accountId) {
+    return null;
+  }
+  const normalized = String(accountId).trim();
+  if (!normalized) {
+    return null;
+  }
+  return (
+    projects.find((project) => {
+      if (!project.account_id) {
+        return false;
+      }
+      return String(project.account_id).trim() === normalized;
+    }) || null
+  );
+};
+
+export const listProjectsWithoutAccount = (projects: ProjectCard[]): ProjectCard[] => {
+  return projects.filter((project) => {
+    if (!hasProjectChat(project)) {
+      return false;
+    }
+    if (project.account_id && String(project.account_id).trim()) {
+      return false;
+    }
+    return true;
+  });
+};
+
 export const findProjectCard = async (env: unknown, projectId: string): Promise<ProjectCard | null> => {
   const projects = await loadProjectCards(env);
   return projects.find((project) => project.id === projectId) || null;

@@ -9,7 +9,7 @@ import {
 } from "../types";
 import { escapeHtml, joinHtml } from "../utils/html";
 import { renderLayout } from "./layout";
-import { formatCurrency, formatDateTime } from "../utils/format";
+import { formatCurrency, formatDateTime, metaAccountStatusIcon } from "../utils/format";
 
 const statusIcon = (status?: string | null): string => {
   const normalized = (status || "").toLowerCase();
@@ -268,6 +268,145 @@ const renderProjectsTab = (projects: ProjectCard[]): string => {
     ? '<div class="grid gap-5 lg:grid-cols-2">' + projects.map(renderProjectCard).join("") + '</div>'
     : '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-8 text-center text-slate-400">Проекты не найдены.</div>';
   return renderCreateProjectForm() + list;
+};
+
+const renderAccountsTab = (projects: ProjectCard[], accounts: MetaAccountInfo[]): string => {
+  if (!accounts.length) {
+    return '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-6 text-sm text-slate-400">Нет данных об аккаунтах. Проверьте подключение к Facebook.</div>';
+  }
+
+  const availableChats = projects
+    .filter((project) => !project.account_id && (project.chat_link || project.chat_username || project.chat_id))
+    .sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+  const buildChatButtons = (): string => {
+    if (!availableChats.length) {
+      return '<p class="text-sm text-slate-400">Свободных чат-групп нет. Добавьте проект с чатами в разделе «Проекты».</p>';
+    }
+    return (
+      '<div class="flex flex-wrap gap-2" data-account-chat-list>' +
+      availableChats
+        .map(
+          (chat) =>
+            '<button type="button" data-account-chat data-project="' +
+            escapeHtml(chat.id) +
+            '" data-project-name="' +
+            escapeHtml(chat.name) +
+            '" class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-emerald-400 hover:text-emerald-300">' +
+            escapeHtml(chat.name) +
+            '</button>',
+        )
+        .join("") +
+      '</div>'
+    );
+  };
+
+  const cards = accounts
+    .map((account) => {
+      const project = projects.find((item) => item.account_id && item.account_id === account.id) || null;
+      const hasChat = Boolean(project && (project.chat_link || project.chat_username || project.chat_id));
+      const spend = project && typeof project.summary?.spend === "number"
+        ? formatCurrency(project.summary.spend, project.currency || "USD")
+        : "—";
+      const icon = hasChat ? metaAccountStatusIcon(account.status) : "🔘";
+      const chatLabel = project
+        ? project.chat_link
+          ? '<a class="text-emerald-400 hover:text-emerald-300" href="' + escapeHtml(project.chat_link) + '">Чат проекта</a>'
+          : project.chat_username
+          ? '<span class="text-slate-400">@' + escapeHtml(project.chat_username.replace(/^@/, "")) + '</span>'
+          : project.chat_id
+          ? '<span class="text-slate-400">ID: ' + escapeHtml(String(project.chat_id)) + '</span>'
+          : '<span class="text-slate-400">Чат не указан</span>'
+        : '<span class="text-slate-400">Чат не подключён</span>';
+
+      const cardClasses = hasChat
+        ? 'rounded-2xl border border-slate-800 bg-slate-950 p-5 shadow-lg shadow-emerald-500/10'
+        : 'rounded-2xl border border-slate-800 bg-slate-950 p-5';
+
+      const projectNameRow = project
+        ? '<div class="mt-2 text-sm text-slate-300">Проект: <span class="font-semibold text-slate-100">' +
+          escapeHtml(project.name) +
+          '</span></div>'
+        : '<div class="mt-2 text-sm text-slate-400">Проект не подключён</div>';
+
+      const chatRow = '<div class="mt-1 text-sm text-slate-400">' + chatLabel + '</div>';
+      const spendLabel = project && project.summary && (project.summary as any).period_label
+        ? ' (' + escapeHtml(String((project.summary as any).period_label)) + ')'
+        : '';
+      const spendRow =
+        '<div class="mt-3 text-sm text-slate-300">💰 Потрачено: <span class="font-semibold text-emerald-300">' +
+        escapeHtml(spend) +
+        '</span>' +
+        spendLabel +
+        '</div>';
+
+      const lastUpdate = project?.updated_at || project?.last_sync || account.last_update || null;
+      const lastUpdateRow =
+        '<div class="mt-1 text-xs text-slate-500">Обновлено: ' + escapeHtml(formatDateTime(lastUpdate)) + '</div>';
+
+      const linkedControls = hasChat && project
+        ? '<div class="mt-4 flex flex-wrap gap-2">' +
+          '<button type="button" data-account-action="open-project" data-project="' +
+          escapeHtml(project.id) +
+          '" class="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/30 hover:bg-emerald-400">Открыть проект</button>' +
+          (project.portal_url
+            ? '<a class="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:border-emerald-400 hover:text-emerald-300" href="' +
+              escapeHtml(project.portal_url) +
+              '" target="_blank" rel="noreferrer">Портал</a>'
+            : '') +
+          '</div>'
+        : '';
+
+      const selector = !hasChat
+        ? '<div class="mt-4 hidden" data-account-selector>' +
+          '<p class="text-sm text-slate-300">Выберите чат-группу для подвязки:</p>' +
+          buildChatButtons() +
+          '<div class="mt-3 hidden space-y-3" data-account-confirm>' +
+          '<p class="text-sm text-slate-300" data-account-confirm-text></p>' +
+          '<div class="flex flex-wrap gap-2">' +
+          '<button type="button" data-account-action="change" class="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:border-emerald-400 hover:text-emerald-300">Изменить</button>' +
+          '<button type="button" data-account-action="confirm" data-account="' +
+          escapeHtml(account.id) +
+          '" class="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 shadow-lg shadow-emerald-500/30 hover:bg-emerald-400">Подвязать ✅</button>' +
+          '</div>' +
+          '</div>' +
+          '</div>'
+        : '';
+
+      const connectButton = hasChat
+        ? ''
+        : '<div class="mt-4"><button type="button" data-account-action="link" data-account="' +
+          escapeHtml(account.id) +
+          '" class="rounded-lg border border-emerald-400 px-3 py-2 text-sm font-semibold text-emerald-300 hover:bg-emerald-500/10">Подключить</button></div>';
+
+      return (
+        '<div class="' +
+        cardClasses +
+        '" data-account-card="' +
+        escapeHtml(account.id) +
+        '" data-account-name="' +
+        escapeHtml(account.name || account.id) +
+        '">' +
+        '<div class="flex flex-col gap-1 md:flex-row md:items-start md:justify-between">' +
+        '<div>' +
+        '<div class="text-lg font-semibold text-slate-100">' + icon + ' ' + escapeHtml(account.name || account.id) + '</div>' +
+        '<div class="text-sm text-slate-400">ID: ' + escapeHtml(account.id) + '</div>' +
+        '</div>' +
+        '<div class="text-sm text-slate-400">Статус: ' + escapeHtml(account.status || '—') + '</div>' +
+        '</div>' +
+        projectNameRow +
+        chatRow +
+        spendRow +
+        lastUpdateRow +
+        linkedControls +
+        connectButton +
+        selector +
+        '</div>'
+      );
+    })
+    .join('<div class="h-px bg-slate-800"></div>');
+
+  return '<div class="space-y-4">' + cards + '</div>';
 };
 
 const renderBillingRow = (project: ProjectCard): string => {
@@ -609,6 +748,7 @@ const renderTechTools = (): string => {
 
 const TAB_CONFIG = [
   { id: "projects", label: "Проекты" },
+  { id: "accounts", label: "Рекламные аккаунты" },
   { id: "billing", label: "Оплаты" },
   { id: "facebook", label: "Facebook" },
   { id: "tech", label: "Тех.панель" },
@@ -631,6 +771,7 @@ const renderTabContent = (dashboard: AdminDashboardData): string => {
   return (
     '<div>' +
     '<section data-tab-content="projects" class="tab-panel">' + renderProjectsTab(dashboard.projects) + '</section>' +
+    '<section data-tab-content="accounts" class="tab-panel hidden">' + renderAccountsTab(dashboard.projects, dashboard.accounts) + '</section>' +
     '<section data-tab-content="billing" class="tab-panel hidden">' + renderBillingTab(dashboard.projects) + '</section>' +
     '<section data-tab-content="facebook" class="tab-panel hidden space-y-5">' +
     renderMetaStatus(dashboard.meta_status, dashboard.meta_token) +
@@ -735,6 +876,100 @@ const ACTION_SCRIPT = [
   "    });",
   "    if (target) {",
   "      target.classList.toggle('hidden');",
+  "    }",
+  "  };",
+  "  const resetAccountSelector = function(card){",
+  "    if (!card) { return; }",
+  "    card.removeAttribute('data-selected-project');",
+  "    var selector = card.querySelector('[data-account-selector]');",
+  "    if (selector) { selector.classList.remove('hidden'); }",
+  "    var confirmBlock = card.querySelector('[data-account-confirm]');",
+  "    if (confirmBlock) { confirmBlock.classList.add('hidden'); }",
+  "    card.querySelectorAll('[data-account-chat]').forEach(function(btn){",
+  "      btn.classList.remove('border-emerald-400','text-emerald-300','bg-emerald-500/10');",
+  "      btn.classList.add('border-slate-700','text-slate-200');",
+  "    });",
+  "  };",
+  "  const handleAccountChatSelect = function(button){",
+  "    var card = button.closest('[data-account-card]');",
+  "    if (!card) { return; }",
+  "    var projectId = button.getAttribute('data-project');",
+  "    var projectName = button.getAttribute('data-project-name') || '';",
+  "    if (!projectId) { return; }",
+  "    card.setAttribute('data-selected-project', projectId);",
+  "    card.querySelectorAll('[data-account-chat]').forEach(function(btn){",
+  "      btn.classList.remove('border-emerald-400','text-emerald-300','bg-emerald-500/10');",
+  "      btn.classList.add('border-slate-700','text-slate-200');",
+  "    });",
+  "    button.classList.remove('border-slate-700','text-slate-200');",
+  "    button.classList.add('border-emerald-400','text-emerald-300','bg-emerald-500/10');",
+  "    var confirmBlock = card.querySelector('[data-account-confirm]');",
+  "    if (confirmBlock) {",
+  "      confirmBlock.classList.remove('hidden');",
+  "      var text = confirmBlock.querySelector('[data-account-confirm-text]');",
+  "      if (text) {",
+  "        var accountName = card.getAttribute('data-account-name') || '';",
+  "        text.textContent = 'Подвязать «' + accountName + '» к «' + projectName + '»?';",
+  "      }",
+  "      var confirmButton = confirmBlock.querySelector('[data-account-action=\"confirm\"]');",
+  "      if (confirmButton) { confirmButton.setAttribute('data-project', projectId); }",
+  "    }",
+  "  };",
+  "  const handleAccountAction = async function(button){",
+  "    var action = button.getAttribute('data-account-action');",
+  "    if (!action) { return; }",
+  "    var card = button.closest('[data-account-card]');",
+  "    if (!card) { return; }",
+  "    if (action === 'open-project') {",
+  "      var projectId = button.getAttribute('data-project');",
+  "      if (!projectId) { return; }",
+  "      activate('projects');",
+  "      var projectCard = document.querySelector('[data-project-card="' + projectId + '"]');",
+  "      if (projectCard) {",
+  "        projectCard.scrollIntoView({ behavior: 'smooth', block: 'start' });",
+  "        projectCard.classList.add('ring','ring-emerald-500');",
+  "        window.setTimeout(function(){ projectCard.classList.remove('ring','ring-emerald-500'); }, 2000);",
+  "      }",
+  "      return;",
+  "    }",
+  "    if (action === 'link') {",
+  "      var selector = card.querySelector('[data-account-selector]');",
+  "      if (selector) { selector.classList.remove('hidden'); }",
+  "      resetAccountSelector(card);",
+  "      return;",
+  "    }",
+  "    if (action === 'change') {",
+  "      resetAccountSelector(card);",
+  "      return;",
+  "    }",
+  "    if (action === 'confirm') {",
+  "      var projectId = button.getAttribute('data-project');",
+  "      var accountId = card.getAttribute('data-account-card');",
+  "      if (!projectId || !accountId) {",
+  "        alert('Выберите чат перед подтверждением.');",
+  "        return;",
+  "      }",
+  "      button.disabled = true;",
+  "      button.classList.add('opacity-60');",
+  "      try {",
+  "        var response = await fetch(buildUrl('/api/admin/account/' + accountId + '/link'), {",
+  "          method: 'POST',",
+  "          headers: { 'content-type': 'application/json' },",
+  "          body: JSON.stringify({ project_id: projectId })",
+  "        });",
+  "        if (!response.ok) {",
+  "          var text = await response.text();",
+  "          throw new Error(text || 'Request failed');",
+  "        }",
+  "        window.location.reload();",
+  "      } catch (error) {",
+  "        console.error('Account link failed', error);",
+  "        alert('Не удалось подвязать аккаунт: ' + (error && error.message ? error.message : 'ошибка'));",
+  "      } finally {",
+  "        button.disabled = false;",
+  "        button.classList.remove('opacity-60');",
+  "      }",
+  "      return;",
   "    }",
   "  };",
   "  const handleTechAction = async function(button){",
@@ -914,6 +1149,16 @@ const ACTION_SCRIPT = [
   "  document.addEventListener('click', function(event){",
   "    var target = event.target instanceof HTMLElement ? event.target.closest('button') : null;",
   "    if (!target) {",
+  "      return;",
+  "    }",
+  "    if (target.hasAttribute('data-account-chat')) {",
+  "      event.preventDefault();",
+  "      handleAccountChatSelect(target);",
+  "      return;",
+  "    }",
+  "    if (target.hasAttribute('data-account-action')) {",
+  "      event.preventDefault();",
+  "      handleAccountAction(target);",
   "      return;",
   "    }",
   "    if (target.hasAttribute('data-tech-action')) {",
