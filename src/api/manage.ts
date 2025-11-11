@@ -17,16 +17,26 @@ const maskToken = (token: string): string => {
   return head + "****" + tail;
 };
 
-const ensureAuthorized = (request: Request, env: WorkerEnv): Response | null => {
+const ensureAuthorized = (request: Request, env: WorkerEnv, token: string): Response | null => {
   const adminKey = typeof env.ADMIN_KEY === "string" ? env.ADMIN_KEY : null;
-  if (!adminKey) {
-    return unauthorized("Admin key is not configured");
+  const header = request.headers.get("authorization");
+
+  if (header) {
+    if (!adminKey) {
+      return unauthorized("Admin key is not configured");
+    }
+    if (header !== "Bearer " + adminKey) {
+      return unauthorized("Invalid authorization header");
+    }
+    return null;
   }
-  const header = request.headers.get("authorization") || "";
-  if (header !== "Bearer " + adminKey) {
-    return unauthorized("Invalid authorization header");
+
+  const botToken = typeof env.BOT_TOKEN === "string" ? env.BOT_TOKEN : null;
+  if (token && botToken && token === botToken) {
+    return null;
   }
-  return null;
+
+  return unauthorized("Unauthorized. Provide ADMIN_KEY or valid bot token.");
 };
 
 const collectKnownTokens = (env: WorkerEnv): string[] => {
@@ -90,16 +100,16 @@ export const handleManageTelegramWebhook = async (
     return badRequest("Method not allowed");
   }
 
-  const authFailure = ensureAuthorized(request, env);
-  if (authFailure) {
-    return authFailure;
-  }
-
   const url = new URL(request.url);
   const action = (url.searchParams.get("action") || "status").toLowerCase();
   const token = url.searchParams.get("token") || "";
   const requestedUrl = url.searchParams.get("url") || "";
   const dropFlag = url.searchParams.get("drop") === "1";
+
+  const authFailure = ensureAuthorized(request, env, token);
+  if (authFailure) {
+    return authFailure;
+  }
 
   if (!token) {
     return badRequest("Missing token parameter");
