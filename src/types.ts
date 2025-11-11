@@ -96,6 +96,26 @@ export interface MetaAuthStatus {
   expires_at?: string;
   account_name?: string;
   issues?: string[];
+  account_id?: string | null;
+  status?: string | null;
+  refreshed_at?: string | null;
+  token_snippet?: string | null;
+  expires_in_hours?: number | null;
+  should_refresh?: boolean | null;
+}
+
+export interface MetaTokenStatus {
+  ok: boolean;
+  status: "missing" | "invalid" | "expired" | "ok" | string;
+  valid: boolean;
+  issues: string[];
+  expires_at?: string | null;
+  expires_in_hours?: number | null;
+  should_refresh?: boolean | null;
+  token_snippet?: string | null;
+  account_id?: string | null;
+  account_name?: string | null;
+  refreshed_at?: string | null;
 }
 
 export interface MetaAccountInfo {
@@ -137,6 +157,7 @@ export interface ProjectCard {
 
 export interface AdminDashboardData {
   meta_status: MetaAuthStatus;
+  meta_token: MetaTokenStatus;
   accounts: MetaAccountInfo[];
   projects: ProjectCard[];
   logs: DashboardLogEntry[];

@@ -37,9 +37,12 @@ export const loadMetaStatus = async (env: unknown, options: { useCache?: boolean
   const now = new Date().toISOString();
   const payload: MetaAuthStatus & { updated_at: string } = {
     ok: true,
+    status: "ok",
     account_name: profile && profile.name ? String(profile.name) : undefined,
+    account_id: profile && profile.id ? String(profile.id) : undefined,
     last_refresh: now,
     updated_at: now,
+    refreshed_at: now,
     issues: [],
   };
 

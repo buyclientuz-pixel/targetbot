@@ -1,6 +1,6 @@
 import { appendLogEntry } from "../utils/r2";
 import { notifyTelegramAdmins } from "../utils/telegram";
-import { WorkerEnv } from "../types";
+import { WorkerEnv, MetaTokenStatus } from "../types";
 
 interface MetaAuthRecord {
   access_token: string;
@@ -82,20 +82,6 @@ const deleteMetaAuth = async (env: MetaNamespaceEnv): Promise<void> => {
   }
 };
 
-interface TokenStatusResult {
-  ok: boolean;
-  status: "missing" | "invalid" | "expired" | "ok";
-  valid: boolean;
-  issues: string[];
-  expires_at?: string | null;
-  expires_in_hours?: number | null;
-  should_refresh?: boolean;
-  token_snippet?: string | null;
-  account_id?: string | null;
-  account_name?: string | null;
-  refreshed_at?: string | null;
-}
-
 const buildGraphUrl = (path: string, params: Record<string, string>): string => {
   const url = new URL("https://graph.facebook.com/" + path.replace(/^\/+/, ""));
   for (const key of Object.keys(params)) {
@@ -110,7 +96,7 @@ const sendFacebookErrorLog = async (env: WorkerEnv, message: string): Promise<vo
   await appendLogEntry(env, { level: "error", message, timestamp: now.toISOString() }, dateKey);
 };
 
-export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<TokenStatusResult> => {
+export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<MetaTokenStatus> => {
   const record = await readMetaAuth(env);
   if (!record) {
     return { ok: false, status: "missing", valid: false, issues: ["Meta access token is not configured."] };
@@ -130,6 +116,7 @@ export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<TokenStatu
       account_id: record.account_id || null,
       account_name: record.account_name || null,
       refreshed_at: record.refreshed_at || null,
+      expires_at: record.expires_at ? new Date(record.expires_at).toISOString() : null,
     };
   }
 
@@ -158,6 +145,7 @@ export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<TokenStatu
       account_id: record.account_id || null,
       account_name: record.account_name || null,
       refreshed_at: record.refreshed_at || null,
+      expires_at: record.expires_at ? new Date(record.expires_at).toISOString() : null,
     };
   }
 
@@ -172,6 +160,7 @@ export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<TokenStatu
       account_id: record.account_id || null,
       account_name: record.account_name || null,
       refreshed_at: record.refreshed_at || null,
+      expires_at: record.expires_at ? new Date(record.expires_at).toISOString() : null,
     };
   }
 
@@ -283,7 +272,7 @@ const performTokenRefresh = async (env: WorkerEnv, record: MetaAuthRecord): Prom
 export const checkAndRefreshFacebookToken = async (
   env: WorkerEnv,
   options: { force?: boolean; notify?: boolean } = {},
-): Promise<{ status: TokenStatusResult; refresh?: RefreshResult | null }> => {
+): Promise<{ status: MetaTokenStatus; refresh?: RefreshResult | null }> => {
   const notify = options.notify !== false;
   const forceRefresh = options.force === true;
 
@@ -344,7 +333,7 @@ export const checkAndRefreshFacebookToken = async (
 
 export const forceRefreshFacebookToken = async (
   env: WorkerEnv,
-): Promise<{ status: TokenStatusResult; refresh?: RefreshResult | null }> => {
+): Promise<{ status: MetaTokenStatus; refresh?: RefreshResult | null }> => {
   return checkAndRefreshFacebookToken(env, { force: true, notify: true });
 };
 

@@ -321,7 +321,27 @@ const renderBillingTab = (projects: ProjectCard[]): string => {
   );
 };
 
-const renderMetaStatus = (status: AdminDashboardData["meta_status"]): string => {
+const tokenStatusLabel = (status: string): string => {
+  const normalized = status.toLowerCase();
+  if (normalized === "ok") {
+    return "Активен";
+  }
+  if (normalized === "missing") {
+    return "Не настроен";
+  }
+  if (normalized === "expired") {
+    return "Истёк";
+  }
+  if (normalized === "invalid") {
+    return "Недействителен";
+  }
+  return status;
+};
+
+const renderMetaStatus = (
+  status: AdminDashboardData["meta_status"],
+  token: AdminDashboardData["meta_token"],
+): string => {
   const hasIssues = Boolean(status.issues && status.issues.length > 0);
   const icon = !status.ok ? "🔴" : hasIssues ? "🟡" : "🟢";
   const issues = hasIssues
@@ -329,7 +349,43 @@ const renderMetaStatus = (status: AdminDashboardData["meta_status"]): string => 
       status.issues!.map((issue) => '<li>• ' + escapeHtml(issue) + '</li>').join("") +
       '</ul>'
     : '<p class="mt-3 text-sm text-slate-400">Подключение стабильно</p>';
+
+  const tokenStatus = token.status || (token.ok ? "ok" : "invalid");
+  const tokenIcon = tokenStatus === "ok" ? "🟢" : tokenStatus === "expired" || tokenStatus === "missing" ? "🔴" : "🟡";
+  const tokenIssues = token.issues && token.issues.length
+    ? '<ul class="mt-3 space-y-1 text-xs text-red-300">' +
+      token.issues.map((issue) => '<li>• ' + escapeHtml(issue) + '</li>').join("") +
+      '</ul>'
+    : '<p class="mt-3 text-xs text-slate-400">Ошибок не обнаружено</p>';
+  const snippetRow = token.token_snippet
+    ? '<div class="text-xs text-slate-400">🔑 Токен: ' + escapeHtml(token.token_snippet) + '</div>'
+    : '<div class="text-xs text-red-400">🔑 Токен отсутствует</div>';
+  const expiryParts: string[] = [];
+  if (token.expires_at) {
+    expiryParts.push('⏳ Истекает: ' + escapeHtml(formatDateTime(token.expires_at)));
+  }
+  if (typeof token.expires_in_hours === "number" && Number.isFinite(token.expires_in_hours)) {
+    expiryParts.push('≈ ' + escapeHtml(String(token.expires_in_hours)) + ' ч');
+  }
+  const expiryRow = expiryParts.length
+    ? '<div class="text-xs text-slate-400">' + expiryParts.join(' • ') + '</div>'
+    : '<div class="text-xs text-slate-500">⏳ Срок действия не определён</div>';
+  const refreshedRow = token.refreshed_at
+    ? '<div class="text-xs text-slate-400">♻️ Обновлён: ' + escapeHtml(formatDateTime(token.refreshed_at)) + '</div>'
+    : status.last_refresh
+    ? '<div class="text-xs text-slate-500">♻️ Данные обновлены: ' + escapeHtml(formatDateTime(status.last_refresh)) + '</div>'
+    : '';
+  const refreshHint = token.should_refresh
+    ? '<span class="inline-flex items-center rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-semibold text-amber-300">Требуется обновить</span>'
+    : '';
+  const tokenControls =
+    '<div class="mt-4 flex flex-wrap gap-2">' +
+    '<button type="button" data-tech-action="refresh-meta-token" data-confirm="Обновить Meta токен вручную?" class="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-emerald-400">🔄 Обновить токен</button>' +
+    '<button type="button" data-tech-action="clear-meta-cache" data-confirm="Очистить кэш статуса Facebook?" class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700">🧹 Очистить кэш</button>' +
+    '</div>';
+
   return (
+    '<div class="space-y-4">' +
     '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-6">' +
     '<div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">' +
     '<div>' +
@@ -339,6 +395,29 @@ const renderMetaStatus = (status: AdminDashboardData["meta_status"]): string => 
     '<div class="text-sm text-slate-400">Обновлено: ' + safe(status.last_refresh || "—") + '</div>' +
     '</div>' +
     issues +
+    '</div>' +
+    '<div class="rounded-2xl border border-slate-800 bg-slate-950 p-6">' +
+    '<div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">' +
+    '<div>' +
+    '<h3 class="text-base font-semibold">Токен доступа</h3>' +
+    '<p class="text-sm text-slate-300">' +
+    tokenIcon +
+    ' ' +
+    escapeHtml(tokenStatusLabel(tokenStatus)) +
+    '</p>' +
+    (refreshHint || '') +
+    '</div>' +
+    '<div class="text-right text-xs text-slate-500">' +
+    (token.account_name ? escapeHtml(token.account_name) + '<br>' : '') +
+    (token.account_id ? 'ID: ' + escapeHtml(token.account_id) : '') +
+    '</div>' +
+    '</div>' +
+    snippetRow +
+    expiryRow +
+    refreshedRow +
+    tokenIssues +
+    tokenControls +
+    '</div>' +
     '</div>'
   );
 };
@@ -493,7 +572,7 @@ const renderTabContent = (dashboard: AdminDashboardData): string => {
     '<section data-tab-content="projects" class="tab-panel">' + renderProjectsTab(dashboard.projects) + '</section>' +
     '<section data-tab-content="billing" class="tab-panel hidden">' + renderBillingTab(dashboard.projects) + '</section>' +
     '<section data-tab-content="facebook" class="tab-panel hidden space-y-5">' +
-    renderMetaStatus(dashboard.meta_status) +
+    renderMetaStatus(dashboard.meta_status, dashboard.meta_token) +
     renderAccounts(dashboard.accounts) +
     '</section>' +
     '<section data-tab-content="tech" class="tab-panel hidden space-y-5">' +
@@ -642,7 +721,7 @@ const ACTION_SCRIPT = [
   "        throw new Error(data && data.error ? data.error : (text || 'Request failed'));",
   "      }",
   "      updateTechOutput(data || { ok: true }, false);",
-  "      if (action === 'refresh-all') {",
+  "      if (action === 'refresh-all' || action === 'refresh-meta-token') {",
   "        window.setTimeout(function(){ window.location.reload(); }, 1500);",
   "      }",
   "    } catch (error) {",

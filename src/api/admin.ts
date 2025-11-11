@@ -1,6 +1,7 @@
 import { jsonResponse, unauthorized, notFound, badRequest } from "../utils/http";
 import { loadMetaStatus, STATUS_CACHE_KEY, clearMetaStatusCache } from "./meta";
 import { callGraph } from "../fb/client";
+import { getFacebookTokenStatus, checkAndRefreshFacebookToken } from "../fb/auth";
 import {
   loadProjectCards,
   writeProjectConfig,
@@ -29,6 +30,8 @@ import {
   ProjectReport,
   ProjectAlertsConfig,
   BillingInfo,
+  MetaTokenStatus,
+  WorkerEnv,
 } from "../types";
 import { renderAdminPage } from "../views/admin";
 import { refreshAllProjects } from "./projects";
@@ -429,11 +432,21 @@ export const handleAdminPage = async (request: Request, env: Record<string, unkn
     return error;
   }
 
-  const [metaStatus, accounts, projects, logs, storage] = await Promise.all([
+  const [metaStatus, tokenStatus, accounts, projects, logs, storage] = await Promise.all([
     loadMetaStatus(env, { useCache: true }).catch((error) => ({
       ok: false,
       issues: [(error as Error).message],
     })),
+    getFacebookTokenStatus(env as WorkerEnv).catch((error) => ({
+      ok: false,
+      status: "invalid",
+      valid: false,
+      issues: [(error as Error).message],
+      token_snippet: null,
+      account_id: null,
+      account_name: null,
+      refreshed_at: null,
+    }) as MetaTokenStatus),
     loadAccounts(env),
     loadProjectCards(env),
     loadLogs(env),
@@ -442,6 +455,7 @@ export const handleAdminPage = async (request: Request, env: Record<string, unkn
 
   const dashboard: AdminDashboardData = {
     meta_status: metaStatus as any,
+    meta_token: tokenStatus,
     accounts,
     projects,
     logs,
@@ -718,11 +732,21 @@ export const handleAdminSystemApi = async (
     return error;
   }
 
-  const [metaStatus, tokens, storage, webhook] = await Promise.all([
+  const [metaStatus, tokenStatus, tokens, storage, webhook] = await Promise.all([
     loadMetaStatus(env, { useCache: true }).catch((err) => ({
       ok: false,
       issues: [(err as Error).message],
     })),
+    getFacebookTokenStatus(env as WorkerEnv).catch((error) => ({
+      ok: false,
+      status: "invalid",
+      valid: false,
+      issues: [(error as Error).message],
+      token_snippet: null,
+      account_id: null,
+      account_name: null,
+      refreshed_at: null,
+    }) as MetaTokenStatus),
     Promise.resolve(collectTokenStatus(env)),
     loadStorageOverview(env),
     getTelegramWebhookStatus(env as any).catch(() => null),
@@ -730,6 +754,7 @@ export const handleAdminSystemApi = async (
 
   return jsonResponse({
     meta: metaStatus,
+    token: tokenStatus,
     tokens,
     storage,
     webhook,
@@ -762,6 +787,16 @@ export const handleAdminSystemAction = async (
       "Admin triggered refresh-all for " + result.refreshed.length + " projects",
     );
     return jsonResponse({ ok: true, refreshed: result.refreshed });
+  }
+
+  if (action === "refresh-meta-token") {
+    const outcome = await checkAndRefreshFacebookToken(env as WorkerEnv, { force: true, notify: true });
+    const message =
+      "Admin requested Meta token refresh => " +
+      (outcome.refresh && outcome.refresh.ok ? "success" : "failure") +
+      (outcome.refresh && outcome.refresh.message ? ": " + outcome.refresh.message : "");
+    await logAdminAction(env, message);
+    return jsonResponse(outcome);
   }
 
   if (action === "clear-meta-cache") {
