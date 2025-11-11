@@ -11,8 +11,9 @@
     "lint:api": "node scripts/lint-api.mjs",
     "lint:strings": "node scripts/lint-strings.mjs",
     "migrate:templates": "node tools/convertConcatToTemplate.js --apply && npm run format && npm run lint",
-    "deploy:full": "npm run lint && npm run format && npm run lint:api && npm run lint:strings && npm run build",
     "deploy": "wrangler deploy",
+    "deploy:versions": "wrangler versions upload",
+    "deploy:full": "npm run lint && npm run format && npm run lint:api && npm run lint:strings && npm run deploy:versions",
     "check:config": "node scripts/check-config.mjs",
     "sync:secrets": "node scripts/sync-secrets.mjs",
     "test:integration": "node scripts/run-integration.mjs",
@@ -21,7 +22,7 @@
     "validate:postdeploy": "node scripts/postdeploy-validate.mjs",
     "verify:deploy": "npm run lint:api && npm run check:config && npm run test:integration",
     "prebuild": "npm install --force --legacy-peer-deps",
-    "build": "wrangler deploy"
+    "build": "npm run deploy:versions"
   },
   "devDependencies": {
     "eslint": "^9.39.1",
