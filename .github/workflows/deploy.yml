@@ -21,7 +21,12 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --force --progress=false
+
+      - name: Validate package-lock.json
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-audit
+          git diff --exit-code package-lock.json || (echo "Lockfile out of sync. Run npm install locally." && exit 1)
 
       - name: Lint & Format Check
         run: |
