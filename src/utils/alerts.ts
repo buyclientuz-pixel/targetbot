@@ -5,7 +5,7 @@ import { formatCurrency } from "./format";
 
 const ALERT_STATE_PREFIX = "meta/alerts/";
 
-const getStateKey = (projectId: string): string => ALERT_STATE_PREFIX + projectId + ".json";
+const getStateKey = (projectId: string): string => `${ALERT_STATE_PREFIX}${projectId}.json`;
 
 const loadState = async (env: unknown, projectId: string): Promise<ProjectAlertState> => {
   const existing = await readJsonFromR2<ProjectAlertState>(env as any, getStateKey(projectId));
@@ -42,9 +42,9 @@ const portalUrl = (env: Record<string, unknown>, projectId: string): string => {
   const base = typeof env.WORKER_URL === "string" ? env.WORKER_URL : "";
   if (base) {
     const trimmed = base.endsWith("/") ? base.slice(0, -1) : base;
-    return trimmed + "/portal/" + projectId;
+    return trimmed + `/portal/${projectId}`;
   }
-  return "/portal/" + projectId;
+  return `/portal/${projectId}`;
 };
 
 const sendAlert = async (
@@ -64,7 +64,7 @@ const sendAlert = async (
   } catch (error) {
     await appendLogEntry(env as any, {
       level: "error",
-      message: "Failed to deliver alert: " + (error as Error).message,
+      message: `Failed to deliver alert: ${(error as Error).message}`,
       timestamp: new Date().toISOString(),
     });
     return false;
@@ -148,15 +148,15 @@ const buildModerationMessage = (
   env: Record<string, unknown>,
 ): string => {
   const lines: string[] = [];
-  lines.push("⏱ Кампании на модерации более " + thresholdHours + " ч. для проекта " + report.project_name);
+  lines.push(`⏱ Кампании на модерации более ${thresholdHours} ч. для проекта ${report.project_name}`);
   for (const campaign of report.campaigns) {
     if (overdueIds.indexOf(campaign.id) === -1) {
       continue;
     }
-    const row = "• " + campaign.name + " — статус " + campaign.status;
+    const row = `• ${campaign.name} — статус ${campaign.status}`;
     lines.push(row);
   }
-  lines.push("Портал: " + portalUrl(env, report.project_id));
+  lines.push(`Портал: ${portalUrl(env, report.project_id)}`);
   return lines.join("\n");
 };
 
@@ -184,11 +184,10 @@ export const processAutoAlerts = async (
   if (cpaThreshold !== null && currentCpa !== null) {
     if (currentCpa > cpaThreshold) {
       if (!nextState.cpa_exceeded) {
-        const message = "⚠️ CPA превышен для проекта " + report.project_name + "\n" +
-          "Значение: " + formatCurrency(currentCpa, report.currency) + " при лимите " +
-          formatCurrency(cpaThreshold, report.currency) + "\n" +
-          "Портал: " + portalUrl(runtimeEnv, report.project_id);
-        const delivered = await sendAlert(runtimeEnv, chatId, message, "CPA threshold exceeded for " + project.id);
+        const message = `⚠️ CPA превышен для проекта ${report.project_name}
+Значение: ${formatCurrency(currentCpa, report.currency)} при лимите ${formatCurrency(cpaThreshold, report.currency)}
+Портал: \${portalUrl(runtimeEnv, report.project_id)}`;
+        const delivered = await sendAlert(runtimeEnv, chatId, message, `CPA threshold exceeded for ${project.id}`);
         if (delivered) {
           nextState.cpa_exceeded = true;
           stateChanged = true;
@@ -205,11 +204,10 @@ export const processAutoAlerts = async (
   if (spendLimit !== null && currentSpend !== null) {
     if (currentSpend > spendLimit) {
       if (!nextState.spend_exceeded) {
-        const message = "⚠️ Расход превысил лимит для проекта " + report.project_name + "\n" +
-          "Потрачено: " + formatCurrency(currentSpend, report.currency) + " при лимите " +
-          formatCurrency(spendLimit, report.currency) + "\n" +
-          "Портал: " + portalUrl(runtimeEnv, report.project_id);
-        const delivered = await sendAlert(runtimeEnv, chatId, message, "Spend limit exceeded for " + project.id);
+        const message = `⚠️ Расход превысил лимит для проекта ${report.project_name}
+Потрачено: ${formatCurrency(currentSpend, report.currency)} при лимите ${formatCurrency(spendLimit, report.currency)}
+Портал: \${portalUrl(runtimeEnv, report.project_id)}`;
+        const delivered = await sendAlert(runtimeEnv, chatId, message, `Spend limit exceeded for ${project.id}`);
         if (delivered) {
           nextState.spend_exceeded = true;
           stateChanged = true;
@@ -228,7 +226,7 @@ export const processAutoAlerts = async (
   let moderationSnapshot = previous.slice();
   if (newOnes.length > 0) {
     const message = buildModerationMessage(project, report, newOnes, thresholdHours, runtimeEnv);
-    const delivered = await sendAlert(runtimeEnv, chatId, message, "Moderation delay alert for " + project.id);
+    const delivered = await sendAlert(runtimeEnv, chatId, message, `Moderation delay alert for ${project.id}`);
     if (delivered) {
       moderationSnapshot = overdue;
     }

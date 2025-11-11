@@ -21,13 +21,16 @@ const parsePayload = async (request: Request): Promise<AlertPayload | null> => {
 
 const formatAlertMessage = (payload: AlertPayload): string => {
   const arrow = payload.direction === "below" ? "↓" : "↑";
-  let line = "⚠️ Алерт по проекту " + payload.project_id + "\n";
-  line += payload.metric.toUpperCase() + ": " + payload.value + " (" + arrow + " порога " + payload.threshold + ")";
+  let line = `⚠️ Алерт по проекту ${payload.project_id}
+`;
+  line += payload.metric.toUpperCase() + `: ${payload.value} (${arrow} порога ${payload.threshold})`;
   if (payload.campaign_id) {
-    line += "\nКампания: " + payload.campaign_id;
+    line += `
+Кампания: ${payload.campaign_id}`;
   }
   if (payload.description) {
-    line += "\n" + payload.description;
+    line += `
+${payload.description}`;
   }
   return line;
 };
@@ -47,7 +50,7 @@ export const handleTelegramAlert = async (request: Request, env: Record<string, 
   await sendTelegramMessage(env, chatId, message);
   await appendLogEntry(env as any, {
     level: "warn",
-    message: "Alert dispatched: " + payload.metric + " for " + payload.project_id,
+    message: `Alert dispatched: ${payload.metric} for ${payload.project_id}`,
     timestamp: new Date().toISOString(),
   });
 

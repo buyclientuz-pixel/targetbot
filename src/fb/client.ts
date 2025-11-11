@@ -19,7 +19,7 @@ export const callGraph = async (
   }
 
   const version = env.FB_GRAPH_VERSION || DEFAULT_VERSION;
-  const url = new URL("https://graph.facebook.com/" + version + "/" + path.replace(/^\//, ""));
+  const url = new URL(`https://graph.facebook.com/${version}/${path.replace(/^\//, "")}`);
 
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
@@ -43,15 +43,15 @@ export const callGraph = async (
       const boundFetch = fetch.bind(globalThis);
       response = await boundFetch(requestUrl, requestInit);
     } else if (normalized.includes("timed out") || normalized.includes("timeout")) {
-      throw new Error("Graph request timed out: " + message);
+      throw new Error(`Graph request timed out: ${message}`);
     } else {
-      throw new Error("Graph fetch failed: " + message);
+      throw new Error(`Graph fetch failed: ${message}`);
     }
   }
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error("Graph API error " + response.status + ": " + errorText);
+    throw new Error(`Graph API error ${response.status}: ${errorText}`);
   }
 
   return response.json();

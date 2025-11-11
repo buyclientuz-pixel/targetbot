@@ -87,19 +87,18 @@ const parseCommand = (text: string): { command: string; args: string[] } | null 
   return { command, args };
 };
 
-const START_MESSAGE =
-  "👋 Привет! Этот бот показывает статистику по рекламе.\n\n" +
-  "Доступные команды:\n" +
-  "/help — список команд\n" +
-  "/report — текущие показатели\n" +
-  "/admin — панель администратора";
+const START_MESSAGE = `👋 Привет! Этот бот показывает статистику по рекламе.
 
-const HELP_MESSAGE =
-  "📋 Команды:\n" +
-  "/start — начать\n" +
-  "/help — помощь\n" +
-  "/report — отчёт\n" +
-  "/admin — панель администратора";
+Доступные команды:
+/help — список команд
+/report — текущие показатели
+/admin — панель администратора`;
+
+const HELP_MESSAGE = `📋 Команды:
+/start — начать
+/help — помощь
+/report — отчёт
+/admin — панель администратора`;
 
 const ADMIN_MENU_MESSAGE = "⚙️ Панель администратора";
 
@@ -239,7 +238,7 @@ const loadReportProjects = async (env: Record<string, unknown>): Promise<ReportP
 
   if (!projectSourcesLogEmitted) {
     console.log("Loaded projects from ENV:", envProjects.map((project) => project.id).join(", ") || "<empty>");
-    console.log("Resolved project list:", projects.map((project) => project.id + ":" + project.name).join(", ") || "<empty>");
+    console.log("Resolved project list:", projects.map((project) => project.id + `:${project.name}`).join(", ") || "<empty>");
     if (projects.length === 0) {
       console.warn("⚠️ No projects found in ENV or R2.");
     }
@@ -289,15 +288,15 @@ const buildFacebookStatusLine = (
   }
 
   if (!status.ok || status.status === "invalid") {
-    const issues = status.issues && status.issues.length ? ": " + status.issues.join("; ") : ".";
-    return "Статус Facebook: 🚨 требуется внимание" + issues;
+    const issues = status.issues && status.issues.length ? `: ${status.issues.join("; ") : "."}`;
+    return `Статус Facebook: 🚨 требуется внимание${issues}`;
   }
 
   const icon = status.should_refresh ? "🟡" : "🟢";
   const parts: string[] = [];
-  parts.push(icon + " Facebook подключён" + (accountLabel ? " — " + accountLabel : ""));
+  parts.push(icon + ` Facebook подключён${(accountLabel ? ` — ${accountLabel : ""}`)}`);
   if (expiresAt) {
-    parts.push("действителен до " + expiresAt);
+    parts.push(`действителен до ${expiresAt}`);
   }
   if (status.should_refresh) {
     parts.push("нужно обновить в ближайшее время");
@@ -317,7 +316,7 @@ const countProjectCampaigns = async (
       continue;
     }
     try {
-      const report = await readJsonFromR2<ProjectReport>(env as any, "reports/" + project.id + ".json");
+      const report = await readJsonFromR2<ProjectReport>(env as any, `reports/${project.id}.json`);
       if (report && Array.isArray(report.campaigns)) {
         total += report.campaigns.length;
       }
@@ -432,33 +431,29 @@ const sendAdminProjectsOverview = async (
     }
     const lastActivity = formatDate(lastActivityIso, timeZone);
 
-    const cardLines = [
-      icon + " <b>" + escapeHtml(project.name) + "</b>",
-      "💰 Потрачено: " + escapeHtml(spendText),
-      "📈 Лиды: " + escapeHtml(leadsText) +
-        " | Клики: " +
-        escapeHtml(clicksText) +
-        " | CTR: " +
-        escapeHtml(ctrText),
-      "📆 Последняя активность: " + escapeHtml(lastActivity),
+      const cardLines = [
+        `${icon} <b>${escapeHtml(project.name)}</b>`,
+      `💰 Потрачено: ${escapeHtml(spendText)}`,
+      `📈 Лиды: ${escapeHtml(leadsText)} | Клики: ${escapeHtml(clicksText)} | CTR: ${escapeHtml(ctrText)}`,
+      `📆 Последняя активность: ${escapeHtml(lastActivity)}`,
     ];
     cards.push(cardLines.join("\n"));
 
-    const portalUrl = resolvePortalUrl(env, project.id, project.portal_url || undefined) ||
-      ("/portal/" + project.id);
+    const portalUrl =
+      resolvePortalUrl(env, project.id, project.portal_url || undefined) || `/portal/${project.id}`;
     const chatLink =
       project.chat_link ||
-      (project.chat_username ? "https://t.me/" + project.chat_username.replace(/^@/, "") : null);
+      (project.chat_username ? `https://t.me/${project.chat_username.replace(/^@/, "")}` : null);
 
     const buttonRow: Array<Record<string, unknown>> = [
-      { text: "⚙️ Управление", callback_data: "admin:project:" + project.id },
+      { text: "⚙️ Управление", callback_data: `admin:project:${project.id}` },
       { text: "📊 Отчёт", url: portalUrl },
     ];
 
     if (chatLink) {
       buttonRow.push({ text: "✉️ Чат проекта", url: chatLink });
     } else {
-      buttonRow.push({ text: "✉️ Чат проекта", callback_data: "admin:project:" + project.id });
+      buttonRow.push({ text: "✉️ Чат проекта", callback_data: `admin:project:${project.id}` });
     }
 
     inline_keyboard.push(buttonRow);
@@ -466,7 +461,7 @@ const sendAdminProjectsOverview = async (
 
   if (projects.length > limit) {
     cards.push(
-      "Показаны первые " + String(limit) + " проектов из " + String(projects.length) + ". Остальные доступны в веб-панели.",
+      `Показаны первые ${String(limit)} проектов из ${String(projects.length)}. Остальные доступны в веб-панели.`,
     );
   }
 
@@ -503,19 +498,19 @@ const formatAccountOverview = (
 ): string => {
   const lines: string[] = [];
   const icon = hasChat ? metaAccountStatusIcon(account.status) : "🔘";
-  lines.push(icon + " <b>" + escapeHtml(account.name || account.id) + "</b>");
-  lines.push("ID: <code>" + escapeHtml(account.id) + "</code>");
+  lines.push(icon + ` <b>${escapeHtml(account.name || account.id)}</b>`);
+  lines.push(`ID: <code>${escapeHtml(account.id)}</code>`);
   if (account.status) {
-    lines.push("Статус: " + escapeHtml(String(account.status)));
+    lines.push(`Статус: ${escapeHtml(String(account.status))}`);
   }
   if (project) {
-    lines.push("Проект: " + escapeHtml(project.name));
+    lines.push(`Проект: ${escapeHtml(project.name)}`);
     if (!hasChat) {
       lines.push("Чат: не подключён");
     } else {
       const label = buildChatLabel(project);
       if (label) {
-        lines.push("Чат: " + escapeHtml(label));
+        lines.push(`Чат: ${escapeHtml(label)}`);
       }
     }
   } else {
@@ -523,13 +518,13 @@ const formatAccountOverview = (
   }
   if (spendInfo && spendInfo.value !== null) {
     const spendText = formatCurrency(spendInfo.value, spendInfo.currency);
-    const suffix = spendInfo.label ? " (" + spendInfo.label + ")" : "";
-    lines.push("💰 Потрачено: " + escapeHtml(spendText + suffix));
+    const suffix = spendInfo.label ? ` (${spendInfo.label})` : "";
+    lines.push(`💰 Потрачено: ${escapeHtml(spendText + suffix)}`);
   } else {
     lines.push("💰 Потрачено: —");
   }
   const lastActivity = project?.updated_at || project?.last_sync || account.last_update || null;
-  lines.push("📆 Последняя активность: " + escapeHtml(formatDateTime(lastActivity, timeZone)));
+  lines.push(`📆 Последняя активность: ${escapeHtml(formatDateTime(lastActivity, timeZone))}`);
   return lines.join("\n");
 };
 
@@ -565,15 +560,15 @@ const sendAdminAccountsOverview = async (
       const spendBadge = spendInfo && spendInfo.value !== null ? formatCurrency(spendInfo.value, spendInfo.currency) : "—";
       inline_keyboard.push([
         {
-          text: metaAccountStatusIcon(account.status) + " " + account.name + " | " + spendBadge,
-          callback_data: "admin:project:" + project.id,
+          text: metaAccountStatusIcon(account.status) + ` ${account.name} | ${spendBadge}`,
+          callback_data: `admin:project:${project.id}`,
         },
       ]);
     } else {
       inline_keyboard.push([
         {
-          text: "🔘 " + account.name + " | Подключить",
-          callback_data: "admin:account_link:" + account.id,
+          text: `🔘 ${account.name} | Подключить`,
+          callback_data: `admin:account_link:${account.id}`,
         },
       ]);
     }
@@ -633,16 +628,14 @@ const sendAdminAccountChatSelection = async (
   const buttons = available.map((project) => [
     {
       text: project.name,
-      callback_data: "admin:account_choose:" + accountId + ":" + project.id,
+      callback_data: `admin:account_choose:${accountId}:${project.id}`,
     },
   ]);
 
   buttons.push([{ text: "⬅️ Назад", callback_data: "admin:accounts" }]);
 
   const message =
-    "Подключение <b>" +
-    escapeHtml(accountName) +
-    "</b> к чату. Выберите чат-группу клиента:";
+    `Подключение <b>${escapeHtml(accountName)}</b> к чату. Выберите чат-группу клиента:`;
 
   await deliverAdminMessage(
     env,
@@ -665,16 +658,12 @@ const sendAdminAccountConfirmation = async (
   context: AdminMessageContext = {},
 ): Promise<void> => {
   const message =
-    "Подвязать <b>" +
-    escapeHtml(accountName) +
-    "</b> к проекту <b>" +
-    escapeHtml(project.name) +
-    "</b>?";
+    `Подвязать <b>${escapeHtml(accountName)}</b> к проекту <b>${escapeHtml(project.name)}</b>?`;
 
   const inline_keyboard = [
     [
-      { text: "🔄 Изменить чат", callback_data: "admin:account_choose:" + accountId },
-      { text: "✅ Подвязать", callback_data: "admin:account_confirm:" + accountId + ":" + project.id },
+      { text: "🔄 Изменить чат", callback_data: `admin:account_choose:${accountId}`},
+      { text: "✅ Подвязать", callback_data: `admin:account_confirm:${accountId}:${project.id}`},
     ],
     [{ text: "⬅️ Отмена", callback_data: "admin:accounts" }],
   ];
@@ -704,7 +693,7 @@ const linkAccountToProject = async (
   }
   await appendLogEntry(env as any, {
     level: "info",
-    message: "Telegram admin linked account " + accountId + " to project " + project.id,
+    message: `Telegram admin linked account ${accountId} to project ${project.id}`,
     timestamp: new Date().toISOString(),
   });
   return true;
@@ -713,47 +702,41 @@ const linkAccountToProject = async (
 const formatAdminProjectDetail = (project: ProjectCard, timeZone: string): string => {
   const lines: string[] = [];
   const icon = adminStatusIcon(project.status);
-  lines.push(icon + " <b>" + escapeHtml(project.name) + "</b>");
-  lines.push("ID: <code>" + escapeHtml(project.id) + "</code>");
+  lines.push(icon + ` <b>${escapeHtml(project.name)}</b>`);
+  lines.push(`ID: <code>${escapeHtml(project.id)}</code>`);
 
   if (project.status) {
-    lines.push("Статус: " + escapeHtml(project.status));
+    lines.push(`Статус: ${escapeHtml(project.status)}`);
   }
 
   if (project.account_name) {
-    lines.push("Аккаунт: " + escapeHtml(project.account_name));
+    lines.push(`Аккаунт: ${escapeHtml(project.account_name)}`);
   }
 
   if (project.manager) {
-    lines.push("Менеджер: " + escapeHtml(project.manager));
+    lines.push(`Менеджер: ${escapeHtml(project.manager)}`);
   }
 
   const billing = project.billing || {};
   if (billing.amount !== undefined || billing.next_payment || billing.next_payment_date) {
     const amountText = formatCurrency(billing.amount ?? null, billing.currency || project.currency || "USD");
     const nextPayment = billing.next_payment || billing.next_payment_date || "—";
-    lines.push("💳 Оплата: " + escapeHtml(amountText) + " | Следующая дата: " + escapeHtml(String(nextPayment)));
+    lines.push(`💳 Оплата: ${escapeHtml(amountText)} | Следующая дата: ${escapeHtml(String(nextPayment))}`);
   }
 
   const alertsEnabled = project.alerts_enabled !== false;
   const silentEnabled = Boolean(project.silent_weekends);
-  lines.push("Алерты: " + (alertsEnabled ? "включены" : "выключены"));
-  lines.push("Тихие выходные: " + (silentEnabled ? "включены" : "выключены"));
+  lines.push(`Алерты: ${(alertsEnabled ? "включены" : "выключены")}`);
+  lines.push(`Тихие выходные: ${(silentEnabled ? "включены" : "выключены")}`);
 
   if (project.summary) {
     lines.push("", "📊 Текущие показатели:");
-    lines.push("• Потрачено: " + escapeHtml(formatCurrency(project.summary.spend, project.currency || "USD")));
+    lines.push(`• Потрачено: ${escapeHtml(formatCurrency(project.summary.spend, project.currency || "USD"))}`);
     lines.push(
-      "• Лиды: " +
-        escapeHtml(String(project.summary.leads ?? "—")) +
-        " | Клики: " +
-        escapeHtml(String(project.summary.clicks ?? "—")),
+      `• Лиды: ${escapeHtml(String(project.summary.leads ?? "—"))} | Клики: ${escapeHtml(String(project.summary.clicks ?? "—"))}`,
     );
     lines.push(
-      "• CTR: " +
-        escapeHtml(String(project.summary.ctr ?? "—")) +
-        " | CPA: " +
-        escapeHtml(formatCurrency(project.summary.cpa, project.currency || "USD")),
+      `• CTR: ${escapeHtml(String(project.summary.ctr ?? "—"))} | CPA: ${escapeHtml(formatCurrency(project.summary.cpa, project.currency || "USD"))}`,
     );
   } else {
     lines.push("", "Нет свежего отчёта для отображения.");
@@ -761,7 +744,7 @@ const formatAdminProjectDetail = (project: ProjectCard, timeZone: string): strin
 
   const updatedAt = project.updated_at || project.last_sync || null;
   if (updatedAt) {
-    lines.push("", "⏱ Обновлено: " + escapeHtml(formatDateTime(updatedAt, timeZone)));
+    lines.push("", `⏱ Обновлено: ${escapeHtml(formatDateTime(updatedAt, timeZone))}`);
   }
 
   return lines.join("\n");
@@ -778,30 +761,30 @@ const buildAdminProjectDetailKeyboard = (
   rows.push([
     {
       text: alertsEnabled ? "🔕 Выключить алерты" : "🔔 Включить алерты",
-      callback_data: "admin:toggle_alerts:" + project.id,
+      callback_data: `admin:toggle_alerts:${project.id}`,
     },
     {
       text: silentEnabled ? "🔔 Вернуть уведомления" : "😴 Тихие выходные",
-      callback_data: "admin:toggle_silent:" + project.id,
+      callback_data: `admin:toggle_silent:${project.id}`,
     },
   ]);
 
   rows.push([
-    { text: "💳 Настроить оплату", callback_data: "admin:billing_menu:" + project.id },
-    { text: "🔔 Настроить алерты", callback_data: "admin:alerts_menu:" + project.id },
+    { text: "💳 Настроить оплату", callback_data: `admin:billing_menu:${project.id}`},
+    { text: "🔔 Настроить алерты", callback_data: `admin:alerts_menu:${project.id}`},
   ]);
 
-  rows.push([{ text: "🔄 Обновить отчёт", callback_data: "admin:refresh_project:" + project.id }]);
+  rows.push([{ text: "🔄 Обновить отчёт", callback_data: `admin:refresh_project:${project.id}`}]);
 
   const portal =
-    resolvePortalUrl(env, project.id, project.portal_url || undefined) || "/portal/" + project.id;
+    resolvePortalUrl(env, project.id, project.portal_url || undefined) || `/portal/${project.id}`;
   if (portal) {
     rows.push([{ text: "🌐 Открыть портал", url: portal }]);
   }
   const chatLink = project.chat_link
     ? project.chat_link
     : project.chat_username
-    ? "https://t.me/" + project.chat_username.replace(/^@/, "")
+    ? `https://t.me/${project.chat_username.replace(/^@/, "")}`
     : null;
   if (chatLink) {
     rows.push([{ text: "💬 Чат проекта", url: chatLink }]);
@@ -857,7 +840,7 @@ const toggleProjectField = async (
   }
   await appendLogEntry(env as any, {
     level: "info",
-    message: "Telegram admin toggled " + field + " for " + projectId + " => " + String(nextValue),
+    message: `Telegram admin toggled ${field} for ${projectId} => ${String(nextValue)}`,
     timestamp: new Date().toISOString(),
   });
   return nextValue;
@@ -865,12 +848,12 @@ const toggleProjectField = async (
 
 const buildProjectSelectionKeyboard = (projects: ReportProjectOption[]): Record<string, unknown> => ({
   inline_keyboard: projects.map((project) => [
-    { text: project.name, callback_data: "report:" + project.id },
+    { text: project.name, callback_data: `report:${project.id}`},
   ]),
 });
 
 const buildRefreshKeyboard = (projectId: string): Record<string, unknown> => ({
-  inline_keyboard: [[{ text: "🔁 Обновить данные", callback_data: "refresh:" + projectId }]],
+  inline_keyboard: [[{ text: "🔁 Обновить данные", callback_data: `refresh:${projectId}`}]],
 });
 
 const adminStatusIcon = (status?: string | null): string => {
@@ -935,7 +918,7 @@ const buildOAuthUrl = (env: Record<string, unknown>): string | null => {
     return null;
   }
   const redirectBase = base.endsWith("/") ? base.slice(0, -1) : base;
-  const redirectUri = redirectBase + "/auth/facebook/callback";
+  const redirectUri = `${redirectBase}/auth/facebook/callback`;
   const url = new URL("https://www.facebook.com/v18.0/dialog/oauth");
   url.searchParams.set("client_id", appId);
   url.searchParams.set("redirect_uri", redirectUri);
@@ -951,7 +934,7 @@ const resolveAdminWebUrl = (env: Record<string, unknown>): string | null => {
   if (!base) {
     return null;
   }
-  return base + "/admin?key=" + encodeURIComponent(key);
+  return base + `/admin?key=${encodeURIComponent(key)}`;
 };
 
 const buildAdminMenuKeyboard = (
@@ -992,14 +975,13 @@ const sendAdminFacebookAuth = async (env: Record<string, unknown>, chatId: strin
     return;
   }
   const redirectBase = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
-  const message =
-    "👤 Авторизация Facebook\n\n" +
-    "1. Откройте ссылку: " + url +
-    "\n2. Подтвердите доступ к рекламе и бизнесу." +
-    (redirectBase
-      ? "\n3. После редиректа убедитесь, что страница " + redirectBase.replace(/\/$/, "") +
-        "/auth/facebook/callback сообщает об успешном входе."
-      : "");
+  const message = `👤 Авторизация Facebook
+
+1. Откройте ссылку: ${url}
+2. Подтвердите доступ к рекламе и бизнесу.${redirectBase
+      ? `
+3. После редиректа убедитесь, что страница ${redirectBase.replace(/\/$/, "")}/auth/facebook/callback сообщает об успешном входе.`
+      : ''}`;
   await sendTelegramMessage(env, chatId, message, { disablePreview: true });
 };
 
@@ -1037,8 +1019,8 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
     }
 
     if (!status.ok || status.status === "invalid" || status.valid === false) {
-      const issues = status.issues && status.issues.length ? ": " + status.issues.join("; ") : ".";
-      await sendTelegramMessage(env, chatId, "🚨 Ошибка при обращении к Facebook API" + issues);
+      const issues = status.issues && status.issues.length ? `: ${status.issues.join("; ") : "."}`;
+      await sendTelegramMessage(env, chatId, `🚨 Ошибка при обращении к Facebook API${issues}`);
       return;
     }
 
@@ -1052,7 +1034,7 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
 
     const lines = [
       expiresAtText
-        ? "🟢 Facebook-токен активен (действителен до " + expiresAtText + ")"
+        ? `🟢 Facebook-токен активен (действителен до ${expiresAtText})`
         : "🟢 Facebook-токен активен.",
     ];
 
@@ -1060,7 +1042,7 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
       if (refresh.ok) {
         lines.push("🔄 Токен проверен и актуализирован.");
       } else if (refresh.message) {
-        lines.push("⚠️ Не удалось обновить токен: " + refresh.message);
+        lines.push(`⚠️ Не удалось обновить токен: ${refresh.message}`);
       }
     }
 
@@ -1068,7 +1050,7 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
 
     if (metaStatus) {
       if (metaStatus.updated_at) {
-        detailLines.push("⏱ Обновлено: " + formatDateTime(metaStatus.updated_at, timeZone));
+        detailLines.push(`⏱ Обновлено: ${formatDateTime(metaStatus.updated_at, timeZone)}`);
       }
 
       const accounts: MetaAccountInfo[] = Array.isArray(metaStatus.accounts) ? metaStatus.accounts : [];
@@ -1091,48 +1073,40 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
         });
 
         detailLines.push(
-          "📘 Аккаунты Facebook: " +
-            accounts.length +
-            " (🟢 " +
-            String(activeCount) +
-            " • 🟡 " +
-            String(pendingCount) +
-            " • ⚫️ " +
-            String(disabledCount) +
-            ")",
+          `📘 Аккаунты Facebook: ${accounts.length} (🟢 ${String(activeCount)} • 🟡 ${String(pendingCount)} • ⚫️ ${String(disabledCount)})`,
         );
 
         accounts.slice(0, maxVisible).forEach((account) => {
           const indicator = resolveAccountStatusIndicator(account.status);
           const name = account.name || account.id;
           const statusLabel = account.status ? account.status : "статус неизвестен";
-          accountLines.push(indicator.icon + " " + name + " — " + statusLabel);
+          accountLines.push(indicator.icon + ` ${name} — ${statusLabel}`);
 
           const detailParts: string[] = [];
           if (account.balance !== undefined && account.balance !== null) {
-            detailParts.push("Баланс: " + formatCurrency(account.balance, account.currency || "USD"));
+            detailParts.push(`Баланс: ${formatCurrency(account.balance, account.currency || "USD")}`);
           }
           if (account.spend_cap !== undefined && account.spend_cap !== null) {
-            detailParts.push("Лимит: " + formatCurrency(account.spend_cap, account.currency || "USD"));
+            detailParts.push(`Лимит: ${formatCurrency(account.spend_cap, account.currency || "USD")}`);
           }
           if (account.payment_method) {
-            detailParts.push("Карта: " + account.payment_method);
+            detailParts.push(`Карта: ${account.payment_method}`);
           }
           if (account.last_update) {
-            detailParts.push("Обновлено: " + formatDateTime(account.last_update, timeZone));
+            detailParts.push(`Обновлено: ${formatDateTime(account.last_update, timeZone)}`);
           }
           if (detailParts.length) {
-            accountLines.push("   " + detailParts.join(" • "));
+            accountLines.push(`   ${detailParts.join(" • ")}`);
           }
           if (Array.isArray(account.issues) && account.issues.length) {
-            accountLines.push("   ⚠️ " + account.issues.join("; "));
+            accountLines.push(`   ⚠️ ${account.issues.join("; ")}`);
           }
         });
 
         detailLines.push(...accountLines);
 
         if (accounts.length > maxVisible) {
-          detailLines.push("… и ещё " + (accounts.length - maxVisible) + " аккаунтов смотрите в веб-панели.");
+          detailLines.push(`… и ещё ${(accounts.length - maxVisible)} аккаунтов смотрите в веб-панели.`);
         }
       } else {
         detailLines.push("⚠️ Не удалось получить список рекламных аккаунтов.");
@@ -1142,7 +1116,7 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
         detailLines.push("ℹ️ Используются кешированные данные Meta.");
       }
     } else if (metaStatusError) {
-      detailLines.push("⚠️ Не удалось загрузить статус Meta: " + metaStatusError);
+      detailLines.push(`⚠️ Не удалось загрузить статус Meta: ${metaStatusError}`);
     }
 
     if (detailLines.length) {
@@ -1151,8 +1125,8 @@ const sendAdminFacebookStatus = async (env: Record<string, unknown>, chatId: str
 
     await sendTelegramMessage(env, chatId, lines.join("\n"));
   } catch (error) {
-    const details = error instanceof Error && error.message ? ": " + error.message : ".";
-    await sendTelegramMessage(env, chatId, "🚨 Ошибка при обращении к Facebook API" + details);
+    const details = error instanceof Error && error.message ? `: ${error.message : "."}`;
+    await sendTelegramMessage(env, chatId, `🚨 Ошибка при обращении к Facebook API${details}`);
   }
 };
 
@@ -1172,9 +1146,10 @@ const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: st
     const status = billing.status || "неизвестно";
     lines.push(
       project.name +
-        "\n  Следующая оплата: " + nextPayment +
-        "\n  Сумма: " + amount +
-        "\n  Статус: " + status,
+        `
+  Следующая оплата: ${nextPayment}
+  Сумма: ${amount}
+  Статус: ${status}`,
     );
   }
   await sendTelegramMessage(env, chatId, lines.join("\n\n"));
@@ -1182,20 +1157,20 @@ const sendAdminBillingOverview = async (env: Record<string, unknown>, chatId: st
 
 const buildBillingActionsKeyboard = (projectId: string): Record<string, unknown> => ({
   inline_keyboard: [
-    [{ text: "💵 Оплатил сегодня", callback_data: "admin:billing_paid:" + projectId }],
+    [{ text: "💵 Оплатил сегодня", callback_data: `admin:billing_paid:${projectId}`}],
     [
-      { text: "💰 Изменить сумму", callback_data: "admin:billing_amount:" + projectId },
-      { text: "📆 Изменить дату", callback_data: "admin:billing_date:" + projectId },
+      { text: "💰 Изменить сумму", callback_data: `admin:billing_amount:${projectId}`},
+      { text: "📆 Изменить дату", callback_data: `admin:billing_date:${projectId}`},
     ],
     [
-      { text: "✅ Оплачено", callback_data: "admin:billing_status:" + projectId + ":paid" },
-      { text: "⚠️ Требуется оплата", callback_data: "admin:billing_status:" + projectId + ":due" },
+      { text: "✅ Оплачено", callback_data: `admin:billing_status:${projectId}:paid` },
+      { text: "⚠️ Требуется оплата", callback_data: `admin:billing_status:${projectId}:due` },
     ],
     [
-      { text: "⛔ Просрочено", callback_data: "admin:billing_status:" + projectId + ":overdue" },
-      { text: "🚫 Неактивен", callback_data: "admin:billing_status:" + projectId + ":inactive" },
+      { text: "⛔ Просрочено", callback_data: `admin:billing_status:${projectId}:overdue` },
+      { text: "🚫 Неактивен", callback_data: `admin:billing_status:${projectId}:inactive` },
     ],
-    [{ text: "⬅️ К проекту", callback_data: "admin:project:" + projectId }],
+    [{ text: "⬅️ К проекту", callback_data: `admin:project:${projectId}`}],
   ],
 });
 
@@ -1221,11 +1196,11 @@ const sendAdminBillingActions = async (
   const status = billing.status || "неизвестно";
 
   const lines: string[] = [
-    "💳 Управление оплатой — " + project.name,
-    "Сумма: " + amount,
-    "Следующая оплата: " + nextPayment,
-    "Последняя оплата: " + lastPayment,
-    "Статус: " + status,
+    `💳 Управление оплатой — ${project.name}`,
+    `Сумма: ${amount}`,
+    `Следующая оплата: ${nextPayment}`,
+    `Последняя оплата: ${lastPayment}`,
+    `Статус: ${status}`,
   ];
 
   await sendTelegramMessage(env, chatId, lines.join("\n"), {
@@ -1235,10 +1210,10 @@ const sendAdminBillingActions = async (
 
 const buildAlertsActionsKeyboard = (projectId: string): Record<string, unknown> => ({
   inline_keyboard: [
-    [{ text: "🎯 Порог CPA", callback_data: "admin:alerts_cpa:" + projectId }],
-    [{ text: "💸 Лимит расходов", callback_data: "admin:alerts_spend:" + projectId }],
-    [{ text: "⏱ Модерация (часы)", callback_data: "admin:alerts_moderation:" + projectId }],
-    [{ text: "⬅️ К проекту", callback_data: "admin:project:" + projectId }],
+    [{ text: "🎯 Порог CPA", callback_data: `admin:alerts_cpa:${projectId}`}],
+    [{ text: "💸 Лимит расходов", callback_data: `admin:alerts_spend:${projectId}`}],
+    [{ text: "⏱ Модерация (часы)", callback_data: `admin:alerts_moderation:${projectId}`}],
+    [{ text: "⬅️ К проекту", callback_data: `admin:project:${projectId}`}],
   ],
 });
 
@@ -1264,10 +1239,10 @@ const sendAdminAlertsActions = async (
       : "—";
 
   const lines: string[] = [
-    "🔔 Настройка алертов — " + project.name,
-    "CPA порог: " + cpa,
-    "Лимит расходов: " + spend,
-    "Модерация, часов: " + moderation,
+    `🔔 Настройка алертов — ${project.name}`,
+    `CPA порог: ${cpa}`,
+    `Лимит расходов: ${spend}`,
+    `Модерация, часов: ${moderation}`,
   ];
 
   await sendTelegramMessage(env, chatId, lines.join("\n"), {
@@ -1288,7 +1263,7 @@ const parseDateInput = (text: string): string | null => {
   }
   const dotMatch = trimmed.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
   if (dotMatch) {
-    return dotMatch[3] + "-" + dotMatch[2] + "-" + dotMatch[1];
+    return dotMatch[3] + `-${dotMatch[2]}-${dotMatch[1]}`;
   }
   const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) {
@@ -1328,7 +1303,7 @@ const updateBillingRecord = async (
   if (record) {
     await appendLogEntry(env as any, {
       level: "info",
-      message: "Telegram admin billing update for " + projectId + ": " + message,
+      message: `Telegram admin billing update for ${projectId}: ${message}`,
       timestamp: new Date().toISOString(),
     });
   }
@@ -1345,7 +1320,7 @@ const updateAlertsRecord = async (
   if (record) {
     await appendLogEntry(env as any, {
       level: "info",
-      message: "Telegram admin alerts update for " + projectId + ": " + message,
+      message: `Telegram admin alerts update for ${projectId}: ${message}`,
       timestamp: new Date().toISOString(),
     });
   }
@@ -1388,14 +1363,14 @@ const sendAdminTechOverview = async (
     "⚙️ Тех.панель",
     "",
     "R2:",
-    "• Отчёты: " + countDistinct(reportKeys, "reports/"),
-    "• Проекты: " + countDistinct(projectKeys, "projects/"),
-    "• Оплаты: " + countDistinct(billingKeys, "billing/"),
-    "• Алерты: " + countDistinct(alertKeys, "alerts/"),
+    `• Отчёты: ${countDistinct(reportKeys, "reports/")}`,
+    `• Проекты: ${countDistinct(projectKeys, "projects/")}`,
+    `• Оплаты: ${countDistinct(billingKeys, "billing/")}`,
+    `• Алерты: ${countDistinct(alertKeys, "alerts/")}`,
   ];
 
   if (fallbackCount !== null && fallbackCount !== undefined) {
-    lines.push("• Fallback KV: " + fallbackCount);
+    lines.push(`• Fallback KV: ${fallbackCount}`);
   }
 
   const cronEntries = cronStatus && typeof cronStatus === "object" ? Object.values(cronStatus) : [];
@@ -1412,17 +1387,17 @@ const sendAdminTechOverview = async (
         entry.last_success && entry.last_success !== "1970-01-01T00:00:00.000Z"
           ? formatDateTime(entry.last_success)
           : null;
-      const suffix = lastSuccess ? " (успех: " + lastSuccess + ")" : "";
-      const message = entry.message ? " — " + entry.message : "";
-      const failure = entry.failure_count && entry.failure_count > 0 ? " [" + entry.failure_count + "× ошибок]" : "";
-      lines.push("• " + icon + " " + label + ": " + runAt + suffix + failure + message);
+      const suffix = lastSuccess ? ` (успех: ${lastSuccess})` : "";
+      const message = entry.message ? ` — ${entry.message : ""}`;
+      const failure = entry.failure_count && entry.failure_count > 0 ? ` [${entry.failure_count}× ошибок]` : "";
+      lines.push(`• ${icon} ${label}: ${runAt}${suffix}${failure}${message}`);
     }
   }
 
   const workerUrl = typeof env.WORKER_URL === "string" ? env.WORKER_URL.trim() : "";
   const webhookBase = workerUrl ? (workerUrl.endsWith("/") ? workerUrl.slice(0, -1) : workerUrl) : "";
   if (webhookBase) {
-    lines.push("", "Вебхук: " + webhookBase + "/manage/telegram/webhook?action=status&token=<token>");
+    lines.push("", `Вебхук: ${webhookBase}/manage/telegram/webhook?action=status&token=<token>`);
   }
 
   lines.push(
@@ -1461,7 +1436,7 @@ const runTechAction = async (
         : "ℹ️ Кэш статуса Facebook уже пуст.";
       await appendLogEntry(env as any, {
         level: "info",
-        message: "Telegram admin cleared Meta status cache (result: " + toast + ")",
+        message: `Telegram admin cleared Meta status cache (result: ${toast})`,
         timestamp,
       });
       return { toast, message };
@@ -1470,13 +1445,14 @@ const runTechAction = async (
       const prefix = extra && extra.trim() ? extra.trim() : "cache/";
       const removed = await deletePrefixFromR2(env as any, prefix);
       const message =
-        "🧺 Удалено объектов: " + removed + "\nПрефикс: " + prefix.replace(/\s+/g, " ");
+        `🧺 Удалено объектов: ${removed}
+Префикс: ${prefix.replace(/\s+/g, " ")}`;
       await appendLogEntry(env as any, {
         level: "info",
-        message: "Telegram admin cleared prefix " + prefix + " => " + removed,
+        message: `Telegram admin cleared prefix ${prefix} => ${removed}`,
         timestamp,
       });
-      return { toast: "Удалено: " + removed, message };
+      return { toast: `Удалено: ${removed}`, message };
     }
     case "clear_fallbacks": {
       const removed = await clearFallbackEntries(env as any);
@@ -1485,60 +1461,60 @@ const runTechAction = async (
       }
       await appendLogEntry(env as any, {
         level: "info",
-        message: "Telegram admin cleared fallback entries => " + removed,
+        message: `Telegram admin cleared fallback entries => ${removed}`,
         timestamp,
       });
-      return { toast: "Удалено: " + removed, message: "🚨 Fallback очищен: " + removed };
+      return { toast: `Удалено: ${removed}`, message: `🚨 Fallback очищен: ${removed}`};
     }
     case "clear_report": {
       const projectId = extra && extra.trim();
       if (!projectId) {
         return { toast: "Укажите проект", alert: true };
       }
-      const key = "reports/" + projectId + ".json";
+      const key = `reports/${projectId}.json`;
       const deleted = await deleteFromR2(env as any, key);
       await appendLogEntry(env as any, {
         level: deleted ? "info" : "warn",
-        message: "Telegram admin cleared report cache for " + projectId + " => " + deleted,
+        message: `Telegram admin cleared report cache for ${projectId} => ${deleted}`,
         timestamp,
       });
       return deleted
         ? {
             toast: "Отчёт удалён",
-            message: "🗑️ Кэш отчёта проекта " + projectId + " удалён из R2.",
+            message: `🗑️ Кэш отчёта проекта ${projectId} удалён из R2.`,
           }
         : {
             toast: "Отчёт не найден",
-            message: "⚠️ Файл отчёта проекта " + projectId + " не найден в R2.",
+            message: `⚠️ Файл отчёта проекта ${projectId} не найден в R2.`,
             alert: true,
           };
     }
     case "webhook": {
       const status = await getTelegramWebhookStatus(env as any, extra && extra.trim() ? extra.trim() : undefined);
       const token = status.token || "—";
-      const lines: string[] = ["📡 Статус вебхука", "Токен: " + token];
+      const lines: string[] = ["📡 Статус вебхука", `Токен: ${token}`];
       if (status.webhook && typeof status.webhook === "object") {
         const webhookInfo = status.webhook as Record<string, unknown>;
         const url = typeof webhookInfo.url === "string" && webhookInfo.url ? webhookInfo.url : "—";
         if (url) {
-          lines.push("URL: " + url);
+          lines.push(`URL: ${url}`);
         }
         if (typeof webhookInfo.pending_update_count === "number") {
-          lines.push("В очереди: " + webhookInfo.pending_update_count);
+          lines.push(`В очереди: ${webhookInfo.pending_update_count}`);
         }
       } else if (status.webhook) {
-        lines.push("Ответ: " + String(status.webhook));
+        lines.push(`Ответ: ${String(status.webhook)}`);
       }
       if (!status.ok) {
         const error = status.error || "Неизвестная ошибка";
-        lines.push("Ошибка: " + error);
+        lines.push(`Ошибка: ${error}`);
         await appendLogEntry(env as any, {
           level: "warn",
-          message: "Telegram admin webhook status error => " + error,
+          message: `Telegram admin webhook status error => ${error}`,
           timestamp,
         });
         return {
-          toast: error.length > 190 ? error.slice(0, 190) + "…" : error,
+          toast: error.length > 190 ? `${error.slice(0, 190)}…` : error,
           message: lines.join("\n"),
           alert: true,
         };
@@ -1559,7 +1535,7 @@ const readProjectReport = async (
   env: Record<string, unknown>,
   projectId: string,
 ): Promise<ProjectReport | null> => {
-  return readJsonFromR2<ProjectReport>(env as any, "reports/" + projectId + ".json");
+  return readJsonFromR2<ProjectReport>(env as any, `reports/${projectId}.json`);
 };
 
 const isReportStale = (report: ProjectReport | null): boolean => {
@@ -1577,47 +1553,35 @@ const formatReportMessage = (report: ProjectReport, timeZone: string, stale: boo
   const summary = report.summary;
   const lines: string[] = [];
 
-  lines.push("📊 <b>" + escapeHtml(report.project_name || report.project_id) + "</b>");
+  lines.push(`📊 <b>${escapeHtml(report.project_name || report.project_id)}</b>`);
 
   if (report.period_label || report.period) {
-    lines.push("📆 Период: " + escapeHtml((report.period_label || report.period || "").toString()));
+    lines.push(`📆 Период: ${escapeHtml((report.period_label || report.period || "").toString())}`);
   }
 
-  lines.push("💰 Потрачено: " + escapeHtml(formatCurrency(summary?.spend ?? null, report.currency)));
+  lines.push(`💰 Потрачено: ${escapeHtml(formatCurrency(summary?.spend ?? null, report.currency))}`);
   lines.push(
-    "📲 Лиды: " +
-      escapeHtml(formatNumber(summary?.leads ?? null)) +
-      " | Клики: " +
-      escapeHtml(formatNumber(summary?.clicks ?? null)),
+    `📲 Лиды: ${escapeHtml(formatNumber(summary?.leads ?? null))} | Клики: ${escapeHtml(formatNumber(summary?.clicks ?? null))}`,
   );
   lines.push(
-    "👁️ Показы: " +
-      escapeHtml(formatNumber(summary?.impressions ?? null)) +
-      " | Частота: " +
-      escapeHtml(formatFrequency(summary?.frequency ?? null)),
+    `👁️ Показы: ${escapeHtml(formatNumber(summary?.impressions ?? null))} | Частота: ${escapeHtml(formatFrequency(summary?.frequency ?? null))}`,
   );
   lines.push(
-    "CPA: " +
-      escapeHtml(formatCurrency(summary?.cpa ?? null, report.currency)) +
-      " | CPC: " +
-      escapeHtml(formatCurrency(summary?.cpc ?? null, report.currency)) +
-      " | CTR: " +
-      escapeHtml(formatPercent(summary?.ctr ?? null)),
+    `CPA: ${escapeHtml(formatCurrency(summary?.cpa ?? null, report.currency))} | CPC: ${escapeHtml(formatCurrency(summary?.cpc ?? null, report.currency))} | CTR: ${escapeHtml(formatPercent(summary?.ctr ?? null))}`,
   );
 
   if (report.billing && report.billing.days_to_pay !== null && report.billing.days_to_pay !== undefined) {
     lines.push(
-      "💳 Дней до оплаты: " +
-        escapeHtml(
+      `💳 Дней до оплаты: ${escapeHtml(
           typeof report.billing.days_to_pay === "number"
             ? report.billing.days_to_pay.toString()
             : String(report.billing.days_to_pay || "—"),
-        ),
+        )}`,
     );
   }
 
   lines.push("");
-  lines.push("⏱ Обновлено: " + escapeHtml(formatDateTime(report.updated_at, timeZone)));
+  lines.push(`⏱ Обновлено: ${escapeHtml(formatDateTime(report.updated_at, timeZone))}`);
 
   if (stale) {
     lines.push("⚠️ <b>Данные устарели!</b>");
@@ -1696,11 +1660,10 @@ const showProjectSelectionMessage = async (
 const formatSummary = (report: ProjectReport): string => {
   const summary = report.summary;
   return (
-    "📊 " + report.project_name + "\n" +
-    "Потрачено: " + formatCurrency(summary.spend, report.currency) + "\n" +
-    "Лиды: " + formatNumber(summary.leads) + " | Клики: " + formatNumber(summary.clicks) + "\n" +
-    "CTR: " + formatPercent(summary.ctr) + " | CPA: " + formatCurrency(summary.cpa, report.currency)
-  );
+    `📊 ${report.project_name}
+Потрачено: ${formatCurrency(summary.spend, report.currency)}
+Лиды: ${formatNumber(summary.leads)} | Клики: ${formatNumber(summary.clicks)}
+CTR: \${formatPercent(summary.ctr)} | CPA: \${formatCurrency(summary.cpa, report.currency)}`);
 };
 
 const formatCampaignList = (report: ProjectReport, limit = 5): string => {
@@ -1709,9 +1672,7 @@ const formatCampaignList = (report: ProjectReport, limit = 5): string => {
     return "Нет кампаний для отображения";
   }
   const lines = campaigns.map((campaign) =>
-    "• " + campaign.name + " — " + formatCurrency(campaign.spend, report.currency) +
-      " / Лиды: " + formatNumber(campaign.leads) +
-      " / CTR: " + formatPercent(campaign.ctr),
+    `• ${campaign.name} — ${formatCurrency(campaign.spend, report.currency)} / Лиды: ${formatNumber(campaign.leads)} / CTR: ${formatPercent(campaign.ctr)}`,
   );
   return lines.join("\n");
 };
@@ -1750,16 +1711,12 @@ const handleProjectCommand = async (
     return;
   }
   const lines = [
-    "📄 Детали проекта " + report.project_name,
-    "Статус: " + (report.status || "—"),
-    "Потрачено: " + formatCurrency(report.summary.spend, report.currency),
-    "Лиды: " + formatNumber(report.summary.leads) +
-      " / Клики: " + formatNumber(report.summary.clicks) +
-      " / Показы: " + formatNumber(report.summary.impressions),
-    "CPA: " + formatCurrency(report.summary.cpa, report.currency) +
-      " / CPC: " + formatCurrency(report.summary.cpc, report.currency) +
-      " / CTR: " + formatPercent(report.summary.ctr),
-    "Портал: " + (env.WORKER_URL ? env.WORKER_URL + "/portal/" + projectId : "/portal/" + projectId),
+    `📄 Детали проекта ${report.project_name}`,
+    `Статус: ${(report.status || "—")}`,
+    `Потрачено: ${formatCurrency(report.summary.spend, report.currency)}`,
+    `Лиды: ${formatNumber(report.summary.leads)} / Клики: ${formatNumber(report.summary.clicks)} / Показы: ${formatNumber(report.summary.impressions)}`,
+    `CPA: ${formatCurrency(report.summary.cpa, report.currency)} / CPC: ${formatCurrency(report.summary.cpc, report.currency)} / CTR: ${formatPercent(report.summary.ctr)}`,
+    `Портал: ${(env.WORKER_URL ? env.WORKER_URL + `/portal/${projectId : "/portal/"}${projectId}`)}`,
   ];
   await reply(env, chatId, lines.join("\n"));
 };
@@ -1775,7 +1732,8 @@ const handleCampaignsCommand = async (
     return;
   }
   const list = formatCampaignList(report, 10);
-  await reply(env, chatId, "📋 Кампании:\n" + list);
+  await reply(env, chatId, `📋 Кампании:
+${list}`);
 };
 
 const handleRefreshCommand = async (
@@ -1788,7 +1746,8 @@ const handleRefreshCommand = async (
     await reply(env, chatId, "Не удалось обновить отчёт");
     return;
   }
-  await reply(env, chatId, "Данные обновлены\n" + formatSummary(report));
+  await reply(env, chatId, `Данные обновлены
+${formatSummary(report)}`);
 };
 
 const handleAlertSettings = async (env: Record<string, unknown>, chatId: string): Promise<void> => {
@@ -1967,7 +1926,7 @@ const handleAdminCallback = async (
         const report = await ensureProjectReport(env, arg, { force: true });
         await appendLogEntry(env as any, {
           level: "info",
-          message: "Telegram admin refreshed project " + arg + (report ? "" : " (без отчёта)"),
+          message: `Telegram admin refreshed project ${arg}${(report ? "" : " (без отчёта)")}`,
           timestamp: new Date().toISOString(),
         });
         await sendAdminProjectDetail(env, chatId, arg, { messageId });
@@ -1992,7 +1951,7 @@ const handleAdminCallback = async (
         await promptAdminInput(
           env,
           chatId,
-          "Введите сумму оплаты для " + arg + ". Пример: 1200000",
+          `Введите сумму оплаты для ${arg}. Пример: 1200000`,
         );
         await answerCallbackQuery(env, callback.id, { text: "Введите сумму" });
         return true;
@@ -2006,7 +1965,7 @@ const handleAdminCallback = async (
         await promptAdminInput(
           env,
           chatId,
-          "Введите дату следующей оплаты для " + arg + " (формат YYYY-MM-DD или DD.MM.YYYY)",
+          `Введите дату следующей оплаты для ${arg} (формат YYYY-MM-DD или DD.MM.YYYY)`,
         );
         await answerCallbackQuery(env, callback.id, { text: "Введите дату" });
         return true;
@@ -2042,7 +2001,7 @@ const handleAdminCallback = async (
           await answerCallbackQuery(env, callback.id, { text: "Недостаточно данных", showAlert: true });
           return true;
         }
-        const updated = await updateBillingRecord(env, arg, { status: extra as BillingInfo["status"] }, "status => " + extra);
+        const updated = await updateBillingRecord(env, arg, { status: extra as BillingInfo["status"] }, `status => ${extra}`);
         if (!updated) {
           await answerCallbackQuery(env, callback.id, { text: "Ошибка обновления", showAlert: true });
           return true;
@@ -2070,7 +2029,7 @@ const handleAdminCallback = async (
           return true;
         }
         await storeAdminSession(env, chatId, buildSession("alerts_cpa", arg, messageId));
-        await promptAdminInput(env, chatId, "Введите порог CPA для " + arg + " (число)");
+        await promptAdminInput(env, chatId, `Введите порог CPA для ${arg} (число)`);
         await answerCallbackQuery(env, callback.id, { text: "Введите значение" });
         return true;
       }
@@ -2080,7 +2039,7 @@ const handleAdminCallback = async (
           return true;
         }
         await storeAdminSession(env, chatId, buildSession("alerts_spend", arg, messageId));
-        await promptAdminInput(env, chatId, "Введите лимит расходов для " + arg + " (число)");
+        await promptAdminInput(env, chatId, `Введите лимит расходов для ${arg} (число)`);
         await answerCallbackQuery(env, callback.id, { text: "Введите значение" });
         return true;
       }
@@ -2090,7 +2049,7 @@ const handleAdminCallback = async (
           return true;
         }
         await storeAdminSession(env, chatId, buildSession("alerts_moderation", arg, messageId));
-        await promptAdminInput(env, chatId, "Введите порог модерации (часы) для " + arg);
+        await promptAdminInput(env, chatId, `Введите порог модерации (часы) для ${arg}`);
         await answerCallbackQuery(env, callback.id, { text: "Введите значение" });
         return true;
       }
@@ -2147,7 +2106,7 @@ const handleAdminCallback = async (
         await sendTelegramMessage(
           env,
           chatId,
-          "🔁 Обновление отчётов завершено. Обновлено проектов: " + count,
+          `🔁 Обновление отчётов завершено. Обновлено проектов: ${count}`,
         );
         await answerCallbackQuery(env, callback.id, { text: "Обновление выполнено" });
         return true;
@@ -2158,7 +2117,7 @@ const handleAdminCallback = async (
   } catch (error) {
     await appendLogEntry(env as any, {
       level: "error",
-      message: "Admin callback error: " + (error as Error).message,
+      message: `Admin callback error: ${(error as Error).message}`,
       timestamp: new Date().toISOString(),
     });
     await sendTelegramMessage(env, chatId, "⚠️ Не удалось выполнить действие администратора. Попробуйте позже.");
@@ -2222,7 +2181,7 @@ const handleCallbackQuery = async (
   } catch (error) {
     await appendLogEntry(env as any, {
       level: "error",
-      message: "Telegram callback error: " + (error as Error).message,
+      message: `Telegram callback error: ${(error as Error).message}`,
       timestamp: new Date().toISOString(),
     });
     await answerCallbackQuery(env, callback.id, { text: "Произошла ошибка", showAlert: true });
@@ -2263,7 +2222,7 @@ const handleAdminSessionInput = async (
           await sendTelegramMessage(env, chatId, "Введите числовое значение для суммы.");
           return true;
         }
-        const updated = await updateBillingRecord(env, session.projectId, { amount: value }, "amount => " + value);
+        const updated = await updateBillingRecord(env, session.projectId, { amount: value }, `amount => ${value}`);
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить сумму. Попробуйте позже.");
           return true;
@@ -2272,7 +2231,7 @@ const handleAdminSessionInput = async (
         await sendTelegramMessage(
           env,
           chatId,
-          "✅ Сумма обновлена: " + formatCurrency(value, currency),
+          `✅ Сумма обновлена: ${formatCurrency(value, currency)}`,
         );
         if (session.messageId !== undefined) {
           await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
@@ -2289,14 +2248,14 @@ const handleAdminSessionInput = async (
           env,
           session.projectId,
           { next_payment: nextDate, next_payment_date: nextDate },
-          "next_payment => " + nextDate,
+          `next_payment => ${nextDate}`,
         );
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить дату оплаты.");
           return true;
         }
         await clearAdminSession(env as any, chatId);
-        await sendTelegramMessage(env, chatId, "✅ Дата следующей оплаты: " + nextDate);
+        await sendTelegramMessage(env, chatId, `✅ Дата следующей оплаты: ${nextDate}`);
         if (session.messageId !== undefined) {
           await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
         }
@@ -2308,13 +2267,13 @@ const handleAdminSessionInput = async (
           await sendTelegramMessage(env, chatId, "Введите числовой порог CPA.");
           return true;
         }
-        const updated = await updateAlertsRecord(env, session.projectId, { cpa_threshold: value }, "cpa => " + value);
+        const updated = await updateAlertsRecord(env, session.projectId, { cpa_threshold: value }, `cpa => ${value}`);
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить порог CPA.");
           return true;
         }
         await clearAdminSession(env as any, chatId);
-        await sendTelegramMessage(env, chatId, "✅ Порог CPA обновлён: " + value);
+        await sendTelegramMessage(env, chatId, `✅ Порог CPA обновлён: ${value}`);
         if (session.messageId !== undefined) {
           await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
         }
@@ -2326,13 +2285,13 @@ const handleAdminSessionInput = async (
           await sendTelegramMessage(env, chatId, "Введите числовой лимит расходов.");
           return true;
         }
-        const updated = await updateAlertsRecord(env, session.projectId, { spend_limit: value }, "spend => " + value);
+        const updated = await updateAlertsRecord(env, session.projectId, { spend_limit: value }, `spend => ${value}`);
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить лимит расходов.");
           return true;
         }
         await clearAdminSession(env as any, chatId);
-        await sendTelegramMessage(env, chatId, "✅ Лимит расходов обновлён: " + value);
+        await sendTelegramMessage(env, chatId, `✅ Лимит расходов обновлён: ${value}`);
         if (session.messageId !== undefined) {
           await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
         }
@@ -2344,13 +2303,13 @@ const handleAdminSessionInput = async (
           await sendTelegramMessage(env, chatId, "Введите количество часов для модерации.");
           return true;
         }
-        const updated = await updateAlertsRecord(env, session.projectId, { moderation_hours: value }, "moderation => " + value);
+        const updated = await updateAlertsRecord(env, session.projectId, { moderation_hours: value }, `moderation => ${value}`);
         if (!updated) {
           await sendTelegramMessage(env, chatId, "⚠️ Не удалось обновить параметр модерации.");
           return true;
         }
         await clearAdminSession(env as any, chatId);
-        await sendTelegramMessage(env, chatId, "✅ Порог модерации обновлён: " + value + " ч.");
+        await sendTelegramMessage(env, chatId, `✅ Порог модерации обновлён: ${value} ч.`);
         if (session.messageId !== undefined) {
           await sendAdminProjectDetail(env, chatId, session.projectId, { messageId: session.messageId });
         }
@@ -2397,7 +2356,7 @@ const handleAdminSessionInput = async (
   } catch (error) {
     await appendLogEntry(env as any, {
       level: "error",
-      message: "Admin session input failed: " + (error as Error).message,
+      message: `Admin session input failed: ${(error as Error).message}`,
       timestamp: new Date().toISOString(),
     });
     await sendTelegramMessage(env, chatId, "⚠️ Ошибка обработки ввода. Попробуйте позже.");
@@ -2501,7 +2460,7 @@ export const handleTelegramWebhook = async (
   } catch (error) {
     await appendLogEntry(env as any, {
       level: "error",
-      message: "Telegram handler error: " + (error as Error).message,
+      message: `Telegram handler error: ${(error as Error).message}`,
       timestamp: new Date().toISOString(),
     });
     await reply(env, chatId, "Произошла ошибка при обработке команды");

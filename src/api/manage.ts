@@ -13,11 +13,11 @@ interface TelegramResponse {
 
 const maskToken = (token: string): string => {
   if (token.length <= 6) {
-    return token.slice(0, 2) + "****";
+    return `${token.slice(0, 2)}****`;
   }
   const head = token.slice(0, 5);
   const tail = token.slice(-4);
-  return head + "****" + tail;
+  return head + `****${tail}`;
 };
 
 const ensureAuthorized = (request: Request, env: WorkerEnv, token: string): Response | null => {
@@ -28,7 +28,7 @@ const ensureAuthorized = (request: Request, env: WorkerEnv, token: string): Resp
     if (!adminKey) {
       return unauthorized("Admin key is not configured");
     }
-    if (header !== "Bearer " + adminKey) {
+    if (header !== `Bearer ${adminKey}`) {
       return unauthorized("Invalid authorization header");
     }
     return null;
@@ -54,7 +54,7 @@ const ensureMetaManageAuthorized = (
     if (!adminKey) {
       return unauthorized("Admin key is not configured");
     }
-    if (header !== "Bearer " + adminKey) {
+    if (header !== `Bearer ${adminKey}`) {
       return unauthorized("Invalid admin key");
     }
     return null;
@@ -91,7 +91,7 @@ const telegramFetch = async (
   method: string,
   data: Record<string, unknown> | null = null,
 ): Promise<TelegramResponse> => {
-  const url = "https://api.telegram.org/bot" + token + "/" + method;
+  const url = `https://api.telegram.org/bot${token}/${method}`;
   const hasPayload = data !== null && Object.keys(data).length > 0;
   const response = await fetch(url, {
     method: "POST",
@@ -294,7 +294,7 @@ export const handleManageMeta = async (
     } else {
       await appendLogEntry(env, {
         level: "error",
-        message: "Meta manage status failed: " + errorMessage,
+        message: `Meta manage status failed: ${errorMessage}`,
         timestamp: new Date().toISOString(),
       });
       return serverError({ ok: false, error: errorMessage });

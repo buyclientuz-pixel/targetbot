@@ -215,7 +215,7 @@ export default {
     } catch (error) {
       await appendLogEntry(env, {
         level: "error",
-        message: "Unhandled error: " + (error as Error).message,
+        message: `Unhandled error: ${(error as Error).message}`,
         timestamp: new Date().toISOString(),
       });
       return serverError("Internal error");
@@ -233,7 +233,7 @@ export default {
           try {
             const result = await refreshAllProjects(env);
             const message =
-              "Scheduled refresh completed for " + result.refreshed.length + " projects";
+              `Scheduled refresh completed for ${result.refreshed.length} projects`;
             await appendLogEntry(env, {
               level: "info",
               message,
@@ -241,14 +241,14 @@ export default {
             });
             await updateCronStatus(env, "projects-refresh", { ok: true, message });
           } catch (error) {
-            const message = "Scheduled refresh failed: " + (error as Error).message;
+            const message = `Scheduled refresh failed: ${(error as Error).message}`;
             await appendLogEntry(env, {
               level: "error",
               message,
               timestamp: new Date().toISOString(),
             });
             await updateCronStatus(env, "projects-refresh", { ok: false, message });
-            await notifyTelegramAdmins(env, "🚨 Ошибка крон-задачи проектов: " + (error as Error).message);
+            await notifyTelegramAdmins(env, `🚨 Ошибка крон-задачи проектов: ${(error as Error).message}`);
           }
         }
 
@@ -256,9 +256,7 @@ export default {
           try {
             const result = await checkAndRefreshFacebookToken(env, { notify: true });
             const message =
-              "Meta token check status: " +
-              result.status.status +
-              (result.refresh && result.refresh.message ? " - " + result.refresh.message : "");
+              `Meta token check status: ${result.status.status}${(result.refresh && result.refresh.message ? ` - ${result.refresh.message : ""}`)}`;
             await appendLogEntry(env, {
               level: result.refresh && result.refresh.ok ? "info" : "warn",
               message,
@@ -269,14 +267,14 @@ export default {
               message,
             });
           } catch (error) {
-            const message = "Meta token scheduled check failed: " + (error as Error).message;
+            const message = `Meta token scheduled check failed: ${(error as Error).message}`;
             await appendLogEntry(env, {
               level: "error",
               message,
               timestamp: new Date().toISOString(),
             });
             await updateCronStatus(env, "meta-token", { ok: false, message });
-            await notifyTelegramAdmins(env, "🚨 Ошибка проверки Meta токена: " + (error as Error).message);
+            await notifyTelegramAdmins(env, `🚨 Ошибка проверки Meta токена: ${(error as Error).message}`);
           }
         }
       })(),

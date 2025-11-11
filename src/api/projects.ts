@@ -17,7 +17,7 @@ const isFresh = (isoDate: string | null | undefined): boolean => {
   return Date.now() - updated <= MAX_REPORT_AGE_MS;
 };
 
-const getReportKey = (projectId: string): string => "reports/" + projectId + ".json";
+const getReportKey = (projectId: string): string => `reports/${projectId}.json`;
 
 const loadReportFromCache = async (env: unknown, projectId: string): Promise<ProjectReport | null> => {
   return readJsonFromR2<ProjectReport>(env as any, getReportKey(projectId));

@@ -55,7 +55,7 @@ export const resolveAccountSpend = async (
   }
   const currency = project.currency || project.billing?.currency || "USD";
   try {
-    const report = await readJsonFromR2<ProjectReport>(env as any, "reports/" + project.id + ".json");
+    const report = await readJsonFromR2<ProjectReport>(env as any, `reports/${project.id}.json`);
     const spend = extractReportSpend(report);
     if (spend.value !== null) {
       return { value: spend.value, label: spend.label, currency };
@@ -84,12 +84,12 @@ export const buildChatLabel = (project: ProjectCard | null): string | null => {
     return project.chat_link.trim();
   }
   if (project.chat_username && project.chat_username.trim()) {
-    return "@" + project.chat_username.replace(/^@/, "");
+    return `@${project.chat_username.replace(/^@/, "")}`;
   }
   if (project.chat_id !== null && project.chat_id !== undefined) {
     const idText = String(project.chat_id).trim();
     if (idText) {
-      return "ID: " + idText;
+      return `ID: ${idText}`;
     }
   }
   return null;

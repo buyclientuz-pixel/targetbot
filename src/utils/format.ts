@@ -34,7 +34,7 @@ export const formatPercent = (value: number | null | undefined): string => {
   if (value === null || value === undefined || Number.isNaN(value)) {
     return "—";
   }
-  return value.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+  return `${value.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
 };
 
 export const formatFrequency = (value: number | null | undefined): string => {
@@ -81,7 +81,7 @@ export const kFormatter = (value: number | null | undefined): string => {
   if (Math.abs(value) < 1000) {
     return formatNumber(value);
   }
-  return smallNumberFormatter.format(value / 1000) + "K";
+  return `${smallNumberFormatter.format(value / 1000)}K`;
 };
 
 const normalizeStatus = (status: string | null | undefined): string => {

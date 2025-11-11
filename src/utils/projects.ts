@@ -110,10 +110,10 @@ export const resolvePortalUrl = (
   const runtime = env as Record<string, unknown>;
   const base = typeof runtime.WORKER_URL === "string" ? runtime.WORKER_URL.trim() : "";
   if (!base) {
-    return "/portal/" + projectId;
+    return `/portal/${projectId}`;
   }
   const normalized = base.endsWith("/") ? base.slice(0, -1) : base;
-  return normalized + "/portal/" + projectId;
+  return normalized + `/portal/${projectId}`;
 };
 
 const ensureCard = (map: Map<string, ProjectCard>, projectId: string): ProjectCard => {
@@ -155,7 +155,7 @@ const loadConfigsFromFiles = async (
   ids: Set<string>,
 ): Promise<void> => {
   for (const projectId of ids) {
-    const config = await readJsonFromR2<ProjectConfigRecord>(env as any, "projects/" + projectId + ".json");
+    const config = await readJsonFromR2<ProjectConfigRecord>(env as any, `projects/${projectId}.json`);
     if (!config) {
       continue;
     }
@@ -197,20 +197,20 @@ export const loadProjectCards = async (env: unknown): Promise<ProjectCard[]> => 
 
   for (const projectId of ids) {
     const card = ensureCard(map, projectId);
-    const report = await readJsonFromR2<ProjectReport>(env as any, "reports/" + projectId + ".json");
+    const report = await readJsonFromR2<ProjectReport>(env as any, `reports/${projectId}.json`);
     if (report) {
       applyReportToCard(card, report);
     }
-    const billing = await readJsonFromR2<BillingInfo>(env as any, "billing/" + projectId + ".json");
+    const billing = await readJsonFromR2<BillingInfo>(env as any, `billing/${projectId}.json`);
     if (billing) {
       applyBillingToCard(card, billing);
     }
-    const alerts = await readJsonFromR2<ProjectAlertsConfig>(env as any, "alerts/" + projectId + ".json");
+    const alerts = await readJsonFromR2<ProjectAlertsConfig>(env as any, `alerts/${projectId}.json`);
     if (alerts) {
       applyAlertsToCard(card, alerts);
     }
     if (!card.chat_link && card.chat_username) {
-      card.chat_link = "https://t.me/" + card.chat_username.replace(/^@/, "");
+      card.chat_link = `https://t.me/${card.chat_username.replace(/^@/, "")}`;
     }
     card.portal_url = resolvePortalUrl(env, projectId, card.portal_url);
   }
@@ -289,7 +289,7 @@ export const readProjectConfig = async (
   env: unknown,
   projectId: string,
 ): Promise<ProjectConfigRecord | null> => {
-  return readJsonFromR2<ProjectConfigRecord>(env as any, PROJECT_CONFIG_PREFIX + ensureProjectId(projectId) + ".json");
+  return readJsonFromR2<ProjectConfigRecord>(env as any, `${PROJECT_CONFIG_PREFIX}${ensureProjectId(projectId)}.json`);
 };
 
 export const writeProjectConfig = async (
@@ -321,7 +321,7 @@ export const writeProjectConfig = async (
     next.alerts = { ...(base.alerts || {}), ...patch.alerts };
   }
 
-  const success = await writeJsonToR2(env as any, PROJECT_CONFIG_PREFIX + id + ".json", next);
+  const success = await writeJsonToR2(env as any, `${PROJECT_CONFIG_PREFIX}${id}.json`, next);
   return success ? next : null;
 };
 
@@ -329,7 +329,7 @@ export const readBillingInfo = async (
   env: unknown,
   projectId: string,
 ): Promise<BillingInfo | null> => {
-  return readJsonFromR2<BillingInfo>(env as any, BILLING_PREFIX + ensureProjectId(projectId) + ".json");
+  return readJsonFromR2<BillingInfo>(env as any, `${BILLING_PREFIX}${ensureProjectId(projectId)}.json`);
 };
 
 export const writeBillingInfo = async (
@@ -340,7 +340,7 @@ export const writeBillingInfo = async (
   const id = ensureProjectId(projectId);
   const existing = await readBillingInfo(env, id);
   const next: BillingInfo = { ...(existing || {}), ...patch };
-  const success = await writeJsonToR2(env as any, BILLING_PREFIX + id + ".json", next);
+  const success = await writeJsonToR2(env as any, `${BILLING_PREFIX}${id}.json`, next);
   return success ? next : null;
 };
 
@@ -348,7 +348,7 @@ export const readAlertsConfig = async (
   env: unknown,
   projectId: string,
 ): Promise<ProjectAlertsConfig | null> => {
-  return readJsonFromR2<ProjectAlertsConfig>(env as any, ALERTS_PREFIX + ensureProjectId(projectId) + ".json");
+  return readJsonFromR2<ProjectAlertsConfig>(env as any, `${ALERTS_PREFIX}${ensureProjectId(projectId)}.json`);
 };
 
 export const writeAlertsConfig = async (
@@ -359,6 +359,6 @@ export const writeAlertsConfig = async (
   const id = ensureProjectId(projectId);
   const existing = await readAlertsConfig(env, id);
   const next: ProjectAlertsConfig = { ...(existing || {}), ...patch };
-  const success = await writeJsonToR2(env as any, ALERTS_PREFIX + id + ".json", next);
+  const success = await writeJsonToR2(env as any, `${ALERTS_PREFIX}${id}.json`, next);
   return success ? next : null;
 };

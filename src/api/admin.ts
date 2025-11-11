@@ -51,7 +51,7 @@ const LOG_KEYS = ((): string[] => {
   const today = new Date();
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const format = (date: Date) => date.toISOString().slice(0, 10);
-  return ["logs/" + format(today) + ".json", "logs/" + format(yesterday) + ".json"];
+  return [`logs/${format(today)}.json`, `logs/${format(yesterday)}.json`];
 })();
 
 const loadLogs = async (env: unknown): Promise<DashboardLogEntry[]> => {
@@ -467,7 +467,7 @@ export const handleRefreshAllRequest = async (env: unknown): Promise<Response> =
 };
 
 const loadProjectReport = async (env: unknown, projectId: string): Promise<ProjectReport | null> => {
-  return readJsonFromR2<ProjectReport>(env as any, "reports/" + projectId + ".json");
+  return readJsonFromR2<ProjectReport>(env as any, `reports/${projectId}.json`);
 };
 
 export const handleAdminProjectsApi = async (
@@ -597,12 +597,12 @@ export const handleAdminAccountLink = async (
     return jsonResponse({ error: "Unable to persist project config" }, { status: 500 });
   }
 
-  await logAdminAction(env, "Admin linked account " + accountIdValue + " to project " + project.id);
+  await logAdminAction(env, `Admin linked account ${accountIdValue} to project ${project.id}`);
 
   if (!hasProjectChat(project)) {
     await appendLogEntry(env, {
       level: "warn",
-      message: "Account " + accountIdValue + " linked to project " + project.id + " without chat binding",
+      message: `Account ${accountIdValue} linked to project ${project.id} without chat binding`,
       timestamp: new Date().toISOString(),
     });
   }
@@ -672,7 +672,7 @@ export const handleAdminProjectCreate = async (
     return jsonResponse({ error: "Unable to persist project config" }, { status: 500 });
   }
 
-  await logAdminAction(env, "Admin saved project config for " + projectId);
+  await logAdminAction(env, `Admin saved project config for ${projectId}`);
 
   return jsonResponse({ ok: true, project: record });
 };
@@ -699,7 +699,7 @@ export const handleAdminProjectUpdate = async (
     return jsonResponse({ error: "Unable to persist project config" }, { status: 500 });
   }
 
-  await logAdminAction(env, "Admin updated project config for " + projectId);
+  await logAdminAction(env, `Admin updated project config for ${projectId}`);
 
   return jsonResponse({ ok: true, project: record });
 };
@@ -736,7 +736,7 @@ export const handleAdminProjectToggle = async (
     return jsonResponse({ error: "Unable to persist project toggle" }, { status: 500 });
   }
 
-  await logAdminAction(env, "Admin toggled " + field + " for " + projectId + " => " + String(nextValue));
+  await logAdminAction(env, `Admin toggled ${field} for ${projectId} => ${String(nextValue)}`);
 
   return jsonResponse({ ok: true, field, value: nextValue, project: record });
 };
@@ -763,7 +763,7 @@ export const handleAdminProjectBillingUpdate = async (
     return jsonResponse({ error: "Unable to persist billing info" }, { status: 500 });
   }
 
-  await logAdminAction(env, "Admin updated billing info for " + projectId);
+  await logAdminAction(env, `Admin updated billing info for ${projectId}`);
 
   return jsonResponse({ ok: true, billing: record });
 };
@@ -790,7 +790,7 @@ export const handleAdminProjectAlertsUpdate = async (
     return jsonResponse({ error: "Unable to persist alerts config" }, { status: 500 });
   }
 
-  await logAdminAction(env, "Admin updated alerts config for " + projectId);
+  await logAdminAction(env, `Admin updated alerts config for ${projectId}`);
 
   return jsonResponse({ ok: true, alerts: record });
 };
@@ -894,7 +894,7 @@ export const handleAdminSystemAction = async (
     const result = await refreshAllProjects(env);
     await logAdminAction(
       env,
-      "Admin triggered refresh-all for " + result.refreshed.length + " projects",
+      `Admin triggered refresh-all for ${result.refreshed.length} projects`,
     );
     return jsonResponse({ ok: true, refreshed: result.refreshed });
   }
@@ -902,9 +902,7 @@ export const handleAdminSystemAction = async (
   if (action === "refresh-meta-token") {
     const outcome = await checkAndRefreshFacebookToken(env as WorkerEnv, { force: true, notify: true });
     const message =
-      "Admin requested Meta token refresh => " +
-      (outcome.refresh && outcome.refresh.ok ? "success" : "failure") +
-      (outcome.refresh && outcome.refresh.message ? ": " + outcome.refresh.message : "");
+      `Admin requested Meta token refresh => ${(outcome.refresh && outcome.refresh.ok ? "success" : "failure")}${(outcome.refresh && outcome.refresh.message ? `: ${outcome.refresh.message : ""}`)}`;
     await logAdminAction(env, message);
     return jsonResponse(outcome);
   }
@@ -923,7 +921,7 @@ export const handleAdminSystemAction = async (
       return badRequest("Prefix is required");
     }
     const removed = await deletePrefixFromR2(env as any, prefix);
-    await logAdminAction(env, "Admin cleared cache prefix " + prefix + " => " + removed + " items");
+    await logAdminAction(env, `Admin cleared cache prefix ${prefix} => ${removed} items`);
     return jsonResponse({ ok: true, prefix, removed });
   }
 
@@ -933,10 +931,10 @@ export const handleAdminSystemAction = async (
       return badRequest("Project ID is required");
     }
     const projectId = ensureProjectIdParam(projectIdValue);
-    const key = "reports/" + projectId + ".json";
+    const key = `reports/${projectId}.json`;
     const deleted = await deleteFromR2(env as any, key);
     if (deleted) {
-      await logAdminAction(env, "Admin removed cached report for " + projectId);
+      await logAdminAction(env, `Admin removed cached report for ${projectId}`);
     }
     return jsonResponse({ ok: Boolean(deleted), project: projectId, key });
   }
@@ -944,7 +942,7 @@ export const handleAdminSystemAction = async (
   if (action === "clear-fallbacks") {
     const removed = await clearFallbackEntries(env as any);
     if (removed !== null) {
-      await logAdminAction(env, "Admin cleared fallback entries => " + removed);
+      await logAdminAction(env, `Admin cleared fallback entries => ${removed}`);
       return jsonResponse({ ok: true, removed });
     }
     return jsonResponse({ ok: false, error: "Fallback storage not configured" }, { status: 503 });

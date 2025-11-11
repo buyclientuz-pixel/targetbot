@@ -9,7 +9,7 @@ const resolveNamespace = (env: SessionEnv): KVNamespace | null => {
   return env.SESSION_NAMESPACE || env.DB || env.FALLBACK_KV || env.LOGS_NAMESPACE || null;
 };
 
-const buildKey = (chatId: string): string => "session:admin:" + chatId;
+const buildKey = (chatId: string): string => `session:admin:${chatId}`;
 
 export interface AdminSessionState {
   kind: string;

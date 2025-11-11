@@ -32,7 +32,7 @@ const maskToken = (token: string): string => {
   }
   const start = token.slice(0, 5);
   const end = token.slice(-2);
-  return start + "****" + end;
+  return start + `****${end}`;
 };
 
 const readMetaAuth = async (env: MetaNamespaceEnv): Promise<MetaAuthRecord | null> => {
@@ -83,7 +83,7 @@ const deleteMetaAuth = async (env: MetaNamespaceEnv): Promise<void> => {
 };
 
 const buildGraphUrl = (path: string, params: Record<string, string>): string => {
-  const url = new URL("https://graph.facebook.com/" + path.replace(/^\/+/, ""));
+  const url = new URL(`https://graph.facebook.com/${path.replace(/^\/+/, "")}`);
   for (const key of Object.keys(params)) {
     url.searchParams.set(key, params[key]);
   }
@@ -92,7 +92,7 @@ const buildGraphUrl = (path: string, params: Record<string, string>): string => 
 
 const sendFacebookErrorLog = async (env: WorkerEnv, message: string): Promise<void> => {
   const now = new Date();
-  const dateKey = "facebook_errors/" + now.toISOString().slice(0, 10);
+  const dateKey = `facebook_errors/${now.toISOString().slice(0, 10)}`;
   await appendLogEntry(env, { level: "error", message, timestamp: now.toISOString() }, dateKey);
 };
 
@@ -122,7 +122,7 @@ export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<MetaTokenS
 
   const debugUrl = buildGraphUrl("debug_token", {
     input_token: token,
-    access_token: appId + "|" + appSecret,
+    access_token: appId + `|${appSecret}`,
   });
 
   let debugResponse: any = null;
@@ -130,12 +130,12 @@ export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<MetaTokenS
     const response = await fetch(debugUrl);
     if (!response.ok) {
       const text = await response.text();
-      throw new Error("Debug token request failed: " + text);
+      throw new Error(`Debug token request failed: ${text}`);
     }
     debugResponse = await response.json();
   } catch (error) {
     const message = (error as Error).message || "Unknown error";
-    await sendFacebookErrorLog(env, "Token debug failed: " + message);
+    await sendFacebookErrorLog(env, `Token debug failed: ${message}`);
     return {
       ok: false,
       status: "invalid",
@@ -182,7 +182,7 @@ export const getFacebookTokenStatus = async (env: WorkerEnv): Promise<MetaTokenS
   }
 
   if (expired) {
-    issues.push("Meta access token expired at " + (expiresAtIso || "unknown"));
+    issues.push(`Meta access token expired at ${(expiresAtIso || "unknown")}`);
   }
 
   return {
@@ -232,7 +232,7 @@ const performTokenRefresh = async (env: WorkerEnv, record: MetaAuthRecord): Prom
     const response = await fetch(refreshUrl);
     if (!response.ok) {
       const text = await response.text();
-      throw new Error("Token refresh failed: " + text);
+      throw new Error(`Token refresh failed: ${text}`);
     }
     const payload = await response.json();
     const newToken = typeof payload.access_token === "string" ? payload.access_token : null;
@@ -286,14 +286,14 @@ export const checkAndRefreshFacebookToken = async (
   }
 
   if (status.status === "invalid" && status.issues.length > 0) {
-    const message = "⚠️ Ошибка Meta токена: " + status.issues.join("; ");
+    const message = `⚠️ Ошибка Meta токена: ${status.issues.join("; ")}`;
     await notifyTelegramAdmins(env, message);
     return { status, refresh: null };
   }
 
   if (status.status === "expired") {
     await deleteMetaAuth(env);
-    const message = "🚨 Meta токен истёк " + (status.expires_at || "ранее");
+    const message = `🚨 Meta токен истёк ${(status.expires_at || "ранее")}`;
     await notifyTelegramAdmins(env, message);
     await sendFacebookErrorLog(env, message);
     return { status, refresh: null };
@@ -313,7 +313,7 @@ export const checkAndRefreshFacebookToken = async (
 
   if (refreshResult.ok) {
     const message =
-      "✅ Meta токен обновлён." + (refreshResult.expires_at ? " Новый срок: " + refreshResult.expires_at : "");
+      `✅ Meta токен обновлён.${(refreshResult.expires_at ? ` Новый срок: ${refreshResult.expires_at : ""}`)}`;
     if (notify) {
       await notifyTelegramAdmins(env, message);
     }
@@ -325,7 +325,7 @@ export const checkAndRefreshFacebookToken = async (
     return { status: await getFacebookTokenStatus(env), refresh: refreshResult };
   }
 
-  const errorMessage = "🚨 Ошибка обновления Meta токена: " + refreshResult.message;
+  const errorMessage = `🚨 Ошибка обновления Meta токена: ${refreshResult.message}`;
   await notifyTelegramAdmins(env, errorMessage);
   await sendFacebookErrorLog(env, errorMessage);
   return { status, refresh: refreshResult };

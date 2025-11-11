@@ -5,8 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "npx wrangler@4.46.0 dev",
+    "lint": "eslint 'src/**/*.{js,ts,tsx}' --quiet",
+    "format": "prettier --write 'src/**/*.{js,ts,tsx,json,html,css}'",
     "lint:api": "node scripts/lint-api.mjs",
-    "deploy": "npm run lint:api && npx wrangler@4.46.0 deploy",
+    "lint:strings": "grep -R \"' \\\\+\" src/ || true",
+    "migrate:templates": "node tools/convertConcatToTemplate.js --apply",
+    "deploy": "npm run lint && npm run format && npm run lint:api && npm run lint:strings && npx wrangler@4.46.0 deploy",
     "check:config": "node scripts/check-config.mjs",
     "sync:secrets": "node scripts/sync-secrets.mjs",
     "test:integration": "node scripts/run-integration.mjs",
@@ -15,5 +19,12 @@
     "validate:postdeploy": "node scripts/postdeploy-validate.mjs",
     "verify:deploy": "npm run lint:api && npm run check:config && npm run test:integration"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-prettier": "^5.1.3",
+    "glob": "^10.3.10",
+    "prettier": "^3.2.5",
+    "typescript": "^5.4.5"
+  }
 }

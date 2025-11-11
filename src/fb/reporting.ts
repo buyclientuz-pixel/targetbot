@@ -125,7 +125,7 @@ const fetchCampaignStatuses = async (
   accountId: string,
 ): Promise<Map<string, CampaignStatusInfo>> => {
   try {
-    const response = await callGraph(env as any, accountId + "/campaigns", {
+    const response = await callGraph(env as any, `${accountId}/campaigns`, {
       fields: "id,status,effective_status,updated_time",
       limit: "500",
     });
@@ -190,7 +190,7 @@ export const refreshProjectReport = async (
   if (!project) {
     await appendLogEntry(env as any, {
       level: "warn",
-      message: "Project not found for refresh: " + projectId,
+      message: `Project not found for refresh: ${projectId}`,
       timestamp: new Date().toISOString(),
     });
     return null;
@@ -200,7 +200,7 @@ export const refreshProjectReport = async (
   try {
     const statusMap = await fetchCampaignStatuses(env, accountId);
     const period = pickPeriod(project, options.period);
-    const insights = await callGraph(env as any, accountId + "/insights", {
+    const insights = await callGraph(env as any, `${accountId}/insights`, {
       level: "campaign",
       time_increment: "1",
       date_preset: period,
@@ -239,16 +239,16 @@ export const refreshProjectReport = async (
       alerts: project.alerts || null,
     };
 
-    await writeJsonToR2(env as any, "reports/" + projectId + ".json", report);
+    await writeJsonToR2(env as any, `reports/${projectId}.json`, report);
     await processAutoAlerts(env, project, report);
     return report;
   } catch (error) {
     await appendLogEntry(env as any, {
       level: "error",
-      message: "Failed to refresh project " + projectId + ": " + (error as Error).message,
+      message: `Failed to refresh project ${projectId}: ${(error as Error).message}`,
       timestamp: new Date().toISOString(),
     });
-    return await readJsonFromR2<ProjectReport>(env as any, "reports/" + projectId + ".json");
+    return await readJsonFromR2<ProjectReport>(env as any, `reports/${projectId}.json`);
   }
 };
 

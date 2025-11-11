@@ -67,7 +67,7 @@ const callTelegramMethod = async (
     throw new Error("Telegram token is not configured");
   }
 
-  const url = "https://api.telegram.org/bot" + token + "/" + method;
+  const url = `https://api.telegram.org/bot${token}/${method}`;
 
   await fetch(url, {
     method: "POST",

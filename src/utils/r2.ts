@@ -63,8 +63,8 @@ export const appendLogEntry = async (
   dateKey?: string,
 ): Promise<void> => {
   const bucket = resolveBucket(env);
-  const logKey = (dateKey || new Date().toISOString().slice(0, 10)) + ".json";
-  const fullKey = "logs/" + logKey;
+  const logKey = `${dateKey || new Date().toISOString().slice(0, 10)}.json`;
+  const fullKey = `logs/${logKey}`;
 
   if (!bucket) {
     await writeFallback(env, fullKey, entry);
@@ -179,7 +179,7 @@ export const deletePrefixFromR2 = async (env: R2Env, prefix: string): Promise<nu
       cursor = result.truncated ? result.cursor : undefined;
     } while (cursor);
   } catch (_error) {
-    await writeFallback(env, prefix + ":delete", { reason: "delete_prefix_error" });
+    await writeFallback(env, `${prefix}:delete`, { reason: "delete_prefix_error" });
   }
 
   return removed;
@@ -203,7 +203,7 @@ const writeFallback = async (
       message,
       _fallback: true,
     };
-    await fallback.put("fallback:" + key + ":" + now, JSON.stringify(payload));
+    await fallback.put(`fallback:${key}:${now}`, JSON.stringify(payload));
     return true;
   } catch (_error) {
     return false;
@@ -236,7 +236,7 @@ export const listR2Keys = async (env: R2Env, prefix: string): Promise<string[]> 
       cursor = result.truncated ? result.cursor : undefined;
     } while (cursor);
   } catch (_error) {
-    await writeFallback(env, prefix + ":list", { reason: "list_error" });
+    await writeFallback(env, `${prefix}:list`, { reason: "list_error" });
     return [];
   }
 
