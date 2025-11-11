@@ -118,6 +118,25 @@ export interface TokenStatus {
   hint?: string;
 }
 
+export interface WorkerEnv extends Record<string, unknown> {
+  REPORTS_BUCKET?: R2Bucket;
+  R2_BUCKET?: R2Bucket;
+  LOGS_BUCKET?: R2Bucket;
+  FALLBACK_KV?: KVNamespace;
+  LOGS_NAMESPACE?: KVNamespace;
+  SESSION_NAMESPACE?: KVNamespace;
+  META_MANAGE_TOKEN?: string;
+  META_LONG_TOKEN?: string;
+  META_ACCESS_TOKEN?: string;
+  FB_GRAPH_VERSION?: string;
+  BOT_TOKEN?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TG_API_TOKEN?: string;
+  ADMIN_KEY?: string;
+  DEFAULT_TZ?: string;
+  WORKER_URL?: string;
+}
+
 export interface AlertPayload {
   project_id: string;
   campaign_id?: string;

@@ -5,31 +5,14 @@ import { handlePortalSummary, handlePortalCampaigns } from "./api/portal";
 import { handleAdminPage, handleRefreshAllRequest } from "./api/admin";
 import { handleTelegramWebhook } from "./telegram";
 import { handleTelegramAlert } from "./api/telegram";
+import { handleManageTelegramWebhook } from "./api/manage";
 import { appendLogEntry } from "./utils/r2";
 import { refreshAllProjects } from "./api/projects";
-
-interface Env extends Record<string, unknown> {
-  REPORTS_BUCKET?: R2Bucket;
-  R2_BUCKET?: R2Bucket;
-  LOGS_BUCKET?: R2Bucket;
-  FALLBACK_KV?: KVNamespace;
-  LOGS_NAMESPACE?: KVNamespace;
-  SESSION_NAMESPACE?: KVNamespace;
-  META_MANAGE_TOKEN?: string;
-  META_LONG_TOKEN?: string;
-  META_ACCESS_TOKEN?: string;
-  FB_GRAPH_VERSION?: string;
-  BOT_TOKEN?: string;
-  TELEGRAM_BOT_TOKEN?: string;
-  TG_API_TOKEN?: string;
-  ADMIN_KEY?: string;
-  DEFAULT_TZ?: string;
-  WORKER_URL?: string;
-}
+import { WorkerEnv } from "./types";
 
 const handleNotFound = (): Response => notFound("Route not found");
 
-const routePortal = async (request: Request, env: Env, segments: string[]): Promise<Response> => {
+const routePortal = async (request: Request, env: WorkerEnv, segments: string[]): Promise<Response> => {
   if (segments.length === 2) {
     return handlePortalSummary(request, env, segments[1]);
   }
@@ -39,7 +22,10 @@ const routePortal = async (request: Request, env: Env, segments: string[]): Prom
   return handleNotFound();
 };
 
-const routeApi = async (request: Request, env: Env, segments: string[]): Promise<Response> => {
+const routeApi = async (request: Request, env: WorkerEnv, segments: string[]): Promise<Response> => {
+  if (segments[1] === "ping" && request.method === "GET") {
+    return jsonResponse({ pong: true, timestamp: new Date().toISOString() });
+  }
   if (segments[1] === "meta" && segments[2] === "status" && request.method === "GET") {
     return handleMetaStatus(env);
   }
@@ -72,10 +58,10 @@ const routeApi = async (request: Request, env: Env, segments: string[]): Promise
   return handleNotFound();
 };
 
-const routeAdmin = (request: Request, env: Env): Promise<Response> => handleAdminPage(request, env);
+const routeAdmin = (request: Request, env: WorkerEnv): Promise<Response> => handleAdminPage(request, env);
 
 export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const pathname = url.pathname;
     const segments = pathname.split("/").filter(Boolean);
@@ -101,6 +87,15 @@ export default {
         return routeApi(request, env, segments);
       }
 
+      if (
+        segments[0] === "manage" &&
+        segments.length >= 3 &&
+        segments[1] === "telegram" &&
+        segments[2] === "webhook"
+      ) {
+        return handleManageTelegramWebhook(request, env);
+      }
+
       if ((segments[0] === "tg" || segments[0] === "telegram" || segments[0] === "webhook") && request.method === "POST") {
         return handleTelegramWebhook(request, env);
       }
@@ -116,7 +111,7 @@ export default {
     }
   },
 
-  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
       (async () => {
         try {
