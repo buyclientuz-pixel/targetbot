@@ -35,7 +35,7 @@ export const readJsonFromR2 = async <T>(env: R2Env, key: string): Promise<T | nu
     const text = await object.text();
     return JSON.parse(text) as T;
   } catch (_error) {
-    await writeFallback(env, key, "read_error");
+    await writeFallback(env, key, { reason: "read_error" });
     return null;
   }
 };
@@ -52,7 +52,7 @@ export const writeJsonToR2 = async (env: R2Env, key: string, value: unknown): Pr
     });
     return true;
   } catch (_error) {
-    await writeFallback(env, key, "write_error");
+    await writeFallback(env, key, { reason: "write_error", value });
     return false;
   }
 };
@@ -67,7 +67,7 @@ export const appendLogEntry = async (
   const fullKey = "logs/" + logKey;
 
   if (!bucket) {
-    await writeFallback(env, fullKey, JSON.stringify(entry));
+    await writeFallback(env, fullKey, entry);
     return;
   }
 
@@ -79,11 +79,15 @@ export const appendLogEntry = async (
       httpMetadata: { contentType: "application/json" },
     });
   } catch (_error) {
-    await writeFallback(env, fullKey, JSON.stringify(entry));
+    await writeFallback(env, fullKey, entry);
   }
 };
 
-const writeFallback = async (env: R2Env, key: string, message: string): Promise<void> => {
+const writeFallback = async (
+  env: R2Env,
+  key: string,
+  message: unknown,
+): Promise<void> => {
   const fallback = env.FALLBACK_KV || env.LOGS_NAMESPACE;
   if (!fallback) {
     return;
@@ -91,7 +95,13 @@ const writeFallback = async (env: R2Env, key: string, message: string): Promise<
 
   try {
     const now = new Date().toISOString();
-    await fallback.put("fallback:" + key + ":" + now, message);
+    const payload = {
+      key,
+      timestamp: now,
+      message,
+      _fallback: true,
+    };
+    await fallback.put("fallback:" + key + ":" + now, JSON.stringify(payload));
   } catch (_error) {
     // ignore
   }

@@ -23,13 +23,20 @@ const loadReportFromCache = async (env: unknown, projectId: string): Promise<Pro
   return readJsonFromR2<ProjectReport>(env as any, getReportKey(projectId));
 };
 
-const getReport = async (env: unknown, projectId: string, forceRefresh = false): Promise<ProjectReport | null> => {
+export const getReport = async (
+  env: unknown,
+  projectId: string,
+  options: { forceRefresh?: boolean; period?: string } = {},
+): Promise<ProjectReport | null> => {
   const cached = await loadReportFromCache(env, projectId);
+  const requestedLabel = options.period || null;
+  const labelMismatch = requestedLabel !== null && (!cached || cached.period_label !== requestedLabel);
+  const forceRefresh = Boolean(options.forceRefresh) || labelMismatch;
   if (!forceRefresh && cached && isFresh(cached.updated_at)) {
     return cached;
   }
 
-  const refreshed = await refreshProjectReport(env, projectId);
+  const refreshed = await refreshProjectReport(env, projectId, { period: options.period });
   if (refreshed) {
     return refreshed;
   }
@@ -74,16 +81,11 @@ export const ensureProjectReport = async (
   projectId: string,
   options: { force?: boolean; period?: string } = {},
 ): Promise<ProjectReport | null> => {
-  const forceRefresh = options.force || false;
-  if (forceRefresh) {
+  if (options.force) {
     return refreshProjectReport(env, projectId, { period: options.period });
   }
 
-  const cached = await loadReportFromCache(env, projectId);
-  if (cached && isFresh(cached.updated_at)) {
-    return cached;
-  }
-  return refreshProjectReport(env, projectId, { period: options.period });
+  return getReport(env, projectId, { period: options.period });
 };
 
 export const getProjectCard = async (env: unknown, projectId: string): Promise<ProjectCard | null> => {

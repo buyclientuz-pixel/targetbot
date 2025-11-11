@@ -133,6 +133,8 @@ const fetchCampaignStatuses = async (env: unknown, accountId: string): Promise<M
   }
 };
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 const fetchBillingInfo = (account: any): BillingInfo | undefined => {
   if (!account) {
     return undefined;
@@ -140,10 +142,20 @@ const fetchBillingInfo = (account: any): BillingInfo | undefined => {
   const details = account.funding_source_details || {};
   const card = details.display_string || details.card_number_last_four || null;
   const nextDate = account.next_bill_date || (details.next_bill_date || null);
+  let daysToPay: number | null = null;
+  if (nextDate) {
+    const target = new Date(nextDate).getTime();
+    if (Number.isFinite(target)) {
+      const diff = Math.ceil((target - Date.now()) / DAY_MS);
+      if (Number.isFinite(diff)) {
+        daysToPay = diff < 0 ? 0 : diff;
+      }
+    }
+  }
   return {
     card_last4: card ? String(card).slice(-4) : null,
     next_payment_date: nextDate || null,
-    days_to_pay: undefined,
+    days_to_pay: daysToPay,
   };
 };
 
@@ -194,6 +206,8 @@ export const refreshProjectReport = async (
       project_name: project.name,
       currency: accountDetails.currency || project.currency || "USD",
       updated_at: new Date().toISOString(),
+      period,
+      period_label: options.period || project.default_period || null,
       status: normalizeStatus(accountDetails.account_status, accountDetails.disable_reason),
       summary,
       campaigns,

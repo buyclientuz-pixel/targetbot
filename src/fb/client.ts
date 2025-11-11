@@ -26,11 +26,28 @@ export const callGraph = async (
   }
   url.searchParams.set("access_token", token);
 
-  const response = await fetch(url.toString(), {
+  const requestUrl = url.toString();
+  const requestInit: RequestInit = {
     method: init.method || "GET",
     headers: init.headers,
     body: init.body,
-  });
+  };
+
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, requestInit);
+  } catch (error) {
+    const message = (error as Error).message || "unknown error";
+    const normalized = message.toLowerCase();
+    if (normalized.includes("illegal invocation")) {
+      const boundFetch = fetch.bind(globalThis);
+      response = await boundFetch(requestUrl, requestInit);
+    } else if (normalized.includes("timed out") || normalized.includes("timeout")) {
+      throw new Error("Graph request timed out: " + message);
+    } else {
+      throw new Error("Graph fetch failed: " + message);
+    }
+  }
 
   if (!response.ok) {
     const errorText = await response.text();

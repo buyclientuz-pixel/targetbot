@@ -36,6 +36,8 @@ export interface ProjectReport {
   project_name: string;
   currency: string;
   updated_at: string;
+  period?: string | null;
+  period_label?: string | null;
   status?: "active" | "pending" | "paused" | "unknown";
   summary: ProjectSummary;
   campaigns: CampaignMetric[];
