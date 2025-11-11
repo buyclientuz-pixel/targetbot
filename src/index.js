@@ -3370,10 +3370,10 @@ function describeCampaignPrimaryMetrics(campaign, { objective } = {}) {
 
   const extraParts = [];
   if (Number.isFinite(campaign?.ctr)) {
-    extraParts.push(`CTR: ${formatPercentage(campaign.ctr, { digits: 1 })}`);
+    extraParts.push('CTR: ' + formatPercentage(campaign.ctr, { digits: 1 }));
   }
   if (Number.isFinite(campaign?.frequency)) {
-    extraParts.push(`Частота: ${formatFloat(campaign.frequency, { digits: 1 })}`);
+    extraParts.push('Частота: ' + formatFloat(campaign.frequency, { digits: 1 }));
   }
 
   return { label, valueText, costLabel, costText, extraParts, value: valueRaw, cost: costRaw };
@@ -3389,7 +3389,7 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   const titleLabel = baseLabel || 'Период';
   let periodLabel = '';
   if (sinceLabel && untilLabel) {
-    periodLabel = sinceLabel === untilLabel ? sinceLabel : `${sinceLabel} — ${untilLabel}`;
+    periodLabel = sinceLabel === untilLabel ? sinceLabel : sinceLabel + ' — ' + untilLabel;
   } else if (range?.label) {
     periodLabel = range.label;
   } else if (sinceLabel) {
@@ -3397,8 +3397,8 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   }
 
   const headerLine = periodLabel
-    ? `📆 <b>Отчёт ${escapeHtml(titleLabel)}</b> (${escapeHtml(periodLabel)})`
-    : `📆 <b>Отчёт ${escapeHtml(titleLabel)}</b>`;
+    ? '📆 <b>Отчёт ' + escapeHtml(titleLabel) + '</b> (' + escapeHtml(periodLabel) + ')'
+    : '📆 <b>Отчёт ' + escapeHtml(titleLabel) + '</b>';
 
   lines.push(headerLine);
   lines.push('');
@@ -3454,10 +3454,10 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
       const metrics = describeCampaignPrimaryMetrics(campaign, { objective: projectObjective });
       const metricParts = [];
       if (metrics.label) {
-        metricParts.push(`${metrics.label}: ${metrics.valueText}`);
+        metricParts.push(metrics.label + ': ' + metrics.valueText);
       }
       if (metrics.costLabel) {
-        metricParts.push(`${metrics.costLabel}: ${metrics.costText}`);
+        metricParts.push(metrics.costLabel + ': ' + metrics.costText);
       }
       if (metrics.extraParts && metrics.extraParts.length > 0) {
         metricParts.push(...metrics.extraParts);
@@ -3465,7 +3465,7 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
       if (metricParts.length === 0) {
         metricParts.push('—');
       }
-      lines.push(`• <b>${escapeHtml(campaign.name)}</b> - ${spendText}`);
+      lines.push('• <b>' + escapeHtml(campaign.name) + '</b> - ' + spendText);
       lines.push(metricParts.join(' | '));
       lines.push('');
     }
@@ -3517,16 +3517,16 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   }
   const summaryParts = [];
   if (Number.isFinite(report?.totals?.reach)) {
-    summaryParts.push(`Охват: ${formatInteger(report.totals.reach)}`);
+    summaryParts.push('Охват: ' + formatInteger(report.totals.reach));
   }
   if (Number.isFinite(report?.totals?.impressions)) {
-    summaryParts.push(`Показы: ${formatInteger(report.totals.impressions)}`);
+    summaryParts.push('Показы: ' + formatInteger(report.totals.impressions));
   }
   if (totalMetrics.label) {
-    summaryParts.push(`${totalMetrics.label}: ${totalMetrics.valueText}`);
+    summaryParts.push(totalMetrics.label + ': ' + totalMetrics.valueText);
   }
   if (totalMetrics.costLabel) {
-    summaryParts.push(`${totalMetrics.costLabel}: ${totalCostText}`);
+    summaryParts.push(totalMetrics.costLabel + ': ' + totalCostText);
   }
   if (summaryParts.length > 0) {
     summaryLines.push(summaryParts.join(' | '));
@@ -3542,12 +3542,14 @@ function buildProjectReportPreview({ project, account, rawProject, preset, repor
   if (lines[lines.length - 1] !== '') {
     lines.push('');
   }
+  const totalPrimaryValue = totalMetrics.valueText
+    || (totalMetrics.label === 'Лиды' ? totalLeadsText : totalConversionsText);
   const totalLabelParts = [
-    `${totalMetrics.label || 'Цель'}: ${totalMetrics.valueText || (totalMetrics.label === 'Лиды' ? totalLeadsText : totalConversionsText)}`,
+    (totalMetrics.label || 'Цель') + ': ' + totalPrimaryValue,
   ];
   const costLabel = totalMetrics.costLabel || 'CPA';
-  totalLabelParts.push(`${costLabel}: ${totalCostText}`);
-  lines.push(`🧾 ИТОГО: ${totalSpendText} | ${totalLabelParts.join(' | ')}`);
+  totalLabelParts.push(costLabel + ': ' + totalCostText);
+  lines.push('🧾 ИТОГО: ' + totalSpendText + ' | ' + totalLabelParts.join(' | '));
 
   return {
     text: lines.join('\n'),
@@ -3589,7 +3591,7 @@ function selectAutopauseCandidates({ campaigns = [], kpiTarget = null, limit = 5
     if (Number.isFinite(kpiTarget) && Number.isFinite(cpa) && cpa > kpiTarget) {
       const diff = cpa - kpiTarget;
       if (diff / kpiTarget >= 0.15) {
-        reasons.push(`CPA ${formatUsd(cpa, { digitsBelowOne: 2, digitsAboveOne: 0 })}`);
+        reasons.push('CPA ' + formatUsd(cpa, { digitsBelowOne: 2, digitsAboveOne: 0 }));
       }
     }
 
@@ -3599,7 +3601,7 @@ function selectAutopauseCandidates({ campaigns = [], kpiTarget = null, limit = 5
 
     candidates.push({
       id: String(id),
-      name: campaign.name || `Кампания ${id}`,
+      name: campaign.name || 'Кампания ' + id,
       spend,
       leads,
       cpa,
@@ -3630,12 +3632,13 @@ function buildDigestPreview({ sections = [], timezone }) {
     const untilLabel = range.until ? formatDateShort(range.until, { timezone: range.timezone || timezone }) : sinceLabel;
     let header = label || 'Период';
     if (sinceLabel && untilLabel) {
-      header = `${label} (${sinceLabel === untilLabel ? sinceLabel : `${sinceLabel} — ${untilLabel}`})`;
+      const period = sinceLabel === untilLabel ? sinceLabel : sinceLabel + ' — ' + untilLabel;
+      header = label + ' (' + period + ')';
     } else if (preview.label) {
-      header = `${label} (${preview.label})`;
+      header = label + ' (' + preview.label + ')';
     }
 
-    digestLines.push('', `<b>${escapeHtml(header)}</b>`);
+    digestLines.push('', '<b>' + escapeHtml(header) + '</b>');
 
     const previewLines = String(preview.text || '')
       .split('\n')
@@ -3650,20 +3653,20 @@ function buildDigestPreview({ sections = [], timezone }) {
 function buildProjectDetailKeyboard(base, { chatUrl, portalUrl } = {}) {
   const keyboard = [];
   keyboard.push([
-    chatUrl ? { text: '💬 Чат-группа', url: chatUrl } : { text: '💬 Чат-группа', callback_data: `${base}:chat` },
-    { text: '🌐 Портал', callback_data: `${base}:portal` },
-    { text: '📊 Аналитика', callback_data: `${base}:analytics` },
+    chatUrl ? { text: '💬 Чат-группа', url: chatUrl } : { text: '💬 Чат-группа', callback_data: base + ':chat' },
+    { text: '🌐 Портал', callback_data: base + ':portal' },
+    { text: '📊 Аналитика', callback_data: base + ':analytics' },
   ]);
 
   keyboard.push([
-    { text: '💳 Оплата', callback_data: `${base}:payment` },
-    { text: '📈 Отчёты', callback_data: `${base}:reports` },
-    { text: '🎯 KPI', callback_data: `${base}:kpi` },
+    { text: '💳 Оплата', callback_data: base + ':payment' },
+    { text: '📈 Отчёты', callback_data: base + ':reports' },
+    { text: '🎯 KPI', callback_data: base + ':kpi' },
   ]);
 
   keyboard.push([
-    { text: '🚨 Алерты', callback_data: `${base}:alerts` },
-    { text: '🔄 Обновить', callback_data: `${base}:refresh` },
+    { text: '🚨 Алерты', callback_data: base + ':alerts' },
+    { text: '🔄 Обновить', callback_data: base + ':refresh' },
     { text: '⬅️ В админку', callback_data: 'admin:panel' },
   ]);
 
@@ -3676,24 +3679,24 @@ function buildProjectReportKeyboard(
 ) {
   const rows = [
     [
-      { text: 'Сегодня', callback_data: `${base}:report:today` },
-      { text: 'Вчера', callback_data: `${base}:report:yesterday` },
-      { text: '7 дней', callback_data: `${base}:report:week` },
+      { text: 'Сегодня', callback_data: base + ':report:today' },
+      { text: 'Вчера', callback_data: base + ':report:yesterday' },
+      { text: '7 дней', callback_data: base + ':report:week' },
     ],
     [
-      { text: 'Месяц', callback_data: `${base}:report:month` },
-      { text: 'Год', callback_data: `${base}:report:year` },
-      { text: 'Диапазон', callback_data: `${base}:report:custom` },
+      { text: 'Месяц', callback_data: base + ':report:month' },
+      { text: 'Год', callback_data: base + ':report:year' },
+      { text: 'Диапазон', callback_data: base + ':report:custom' },
     ],
   ];
 
   if (hasPreview && (canSendToChat || canSendToAdmin || portalUrl)) {
     const sendRow = [];
     if (canSendToChat) {
-      sendRow.push({ text: '📤 В чат клиента', callback_data: `${base}:report:send:chat` });
+      sendRow.push({ text: '📤 В чат клиента', callback_data: base + ':report:send:chat' });
     }
     if (canSendToAdmin) {
-      sendRow.push({ text: '📨 В мой чат', callback_data: `${base}:report:send:admin` });
+      sendRow.push({ text: '📨 В мой чат', callback_data: base + ':report:send:admin' });
     }
     if (portalUrl) {
       sendRow.push({ text: '🌐 Портал', url: portalUrl });
@@ -3704,8 +3707,8 @@ function buildProjectReportKeyboard(
   }
 
   rows.push([
-    { text: '📈 Сводный отчёт', callback_data: `${base}:digest` },
-    { text: '⬅️ К проекту', callback_data: `${base}:open` },
+    { text: '📈 Сводный отчёт', callback_data: base + ':digest' },
+    { text: '⬅️ К проекту', callback_data: base + ':open' },
   ]);
 
   return { inline_keyboard: rows };
@@ -3719,24 +3722,24 @@ function buildAutopauseKeyboard(base, { autopause } = {}) {
   const keyboard = [];
 
   keyboard.push([
-    { text: toggleLabel, callback_data: `${base}:autopause:toggle` },
-    { text: '🔄 Обновить', callback_data: `${base}:autopause` },
+    { text: toggleLabel, callback_data: base + ':autopause:toggle' },
+    { text: '🔄 Обновить', callback_data: base + ':autopause' },
   ]);
 
   const thresholdRow = AUTOPAUSE_THRESHOLD_OPTIONS.map((days) => {
     const selected = days === threshold;
-    const label = selected ? `• ${days}д` : `${days}д`;
-    return { text: label, callback_data: `${base}:autopause:threshold:${days}` };
+    const label = selected ? '• ' + days + 'д' : String(days) + 'д';
+    return { text: label, callback_data: base + ':autopause:threshold:' + days };
   });
   keyboard.push(thresholdRow);
 
-  keyboard.push([{ text: '⏸ Поставить на паузу', callback_data: `${base}:autopause:trigger` }]);
+  keyboard.push([{ text: '⏸ Поставить на паузу', callback_data: base + ':autopause:trigger' }]);
 
   if (enabled) {
-    keyboard.push([{ text: '📄 История', callback_data: `${base}:autopause:history` }]);
+    keyboard.push([{ text: '📄 История', callback_data: base + ':autopause:history' }]);
   }
 
-  keyboard.push([{ text: '⬅️ К проекту', callback_data: `${base}:open` }]);
+  keyboard.push([{ text: '⬅️ К проекту', callback_data: base + ':open' }]);
 
   return { inline_keyboard: keyboard };
 }
@@ -3754,12 +3757,12 @@ function buildPaymentCalendarKeyboard(base, { timezone } = {}) {
       const iso = formatDateIsoInTimeZone(date, timezone).slice(0, 10);
       const label = formatDateShort(date, { timezone }) || iso;
       const prefix = daysOffset === 0 ? 'Сегодня — ' : daysOffset === 1 ? 'Вчера — ' : '';
-      row.push({ text: `${prefix}${label}`, callback_data: `${base}:payment:set:${iso}` });
+      row.push({ text: prefix + label, callback_data: base + ':payment:set:' + iso });
     }
     rows.push(row);
   }
 
-  rows.push([{ text: '⬅️ Назад', callback_data: `${base}:payment` }]);
+  rows.push([{ text: '⬅️ Назад', callback_data: base + ':payment' }]);
   return { inline_keyboard: rows };
 }
 
@@ -3787,7 +3790,7 @@ function buildMetaAdminSection(metaStatus, { timezone } = {}) {
   const status = pickMetaStatus(metaStatus) || {};
   const message = typeof status.message === 'string' ? status.message.trim() : '';
   if (message) {
-    section.push(`Сообщение: ${escapeHtml(message)}`);
+    section.push('Сообщение: ' + escapeHtml(message));
   }
 
   section.push('<b>Facebook</b>');
@@ -3795,7 +3798,7 @@ function buildMetaAdminSection(metaStatus, { timezone } = {}) {
   const facebook = status.facebook && typeof status.facebook === 'object' ? status.facebook : {};
   const connected = Boolean(facebook.connected);
   const connectionEmoji = connected ? '🟢' : '🔴';
-  section.push(`Статус: ${connectionEmoji} ${connected ? 'Подключено' : 'Не подключено'}`);
+  section.push('Статус: ' + connectionEmoji + ' ' + (connected ? 'Подключено' : 'Не подключено'));
 
   if (!connected && !facebook.error && (!Array.isArray(facebook.adAccounts) || facebook.adAccounts.length === 0)) {
     section.push('Данные Meta ещё не загружены.');
@@ -3806,19 +3809,19 @@ function buildMetaAdminSection(metaStatus, { timezone } = {}) {
   }
 
   if (facebook.error) {
-    section.push(`Ошибка Meta: ${escapeHtml(String(facebook.error))}`);
+    section.push('Ошибка Meta: ' + escapeHtml(String(facebook.error)));
   }
 
   if (facebook.accountName) {
-    section.push(`Аккаунт: <b>${escapeHtml(facebook.accountName)}</b>`);
+    section.push('Аккаунт: <b>' + escapeHtml(facebook.accountName) + '</b>');
   }
 
   if (facebook.accountId) {
-    section.push(`ID: <code>${escapeHtml(facebook.accountId)}</code>`);
+    section.push('ID: <code>' + escapeHtml(facebook.accountId) + '</code>');
   }
 
   const adAccounts = Array.isArray(facebook.adAccounts) ? facebook.adAccounts : [];
-  section.push(`Рекламных аккаунтов: <b>${adAccounts.length}</b>`);
+  section.push('Рекламных аккаунтов: <b>' + adAccounts.length + '</b>');
 
   for (const account of adAccounts) {
     const accountLines = buildMetaAdAccountLines(account);
@@ -3829,7 +3832,7 @@ function buildMetaAdminSection(metaStatus, { timezone } = {}) {
 
   const updatedAt = facebook.updatedAt || facebook.updated_at;
   if (updatedAt) {
-    section.push(`Обновлено: ${escapeHtml(formatTimestamp(updatedAt, timezone))}`);
+    section.push('Обновлено: ' + escapeHtml(formatTimestamp(updatedAt, timezone)));
   }
 
   return section;
@@ -3870,8 +3873,8 @@ function buildMetaAdAccountLines(account) {
     .map((part) => String(part || '').trim())
     .filter(Boolean)
     .join(' • ');
-  const headerSuffix = headerDetails ? ` — ${escapeHtml(headerDetails)}` : '';
-  lines.push(`• ${badge} <b>${escapeHtml(name)}</b>${headerSuffix}`);
+  const headerSuffix = headerDetails ? ' — ' + escapeHtml(headerDetails) : '';
+  lines.push('• ' + badge + ' <b>' + escapeHtml(name) + '</b>' + headerSuffix);
 
   const last4 =
     account.defaultPaymentMethodLast4 ||
@@ -3879,13 +3882,13 @@ function buildMetaAdAccountLines(account) {
     account.card_last4 ||
     account.paymentMethodLast4;
   if (last4) {
-    lines.push(`  ◦ 💳 ****${escapeHtml(String(last4))}`);
+    lines.push('  ◦ 💳 ****' + escapeHtml(String(last4)));
   }
 
   const debt =
     account.debtUsd ?? account.debt_usd ?? account.debtUSD ?? account.debt ?? account.balance_due_usd;
   if (Number.isFinite(Number(debt)) && Number(debt) !== 0) {
-    lines.push(`  ◦ Долг: <b>${formatUsd(Number(debt), { digitsBelowOne: 2, digitsAboveOne: 2 })}</b>`);
+    lines.push('  ◦ Долг: <b>' + formatUsd(Number(debt), { digitsBelowOne: 2, digitsAboveOne: 2 }) + '</b>');
   }
 
   const running = account.runningCampaigns ?? account.campaignsRunning ?? account.activeCampaigns;
@@ -3893,9 +3896,9 @@ function buildMetaAdAccountLines(account) {
   const cpaMax = account.cpaMaxUsd ?? account.cpaMax ?? account.cpa_max_usd ?? account.cpa_max;
   const cpaRange = formatCpaRange(cpaMin, cpaMax, account?.campaignSummaries);
   if (Number.isFinite(Number(running)) || cpaRange) {
-    const runningText = Number.isFinite(Number(running)) ? `<b>${Number(running)}</b>` : '<b>0</b>';
-    const cpaText = cpaRange ? ` (CPA: ${cpaRange})` : '';
-    lines.push(`  ◦ Кампании: ${runningText}${cpaText}`);
+    const runningText = Number.isFinite(Number(running)) ? '<b>' + Number(running) + '</b>' : '<b>0</b>';
+    const cpaText = cpaRange ? ' (CPA: ' + cpaRange + ')' : '';
+    lines.push('  ◦ Кампании: ' + runningText + cpaText);
   }
 
   return lines;
@@ -3951,7 +3954,7 @@ function normalizeProjectRecord(key, raw = {}) {
     id: projectId,
     key,
     code: raw.code || raw.slug || raw.short_code || '',
-    name: raw.name || raw.title || meta.projectName || meta.accountName || `Проект ${projectId}`,
+    name: raw.name || raw.title || meta.projectName || meta.accountName || 'Проект ' + projectId,
     description: raw.description || '',
     adAccountId: adAccountId ? String(adAccountId) : '',
     chatId: chatId ? String(chatId) : '',
@@ -4052,33 +4055,33 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
     ];
 
     const lines = [];
-    lines.push(`<b>${escapeHtml(headerParts.join(' | '))}</b>`);
-    lines.push(`Статус: ${statusEmoji} ${escapeHtml(accountStatusLabel)}`);
+    lines.push('<b>' + escapeHtml(headerParts.join(' | ')) + '</b>');
+    lines.push('Статус: ' + statusEmoji + ' ' + escapeHtml(accountStatusLabel));
 
     if (cardLast4) {
-      lines.push(`Оплата: 💳 ****${escapeHtml(String(cardLast4))}`);
+      lines.push('Оплата: 💳 ****' + escapeHtml(String(cardLast4)));
     }
 
     if (debt !== null && debt !== 0) {
-      lines.push(`Долг: <b>${formatUsd(debt, { digitsBelowOne: 2, digitsAboveOne: 2 })}</b>`);
+      lines.push('Долг: <b>' + formatUsd(debt, { digitsBelowOne: 2, digitsAboveOne: 2 }) + '</b>');
     }
 
     if (campaignsRunning !== null || cpaRange) {
-      const campaignsText = campaignsRunning !== null ? `${campaignsRunning}` : '0';
-      const suffix = cpaRange ? ` | CPA: ${cpaRange}` : '';
-      lines.push(`Кампании: <b>${campaignsText}</b>${suffix}`);
+      const campaignsText = campaignsRunning !== null ? String(campaignsRunning) : '0';
+      const suffix = cpaRange ? ' | CPA: ' + cpaRange : '';
+      lines.push('Кампании: <b>' + campaignsText + '</b>' + suffix);
     }
 
     if (paymentIssues.length > 0) {
-      lines.push(`Проблемы: ${escapeHtml(paymentIssues.join(' • '))}`);
+      lines.push('Проблемы: ' + escapeHtml(paymentIssues.join(' • ')));
     }
 
     if (record.chatTitle) {
-      lines.push(`Чат: ${escapeHtml(record.chatTitle)}`);
+      lines.push('Чат: ' + escapeHtml(record.chatTitle));
     }
 
     if (record.code) {
-      lines.push(`Код проекта: <code>${escapeHtml(record.code)}</code>`);
+      lines.push('Код проекта: <code>' + escapeHtml(record.code) + '</code>');
     }
 
     items.push({
@@ -4092,7 +4095,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       spendUsd,
       currency,
       title: displayName,
-      accountId: normalizedAccountId ? `act_${normalizedAccountId}` : '',
+      accountId: normalizedAccountId ? 'act_' + normalizedAccountId : '',
       placeholder: false,
       portalTokens,
     });
@@ -4115,11 +4118,11 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       daysUntil.label,
     ];
     const lines = [];
-    lines.push(`<b>${escapeHtml(header.join(' | '))}</b>`);
+    lines.push('<b>' + escapeHtml(header.join(' | ')) + '</b>');
     const statusLabel = account.paymentStatusLabel || account.statusLabel || account.status || '—';
-    lines.push(`Статус: ${statusEmoji} ${escapeHtml(statusLabel)}`);
+    lines.push('Статус: ' + statusEmoji + ' ' + escapeHtml(statusLabel));
     if (account.paymentIssues && account.paymentIssues.length > 0) {
-      lines.push(`Проблемы: ${escapeHtml(account.paymentIssues.filter(Boolean).join(' • '))}`);
+      lines.push('Проблемы: ' + escapeHtml(account.paymentIssues.filter(Boolean).join(' • ')));
     }
     lines.push('Проект ещё не создан. Используйте «Подключить проект».');
 
@@ -4131,7 +4134,7 @@ function buildProjectSummaries(projectRecords, metaStatus, { timezone } = {}) {
       lines,
       daysUntil,
       title: account.name || account.id || 'Рекламный аккаунт',
-      accountId: key ? `act_${key}` : '',
+      accountId: key ? 'act_' + key : '',
       placeholder: true,
       currency: account.currency || 'USD',
       spendUsd: Number.isFinite(Number(account.spendTodayUsd)) ? Number(account.spendTodayUsd) : null,
@@ -4164,32 +4167,32 @@ function renderAdminDashboard({
   const status = pickMetaStatus(metaStatus) || {};
   const message = typeof status.message === 'string' ? status.message.trim() : '';
   if (message) {
-    lines.push('', `Сообщение: ${escapeHtml(message)}`);
+    lines.push('', 'Сообщение: ' + escapeHtml(message));
   }
 
   const facebook = status.facebook && typeof status.facebook === 'object' ? status.facebook : {};
   const connected = Boolean(facebook.connected);
   const connectionEmoji = connected ? '🟢' : '🔴';
   lines.push('', '<b>Facebook</b>');
-  lines.push(`Статус: ${connectionEmoji} ${connected ? 'Подключено' : 'Нет данных'}`);
+  lines.push('Статус: ' + connectionEmoji + ' ' + (connected ? 'Подключено' : 'Нет данных'));
   if (connected && facebook.accountName) {
-    lines.push(`Аккаунт: <b>${escapeHtml(facebook.accountName)}</b>`);
+    lines.push('Аккаунт: <b>' + escapeHtml(facebook.accountName) + '</b>');
   } else if (!connected && facebook.accountName) {
-    lines.push(`Последний статус: ${escapeHtml(facebook.accountName)}`);
+    lines.push('Последний статус: ' + escapeHtml(facebook.accountName));
   }
   if (facebook.accountId) {
-    lines.push(`ID: <code>${escapeHtml(facebook.accountId)}</code>`);
+    lines.push('ID: <code>' + escapeHtml(facebook.accountId) + '</code>');
   }
 
   const adAccounts = Array.isArray(facebook.adAccounts) ? facebook.adAccounts : [];
-  lines.push(`Рекламных аккаунтов: <b>${adAccounts.length}</b>`);
+  lines.push('Рекламных аккаунтов: <b>' + adAccounts.length + '</b>');
   const attention = adAccounts.filter((account) => determineAccountSignal(account, { daysUntilDue: { value: account.billingDueInDays ?? null } }) === '🔴');
   if (attention.length > 0) {
-    lines.push(`Требуют внимания: <b>${attention.length}</b>`);
+    lines.push('Требуют внимания: <b>' + attention.length + '</b>');
   }
 
   if (facebook.error) {
-    lines.push(`Ошибка: ${escapeHtml(String(facebook.error))}`);
+    lines.push('Ошибка: ' + escapeHtml(String(facebook.error)));
   }
 
   if (facebook.stale) {
@@ -4198,13 +4201,12 @@ function renderAdminDashboard({
 
   if (facebook.updatedAt || facebook.updated_at) {
     lines.push(
-      `Обновлено: ${escapeHtml(
-        formatTimestamp(facebook.updatedAt || facebook.updated_at, timezone),
-      )}`,
+      'Обновлено: '
+        + escapeHtml(formatTimestamp(facebook.updatedAt || facebook.updated_at, timezone)),
     );
   }
 
-  lines.push('', `<b>Проекты (${totals.projects})</b>`);
+  lines.push('', '<b>Проекты (' + totals.projects + ')</b>');
   if (projectSummaries.length === 0) {
     lines.push('Проекты ещё не настроены. Используйте меню ниже, чтобы подключить первый проект.');
   } else {
@@ -4216,24 +4218,28 @@ function renderAdminDashboard({
   if (placeholderCount > 0 && placeholdersShown > 0) {
     lines.push(
       '',
-      `Без проекта: ${placeholdersShown} из ${placeholderCount} аккаунтов Meta. Откройте раздел «Новые РК».`,
+      'Без проекта: ' + placeholdersShown + ' из ' + placeholderCount +
+        ' аккаунтов Meta. Откройте раздел «Новые РК».',
     );
   }
 
   if (webhook) {
     const webhookLines = [];
     const webhookActive = Boolean(webhook?.info?.url);
-    webhookLines.push(`Вебхук: ${webhookActive ? '🟢' : '🔴'} ${
-      webhookActive ? `<code>${escapeHtml(webhook.info.url)}</code>` : 'не настроен'
-    }`);
+    webhookLines.push(
+      'Вебхук: '
+        + (webhookActive ? '🟢' : '🔴')
+        + ' '
+        + (webhookActive ? '<code>' + escapeHtml(webhook.info.url) + '</code>' : 'не настроен'),
+    );
     if (webhook?.info?.pending_update_count) {
-      webhookLines.push(`В очереди: <b>${webhook.info.pending_update_count}</b>`);
+      webhookLines.push('В очереди: <b>' + webhook.info.pending_update_count + '</b>');
     }
     if (webhook?.defaultUrl && (!webhookActive || webhook.info.url !== webhook.defaultUrl)) {
-      webhookLines.push(`Рекомендуемый URL: <code>${escapeHtml(webhook.defaultUrl)}</code>`);
+      webhookLines.push('Рекомендуемый URL: <code>' + escapeHtml(webhook.defaultUrl) + '</code>');
     }
     if (webhook?.error) {
-      webhookLines.push(`Ошибка: ${escapeHtml(webhook.error)}`);
+      webhookLines.push('Ошибка: ' + escapeHtml(webhook.error));
     }
     if (webhook?.ensured) {
       webhookLines.push('Автоматическое подключение выполнено ✅');
@@ -4244,7 +4250,7 @@ function renderAdminDashboard({
   }
 
   if (typeof totals.chats === 'number') {
-    lines.push('', `Зарегистрированных чатов: <b>${totals.chats}</b>`);
+    lines.push('', 'Зарегистрированных чатов: <b>' + totals.chats + '</b>');
   }
 
   return lines.join('\n');
@@ -4464,7 +4470,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     const { since, until } = period.report.range;
     const sinceLabel = since ? formatDateLabel(since, { timezone }) : '';
     const untilLabel = until ? formatDateLabel(until, { timezone }) : '';
-    payload.rangeLabel = sinceLabel && untilLabel ? `${sinceLabel} — ${untilLabel}` : sinceLabel || untilLabel || '';
+    payload.rangeLabel = sinceLabel && untilLabel ? sinceLabel + ' — ' + untilLabel : sinceLabel || untilLabel || '';
   }
 
   const report = period?.report;
@@ -4599,7 +4605,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     id: 'ctr',
     label: 'CTR',
     value: Number.isFinite(ctrValue) ? ctrValue : null,
-    text: Number.isFinite(ctrValue) ? `${formatFloat(ctrValue, { digits: 1 })}%` : '—',
+    text: Number.isFinite(ctrValue) ? formatFloat(ctrValue, { digits: 1 }) + '%' : '—',
   });
 
   payload.metrics.push(...detailMetrics);
@@ -4644,7 +4650,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
     const ctr = Number.isFinite(campaign?.ctr)
       ? Number(campaign.ctr)
       : safeDivision(campaign?.clicks, campaign?.impressions) * 100;
-    const ctrText = Number.isFinite(ctr) ? `${formatFloat(ctr, { digits: 1 })}%` : '—';
+    const ctrText = Number.isFinite(ctr) ? formatFloat(ctr, { digits: 1 }) + '%' : '—';
     const leadsValueRaw = Number.isFinite(campaign?.leads) ? Number(campaign.leads) : null;
     const conversionsValueRaw = Number.isFinite(campaign?.conversions) ? Number(campaign.conversions) : null;
     const clicksValueRaw = Number.isFinite(campaign?.clicks) ? Number(campaign.clicks) : null;
@@ -4664,7 +4670,7 @@ function buildPortalPeriodPayload(period, { timezone, currency, kpiMeta, objecti
 
     return {
       id: rawId || lookupId || '',
-      name: campaign?.name || indexEntry?.name || (rawId ? `Campaign ${rawId}` : 'Campaign'),
+      name: campaign?.name || indexEntry?.name || (rawId ? 'Campaign ' + rawId : 'Campaign'),
       statusIcon: statusVisual.icon,
       statusCategory: statusVisual.category,
       statusLabel: statusVisual.label,
@@ -4730,7 +4736,7 @@ function buildPortalDataset({
   const normalizedAccountKey = normalizeAccountKey(
     account?.accountId || account?.id || account?.account_id || project?.adAccountId,
   );
-  const accountId = normalizedAccountKey ? `act_${normalizedAccountKey}` : '';
+  const accountId = normalizedAccountKey ? 'act_' + normalizedAccountKey : '';
   const accountManagerUrl = normalizedAccountKey
     ? `https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=${encodeURIComponent(normalizedAccountKey)}`
     : '';
