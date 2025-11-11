@@ -5986,43 +5986,63 @@ function renderClientPortalPage({
               const campaignName = item.name || 'Кампания';
               const statusTone = item.statusTone || item.statusCategory || '';
               const statusLabel = item.statusLabel || '';
+              const statusIcon = item.statusIcon || '⚪️';
+              const campaignId = item.id || '';
+              const ariaLabel = 'Подробнее о кампании ' + campaignName;
+              const escapedStatusLabel = escapeText(statusLabel);
+              const escapedStatusTone = escapeText(statusTone);
+              const escapedCampaignId = escapeText(campaignId);
+              const escapedAriaLabel = escapeText(ariaLabel);
+              const escapedStatusIcon = escapeText(statusIcon);
+              const escapedCampaignName = escapeText(campaignName);
+              const escapedKeyLabel = escapeText(keyLabel);
+              const escapedKeyText = escapeText(keyText);
+              const escapedSpendText = escapeText(spendText);
+              const escapedCostLabel = escapeText(costLabel || 'CPA');
+              const escapedCostText = escapeText(costText);
+              const escapedCtrText = escapeText(ctrText);
+              const escapedLastActivity = escapeText(lastActivity);
               return (
                 '<article class="campaign-card" role="button" tabindex="0" data-status="' +
-                escapeText(statusLabel) +
+                escapedStatusLabel +
                 '" data-tone="' +
-                escapeText(statusTone) +
+                escapedStatusTone +
                 '" data-campaign-id="' +
-                escapeText(item.id || '') +
+                escapedCampaignId +
                 '" aria-label="' +
-                escapeText('Подробнее о кампании ' + campaignName) +
+                escapedAriaLabel +
                 '">' +
                 '<div class="campaign-card__line">' +
                 '<span class="campaign-card__status" data-tone="' +
-                escapeText(statusTone) +
+                escapedStatusTone +
                 '" title="' +
-                escapeText(statusLabel) +
+                escapedStatusLabel +
                 '">' +
-                escapeText(item.statusIcon || '⚪️') +
+                escapedStatusIcon +
                 '</span>' +
                 '<span class="campaign-card__name">"' +
-                escapeText(campaignName) +
+                escapedCampaignName +
                 '"</span>' +
                 '<span class="campaign-card__metric">' +
-                escapeText(keyLabel + ': ' + keyText) +
+                escapedKeyLabel +
+                ': ' +
+                escapedKeyText +
                 '</span>' +
                 '<span class="campaign-card__metric">Потрачено: ' +
-                escapeText(spendText) +
+                escapedSpendText +
                 '</span>' +
                 '<span class="campaign-card__metric">' +
-                escapeText((costLabel || 'CPA') + ': ' + costText) +
+                escapedCostLabel +
+                ': ' +
+                escapedCostText +
                 '</span>' +
                 '<span class="campaign-card__metric">CTR: ' +
-                escapeText(ctrText) +
+                escapedCtrText +
                 '</span>' +
                 '</div>' +
                 '<div class="campaign-card__meta">' +
                 '<span>Последняя активность: ' +
-                escapeText(lastActivity) +
+                escapedLastActivity +
                 '</span>' +
                 '<span class="campaign-card__cta">Подробнее</span>' +
                 '</div>' +
@@ -6047,7 +6067,7 @@ function renderClientPortalPage({
           const paddingRight = 20;
           const paddingTop = 24;
           const paddingBottom = 40;
-          campaignModalChart.setAttribute('viewBox', `0 0 ${width} ${height}`);
+          campaignModalChart.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
           const maxSpend = Math.max(...points.map((point) => Number(point.spend) || 0));
           const maxLeads = Math.max(...points.map((point) => Number(point.leads) || 0));
           const maxValue = Math.max(maxSpend, maxLeads, 1);
