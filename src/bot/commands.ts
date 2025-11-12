@@ -5,15 +5,18 @@ import { escapeAttribute, escapeHtml } from "../utils/html";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
 import {
   appendCommandLog,
+  listChatRegistrations,
   listLeads,
   listPayments,
+  listProjects,
   listUsers,
   loadMetaToken,
+  saveChatRegistrations,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { sendTelegramMessage, answerCallbackQuery } from "../utils/telegram";
 import { fetchAdAccounts, resolveMetaStatus } from "../utils/meta";
-import { LeadRecord, MetaAdAccount, ProjectSummary } from "../types";
+import { ChatRegistrationRecord, LeadRecord, MetaAdAccount, ProjectRecord, ProjectSummary } from "../types";
 
 const AUTH_URL_FALLBACK = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
 
@@ -182,6 +185,10 @@ const COMMAND_ALIASES: Record<string, string> = {
   "⚙ настройки": "settings",
   "cmd:webhooks": "webhooks",
   "🔄 обновить вебхуки": "webhooks",
+  "/reg": "register_chat",
+  "reg": "register_chat",
+  "рег": "register_chat",
+  "регистрация": "register_chat",
   "/auto_report": "auto_report",
   "автоотчёт": "auto_report",
   "автоотчет": "auto_report",
@@ -232,6 +239,100 @@ const sendMessage = async (
     text,
     replyMarkup: options.replyMarkup ?? HOME_MARKUP,
   });
+};
+
+const sendPlainMessage = async (context: BotContext, text: string): Promise<void> => {
+  const chatId = ensureChatId(context);
+  if (!chatId) {
+    return;
+  }
+  await sendTelegramMessage(context.env, {
+    chatId,
+    threadId: context.threadId,
+    text,
+  });
+};
+
+const handleRegisterChat = async (context: BotContext): Promise<void> => {
+  const chatId = ensureChatId(context);
+  if (!chatId) {
+    return;
+  }
+  if (!context.chatType || context.chatType === "private") {
+    await sendPlainMessage(
+      context,
+      "Команда /reg предназначена для групп, где бот отправляет отчёты. Добавьте TargetBot в чат-группу клиента и повторите команду там.",
+    );
+    return;
+  }
+
+  const [projects, registrations] = await Promise.all([
+    listProjects(context.env),
+    listChatRegistrations(context.env).catch(() => [] as ChatRegistrationRecord[]),
+  ]);
+
+  const project = projects.find((entry) => entry.telegramChatId === chatId) ?? null;
+  const now = new Date().toISOString();
+  const next = [...registrations];
+  const existingIndex = next.findIndex((entry) => entry.chatId === chatId);
+  let record: ChatRegistrationRecord;
+
+  if (existingIndex >= 0) {
+    const current = next[existingIndex];
+    record = {
+      ...current,
+      chatTitle: context.chatTitle ?? current.chatTitle,
+      chatType: context.chatType ?? current.chatType,
+      username: context.username ?? current.username,
+      linkedProjectId: project?.id ?? current.linkedProjectId,
+      status: project ? "linked" : current.status ?? "pending",
+      updatedAt: now,
+    };
+    next[existingIndex] = record;
+  } else {
+    record = {
+      id: createId(),
+      chatId,
+      chatTitle: context.chatTitle,
+      chatType: context.chatType,
+      username: context.username,
+      status: project ? "linked" : "pending",
+      linkedProjectId: project?.id,
+      createdAt: now,
+      updatedAt: now,
+    };
+    next.push(record);
+  }
+
+  await saveChatRegistrations(context.env, next);
+
+  const lines: Array<string | null> = [
+    "🔐 Регистрация чат-группы",
+    "",
+    `ID: <code>${escapeHtml(chatId)}</code>`,
+    context.chatTitle ? `Название: <b>${escapeHtml(context.chatTitle)}</b>` : null,
+    `Запись: <code>${escapeHtml(record.id)}</code>`,
+    "",
+  ];
+
+  if (project) {
+    lines.push(
+      `Чат уже подключён к проекту <b>${escapeHtml(project.name)}</b>.`,
+      "TargetBot продолжит отправлять лиды и отчёты согласно настройкам проекта.",
+    );
+  } else {
+    lines.push(
+      "Чат сохранён в списке свободных групп.",
+      "Назначьте его на проект через веб-панель (/admin → Проекты), чтобы включить отчёты и уведомления.",
+    );
+  }
+
+  lines.push(
+    "",
+    "Команды и меню в клиентских чатах отключены — после привязки бот будет отвечать только автоматическими отчётами.",
+  );
+
+  await sendPlainMessage(context, lines.filter(Boolean).join("\n"));
 };
 
 const handleAuth = async (context: BotContext): Promise<void> => {
@@ -1151,6 +1252,7 @@ const COMMAND_HANDLERS: Record<string, (context: BotContext) => Promise<void>> =
   webhooks: handleWebhookRefresh,
   auto_report: handleAutoReport,
   summary_report: handleSummaryReport,
+  register_chat: handleRegisterChat,
 };
 
 export const resolveCommand = (text: string | undefined): string | null => {

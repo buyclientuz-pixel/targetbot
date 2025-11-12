@@ -46,6 +46,8 @@ export interface BotContext {
   env: EnvBindings & TelegramEnv;
   update: TelegramUpdate;
   chatId?: string;
+  chatType?: string;
+  chatTitle?: string;
   threadId?: number;
   userId?: string;
   username?: string;

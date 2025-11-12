@@ -25,6 +25,28 @@ const toChatId = (chatId: number | string | undefined): string | undefined => {
   return undefined;
 };
 
+const toChatType = (message: TelegramMessage | undefined): string | undefined => {
+  if (!message?.chat?.type) {
+    return undefined;
+  }
+  const type = message.chat.type.trim();
+  return type || undefined;
+};
+
+const toChatTitle = (message: TelegramMessage | undefined): string | undefined => {
+  if (!message?.chat) {
+    return undefined;
+  }
+  const { title, username } = message.chat;
+  if (title && title.trim()) {
+    return title.trim();
+  }
+  if (username && username.trim()) {
+    return username.trim();
+  }
+  return undefined;
+};
+
 const toThreadId = (message: TelegramMessage | undefined): number | undefined => {
   if (!message) {
     return undefined;
@@ -75,6 +97,8 @@ export const createContext = (
     env,
     update,
     chatId: toChatId(message?.chat.id),
+    chatType: toChatType(message),
+    chatTitle: toChatTitle(message),
     threadId: toThreadId(message),
     userId: toUserId(message, update),
     username: toUsername(message, update),

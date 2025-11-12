@@ -71,6 +71,18 @@ export interface ProjectRecord {
   updatedAt: string;
 }
 
+export interface ChatRegistrationRecord {
+  id: string;
+  chatId: string;
+  chatType?: string;
+  chatTitle?: string;
+  username?: string;
+  status: "pending" | "linked";
+  linkedProjectId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ProjectLeadStats {
   total: number;
   new: number;

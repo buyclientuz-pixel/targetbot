@@ -1,4 +1,5 @@
 import {
+  ChatRegistrationRecord,
   CommandLogRecord,
   LeadRecord,
   MetaTokenRecord,
@@ -20,6 +21,7 @@ const REPORT_INDEX_KEY = "reports/index.json";
 const SETTINGS_KEY = "settings/index.json";
 const COMMAND_LOG_KEY = "logs/commands.json";
 const REPORT_SESSION_PREFIX = "reports/session/";
+const CHAT_REGISTRY_KEY = "chats/index.json";
 
 export interface ReportSessionRecord {
   id: string;
@@ -231,6 +233,19 @@ export const saveSettings = async (
   settings: SettingRecord[],
 ): Promise<void> => {
   await writeJsonToR2(env, SETTINGS_KEY, settings);
+};
+
+export const listChatRegistrations = async (
+  env: EnvBindings,
+): Promise<ChatRegistrationRecord[]> => {
+  return readJsonFromR2<ChatRegistrationRecord[]>(env, CHAT_REGISTRY_KEY, []);
+};
+
+export const saveChatRegistrations = async (
+  env: EnvBindings,
+  records: ChatRegistrationRecord[],
+): Promise<void> => {
+  await writeJsonToR2(env, CHAT_REGISTRY_KEY, records);
 };
 
 export const appendCommandLog = async (
