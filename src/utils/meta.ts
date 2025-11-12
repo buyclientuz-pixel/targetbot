@@ -10,11 +10,22 @@ import {
 const GRAPH_BASE = "https://graph.facebook.com";
 const DEFAULT_GRAPH_VERSION = "v19.0";
 
-const TOKEN_KEYS = ["META_ACCESS_TOKEN", "FB_ACCESS_TOKEN", "GRAPH_API_TOKEN", "META_TOKEN"] as const;
+const TOKEN_KEYS = [
+  "META_ACCESS_TOKEN",
+  "FB_ACCESS_TOKEN",
+  "FB_LONG_TOKEN",
+  "META_LONG_TOKEN",
+  "FACEBOOK_LONG_TOKEN",
+  "GRAPH_API_TOKEN",
+  "META_TOKEN",
+] as const;
 const TOKEN_EXPIRES_KEYS = [
   "META_ACCESS_TOKEN_EXPIRES",
   "META_TOKEN_EXPIRES_AT",
   "FB_ACCESS_TOKEN_EXPIRES",
+  "FB_LONG_TOKEN_EXPIRES",
+  "META_LONG_TOKEN_EXPIRES",
+  "FACEBOOK_LONG_TOKEN_EXPIRES",
   "META_TOKEN_EXPIRATION",
 ] as const;
 const APP_ID_KEYS = [
@@ -65,16 +76,22 @@ const META_SECRET_SETTING_KEYS = [
 const META_TOKEN_SETTING_KEYS = [
   "meta.token",
   "meta.accessToken",
+  "meta.longToken",
   "meta.oauth.token",
   "meta.oauth.accessToken",
+  "meta.oauth.longToken",
   "system.meta.token",
+  "system.meta.longToken",
 ] as const;
 
 const META_TOKEN_EXPIRES_SETTING_KEYS = [
   "meta.token.expiresAt",
   "meta.token.expires",
+  "meta.token.longExpires",
+  "meta.longToken.expiresAt",
   "meta.oauth.expiresAt",
   "meta.oauth.expiration",
+  "meta.oauth.longExpires",
   "system.meta.tokenExpires",
 ] as const;
 

@@ -108,6 +108,9 @@ const resolveWebhookFromEnv = (env: ManageEnv): { url: string; source: string } 
   const directCandidates = [
     env.TELEGRAM_WEBHOOK_URL,
     env.BOT_WEBHOOK_URL,
+    env.WORKER_WEBHOOK_URL,
+    env.BOT_WEBHOOK,
+    env.TELEGRAM_WEBHOOK,
     env.WEBHOOK_URL,
     env.PUBLIC_TELEGRAM_WEBHOOK,
     env.PUBLIC_WEBHOOK_URL,
@@ -129,9 +132,16 @@ const resolveWebhookFromEnv = (env: ManageEnv): { url: string; source: string } 
     env.PUBLIC_WORKER_URL,
     env.WORKER_PUBLIC_URL,
     env.WORKER_BASE_URL,
+    env.WORKER_URL,
+    env.WORKER_DOMAIN,
+    env.WORKER_HOST,
+    env.WORKER_ORIGIN,
+    env.WORKER_NAME,
+    env.WORKER_DNS,
     env.MANAGE_BASE_URL,
     env.PUBLIC_URL,
     env.APP_BASE_URL,
+    env.BOT_WEBHOOK_BASE,
   ];
 
   for (const candidate of baseCandidates) {
