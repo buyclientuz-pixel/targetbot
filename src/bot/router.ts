@@ -1,6 +1,7 @@
 import { createContext } from "./context";
 import { acknowledgeCommand } from "./menu";
 import { runCommand, resolveCommand } from "./commands";
+import { handleReportCallback, isReportCallbackData } from "./reports";
 import { BotContext, TelegramUpdate } from "./types";
 import { jsonResponse } from "../utils/http";
 import { EnvBindings } from "../utils/storage";
@@ -17,6 +18,13 @@ const ensureEnv = (env: unknown): (EnvBindings & TelegramEnv) | null => {
 };
 
 const handleUpdate = async (context: BotContext): Promise<void> => {
+  const callbackData = context.update.callback_query?.data;
+  if (isReportCallbackData(callbackData)) {
+    const handled = await handleReportCallback(context, callbackData!);
+    if (handled) {
+      return;
+    }
+  }
   const command = resolveCommand(context.text);
   if (command) {
     const handled = await runCommand(command, context);

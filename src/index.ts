@@ -34,6 +34,7 @@ import {
   handleReportDelete,
   handleReportGet,
   handleReportsCreate,
+  handleReportsGenerate,
   handleReportsList,
 } from "./api/reports";
 import {
@@ -52,6 +53,7 @@ import {
   EnvBindings,
   listPayments,
   listProjects,
+  listReports,
   listUsers,
   loadMetaToken,
   loadProject,
@@ -195,6 +197,9 @@ export default {
       if (pathname === "/api/reports" && method === "POST") {
         return withCors(await handleReportsCreate(request, env));
       }
+      if (pathname === "/api/reports/generate" && method === "POST") {
+        return withCors(await handleReportsGenerate(request, env));
+      }
       const reportMatch = pathname.match(/^\/api\/reports\/([^/]+)$/);
       if (reportMatch) {
         const reportId = decodeURIComponent(reportMatch[1]);
@@ -238,9 +243,10 @@ export default {
 
       if (pathname === "/admin" && method === "GET") {
         const bindings = ensureEnv(env);
-        const [projectsWithLeads, token] = await Promise.all([
+        const [projectsWithLeads, token, reports] = await Promise.all([
           summarizeProjects(bindings),
           loadMetaToken(bindings),
+          listReports(bindings),
         ]);
         const projectSummaries: ProjectSummary[] = sortProjectSummaries(projectsWithLeads);
         const [meta, accounts] = await Promise.all([
@@ -286,7 +292,10 @@ export default {
           const message = url.searchParams.get("metaMessage") || "Не удалось завершить Meta OAuth.";
           flash = { type: "error", message };
         }
-        const html = renderAdminDashboard({ meta, accounts, projects: projectSummaries, flash });
+        const recentReports = [...reports]
+          .sort((a, b) => Date.parse(b.generatedAt || b.createdAt) - Date.parse(a.generatedAt || a.createdAt))
+          .slice(0, 5);
+        const html = renderAdminDashboard({ meta, accounts, projects: projectSummaries, reports: recentReports, flash });
         return htmlResponse(html);
       }
 

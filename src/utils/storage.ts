@@ -4,6 +4,7 @@ import {
   MetaTokenRecord,
   PaymentRecord,
   ProjectRecord,
+  ReportFilters,
   ReportRecord,
   SettingRecord,
   UserRecord,
@@ -17,6 +18,24 @@ const PAYMENT_INDEX_KEY = "payments/index.json";
 const REPORT_INDEX_KEY = "reports/index.json";
 const SETTINGS_KEY = "settings/index.json";
 const COMMAND_LOG_KEY = "logs/commands.json";
+const REPORT_SESSION_PREFIX = "reports/session/";
+
+export interface ReportSessionRecord {
+  id: string;
+  chatId: string;
+  userId?: string;
+  username?: string;
+  type: "auto" | "summary" | "custom";
+  command: "auto_report" | "summary" | "custom";
+  projectIds: string[];
+  projects: { id: string; name: string }[];
+  filters?: ReportFilters;
+  title?: string;
+  format?: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+}
 
 export interface EnvBindings {
   DB: KVNamespace;
@@ -143,4 +162,58 @@ export const appendCommandLog = async (
 
 export const listCommandLogs = async (env: EnvBindings): Promise<CommandLogRecord[]> => {
   return readJsonFromR2<CommandLogRecord[]>(env, COMMAND_LOG_KEY, []);
+};
+
+const parseSessionRecord = (value: string | null): ReportSessionRecord | null => {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value) as ReportSessionRecord;
+    return parsed;
+  } catch (error) {
+    console.error("Failed to parse report session", error);
+    return null;
+  }
+};
+
+const sessionKey = (sessionId: string): string => `${REPORT_SESSION_PREFIX}${sessionId}`;
+
+export const loadReportSession = async (
+  env: EnvBindings,
+  sessionId: string,
+): Promise<ReportSessionRecord | null> => {
+  const stored = await env.DB.get(sessionKey(sessionId));
+  const record = parseSessionRecord(stored);
+  if (!record) {
+    return null;
+  }
+  if (record.expiresAt) {
+    const expires = Date.parse(record.expiresAt);
+    if (!Number.isNaN(expires) && expires < Date.now()) {
+      await deleteReportSession(env, sessionId);
+      return null;
+    }
+  }
+  return record;
+};
+
+export const saveReportSession = async (
+  env: EnvBindings,
+  session: ReportSessionRecord,
+): Promise<void> => {
+  let ttl = 1800;
+  if (session.expiresAt) {
+    const expires = Date.parse(session.expiresAt);
+    if (!Number.isNaN(expires)) {
+      ttl = Math.max(60, Math.floor((expires - Date.now()) / 1000));
+    }
+  }
+  await env.DB.put(sessionKey(session.id), JSON.stringify(session), {
+    expirationTtl: ttl,
+  });
+};
+
+export const deleteReportSession = async (env: EnvBindings, sessionId: string): Promise<void> => {
+  await env.DB.delete(sessionKey(sessionId));
 };

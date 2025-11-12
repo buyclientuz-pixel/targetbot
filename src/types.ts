@@ -126,6 +126,21 @@ export interface PaymentRecord {
 
 export type ReportType = "summary" | "detailed" | "finance" | "custom";
 
+export type ReportChannel = "telegram" | "web" | "api";
+
+export interface ReportFilters {
+  datePreset?: string;
+  since?: string;
+  until?: string;
+}
+
+export interface ReportTotals {
+  projects: number;
+  leadsTotal: number;
+  leadsNew: number;
+  leadsDone: number;
+}
+
 export interface ReportRecord {
   id: string;
   projectId: string;
@@ -136,6 +151,13 @@ export interface ReportRecord {
   generatedAt: string;
   createdAt: string;
   updatedAt: string;
+  projectIds?: string[];
+  filters?: ReportFilters;
+  summary?: string;
+  totals?: ReportTotals;
+  channel?: ReportChannel;
+  generatedBy?: string;
+  metadata?: JsonValue;
 }
 
 export type SettingScope = "bot" | "portal" | "reports" | "billing" | "system";

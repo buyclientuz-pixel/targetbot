@@ -8,7 +8,7 @@ TargetBot разворачивается на Cloudflare Workers и объеди
 - [x] Итерация 3 — Добавление Facebook OAuth и токен-менеджера
 - [x] Итерация 4 — Подключение Meta API, получение кампаний и расходов
 - [x] Итерация 5 — Создание логики проектов, лидов и оплат
-- [ ] Итерация 6 — Реализация отчётов (/auto_report, /summary)
+- [x] Итерация 6 — Реализация отчётов (/auto_report, /summary)
 - [ ] Итерация 7 — Вебхуки Telegram + Cloudflare
 - [ ] Итерация 8 — Интеграция с веб-панелью и синхронизация KV
 - [ ] Итерация 9 — Финализация FSM и inline-меню
@@ -132,7 +132,7 @@ flowchart LR
 | Leads | `POST /api/leads`, `GET /api/leads?projectId=`, `PATCH /api/leads/:id` | Приём и обработка лидов |
 | Users | `GET/POST /api/users`, `PATCH/DELETE /api/users/:id` | Управление пользователями и ролями |
 | Payments | `GET/POST /api/payments`, `PATCH/DELETE /api/payments/:id` | Учёт оплат, статусы, биллинг |
-| Reports | `GET/POST /api/reports`, `GET/DELETE /api/reports/:id` | Регистрация отчётов и файлов экспорта |
+| Reports | `GET/POST /api/reports`, `POST /api/reports/generate`, `GET/DELETE /api/reports/:id` | Регистрация отчётов и файлов экспорта |
 | Settings | `GET /api/settings`, `POST /api/settings`, `PATCH /api/settings`, `GET /api/settings/:key` | Расписания, локализация, вебхуки |
 | Manage | `GET /manage/telegram/webhook?action=refresh&drop=1` | Переподключение вебхуков Telegram |
 | Telegram | `POST /bot/webhook` | Вебхук бота, роутинг команд |
@@ -183,3 +183,12 @@ flowchart LR
 
 ### Прогресс: 5/10 итераций
 Осталось: отчёты (/auto_report, /summary), расширение FSM-меню, финальные вебхуки и финтесты с документацией.
+
+### Progress 6
+Что сделано: реализованы Telegram-команды /summary и /auto_report с выбором проектов, добавлен эндпоинт `POST /api/reports/generate` и сохранение отчётов в KV/R2, админка показывает таблицу последних отчётов. Что дальше: Итерация 7 — вебхуки Telegram + Cloudflare и синхронная настройка через панель.
+
+### ✅ Итерация 6 завершена
+Отчётность работает через общие утилиты: бот строит интерактивный выбор проектов, формирует HTML/текст сводку и сохраняет запись в Reports, админка отображает свежие выгрузки. Следующая задача: Итерация 7 — вебхуки Telegram + Cloudflare.
+
+### Прогресс: 6/10 итераций
+Осталось: вебхуки Telegram/Cloudflare, интеграция KV с веб-панелью, финализация FSM и итоговые тесты с документацией.

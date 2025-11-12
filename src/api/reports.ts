@@ -1,13 +1,14 @@
 import { jsonResponse } from "../utils/http";
 import { createId } from "../utils/ids";
 import { EnvBindings, listReports, saveReports } from "../utils/storage";
-import { ApiError, ApiSuccess, ReportRecord, ReportType } from "../types";
+import { generateReport } from "../utils/reports";
+import { ApiError, ApiSuccess, JsonObject, ReportRecord, ReportType } from "../types";
 
-const ensureEnv = (env: unknown): EnvBindings => {
+const ensureEnv = (env: unknown): (EnvBindings & Record<string, unknown>) => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
     throw new Error("Env bindings are not configured");
   }
-  return env as EnvBindings;
+  return env as EnvBindings & Record<string, unknown>;
 };
 
 const parseReportType = (value: unknown): ReportType => {
@@ -22,6 +23,46 @@ const parseFormat = (value: unknown): ReportRecord["format"] => {
     return value;
   }
   return "pdf";
+};
+
+const parseChannel = (value: unknown): ReportRecord["channel"] | undefined => {
+  if (value === "telegram" || value === "web" || value === "api") {
+    return value;
+  }
+  return undefined;
+};
+
+const parseStringArray = (value: unknown): string[] => {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => (typeof item === "string" ? item.trim() : String(item))).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/[,\n\r\t ]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+};
+
+const parseTotals = (value: unknown): ReportRecord["totals"] | undefined => {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const toNumber = (key: string): number => {
+    const numeric = Number(record[key]);
+    return Number.isFinite(numeric) ? Number(numeric) : 0;
+  };
+  return {
+    projects: toNumber("projects"),
+    leadsTotal: toNumber("leadsTotal"),
+    leadsNew: toNumber("leadsNew"),
+    leadsDone: toNumber("leadsDone"),
+  };
 };
 
 const ensureTitle = (value: unknown, fallback: string): string => {
@@ -54,14 +95,30 @@ export const handleReportsList = async (request: Request, env: unknown): Promise
     const reports = await listReports(bindings);
     const filtered = reports.filter((report) => {
       if (projectId && report.projectId !== projectId) {
-        return false;
+        if (!report.projectIds || !report.projectIds.includes(projectId)) {
+          return false;
+        }
       }
       if (type && report.type !== type) {
         return false;
       }
       return true;
     });
-    const payload: ApiSuccess<ReportRecord[]> = { ok: true, data: filtered };
+    const sorted = filtered.sort((a, b) => {
+      const aTime = Date.parse(a.generatedAt || a.createdAt);
+      const bTime = Date.parse(b.generatedAt || b.createdAt);
+      if (Number.isNaN(aTime) && Number.isNaN(bTime)) {
+        return 0;
+      }
+      if (Number.isNaN(aTime)) {
+        return 1;
+      }
+      if (Number.isNaN(bTime)) {
+        return -1;
+      }
+      return bTime - aTime;
+    });
+    const payload: ApiSuccess<ReportRecord[]> = { ok: true, data: sorted };
     return jsonResponse(payload);
   } catch (error) {
     const payload: ApiError = { ok: false, error: (error as Error).message };
@@ -75,6 +132,7 @@ export const handleReportsCreate = async (request: Request, env: unknown): Promi
     const body = (await request.json()) as Record<string, unknown>;
     const now = new Date().toISOString();
     const projectId = ensureProjectId(body.projectId);
+    const projectIds = parseStringArray(body.projectIds);
     const report: ReportRecord = {
       id: typeof body.id === "string" && body.id.trim() ? body.id.trim() : createId(),
       projectId,
@@ -85,6 +143,32 @@ export const handleReportsCreate = async (request: Request, env: unknown): Promi
       generatedAt: ensureIsoDate(body.generatedAt, now),
       createdAt: now,
       updatedAt: now,
+      projectIds: projectIds.length ? projectIds : undefined,
+      filters:
+        typeof body.filters === "object" && body.filters
+          ? {
+              datePreset:
+                typeof (body.filters as Record<string, unknown>).datePreset === "string"
+                  ? ((body.filters as Record<string, unknown>).datePreset as string)
+                  : undefined,
+              since:
+                typeof (body.filters as Record<string, unknown>).since === "string"
+                  ? ((body.filters as Record<string, unknown>).since as string)
+                  : undefined,
+              until:
+                typeof (body.filters as Record<string, unknown>).until === "string"
+                  ? ((body.filters as Record<string, unknown>).until as string)
+                  : undefined,
+            }
+          : undefined,
+      summary: typeof body.summary === "string" ? body.summary : undefined,
+      totals: parseTotals(body.totals),
+      channel: parseChannel(body.channel),
+      generatedBy: typeof body.generatedBy === "string" ? body.generatedBy : undefined,
+      metadata:
+        body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+          ? (body.metadata as JsonObject)
+          : undefined,
     };
     const reports = await listReports(bindings);
     if (reports.some((item) => item.id === report.id)) {
@@ -93,6 +177,35 @@ export const handleReportsCreate = async (request: Request, env: unknown): Promi
     reports.push(report);
     await saveReports(bindings, reports);
     const payload: ApiSuccess<ReportRecord> = { ok: true, data: report };
+    return jsonResponse(payload, { status: 201 });
+  } catch (error) {
+    const payload: ApiError = { ok: false, error: (error as Error).message };
+    return jsonResponse(payload, { status: 400 });
+  }
+};
+
+export const handleReportsGenerate = async (request: Request, env: unknown): Promise<Response> => {
+  try {
+    const bindings = ensureEnv(env);
+    const body = (await request.json()) as Record<string, unknown>;
+    const projectIds = parseStringArray(body.projectIds);
+    const result = await generateReport(bindings, {
+      type: parseReportType(body.type),
+      title: typeof body.title === "string" ? body.title : undefined,
+      projectIds: projectIds.length ? projectIds : undefined,
+      format: parseFormat(body.format),
+      datePreset: typeof body.datePreset === "string" ? body.datePreset : undefined,
+      since: typeof body.since === "string" ? body.since : undefined,
+      until: typeof body.until === "string" ? body.until : undefined,
+      includeMeta: body.includeMeta === undefined ? true : Boolean(body.includeMeta),
+      channel: parseChannel(body.channel) ?? "api",
+      triggeredBy: typeof body.triggeredBy === "string" ? body.triggeredBy : undefined,
+      command: typeof body.command === "string" ? body.command : undefined,
+    });
+    const payload: ApiSuccess<{ report: ReportRecord; summary: string; html: string }> = {
+      ok: true,
+      data: { report: result.record, summary: result.text, html: result.html },
+    };
     return jsonResponse(payload, { status: 201 });
   } catch (error) {
     const payload: ApiError = { ok: false, error: (error as Error).message };

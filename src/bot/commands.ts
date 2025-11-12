@@ -1,5 +1,6 @@
 import { BotContext } from "./types";
 import { sendMainMenu } from "./menu";
+import { startReportWorkflow } from "./reports";
 import { escapeAttribute, escapeHtml } from "../utils/html";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
 import {
@@ -51,6 +52,14 @@ const COMMAND_ALIASES: Record<string, string> = {
   "📈 аналитика": "analytics",
   "💰 финансы": "finance",
   "⚙ настройки": "settings",
+  "/auto_report": "auto_report",
+  "автоотчёт": "auto_report",
+  "автоотчет": "auto_report",
+  "cmd:auto_report": "auto_report",
+  "/summary": "summary_report",
+  "summary": "summary_report",
+  "краткий отчёт": "summary_report",
+  "cmd:summary": "summary_report",
 };
 
 const formatDateTime = (value?: string): string => {
@@ -330,6 +339,7 @@ const handleAnalytics = async (context: BotContext): Promise<void> => {
     lines.push("Нет данных для аналитики. Добавьте проекты и лиды, чтобы сформировать отчёт.");
   }
   lines.push("", "Фильтры по периодам и экспорт появятся в следующих итерациях веб-панели.");
+  lines.push("", "Команды /summary и /auto_report сформируют отчёты прямо в этом чате.");
 
   await sendMessage(context, lines.join("\n"));
 };
@@ -403,6 +413,14 @@ const handleSettings = async (context: BotContext): Promise<void> => {
   await sendMessage(context, lines.join("\n"));
 };
 
+const handleAutoReport = async (context: BotContext): Promise<void> => {
+  await startReportWorkflow(context, "auto");
+};
+
+const handleSummaryReport = async (context: BotContext): Promise<void> => {
+  await startReportWorkflow(context, "summary");
+};
+
 const COMMAND_HANDLERS: Record<string, (context: BotContext) => Promise<void>> = {
   menu: sendMainMenu,
   auth: handleAuth,
@@ -412,6 +430,8 @@ const COMMAND_HANDLERS: Record<string, (context: BotContext) => Promise<void>> =
   analytics: handleAnalytics,
   finance: handleFinance,
   settings: handleSettings,
+  auto_report: handleAutoReport,
+  summary_report: handleSummaryReport,
 };
 
 export const resolveCommand = (text: string | undefined): string | null => {

@@ -1,4 +1,4 @@
-import { MetaAdAccount, MetaStatusResponse, ProjectSummary } from "../types";
+import { MetaAdAccount, MetaStatusResponse, ProjectSummary, ReportRecord } from "../types";
 import { renderLayout } from "../components/layout";
 import { escapeAttribute, escapeHtml } from "../utils/html";
 
@@ -6,6 +6,7 @@ export interface AdminDashboardProps {
   meta: MetaStatusResponse | null;
   accounts: MetaAdAccount[];
   projects: ProjectSummary[];
+  reports: ReportRecord[];
   flash?: AdminFlashMessage;
 }
 
@@ -242,7 +243,103 @@ const campaignsTable = (accounts: MetaAdAccount[]): string => {
   `;
 };
 
-export const renderAdminDashboard = ({ meta, accounts, projects, flash }: AdminDashboardProps): string => {
+const formatReportDate = (value?: string): string => {
+  if (!value) {
+    return "—";
+  }
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return escapeHtml(value);
+  }
+  return escapeHtml(new Date(timestamp).toLocaleString("ru-RU"));
+};
+
+const reportPeriodLabel = (report: ReportRecord): string => {
+  const metadata =
+    report.metadata && typeof report.metadata === "object" && !Array.isArray(report.metadata)
+      ? (report.metadata as Record<string, unknown>)
+      : null;
+  const metaPeriod = metadata && typeof metadata.periodLabel === "string" ? metadata.periodLabel.trim() : "";
+  if (metaPeriod) {
+    return metaPeriod;
+  }
+  const filters = report.filters;
+  if (filters?.datePreset) {
+    return filters.datePreset;
+  }
+  if (filters?.since || filters?.until) {
+    const since = filters?.since ?? "";
+    const until = filters?.until ?? "";
+    if (since && until && since !== until) {
+      return `${since} → ${until}`;
+    }
+    return since || until;
+  }
+  return "—";
+};
+
+const reportProjectLabel = (report: ReportRecord): string => {
+  if (report.projectIds && report.projectIds.length > 1) {
+    return `Несколько (${report.projectIds.length})`;
+  }
+  if (report.projectIds && report.projectIds.length === 1) {
+    return report.projectIds[0];
+  }
+  return report.projectId || "—";
+};
+
+const previewSummary = (summary?: string): string => {
+  if (!summary) {
+    return '<span class="muted">—</span>';
+  }
+  const normalized = summary.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return '<span class="muted">—</span>';
+  }
+  const limit = 160;
+  const text = normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
+  return escapeHtml(text);
+};
+
+const renderReportsTable = (reports: ReportRecord[]): string => {
+  if (!reports.length) {
+    return '<p class="muted">Отчёты ещё не сформированы. Используйте Telegram-команды /auto_report или /summary.</p>';
+  }
+  const rows = reports
+    .map((report) => {
+      const channel = report.channel ? escapeHtml(report.channel) : '<span class="muted">—</span>';
+      return `
+        <tr>
+          <td><strong>${escapeHtml(report.title)}</strong><div class="muted">${formatReportDate(report.generatedAt)}</div></td>
+          <td>${escapeHtml(report.type)}</td>
+          <td>${escapeHtml(reportProjectLabel(report))}</td>
+          <td>${escapeHtml(reportPeriodLabel(report))}</td>
+          <td>${previewSummary(report.summary)}</td>
+          <td>${channel}</td>
+        </tr>
+      `;
+    })
+    .join("\n");
+  return `
+    <table>
+      <thead>
+        <tr>
+          <th>Название</th>
+          <th>Тип</th>
+          <th>Проекты</th>
+          <th>Период</th>
+          <th>Краткое содержание</th>
+          <th>Канал</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+};
+
+export const renderAdminDashboard = ({ meta, accounts, projects, reports, flash }: AdminDashboardProps): string => {
   const flashBlock = flash
     ? `<div class="alert ${flash.type}">${escapeHtml(flash.message)}</div>`
     : "";
@@ -275,6 +372,10 @@ export const renderAdminDashboard = ({ meta, accounts, projects, flash }: AdminD
       <div class="grid two" style="margin-top:16px;">
         ${projects.map(projectCard).join("\n")}
       </div>
+    </section>
+    <section class="card">
+      <h2>Последние отчёты</h2>
+      ${renderReportsTable(reports)}
     </section>
   `;
 

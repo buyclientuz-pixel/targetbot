@@ -22,6 +22,13 @@ export interface TelegramMessageOptions {
   replyMarkup?: unknown;
 }
 
+export interface TelegramEditMessageOptions {
+  chatId: string;
+  messageId: number;
+  text: string;
+  replyMarkup?: unknown;
+}
+
 export const sendTelegramMessage = async (
   env: TelegramEnv,
   options: TelegramMessageOptions,
@@ -51,6 +58,36 @@ export const sendTelegramMessage = async (
   });
   if (!response.ok) {
     console.error("Failed to send Telegram message", await response.text());
+  }
+};
+
+export const editTelegramMessage = async (
+  env: TelegramEnv,
+  options: TelegramEditMessageOptions,
+): Promise<void> => {
+  const token = resolveToken(env);
+  if (!token) {
+    console.warn("Telegram token is missing");
+    return;
+  }
+  const url = new URL(`${TELEGRAM_BASE}/bot${token}/editMessageText`);
+  const payload: Record<string, unknown> = {
+    chat_id: options.chatId,
+    message_id: options.messageId,
+    text: options.text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+  };
+  if (options.replyMarkup) {
+    payload.reply_markup = options.replyMarkup;
+  }
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    console.error("Failed to edit Telegram message", await response.text());
   }
 };
 
