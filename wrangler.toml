@@ -3,9 +3,6 @@ main = "src/index.ts"
 compatibility_date = "2025-02-04"
 compatibility_flags = ["nodejs_compat"]
 
-[build]
-command = "npm install --force --legacy-peer-deps && npm run build"
-
 [observability]
 enabled = false
 head_sampling_rate = 1

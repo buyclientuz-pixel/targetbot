@@ -1,320 +1,401 @@
-import { jsonResponse, textResponse, notFound, serverError } from "./utils/http";
-import { handleProjectsList, handleProjectDetail, handleProjectRefresh } from "./api/projects";
-import { handleMetaStatus } from "./api/meta";
-import { handlePortalSummary, handlePortalCampaigns } from "./api/portal";
 import {
-  handleAdminPage,
-  handleRefreshAllRequest,
-  handleAdminProjectsApi,
-  handleAdminProjectDetail,
-  handleAdminProjectCreate,
-  handleAdminProjectUpdate,
-  handleAdminProjectToggle,
-  handleAdminProjectBillingUpdate,
-  handleAdminProjectAlertsUpdate,
-  handleAdminLogsApi,
-  handleAdminBillingApi,
-  handleAdminSystemApi,
-  handleAdminSystemAction,
-  handleAdminAccountsApi,
-  handleAdminAccountLink,
-} from "./api/admin";
-import { handleTelegramWebhook } from "./telegram";
-import { handleTelegramAlert } from "./api/telegram";
-import { handleManageTelegramWebhook, handleManageMeta } from "./api/manage";
-import { appendLogEntry, updateCronStatus } from "./utils/r2";
-import { refreshAllProjects } from "./api/projects";
+  handleMetaAdAccounts,
+  handleMetaCampaigns,
+  handleMetaOAuthCallback,
+  handleMetaOAuthStart,
+  handleMetaRefresh,
+  handleMetaStatus,
+} from "./api/meta";
 import {
-  handleFacebookStatusApi,
-  handleFacebookRefreshApi,
-  handleFacebookLogin,
-  handleFacebookCallback,
-} from "./api/auth";
-import { checkAndRefreshFacebookToken } from "./fb/auth";
-import { WorkerEnv } from "./types";
-import { notifyTelegramAdmins } from "./utils/telegram";
+  handleProjectDelete,
+  handleProjectGet,
+  handleProjectUpdate,
+  handleProjectsCreate,
+  handleProjectsList,
+} from "./api/projects";
+import {
+  handleLeadCreate,
+  handleLeadUpdateStatus,
+  handleLeadsList,
+} from "./api/leads";
+import {
+  handlePaymentDelete,
+  handlePaymentsCreate,
+  handlePaymentsList,
+  handlePaymentUpdate,
+} from "./api/payments";
+import {
+  handleUserDelete,
+  handleUserUpdate,
+  handleUsersCreate,
+  handleUsersList,
+} from "./api/users";
+import {
+  handleReportDelete,
+  handleReportGet,
+  handleReportsCreate,
+  handleReportsGenerate,
+  handleReportsList,
+} from "./api/reports";
+import {
+  handleSettingGet,
+  handleSettingsList,
+  handleSettingsUpsert,
+} from "./api/settings";
+import { handleCommandLogsList } from "./api/logs";
+import { handleTelegramWebhookRefresh } from "./api/manage";
+import { AdminFlashMessage, renderAdminDashboard } from "./admin/index";
+import { renderUsersPage } from "./admin/users";
+import { renderProjectForm } from "./admin/project-form";
+import { renderPaymentsPage } from "./admin/payments";
+import { renderSettingsPage } from "./admin/settings";
+import { renderPortal } from "./views/portal";
+import { htmlResponse, jsonResponse } from "./utils/http";
+import {
+  EnvBindings,
+  listCommandLogs,
+  listPayments,
+  listProjects,
+  listReports,
+  listSettings,
+  listUsers,
+  loadMetaToken,
+  loadProject,
+  listLeads,
+} from "./utils/storage";
+import { fetchAdAccounts, resolveMetaStatus } from "./utils/meta";
+import { projectBilling, summarizeProjects, sortProjectSummaries } from "./utils/projects";
+import { ProjectSummary } from "./types";
+import { handleTelegramUpdate } from "./bot/router";
 
-const handleNotFound = (): Response => notFound("Route not found");
-
-const routePortal = async (
-  request: Request,
-  env: WorkerEnv,
-  segments: string[]
-): Promise<Response> => {
-  if (segments.length === 2) {
-    return handlePortalSummary(request, env, segments[1]);
+const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
+  if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
+    throw new Error("Env bindings are not configured");
   }
-  if (segments.length === 3 && segments[2] === "campaigns") {
-    return handlePortalCampaigns(request, env, segments[1]);
-  }
-  return handleNotFound();
+  return env as EnvBindings & Record<string, unknown>;
 };
 
-const routeApi = async (
-  request: Request,
-  env: WorkerEnv,
-  segments: string[]
-): Promise<Response> => {
-  if (segments[1] === "ping" && request.method === "GET") {
-    return jsonResponse({ pong: true, timestamp: new Date().toISOString() });
-  }
-  if (segments[1] === "meta" && segments[2] === "status" && request.method === "GET") {
-    return handleMetaStatus(env);
-  }
-  if (segments[1] === "auth" && segments.length >= 4 && segments[2] === "facebook") {
-    if (segments[3] === "status" && request.method === "GET") {
-      return handleFacebookStatusApi(request, env);
-    }
-    if (segments[3] === "refresh" && (request.method === "POST" || request.method === "GET")) {
-      return handleFacebookRefreshApi(request, env);
-    }
-  }
-  if (segments[1] === "projects" && request.method === "GET") {
-    return handleProjectsList(env);
-  }
-  if (segments[1] === "admin") {
-    if (segments.length === 2) {
-      if (request.method === "GET") {
-        return handleAdminProjectsApi(request, env);
-      }
-      if (request.method === "POST") {
-        return handleAdminProjectCreate(request, env);
-      }
-    }
-    if (segments.length === 3) {
-      if (segments[2] === "logs" && request.method === "GET") {
-        return handleAdminLogsApi(request, env);
-      }
-      if (segments[2] === "billing" && request.method === "GET") {
-        return handleAdminBillingApi(request, env);
-      }
-      if (segments[2] === "accounts" && request.method === "GET") {
-        return handleAdminAccountsApi(request, env);
-      }
-      if (segments[2] === "system") {
-        if (request.method === "GET") {
-          return handleAdminSystemApi(request, env);
-        }
-        if (request.method === "POST") {
-          return handleAdminSystemAction(request, env);
-        }
-      }
-    }
-    if (segments.length >= 4 && segments[2] === "account") {
-      const accountId = segments[3];
-      if (segments.length === 5 && segments[4] === "link" && request.method === "POST") {
-        return handleAdminAccountLink(request, env, accountId);
-      }
-    }
-    if (segments.length >= 4 && segments[2] === "project") {
-      const projectId = segments[3];
-      if (segments.length === 4) {
-        if (request.method === "GET") {
-          return handleAdminProjectDetail(request, env, projectId);
-        }
-        if (request.method === "POST" || request.method === "PATCH") {
-          return handleAdminProjectUpdate(request, env, projectId);
-        }
-      }
-      if (segments.length === 5) {
-        if (segments[4] === "toggle" && request.method === "POST") {
-          return handleAdminProjectToggle(request, env, projectId);
-        }
-        if (segments[4] === "billing" && request.method === "POST") {
-          return handleAdminProjectBillingUpdate(request, env, projectId);
-        }
-        if (segments[4] === "alerts" && request.method === "POST") {
-          return handleAdminProjectAlertsUpdate(request, env, projectId);
-        }
-      }
-    }
-  }
-  if (segments[1] === "project" && segments.length >= 3) {
-    const projectId = segments[2];
-    if (segments.length === 3 && request.method === "GET") {
-      return handleProjectDetail(env, projectId);
-    }
-    if (segments.length === 3 && request.method === "POST") {
-      const url = new URL(request.url);
-      const period = url.searchParams.get("period") || undefined;
-      return handleProjectRefresh(env, projectId, period || undefined);
-    }
-    if (segments.length === 4 && segments[3] === "refresh") {
-      const periodParam = new URL(request.url).searchParams.get("period") || undefined;
-      if (request.method === "POST" || request.method === "GET") {
-        return handleProjectRefresh(env, projectId, periodParam);
-      }
-    }
-  }
-  if (
-    segments[1] === "project" &&
-    segments.length >= 3 &&
-    segments[2] === "refresh-all" &&
-    request.method === "POST"
-  ) {
-    return handleRefreshAllRequest(env);
-  }
-  if (
-    segments[1] === "tg" &&
-    segments.length >= 3 &&
-    segments[2] === "alert" &&
-    request.method === "POST"
-  ) {
-    return handleTelegramAlert(request, env);
-  }
-  return handleNotFound();
-};
+const notFound = () => new Response("Not found", { status: 404 });
 
-const routeAuth = async (
-  request: Request,
-  env: WorkerEnv,
-  segments: string[]
-): Promise<Response> => {
-  if (segments.length >= 2 && segments[1] === "facebook") {
-    if (segments.length === 3 && segments[2] === "login" && request.method === "GET") {
-      return handleFacebookLogin(request, env);
-    }
-    if (segments.length === 3 && segments[2] === "callback" && request.method === "GET") {
-      return handleFacebookCallback(request, env);
-    }
-    if (segments.length === 3 && segments[2] === "status" && request.method === "GET") {
-      return handleFacebookStatusApi(request, env);
-    }
-    if (
-      segments.length === 3 &&
-      segments[2] === "refresh" &&
-      (request.method === "GET" || request.method === "POST")
-    ) {
-      return handleFacebookRefreshApi(request, env);
-    }
-  }
-  return handleNotFound();
+const withCors = (response: Response): Response => {
+  const headers = new Headers(response.headers);
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-allow-headers", "content-type");
+  headers.set("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  return new Response(response.body, { ...response, headers });
 };
-
-const routeAdmin = (request: Request, env: WorkerEnv): Promise<Response> =>
-  handleAdminPage(request, env);
 
 export default {
-  async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: unknown): Promise<Response> {
+    const method = request.method.toUpperCase();
+    if (method === "OPTIONS") {
+      return withCors(new Response(null, { status: 204 }));
+    }
+
     const url = new URL(request.url);
-    const pathname = url.pathname;
-    const segments = pathname.split("/").filter(Boolean);
+    const pathname = url.pathname.replace(/\/+/g, "/");
 
     try {
-      if (pathname === "/" && request.method === "GET") {
-        return textResponse("ok");
+      if (pathname === "/bot/webhook" && method === "POST") {
+        return await handleTelegramUpdate(request, env);
+      }
+
+      if (pathname === "/") {
+        return htmlResponse(
+          "<h1>Targetbot Worker</h1><p>Используйте /admin для панели управления или /api/* для API.</p>",
+        );
+      }
+
+      if (pathname === "/auth/facebook" && method === "GET") {
+        return withCors(await handleMetaOAuthStart(request, env));
       }
 
       if (pathname === "/health") {
-        return jsonResponse({ ok: true, timestamp: new Date().toISOString() });
+        return jsonResponse({ ok: true, data: { status: "healthy" } });
       }
 
-      if (segments[0] === "portal") {
-        return routePortal(request, env, segments);
+      if (pathname.startsWith("/api/meta/status") && method === "GET") {
+        return withCors(await handleMetaStatus(request, env));
+      }
+      if (pathname.startsWith("/api/meta/adaccounts") && method === "GET") {
+        return withCors(await handleMetaAdAccounts(request, env));
+      }
+      if (pathname.startsWith("/api/meta/campaigns") && method === "GET") {
+        return withCors(await handleMetaCampaigns(request, env));
+      }
+      if (pathname === "/api/meta/oauth/start" && method === "GET") {
+        return withCors(await handleMetaOAuthStart(request, env));
+      }
+      if (pathname === "/api/meta/oauth/callback" && method === "GET") {
+        return withCors(await handleMetaOAuthCallback(request, env));
+      }
+      if (pathname === "/api/meta/refresh" && method === "POST") {
+        return withCors(await handleMetaRefresh(request, env));
       }
 
-      if (segments[0] === "admin") {
-        return routeAdmin(request, env);
+      if (pathname === "/api/projects" && method === "GET") {
+        return withCors(await handleProjectsList(request, env));
+      }
+      if (pathname === "/api/projects" && method === "POST") {
+        return withCors(await handleProjectsCreate(request, env));
       }
 
-      if (segments[0] === "auth") {
-        return routeAuth(request, env, segments);
-      }
-
-      if (segments[0] === "api") {
-        return routeApi(request, env, segments);
-      }
-
-      if (segments[0] === "manage") {
-        if (segments.length >= 3 && segments[1] === "telegram" && segments[2] === "webhook") {
-          return handleManageTelegramWebhook(request, env);
+      const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+      if (projectMatch) {
+        const projectId = decodeURIComponent(projectMatch[1]);
+        if (method === "GET") {
+          return withCors(await handleProjectGet(request, env, projectId));
         }
-        if (segments.length >= 2 && segments[1] === "meta") {
-          return handleManageMeta(request, env);
+        if (method === "PATCH") {
+          return withCors(await handleProjectUpdate(request, env, projectId));
+        }
+        if (method === "DELETE") {
+          return withCors(await handleProjectDelete(request, env, projectId));
         }
       }
 
-      if (
-        (segments[0] === "tg" || segments[0] === "telegram" || segments[0] === "webhook") &&
-        request.method === "POST"
-      ) {
-        return handleTelegramWebhook(request, env);
+      const projectLeadsMatch = pathname.match(/^\/api\/projects\/([^/]+)\/leads$/);
+      if (projectLeadsMatch && method === "GET") {
+        const projectId = decodeURIComponent(projectLeadsMatch[1]);
+        return withCors(await handleLeadsList(request, env, projectId));
       }
 
-      return handleNotFound();
+      if (pathname === "/api/leads" && method === "POST") {
+        return withCors(await handleLeadCreate(request, env));
+      }
+
+      const leadMatch = pathname.match(/^\/api\/leads\/([^/]+)$/);
+      if (leadMatch && method === "PATCH") {
+        const leadId = decodeURIComponent(leadMatch[1]);
+        return withCors(await handleLeadUpdateStatus(request, env, leadId));
+      }
+
+      if (pathname === "/api/leads" && method === "GET") {
+        const projectId = url.searchParams.get("projectId");
+        if (!projectId) {
+          return withCors(jsonResponse({ ok: false, error: "projectId is required" }, { status: 400 }));
+        }
+        return withCors(await handleLeadsList(request, env, projectId));
+      }
+
+      if (pathname === "/api/payments" && method === "GET") {
+        return withCors(await handlePaymentsList(request, env));
+      }
+      if (pathname === "/api/payments" && method === "POST") {
+        return withCors(await handlePaymentsCreate(request, env));
+      }
+      const paymentMatch = pathname.match(/^\/api\/payments\/([^/]+)$/);
+      if (paymentMatch) {
+        const paymentId = decodeURIComponent(paymentMatch[1]);
+        if (method === "PATCH") {
+          return withCors(await handlePaymentUpdate(request, env, paymentId));
+        }
+        if (method === "DELETE") {
+          return withCors(await handlePaymentDelete(request, env, paymentId));
+        }
+      }
+
+      if (pathname === "/api/reports" && method === "GET") {
+        return withCors(await handleReportsList(request, env));
+      }
+      if (pathname === "/api/reports" && method === "POST") {
+        return withCors(await handleReportsCreate(request, env));
+      }
+      if (pathname === "/api/reports/generate" && method === "POST") {
+        return withCors(await handleReportsGenerate(request, env));
+      }
+      const reportMatch = pathname.match(/^\/api\/reports\/([^/]+)$/);
+      if (reportMatch) {
+        const reportId = decodeURIComponent(reportMatch[1]);
+        if (method === "GET") {
+          return withCors(await handleReportGet(request, env, reportId));
+        }
+        if (method === "DELETE") {
+          return withCors(await handleReportDelete(request, env, reportId));
+        }
+      }
+
+      if (pathname === "/api/settings" && (method === "GET" || method === "PATCH" || method === "POST")) {
+        if (method === "GET") {
+          return withCors(await handleSettingsList(request, env));
+        }
+        return withCors(await handleSettingsUpsert(request, env));
+      }
+      const settingMatch = pathname.match(/^\/api\/settings\/([^/]+)$/);
+      if (settingMatch && method === "GET") {
+        const key = decodeURIComponent(settingMatch[1]);
+        return withCors(await handleSettingGet(request, env, key));
+      }
+
+      if (pathname === "/api/logs/commands" && method === "GET") {
+        return withCors(await handleCommandLogsList(request, env));
+      }
+
+      if (pathname === "/api/users" && method === "GET") {
+        return withCors(await handleUsersList(request, env));
+      }
+      if (pathname === "/api/users" && method === "POST") {
+        return withCors(await handleUsersCreate(request, env));
+      }
+
+      const userMatch = pathname.match(/^\/api\/users\/([^/]+)$/);
+      if (userMatch) {
+        const userId = decodeURIComponent(userMatch[1]);
+        if (method === "PATCH") {
+          return withCors(await handleUserUpdate(request, env, userId));
+        }
+        if (method === "DELETE") {
+          return withCors(await handleUserDelete(request, env, userId));
+        }
+      }
+
+      if (pathname === "/admin" && method === "GET") {
+        const bindings = ensureEnv(env);
+        const [projectsWithLeads, token, reports, settings, commandLogs] = await Promise.all([
+          summarizeProjects(bindings),
+          loadMetaToken(bindings),
+          listReports(bindings),
+          listSettings(bindings),
+          listCommandLogs(bindings),
+        ]);
+        const projectSummaries: ProjectSummary[] = sortProjectSummaries(projectsWithLeads);
+        const [meta, accounts] = await Promise.all([
+          resolveMetaStatus(bindings, token),
+          fetchAdAccounts(bindings, token, {
+            includeSpend: true,
+            includeCampaigns: true,
+            campaignsLimit: 5,
+            datePreset: "today",
+          }).catch(() => []),
+        ]);
+        let flash: AdminFlashMessage | undefined;
+        const metaStatusParam = url.searchParams.get("meta");
+        if (metaStatusParam === "success") {
+          const accountNames = url.searchParams.getAll("metaAccount");
+          const accountTotalParam = url.searchParams.get("metaAccountTotal");
+          const totalCount = accountTotalParam ? Number(accountTotalParam) : accountNames.length;
+          const expiresParam = url.searchParams.get("metaExpires");
+          let message = "Meta OAuth успешно подключён.";
+          if (expiresParam) {
+            const expiresDate = Date.parse(expiresParam);
+            const formatted = Number.isNaN(expiresDate)
+              ? expiresParam
+              : new Intl.DateTimeFormat("ru-RU", {
+                  year: "numeric",
+                  month: "2-digit",
+                  day: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }).format(new Date(expiresDate));
+            message += ` Токен активен до: ${formatted}.`;
+          }
+          if (accountNames.length) {
+            message += ` Подключённые аккаунты: ${accountNames.slice(0, 5).join(", ")}`;
+            if (totalCount > accountNames.length) {
+              message += ` и ещё ${totalCount - accountNames.length}.`;
+            }
+          } else if (totalCount > 0) {
+            message += ` Найдено рекламных аккаунтов: ${totalCount}.`;
+          }
+          flash = { type: "success", message };
+        } else if (metaStatusParam === "error") {
+          const message = url.searchParams.get("metaMessage") || "Не удалось завершить Meta OAuth.";
+          flash = { type: "error", message };
+        }
+        const recentReports = [...reports]
+          .sort((a, b) => Date.parse(b.generatedAt || b.createdAt) - Date.parse(a.generatedAt || a.createdAt))
+          .slice(0, 5);
+        const html = renderAdminDashboard({
+          meta,
+          accounts,
+          projects: projectSummaries,
+          reports: recentReports,
+          settings,
+          commandLogs: commandLogs.slice(0, 20),
+          flash,
+        });
+        return htmlResponse(html);
+      }
+
+      if (pathname === "/admin/projects/new" && method === "GET") {
+        const bindings = ensureEnv(env);
+        const [users, token] = await Promise.all([
+          listUsers(bindings),
+          loadMetaToken(bindings),
+        ]);
+        const accounts = await fetchAdAccounts(bindings, token).catch(() => []);
+        return htmlResponse(
+          renderProjectForm({ mode: "create", users, accounts }),
+        );
+      }
+
+      const editProjectMatch = pathname.match(/^\/admin\/projects\/([^/]+)$/);
+      if (editProjectMatch && method === "GET") {
+        const projectId = decodeURIComponent(editProjectMatch[1]);
+        const bindings = ensureEnv(env);
+        const project = await loadProject(bindings, projectId);
+        if (!project) {
+          return htmlResponse("<h1>Проект не найден</h1>", { status: 404 });
+        }
+        const [users, token] = await Promise.all([
+          listUsers(bindings),
+          loadMetaToken(bindings),
+        ]);
+        const accounts = await fetchAdAccounts(bindings, token).catch(() => []);
+        return htmlResponse(
+          renderProjectForm({ mode: "edit", project, users, accounts }),
+        );
+      }
+
+      if (pathname === "/admin/users" && method === "GET") {
+        const bindings = ensureEnv(env);
+        const users = await listUsers(bindings);
+        return htmlResponse(renderUsersPage(users));
+      }
+
+      if (pathname === "/admin/settings" && method === "GET") {
+        const bindings = ensureEnv(env);
+        const settings = await listSettings(bindings);
+        return htmlResponse(renderSettingsPage({ settings }));
+      }
+
+      if (pathname.startsWith("/admin/payments") && method === "GET") {
+        const bindings = ensureEnv(env);
+        const [payments, projects] = await Promise.all([
+          listPayments(bindings),
+          listProjects(bindings),
+        ]);
+        const activeProject = url.searchParams.get("project");
+        return htmlResponse(
+          renderPaymentsPage({ payments, projects, activeProjectId: activeProject }),
+        );
+      }
+
+      const portalMatch = pathname.match(/^\/portal\/([^/]+)$/);
+      if (portalMatch && method === "GET") {
+        const projectId = decodeURIComponent(portalMatch[1]);
+        const bindings = ensureEnv(env);
+        const project = await loadProject(bindings, projectId);
+        if (!project) {
+          return htmlResponse("<h1>Проект не найден</h1>", { status: 404 });
+        }
+        const [leads, payments] = await Promise.all([
+          listLeads(bindings, projectId),
+          listPayments(bindings),
+        ]);
+        const billing = projectBilling.summarize(payments.filter((entry) => entry.projectId === projectId));
+        const html = renderPortal({ project, leads, billing });
+        return htmlResponse(html);
+      }
+
+      if (pathname.startsWith("/manage/telegram/webhook") && method === "GET") {
+        return await handleTelegramWebhookRefresh(request, env);
+      }
+
+      return notFound();
     } catch (error) {
-      await appendLogEntry(env, {
-        level: "error",
-        message: `Unhandled error: ${(error as Error).message}`,
-        timestamp: new Date().toISOString(),
-      });
-      return serverError("Internal error");
+      console.error("Unhandled error", error);
+      return jsonResponse({ ok: false, error: (error as Error).message }, { status: 500 });
     }
-  },
-
-  async scheduled(event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(
-      (async () => {
-        const cronExpression = (event as { cron?: string }).cron || "";
-        const shouldRunProjects =
-          !cronExpression || cronExpression === "*/5 * * * *" || cronExpression === "0 3 * * *";
-        const shouldRunTokenCheck = !cronExpression || cronExpression === "0 3 * * *";
-
-        if (shouldRunProjects) {
-          try {
-            const result = await refreshAllProjects(env);
-            const message = `Scheduled refresh completed for ${result.refreshed.length} projects`;
-            await appendLogEntry(env, {
-              level: "info",
-              message,
-              timestamp: new Date().toISOString(),
-            });
-            await updateCronStatus(env, "projects-refresh", { ok: true, message });
-          } catch (error) {
-            const message = `Scheduled refresh failed: ${(error as Error).message}`;
-            await appendLogEntry(env, {
-              level: "error",
-              message,
-              timestamp: new Date().toISOString(),
-            });
-            await updateCronStatus(env, "projects-refresh", { ok: false, message });
-            await notifyTelegramAdmins(
-              env,
-              `🚨 Ошибка крон-задачи проектов: ${(error as Error).message}`
-            );
-          }
-        }
-
-        if (shouldRunTokenCheck) {
-          try {
-            const result = await checkAndRefreshFacebookToken(env, { notify: true });
-            const refreshNote =
-              result.refresh && result.refresh.message ? ` - ${result.refresh.message}` : "";
-            const message = `Meta token check status: ${result.status.status}${refreshNote}`;
-            await appendLogEntry(env, {
-              level: result.refresh && result.refresh.ok ? "info" : "warn",
-              message,
-              timestamp: new Date().toISOString(),
-            });
-            await updateCronStatus(env, "meta-token", {
-              ok: result.refresh ? result.refresh.ok : result.status.ok,
-              message,
-            });
-          } catch (error) {
-            const message = `Meta token scheduled check failed: ${(error as Error).message}`;
-            await appendLogEntry(env, {
-              level: "error",
-              message,
-              timestamp: new Date().toISOString(),
-            });
-            await updateCronStatus(env, "meta-token", { ok: false, message });
-            await notifyTelegramAdmins(
-              env,
-              `🚨 Ошибка проверки Meta токена: ${(error as Error).message}`
-            );
-          }
-        }
-      })()
-    );
   },
 };
