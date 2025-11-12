@@ -11,10 +11,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Configure npm registry for Cloudflare
-        run: |
-          echo "registry=https://registry.npmjs.cf/" > .npmrc
-          cat .npmrc
+      - name: Ensure npm registry availability
+        run: node ./scripts/ensure-registry.mjs
       - name: Install dependencies
         run: npm install
       - name: Deploy to Cloudflare

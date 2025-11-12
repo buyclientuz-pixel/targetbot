@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "preinstall": "echo '🪄 Using Cloudflare registry mirror'; npm config set registry https://registry.npmjs.cf/",
+    "preinstall": "node ./scripts/ensure-registry.mjs",
     "build": "wrangler deploy",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
