@@ -21,7 +21,9 @@
     "test:fallback": "node scripts/simulate-fallback.mjs",
     "validate:postdeploy": "node scripts/postdeploy-validate.mjs",
     "verify:deploy": "npm run lint:api && npm run check:config && npm run test:integration",
-    "build": "tsc --project tsconfig.json"
+    "build": "npm run bundle",
+    "bundle": "bun build src/index.ts --outdir dist --target browser --format esm --minify",
+    "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",

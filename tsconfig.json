@@ -6,10 +6,8 @@
     "lib": ["ES2020", "DOM"],
     "moduleDetection": "force",
     "strict": false,
-    "noEmit": false,
+    "noEmit": true,
     "skipLibCheck": true,
-    "outDir": "dist",
-    "rootDir": "src",
     "types": ["@cloudflare/workers-types"]
   },
   "include": ["types/**/*.d.ts", "src/**/*.ts"],

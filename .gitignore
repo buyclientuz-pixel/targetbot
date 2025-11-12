@@ -5,7 +5,6 @@ node_modules/
 .dev.vars
 .dev.vars.local
 !.dev.vars.example
-dist/
 .DS_Store
 coverage/
 *.log
