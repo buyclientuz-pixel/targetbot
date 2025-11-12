@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TargetBot Admin</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /*STYLE_PLACEHOLDER*/
+    </style>
+  </head>
+  <body class="bg-slate-950 text-slate-100 font-[Inter]">
+    <div id="app" class="min-h-screen">
+      <main class="max-w-6xl mx-auto px-6 py-10 space-y-8">
+        <header class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 class="text-3xl font-semibold">TargetBot Admin Portal</h1>
+            <p class="text-slate-400">Управление заявками, пользователями и интеграциями.</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <button id="refreshMeta" class="btn-primary">🔄 Синхронизировать Meta</button>
+            <button id="checkWebhook" class="btn-secondary">📡 Проверить Webhook</button>
+          </div>
+        </header>
+        <section>
+          <nav class="tabs" role="tablist">
+            <button class="tab-button active" data-target="dashboard">📈 Статистика</button>
+            <button class="tab-button" data-target="users">👤 Пользователи</button>
+            <button class="tab-button" data-target="leads">💬 Заявки</button>
+            <button class="tab-button" data-target="integrations">⚙️ Интеграции</button>
+            <button class="tab-button" data-target="settings">🔒 Настройки</button>
+          </nav>
+          <div class="tab-panels">
+            <section id="dashboard" class="tab-panel active"></section>
+            <section id="users" class="tab-panel"></section>
+            <section id="leads" class="tab-panel"></section>
+            <section id="integrations" class="tab-panel"></section>
+            <section id="settings" class="tab-panel"></section>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module">
+      /*SCRIPT_PLACEHOLDER*/
+    </script>
+  </body>
+</html>
