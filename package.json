@@ -12,7 +12,10 @@
     "dev": "wrangler dev",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "predeploy": "npm run test && npm run typecheck"
+    "predeploy": "npm run bundle:admin && npm run test && npm run typecheck",
+    "bundle:admin": "node scripts/embed-admin.mjs",
+    "prebuild": "npm run bundle:admin",
+    "predev": "npm run bundle:admin"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240512.0",

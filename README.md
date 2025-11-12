@@ -46,6 +46,7 @@ npm run test       # запуск vitest
 npm run typecheck  # проверка типов
 npm run build      # dry-run деплоя через wrangler
 npm run deploy     # деплой в Cloudflare Workers
+npm run bundle:admin  # вручную пересобрать HTML админки в page.ts (обычно запускается автоматически)
 ```
 
 ## 🔐 Переменные окружения
