@@ -6,6 +6,7 @@ export interface AdminDashboardProps {
   meta: MetaStatusResponse | null;
   accounts: MetaAdAccount[];
   projects: ProjectSummary[];
+  flash?: AdminFlashMessage;
 }
 
 export interface ProjectSummary extends ProjectRecord {
@@ -17,6 +18,11 @@ interface LeadStats {
   new: number;
   done: number;
   latestAt?: string;
+}
+
+export interface AdminFlashMessage {
+  type: "success" | "error" | "info";
+  message: string;
 }
 
 const statusBadge = (meta: MetaStatusResponse | null): string => {
@@ -106,8 +112,12 @@ const accountsTable = (accounts: MetaAdAccount[]): string => {
   `;
 };
 
-export const renderAdminDashboard = ({ meta, accounts, projects }: AdminDashboardProps): string => {
+export const renderAdminDashboard = ({ meta, accounts, projects, flash }: AdminDashboardProps): string => {
+  const flashBlock = flash
+    ? `<div class="alert ${flash.type}">${escapeHtml(flash.message)}</div>`
+    : "";
   const body = `
+    ${flashBlock}
     <section class="card">
       <h2>Meta OAuth</h2>
       <p>${statusBadge(meta)}</p>
@@ -133,6 +143,17 @@ export const renderAdminDashboard = ({ meta, accounts, projects }: AdminDashboar
   `;
 
   const scripts = `
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has('meta') || params.has('metaMessage')) {
+        params.delete('meta');
+        params.delete('metaMessage');
+        const nextSearch = params.toString();
+        const nextUrl = window.location.pathname + (nextSearch ? '?' + nextSearch : '') + window.location.hash;
+        history.replaceState({}, document.title, nextUrl);
+      }
+    })();
+
     const refreshBtn = document.getElementById('refreshMeta');
     if (refreshBtn) {
       refreshBtn.addEventListener('click', async () => {

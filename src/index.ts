@@ -23,7 +23,7 @@ import {
   handleUsersCreate,
   handleUsersList,
 } from "./api/users";
-import { ProjectSummary, renderAdminDashboard } from "./admin/index";
+import { AdminFlashMessage, ProjectSummary, renderAdminDashboard } from "./admin/index";
 import { renderUsersPage } from "./admin/users";
 import { renderProjectForm } from "./admin/project-form";
 import { renderPortal } from "./views/portal";
@@ -205,7 +205,15 @@ export default {
           resolveMetaStatus(bindings, token),
           fetchAdAccounts(bindings, token).catch(() => []),
         ]);
-        const html = renderAdminDashboard({ meta, accounts, projects: projectSummaries });
+        let flash: AdminFlashMessage | undefined;
+        const metaStatusParam = url.searchParams.get("meta");
+        if (metaStatusParam === "success") {
+          flash = { type: "success", message: "Meta OAuth успешно подключён." };
+        } else if (metaStatusParam === "error") {
+          const message = url.searchParams.get("metaMessage") || "Не удалось завершить Meta OAuth.";
+          flash = { type: "error", message };
+        }
+        const html = renderAdminDashboard({ meta, accounts, projects: projectSummaries, flash });
         return htmlResponse(html);
       }
 

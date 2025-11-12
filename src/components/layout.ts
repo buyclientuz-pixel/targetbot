@@ -35,6 +35,10 @@ export const renderLayout = ({ title, body, styles = "", scripts = "" }: LayoutO
       .grid { display: grid; gap: 16px; }
       .grid.two { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
       .muted { color: #627d98; font-size: 13px; margin-top: 6px; }
+      .alert { padding: 12px 16px; border-radius: 10px; font-weight: 600; margin-bottom: 18px; }
+      .alert.success { background: #def7ec; color: #03543f; }
+      .alert.error { background: #fde2e1; color: #9b1c1c; }
+      .alert.info { background: #dceefb; color: #0b69a3; }
       .tabs { display: flex; gap: 12px; margin-top: 16px; }
       .tabs a { padding: 8px 14px; border-radius: 8px; background: #e4ebf5; color: #1f2933; text-decoration: none; font-weight: 600; }
       .tabs a.active { background: #1f75fe; color: #fff; }

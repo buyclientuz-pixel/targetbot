@@ -17,6 +17,18 @@ const buildRedirectUri = (request: Request): string => {
   return url.toString();
 };
 
+const prefersJson = (request: Request, url: URL): boolean => {
+  const accept = request.headers.get("accept");
+  if (accept && accept.toLowerCase().includes("application/json")) {
+    return true;
+  }
+  const format = url.searchParams.get("format") || url.searchParams.get("response");
+  if (format && format.toLowerCase() === "json") {
+    return true;
+  }
+  return false;
+};
+
 export const handleMetaStatus = async (
   request: Request,
   env: unknown,
@@ -81,9 +93,16 @@ export const handleMetaOAuthCallback = async (
   env: unknown,
 ): Promise<Response> => {
   const url = new URL(request.url);
+  const wantsJson = prefersJson(request, url);
   const code = url.searchParams.get("code");
   if (!code) {
-    return jsonResponse({ ok: false, error: "Missing code" }, { status: 400 });
+    if (wantsJson) {
+      return jsonResponse({ ok: false, error: "Missing code" }, { status: 400 });
+    }
+    const redirect = new URL("/admin", url);
+    redirect.searchParams.set("meta", "error");
+    redirect.searchParams.set("metaMessage", "Meta не вернула код авторизации");
+    return Response.redirect(redirect.toString(), 302);
   }
 
   try {
@@ -92,11 +111,25 @@ export const handleMetaOAuthCallback = async (
     const token = await exchangeToken(bindings, code, redirectUri);
     await saveMetaToken(bindings, token);
     const status = await resolveMetaStatus(bindings, token);
-    const payload: ApiSuccess<MetaStatusResponse> = { ok: true, data: status };
-    return jsonResponse(payload);
+    if (wantsJson) {
+      const payload: ApiSuccess<MetaStatusResponse> = { ok: true, data: status };
+      return jsonResponse(payload);
+    }
+    const redirect = new URL("/admin", url);
+    redirect.searchParams.set("meta", "success");
+    return Response.redirect(redirect.toString(), 302);
   } catch (error) {
-    const payload: ApiError = { ok: false, error: (error as Error).message };
-    return jsonResponse(payload, { status: 500 });
+    const message = (error as Error).message;
+    if (wantsJson) {
+      const payload: ApiError = { ok: false, error: message };
+      return jsonResponse(payload, { status: 500 });
+    }
+    const redirect = new URL("/admin", url);
+    redirect.searchParams.set("meta", "error");
+    if (message) {
+      redirect.searchParams.set("metaMessage", message.slice(0, 200));
+    }
+    return Response.redirect(redirect.toString(), 302);
   }
 };
 
