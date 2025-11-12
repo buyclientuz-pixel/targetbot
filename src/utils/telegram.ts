@@ -1,8 +1,8 @@
-interface TelegramEnv {
+export type TelegramEnv = Record<string, unknown> & {
   BOT_TOKEN?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TG_API_TOKEN?: string;
-}
+};
 
 const TELEGRAM_BASE = "https://api.telegram.org";
 
