@@ -1,71 +1,99 @@
-# Деплой и управление секретами
+# Деплой Targetbot
 
-Этот документ описывает, как обновлять секреты Cloudflare Workers и как проходит автоматический деплой из GitHub.
+Этот документ описывает, как подготовить окружение и деплоить Cloudflare Worker вручную. Проект не использует CI-пайплайны и выполняет сборку только из локальной среды разработчика или админа.
 
-## Автодеплой из GitHub Actions
+## Предварительные требования
 
-Workflow `.github/workflows/deploy.yml` запускается при пуше в ветку `main` или вручную через `workflow_dispatch`. Он выполняет:
+- Node.js 18+ и npm 9+.
+- Установленный `wrangler` (используется локально через `npm install`).
+- Доступ к аккаунту Cloudflare с правами на деплой воркера.
+- Переменные окружения `CLOUDFLARE_API_TOKEN` и `CLOUDFLARE_ACCOUNT_ID`.
+- Telegram токен (`BOT_TOKEN` либо `TELEGRAM_BOT_TOKEN`) для отправки уведомлений о лидах.
+- Пара Facebook/Meta (`FB_APP_ID`, `FB_APP_SECRET`) для OAuth.
 
-1. Устанавливает зависимости (`npm install`).
-2. Синхронизирует секреты из GitHub Actions secrets в Cloudflare Workers (`production` environment) с помощью скрипта `npm run sync:secrets -- --env production`.
-3. Деплоит воркер командой `npm run deploy -- --env production` (требуются `CF_API_TOKEN` и `CF_ACCOUNT_ID`).
-
-> Если какое-то значение не задано в secrets GitHub, шаг синхронизации просто пропустит его и продолжит выполнение.
-
-### Какие secrets поддерживаются
-
-Скрипт синхронизации передаёт в Cloudflare следующие ключи (если заданы):
-
-- `BOT_TOKEN`, `ADMIN_IDS`, `DEFAULT_TZ`, `WORKER_URL`.
-- `FB_APP_ID`, `FB_APP_SECRET`, `FB_LONG_TOKEN`, `META_LONG_TOKEN`.
-- `META_MANAGE_TOKEN`, `PORTAL_TOKEN`, `GS_WEBHOOK`.
-- `PROJECT_MANAGER_IDS`, `PROJECT_ACCOUNT_ACCESS`, `PROJECT_CHAT_PRESETS`.
-- `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_ENDPOINT`, `R2_ACCOUNT_ID`.
-
-> Можно добавлять дополнительные переменные без модификации workflow: достаточно указать их в `secrets` и в списке `SECRET_DEFINITIONS` внутри `scripts/sync-secrets.mjs`.
-
-## Локальная синхронизация секретов
-
-Для обновления секретов в Cloudflare из локального окружения:
+## Настройка зависимостей
 
 ```bash
-# Экспортируем значения в текущую сессию
-export BOT_TOKEN="..."
-export FB_APP_ID="..."
-export FB_APP_SECRET="..."
-export META_LONG_TOKEN="..."
-export R2_ACCESS_KEY_ID="..."
-export R2_SECRET_ACCESS_KEY="..."
-export R2_BUCKET_NAME="botbucket"
-export R2_ENDPOINT="https://<account>.r2.cloudflarestorage.com"
-export R2_ACCOUNT_ID="..."
-
-# Отправляем секреты в Cloudflare Workers (production)
-npm run sync:secrets -- --env production
+npm install
 ```
 
-Опции команды:
+> В офлайн-средах установка пакетов может завершиться ошибкой 403. Выполните команду в окружении с доступом к npm-регистри, затем закоммитьте обновлённый `package-lock.json` или скопируйте папку `node_modules` в нужную машину.
 
-- `--env <name>` — окружение Wrangler (`production`, `staging`, `dev`).
-- `--config <path>` — путь к `wrangler.toml`, по умолчанию `wrangler.toml` в корне.
-- `--dry-run` — показать, какие ключи будут синхронизированы, не отправляя их в Cloudflare.
+## Локальная разработка
 
-Скрипт берёт значения только из переменных окружения процесса. Если ключ обязателен (например, `BOT_TOKEN`) и не найден, скрипт завершится с ошибкой.
+1. Экспортируйте переменные окружения в терминале или создайте `.dev.vars` (используется Wrangler):
+   ```bash
+   export BOT_TOKEN="<telegram-token>"
+   export FB_APP_ID="<meta-app-id>"
+   export FB_APP_SECRET="<meta-app-secret>"
+   export CLOUDFLARE_ACCOUNT_ID="<account>"
+   export CLOUDFLARE_API_TOKEN="<api-token>"
+   ```
+2. Запустите дев-сервер Cloudflare Workers:
+   ```bash
+   npm run dev
+   ```
+3. Откройте `http://127.0.0.1:8787/admin` для админки или вызывайте API ручками (`/api/meta/status`, `/api/projects`, `/api/users`).
 
-## Ротация секретов через Cloudflare Dashboard
+## Подготовка к деплою
 
-1. Откройте Cloudflare Dashboard → Workers & Pages → ваш воркер → **Settings → Variables**.
-2. В разделе **Environment Variables** отредактируйте нужный секрет.
-3. После сохранения запустите деплой (через GitHub Actions или `npm run deploy -- --env production`).
+1. Убедитесь, что в README отмечен актуальный прогресс и описаны изменения.
+2. Проверьте, что в Cloudflare Dashboard → Workers → Settings → Variables заданы все токены.
+3. Выполните сухой прогон сборки (Wrangler выполняет бандлинг и статическую проверку):
+   ```bash
+   npm run build
+   ```
+   Команда использует `wrangler deploy --dry-run` и не публикует воркер.
 
-## Проверка деплоя
+## Деплой
 
-1. Выполните `npm run check:config -- --ping-telegram`, чтобы убедиться в валидности токенов.
-2. Откройте `https://<worker>/health?ping=telegram` и проверьте статус вебхука.
-3. Запустите `npm run test:integration -- --base https://<worker>.workers.dev`, чтобы проверить Meta OAuth, `/manage/meta` и клиентский портал.
+1. Выполните команду:
+   ```bash
+   npm run deploy
+   ```
+2. Дождитесь успешного завершения (`Success: Finished deploying worker`).
+3. Перейдите в Cloudflare Dashboard → Workers → выбранный воркер → **Deployments** и убедитесь, что новая версия активна.
 
-## Troubleshooting
+Если Cloudflare запрашивает подтверждение прав, перейдите по ссылке в терминале Wrangler и авторизуйтесь через браузер.
 
-- **`wrangler secret put` требует интерактивного ввода** — используйте скрипт `sync-secrets`, он передаёт значение через stdin автоматически.
-- **`Invalid access token` при авторизации Meta** — обновите `FB_APP_ID`, `FB_APP_SECRET` и выполните OAuth заново через кнопку «Авторизоваться» в админке.
-- **`Illegal invocation` при запросах Meta** — убедитесь, что используете актуальную версию воркера (патч уже включён), либо выполните `npm run deploy` повторно.
+## Постдеплойная проверка
+
+После публикации вручную выполните smoke-тесты:
+
+```bash
+curl -i https://<worker>/health
+curl -i https://<worker>/api/meta/status
+curl -i https://<worker>/api/meta/adaccounts
+curl -i https://<worker>/api/projects
+curl -i https://<worker>/api/users
+```
+
+Дополнительно откройте `/admin` и `/portal/<projectId>` в браузере.
+
+При ошибках:
+- Проверьте логи в Cloudflare Dashboard → Workers → Logs.
+- Убедитесь, что токены Meta и Telegram заданы и не истекли.
+- Перезапустите `npm run build` локально, чтобы воспроизвести проблему.
+
+## Управление секретами
+
+- **Через Cloudflare Dashboard**: Workers & Pages → ваш воркер → Settings → Variables.
+- **Через Wrangler**:
+  ```bash
+  echo "<value>" | npx wrangler secret put BOT_TOKEN
+  ```
+  Повторите команду для `FB_APP_ID`, `FB_APP_SECRET` и других секретов.
+
+Все переменные читаются напрямую из `env`, поэтому пересоздавать воркер или KV не требуется.
+
+## Откат
+
+1. Откройте Cloudflare Dashboard → Workers → нужный воркер → Versions.
+2. Выберите стабильную версию и нажмите **Promote**.
+3. Задокументируйте откат в README (раздел Progress) и заведите задачу на устранение причины.
+
+## Полезные ссылки
+
+- Документация Wrangler: https://developers.cloudflare.com/workers/wrangler/
+- Graph API Meta: https://developers.facebook.com/docs/graph-api/
+- Telegram Bot API: https://core.telegram.org/bots/api

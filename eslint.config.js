@@ -16,7 +16,7 @@ export default [
     },
     rules: {
       'prettier/prettier': 'error',
-      quotes: ['error', 'backtick'],
+      quotes: ['error', 'double', { avoidEscape: true }],
       'no-var': 'error',
       'prefer-const': 'error',
       semi: ['error', 'always']
