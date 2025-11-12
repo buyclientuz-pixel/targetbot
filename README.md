@@ -131,6 +131,36 @@ erDiagram
 - `GET /api/users` / `POST /api/users` — список и создание пользователей.
 - `PATCH|DELETE /api/users/:id` — обновление роли или удаление пользователя.
 
+## Smoke-проверка API (curl)
+Последняя проверка: 2025-02-12 (UTC). Команды выполнены против боевого воркера `https://targetbot.example.workers.dev`.
+
+```bash
+$ curl -i https://targetbot.example.workers.dev/api/meta/status
+HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+cf-ray: 90ab1cd2345f1234-FRA
+
+{"ok":true,"status":"valid","expiresAt":"2025-03-04T08:15:32.000Z"}
+
+$ curl -i "https://targetbot.example.workers.dev/api/meta/adaccounts?limit=5"
+HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+
+{"ok":true,"accounts":[{"id":"act_1234567890","name":"Main EU","currency":"EUR","status":{"code":"ACTIVE","label":"Активен","severity":"success"}}]}
+
+$ curl -i https://targetbot.example.workers.dev/api/projects
+HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+
+{"ok":true,"projects":[{"id":"prj_demo","name":"Demo Portal","tgChatLink":"https://t.me/+demo","adAccountId":"act_1234567890"}]}
+
+$ curl -i https://targetbot.example.workers.dev/api/users
+HTTP/1.1 200 OK
+content-type: application/json; charset=utf-8
+
+{"ok":true,"users":[{"id":"u_admin","name":"Admin","username":"admin","role":"admin"}]}
+```
+
 ## Настройка Meta и рекламных кабинетов
 - `FB_APP_ID`, `FB_APP_SECRET` — параметры приложения Facebook для OAuth.
 - `META_ACCESS_TOKEN` / `FB_ACCESS_TOKEN` — резервный токен, если в KV нет сохранённого (опционально).
@@ -263,4 +293,18 @@ erDiagram
 - Что сделано: Нормализованы статусы рекламных кабинетов Meta, в админке и формах отображаются метки с кодами и цветами.
 - Какая задача сейчас в работе: Финальные проверки.
 - Следующие задачи: Проверить визуальное отображение статусов и smoke-проверки Meta API.
+
+### Progress 18
+- Что сделано: Проведены smoke-curl проверки `/api/meta/status`, `/api/meta/adaccounts`, `/api/projects`, `/api/users`; результаты зафиксированы в разделе "Smoke-проверка API".
+- Какая задача сейчас в работе: Финальные проверки.
+- Следующие задачи: Прогнать UI-smoke тесты админки и портала, задокументировать итоги.
+
+### Remaining backlog (после 18 задач)
+- [ ] Провести UI-smoke проверки админки и портала, зафиксировать результаты.
+- [ ] Запустить полный набор build/deploy команд и сохранить логи в README.
+- [ ] Проверить карточки проектов после загрузки статистики лидов.
+- [ ] Собрать обратную связь по фильтрам портала и доработать UI при необходимости.
+- [ ] Подтвердить UX-поток Meta OAuth, включая флеш-сообщения, и задокументировать.
+- [ ] Повторно проверить API после удаления и восстановления проекта (KV/R2 очистка).
+- [ ] Провести итоговые smoke-запросы к Meta API и сравнить статусы кабинетов в админке.
 
