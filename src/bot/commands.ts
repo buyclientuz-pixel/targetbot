@@ -28,8 +28,59 @@ const resolveAuthUrl = (env: BotContext["env"]): string => {
   return resolved ? resolved : AUTH_URL_FALLBACK;
 };
 
+const buildManageWebhookUrl = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let base: URL;
+  try {
+    base = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+  } catch (error) {
+    console.warn("Invalid manage webhook base", trimmed, error);
+    return null;
+  }
+  base.pathname = "/manage/telegram/webhook";
+  base.search = "";
+  base.searchParams.set("action", "refresh");
+  base.searchParams.set("drop", "1");
+  return base.toString();
+};
+
+const resolveManageWebhookUrl = (env: BotContext["env"]): string | null => {
+  const candidates = [
+    env.MANAGE_WEBHOOK_URL,
+    env.MANAGE_BASE_URL,
+    env.PUBLIC_WORKER_URL,
+    env.WORKER_PUBLIC_URL,
+    env.PUBLIC_BASE_URL,
+    env.PUBLIC_WEB_URL,
+    env.WORKER_BASE_URL,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      const resolved = buildManageWebhookUrl(candidate);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+
+  const fallback = buildManageWebhookUrl(AUTH_URL_FALLBACK);
+  return fallback;
+};
+
 const HOME_MARKUP = {
   inline_keyboard: [[{ text: "⬅ Назад", callback_data: "cmd:menu" }]],
+};
+
+const SETTINGS_MARKUP = {
+  inline_keyboard: [
+    [{ text: "🔄 Обновить вебхуки", callback_data: "cmd:webhooks" }],
+    [{ text: "🧩 Проверить токен Meta", callback_data: "cmd:auth" }],
+    [{ text: "⬅ Назад", callback_data: "cmd:menu" }],
+  ],
 };
 
 const COMMAND_ALIASES: Record<string, string> = {
@@ -52,6 +103,8 @@ const COMMAND_ALIASES: Record<string, string> = {
   "📈 аналитика": "analytics",
   "💰 финансы": "finance",
   "⚙ настройки": "settings",
+  "cmd:webhooks": "webhooks",
+  "🔄 обновить вебхуки": "webhooks",
   "/auto_report": "auto_report",
   "автоотчёт": "auto_report",
   "автоотчет": "auto_report",
@@ -404,13 +457,88 @@ const handleSettings = async (context: BotContext): Promise<void> => {
   const lines = [
     "⚙ Настройки",
     "",
-    "🔄 Обновить вебхуки — выполните после изменения URL воркера.",
-    "🧩 Проверить токен Meta — используйте раздел Авторизация Facebook.",
-    "⏰ Время автоотчёта — настройка появится вместе с модулем отчётов.",
-    "🌐 Язык интерфейса и формат уведомлений можно задать в веб-панели.",
+    "Используйте кнопки ниже для управления сервисными настройками.",
+    "🔄 Обновить вебхуки — выполните после изменения URL воркера или токена.",
+    "🧩 Проверить токен Meta — доступно в разделе Авторизация Facebook.",
+    "⏰ Время автоотчёта и формат уведомлений настраиваются в веб-панели.",
   ];
 
-  await sendMessage(context, lines.join("\n"));
+  await sendMessage(context, lines.join("\n"), { replyMarkup: SETTINGS_MARKUP });
+};
+
+const handleWebhookRefresh = async (context: BotContext): Promise<void> => {
+  const chatId = ensureChatId(context);
+  if (!chatId) {
+    return;
+  }
+
+  const endpoint = resolveManageWebhookUrl(context.env);
+  if (!endpoint) {
+    await sendMessage(
+      context,
+      [
+        "🔄 Обновление вебхуков",
+        "",
+        "❌ Не удалось определить адрес воркера для обновления вебхуков.",
+        "Укажите переменную окружения PUBLIC_BASE_URL или MANAGE_WEBHOOK_URL.",
+      ].join("\n"),
+      { replyMarkup: SETTINGS_MARKUP },
+    );
+    return;
+  }
+
+  let responseText = "";
+  try {
+    const response = await fetch(endpoint, { method: "GET" });
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = await response.text();
+    }
+
+    const isJson = typeof payload === "object" && payload !== null;
+    const ok = isJson && typeof (payload as { ok?: unknown }).ok === "boolean" ? (payload as { ok: boolean }).ok : response.ok;
+
+    if (ok) {
+      const description =
+        isJson && typeof (payload as { data?: { description?: unknown } }).data?.description === "string"
+          ? (payload as { data?: { description?: string } }).data?.description
+          : null;
+      responseText = [
+        "✅ Вебхуки успешно переподключены.",
+        description ? `Ответ Telegram: ${escapeHtml(description)}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    } else {
+      const errorMessage =
+        isJson && typeof (payload as { error?: unknown }).error === "string"
+          ? (payload as { error?: string }).error
+          : response.statusText || "Неизвестная ошибка";
+      const details =
+        isJson && typeof (payload as { details?: unknown }).details === "string"
+          ? (payload as { details?: string }).details
+          : null;
+      responseText = [
+        `❌ Не удалось обновить вебхуки: ${escapeHtml(errorMessage)}.`,
+        details ? `Детали: ${escapeHtml(details)}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    }
+  } catch (error) {
+    responseText = `❌ Ошибка сети: ${escapeHtml((error as Error).message)}`;
+  }
+
+  const lines = [
+    "🔄 Обновление вебхуков",
+    `URL: <code>${escapeHtml(endpoint)}</code>`,
+    "",
+    responseText || "Ответ не получен.",
+  ];
+
+  await sendMessage(context, lines.join("\n"), { replyMarkup: SETTINGS_MARKUP });
 };
 
 const handleAutoReport = async (context: BotContext): Promise<void> => {
@@ -430,6 +558,7 @@ const COMMAND_HANDLERS: Record<string, (context: BotContext) => Promise<void>> =
   analytics: handleAnalytics,
   finance: handleFinance,
   settings: handleSettings,
+  webhooks: handleWebhookRefresh,
   auto_report: handleAutoReport,
   summary_report: handleSummaryReport,
 };

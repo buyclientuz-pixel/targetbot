@@ -347,6 +347,13 @@ export const renderAdminDashboard = ({ meta, accounts, projects, reports, flash 
   const body = `
     ${flashBlock}
     <section class="card">
+      <h2>Вебхуки Telegram</h2>
+      <p class="muted">Переподключите бота после обновления URL воркера или токена.</p>
+      <div class="actions">
+        <button class="btn btn-secondary" id="refreshWebhooks">🔄 Обновить вебхуки</button>
+      </div>
+    </section>
+    <section class="card">
       <h2>Meta OAuth</h2>
       <p>${statusBadge(meta)}</p>
       <div class="actions">
@@ -409,6 +416,45 @@ export const renderAdminDashboard = ({ meta, accounts, projects, reports, flash 
         } finally {
           refreshBtn.removeAttribute('disabled');
           refreshBtn.textContent = 'Обновить токен';
+        }
+      });
+    }
+
+    const refreshWebhooksBtn = document.getElementById('refreshWebhooks');
+    if (refreshWebhooksBtn) {
+      const originalLabel = refreshWebhooksBtn.textContent;
+      refreshWebhooksBtn.addEventListener('click', async () => {
+        refreshWebhooksBtn.setAttribute('disabled', 'true');
+        refreshWebhooksBtn.textContent = 'Переподключаем...';
+        try {
+          const url = new URL('/manage/telegram/webhook', window.location.origin);
+          url.searchParams.set('action', 'refresh');
+          url.searchParams.set('drop', '1');
+          const response = await fetch(url.toString(), { method: 'GET' });
+          let payload;
+          try {
+            payload = await response.clone().json();
+          } catch (error) {
+            payload = await response.text();
+          }
+          const isJson = payload && typeof payload === 'object';
+          if (response.ok && isJson && payload.ok) {
+            const description =
+              typeof payload.data?.description === 'string' ? payload.data.description : 'успех';
+            alert('Вебхуки обновлены: ' + description);
+          } else {
+            const errorMessage =
+              isJson && typeof payload.error === 'string'
+                ? payload.error
+                : response.statusText || 'Неизвестная ошибка';
+            const details = isJson && typeof payload.details === 'string' ? '\n' + payload.details : '';
+            throw new Error(errorMessage + details);
+          }
+        } catch (error) {
+          alert('Ошибка обновления вебхуков: ' + error.message);
+        } finally {
+          refreshWebhooksBtn.removeAttribute('disabled');
+          refreshWebhooksBtn.textContent = originalLabel || '🔄 Обновить вебхуки';
         }
       });
     }
