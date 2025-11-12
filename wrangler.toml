@@ -4,6 +4,7 @@ compatibility_date = "2025-11-01"
 compatibility_flags = ["nodejs_compat"]
 usage_model = "bundled"
 workers_dev = true
+node_compat = true
 
 [kv_namespaces]
 [[kv_namespaces]]

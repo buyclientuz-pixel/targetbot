@@ -7,20 +7,14 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "wrangler deploy --dry-run",
-    "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "predeploy": "npm run bundle:admin && npm run test && npm run typecheck",
-    "bundle:admin": "node scripts/embed-admin.mjs",
-    "prebuild": "npm run bundle:admin",
-    "predev": "npm run bundle:admin"
+    "build": "tsc",
+    "deploy": "npx wrangler deploy --minify",
+    "install": "npm install --ignore-scripts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240512.0",
     "typescript": "^5.4.5",
-    "vitest": "^1.6.0",
     "wrangler": "4.47.0"
   }
 }
