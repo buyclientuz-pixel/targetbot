@@ -677,6 +677,7 @@ npm run deploy -- --env production
 - [x] Deploy confirmation
 
 #### npm install shim
+- [x] Настроены алиасы в `.npmrc`, перенаправляющие `npm ci` и его синонимы на `npm install --force --legacy-peer-deps`,
 - [x] Добавлен `npm-shrinkwrap.json`, чтобы Cloudflare `npm clean-install` всегда находил lock-файл даже при нестандартных шагах сборки.
 
 ---
