@@ -1,24 +1,49 @@
+import type { WorkerEnv } from "../types";
+import { readStoredMetaAuth } from "./auth";
+
 interface GraphEnv {
   META_LONG_TOKEN?: string;
   META_ACCESS_TOKEN?: string;
   META_MANAGE_TOKEN?: string;
+  FB_LONG_TOKEN?: string;
   FB_GRAPH_VERSION?: string;
+  META_GRAPH_VERSION?: string;
 }
 
 const DEFAULT_VERSION = "v18.0";
+const resolveGraphToken = async (env: GraphEnv & Partial<WorkerEnv>): Promise<string | null> => {
+  const directToken =
+    env.META_MANAGE_TOKEN ||
+    env.META_LONG_TOKEN ||
+    env.META_ACCESS_TOKEN ||
+    env.FB_LONG_TOKEN;
+  if (directToken) {
+    return directToken;
+  }
+
+  try {
+    const stored = await readStoredMetaAuth(env as WorkerEnv);
+    if (stored && typeof stored.access_token === "string" && stored.access_token) {
+      return stored.access_token;
+    }
+  } catch (_error) {
+    // ignore storage read errors, fall through to null
+  }
+  return null;
+};
 
 export const callGraph = async (
-  env: GraphEnv,
+  env: GraphEnv & Partial<WorkerEnv>,
   path: string,
   params: Record<string, string> = {},
   init: RequestInit = {}
 ): Promise<any> => {
-  const token = env.META_MANAGE_TOKEN || env.META_LONG_TOKEN || env.META_ACCESS_TOKEN;
+  const token = await resolveGraphToken(env);
   if (!token) {
     throw new Error("Meta access token is not configured");
   }
 
-  const version = env.FB_GRAPH_VERSION || DEFAULT_VERSION;
+  const version = env.FB_GRAPH_VERSION || env.META_GRAPH_VERSION || DEFAULT_VERSION;
   const url = new URL(`https://graph.facebook.com/${version}/${path.replace(/^\//, "")}`);
 
   for (const [key, value] of Object.entries(params)) {
