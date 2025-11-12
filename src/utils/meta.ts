@@ -62,6 +62,22 @@ const META_SECRET_SETTING_KEYS = [
   "system.meta.appSecret",
 ] as const;
 
+const META_TOKEN_SETTING_KEYS = [
+  "meta.token",
+  "meta.accessToken",
+  "meta.oauth.token",
+  "meta.oauth.accessToken",
+  "system.meta.token",
+] as const;
+
+const META_TOKEN_EXPIRES_SETTING_KEYS = [
+  "meta.token.expiresAt",
+  "meta.token.expires",
+  "meta.oauth.expiresAt",
+  "meta.oauth.expiration",
+  "system.meta.tokenExpires",
+] as const;
+
 const ACCOUNT_STATUS_MAP: Record<number, { label: string; severity: "success" | "warning" | "error" }> = {
   1: { label: "Активен", severity: "success" },
   2: { label: "Отключён", severity: "error" },
@@ -213,6 +229,21 @@ export const withMetaSettings = async (
       const secret = findSettingOverride(settings, META_SECRET_SETTING_KEYS, ["secret", "value"]);
       if (secret) {
         overrides.META_APP_SECRET = secret;
+      }
+    }
+
+    if (!resolveEnvToken(env)) {
+      const token = findSettingOverride(settings, META_TOKEN_SETTING_KEYS, ["accessToken", "token", "value"]);
+      if (token) {
+        overrides.META_ACCESS_TOKEN = token;
+        const expiresAt = findSettingOverride(
+          settings,
+          META_TOKEN_EXPIRES_SETTING_KEYS,
+          ["expiresAt", "expires", "value"],
+        );
+        if (expiresAt) {
+          overrides.META_ACCESS_TOKEN_EXPIRES = expiresAt;
+        }
       }
     }
 

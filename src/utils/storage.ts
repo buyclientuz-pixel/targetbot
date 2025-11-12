@@ -2,6 +2,7 @@ import {
   CommandLogRecord,
   LeadRecord,
   MetaTokenRecord,
+  MetaTokenStatus,
   PaymentRecord,
   ProjectRecord,
   ReportFilters,
@@ -42,6 +43,87 @@ export interface EnvBindings {
   R2: R2Bucket;
 }
 
+const normalizeTimestamp = (value: unknown): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const parsed = Date.parse(trimmed);
+    if (!Number.isNaN(parsed)) {
+      return new Date(parsed).toISOString();
+    }
+    const asNumber = Number(trimmed);
+    if (Number.isFinite(asNumber)) {
+      const normalized = asNumber > 1_000_000_000 ? asNumber : asNumber * 1000;
+      return new Date(normalized).toISOString();
+    }
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalized = value > 1_000_000_000 ? value : value * 1000;
+    return new Date(normalized).toISOString();
+  }
+  return undefined;
+};
+
+const normalizeMetaTokenRecord = (value: unknown): MetaTokenRecord | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const data = value as Record<string, unknown>;
+  const rawToken =
+    data.accessToken ||
+    data.access_token ||
+    data.token ||
+    data.access ||
+    data.value;
+  if (typeof rawToken !== "string" || !rawToken.trim()) {
+    return null;
+  }
+
+  const refreshCandidate = data.refreshToken || data.refresh_token;
+  const userCandidate = data.userId || data.user_id;
+  const expiresCandidate =
+    data.expiresAt ||
+    data.expires_at ||
+    data.expiration ||
+    data.expires ||
+    data.expire_at;
+
+  const expiresAt = normalizeTimestamp(expiresCandidate);
+  const refreshToken = typeof refreshCandidate === "string" && refreshCandidate.trim() ? refreshCandidate.trim() : undefined;
+  const userId = typeof userCandidate === "string" && userCandidate.trim() ? userCandidate.trim() : undefined;
+
+  const explicitStatus = typeof data.status === "string" ? data.status : typeof data.state === "string" ? data.state : undefined;
+  const normalizedStatus: MetaTokenStatus = (() => {
+    if (explicitStatus === "expired") {
+      return "expired";
+    }
+    if (explicitStatus === "missing") {
+      return "missing";
+    }
+    if (expiresAt) {
+      const expires = Date.parse(expiresAt);
+      if (!Number.isNaN(expires) && expires <= Date.now()) {
+        return "expired";
+      }
+    }
+    return "valid";
+  })();
+
+  return {
+    accessToken: rawToken.trim(),
+    refreshToken,
+    userId,
+    expiresAt,
+    status: normalizedStatus,
+  };
+};
+
 const readJsonFromR2 = async <T>(env: EnvBindings, key: string, fallback: T): Promise<T> => {
   const object = await env.R2.get(key);
   if (!object) {
@@ -68,7 +150,8 @@ export const loadMetaToken = async (env: EnvBindings): Promise<MetaTokenRecord |
     return null;
   }
   try {
-    return JSON.parse(stored) as MetaTokenRecord;
+    const parsed = JSON.parse(stored);
+    return normalizeMetaTokenRecord(parsed);
   } catch (error) {
     console.error("Failed to parse meta token", error);
     return null;
