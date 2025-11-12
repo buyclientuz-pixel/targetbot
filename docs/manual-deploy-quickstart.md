@@ -17,6 +17,7 @@ node scripts/embed-admin.mjs
 ```bash
 npm install
 ```
+- Если npm сообщает об устаревшем `package-lock.json`, удалите файл и выполните команду повторно — инструкции в [FAQ, пункт 9](./manual-deploy-faq.md#9-npm-ci-can-only-install-packages-when-your-packagejson-and-package-lockjson-are-in-sync).
 
 ## 4. Соберите TypeScript-источники
 ```bash

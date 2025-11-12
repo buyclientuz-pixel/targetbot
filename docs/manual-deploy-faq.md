@@ -72,7 +72,17 @@
 - Если используется приватный регистр, добавьте mirror для пакетов `@cloudflare/*` или временно выполните `npm config set registry https://registry.npmjs.org/`.
 - При невозможности изменить политики доступа выполните `npm install` в окружении с разрешённым интернетом и перенесите подготовленный каталог `node_modules` (или собранный бандл) в рабочее окружение перед запуском `wrangler dev`.
 
-## 9. Cloudflare Dashboard продолжает запускать `npm ci`
+## 9. `npm ci can only install packages when your package.json and package-lock.json are in sync`
+
+**Причина:** В аккаунте всё ещё мог остаться lock-файл из старого CI/CD, который не совпадает с текущим `package.json`. При ручном деплое мы не используем `npm ci`, но Cloudflare Dashboard или локальные скрипты могли сохранить устаревший `package-lock.json`.
+
+**Решение:**
+- Удалите старый lock-файл: `rm -f package-lock.json`.
+- Выполните `npm install`, чтобы npm пересоздал lock-файл под текущий список зависимостей.
+- Зафиксируйте изменения (`git add package.json package-lock.json`) и сделайте коммит, чтобы все участники использовали одну и ту же версию зависимостей.
+- Повторите `npm run build` и `npx wrangler deploy`.
+
+## 10. Cloudflare Dashboard продолжает запускать `npm ci`
 
 **Причина:** В настройках Workers осталась дефолтная build-команда `npm ci`, которая конфликтует с ручным сценарием.
 

@@ -73,6 +73,10 @@ node scripts/embed-admin.mjs
    npm install
    ```
 
+   > Если npm сообщает «`npm ci can only install packages when your package.json and package-lock.json are in sync`», удалите ста
+   > рый `package-lock.json`, запустите `npm install` заново и зафиксируйте обновлённый lock-файл. Подробная инструкция приведена
+   > в [Manual Deployment FAQ](docs/manual-deploy-faq.md#9-npm-ci-can-only-install-packages-when-your-packagejson-and-package-lockjson-are-in-sync).
+
 3. Соберите TypeScript-исходники в соответствии с `tsconfig.json`:
 
    ```bash
