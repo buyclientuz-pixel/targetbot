@@ -1,0 +1,19 @@
+name: Deploy Worker
+
+on:
+  push:
+    branches: [ main ]   # или другая ветка
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: "20"
+      - run: npm install -g wrangler
+      - run: wrangler deploy
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN:  ${{ secrets.CF_API_TOKEN }}
