@@ -31,6 +31,7 @@ export const renderLayout = ({ title, body, styles = "", scripts = "" }: LayoutO
       .btn-primary { background: #1f75fe; color: #fff; }
       .btn-secondary { background: #e4ebf5; color: #1f2933; }
       .btn-danger { background: #f05252; color: #fff; }
+      .btn.active { background: #1f75fe; color: #fff; }
       .grid { display: grid; gap: 16px; }
       .grid.two { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
       .muted { color: #627d98; font-size: 13px; margin-top: 6px; }
