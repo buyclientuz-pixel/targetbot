@@ -8,6 +8,9 @@ declare interface R2Object {
 
 declare interface R2ObjectsList {
   objects: Array<{ key: string; size: number; uploaded?: string }>;
+  // Pagination info returned by some runtimes/SDKs
+  truncated?: boolean;
+  cursor?: string;
 }
 
 declare interface R2ListOptions {
@@ -45,6 +48,18 @@ declare interface DurableObjectNamespace {}
 
 declare interface WorkerExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
+}
+
+// Cloudflare runtime standard global types used in the codebase
+declare interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
+declare interface ScheduledEvent {
+  // cron expression when scheduled via wrangler/Cloudflare
+  cron?: string;
+  // allow other runtime specific fields
+  [key: string]: unknown;
 }
 
 declare interface WorkerEnv {

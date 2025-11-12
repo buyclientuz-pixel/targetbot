@@ -297,7 +297,7 @@ export const handleManageMeta = async (
         message: "Meta manage status failed: " + errorMessage,
         timestamp: new Date().toISOString(),
       });
-      return serverError({ ok: false, error: errorMessage });
+      return serverError(errorMessage || "Meta status load failed");
     }
   }
 

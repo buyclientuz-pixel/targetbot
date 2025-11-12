@@ -389,7 +389,7 @@ const sendAdminProjectsOverview = async (
     const clicksText = formatNumber(summary?.clicks ?? null);
     const ctrText = formatPercent(summary?.ctr ?? null);
     const summaryExtras = summary as Record<string, unknown> | null;
-    const rawLastActive = summaryExtras && "last_active" in summaryExtras ? summaryExtras.last_active : undefined;
+    const rawLastActive = summaryExtras && "last_active" in summaryExtras ? (summaryExtras as any).last_active : undefined;
     let lastActivityIso: string | null = null;
     if (typeof rawLastActive === "string") {
       lastActivityIso = rawLastActive;
@@ -1275,9 +1275,9 @@ const runTechAction = async (
       const status = await getTelegramWebhookStatus(env as any, extra && extra.trim() ? extra.trim() : undefined);
       const token = status.token || "—";
       const lines: string[] = ["📡 Статус вебхука", "Токен: " + token];
-      if (status.webhook && typeof status.webhook === "object") {
-        const webhookInfo = status.webhook as Record<string, unknown>;
-        const url = typeof webhookInfo.url === "string" && webhookInfo.url ? webhookInfo.url : "—";
+    if (status.webhook && typeof status.webhook === "object") {
+      const webhookInfo = status.webhook as Record<string, unknown>;
+      const url = typeof (webhookInfo as any).url === "string" && (webhookInfo as any).url ? (webhookInfo as any).url : "—";
         if (url) {
           lines.push("URL: " + url);
         }
