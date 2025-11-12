@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createLeadHandler, listLeadsHandler } from "../api/leads";
+import { deleteUserHandler, listUsersHandler } from "../api/users";
 import { createContext } from "./helpers";
 
 function requestWithBody(body: unknown, method = "POST") {
@@ -78,5 +79,38 @@ describe("leads api", () => {
     expect(filteredBody.filters.from).toBe("2024-05-01");
     expect(filteredBody.filters.to).toBe("2024-05-31");
     expect(filteredBody.available.sources).toContain("facebook");
+  });
+});
+
+describe("users api", () => {
+  it("deletes user records", async () => {
+    const base = createContext();
+    const env = base.env;
+    await env.KV_USERS.put(
+      "user:99",
+      JSON.stringify({
+        id: 99,
+        firstName: "Удалить",
+        role: "client",
+        token: "token",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    const deleteResponse = await deleteUserHandler(
+      createContext({
+        env,
+        params: { id: "99" },
+        request: new Request("https://example.com/api/users/99?key=test", { method: "DELETE" }),
+      }),
+    );
+    const deleteBody = await deleteResponse.json();
+    expect(deleteBody.deleted).toBe(true);
+
+    const listResponse = await listUsersHandler(
+      createContext({ env, request: new Request("https://example.com/api/users?key=test") }),
+    );
+    const listBody = await listResponse.json();
+    expect(listBody.users.find((user) => user.id === 99)).toBeUndefined();
   });
 });

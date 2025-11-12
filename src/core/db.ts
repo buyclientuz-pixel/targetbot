@@ -33,6 +33,10 @@ export async function listUsers(env: Env) {
   return users;
 }
 
+export async function deleteUser(env: Env, id: number | string) {
+  await env.KV_USERS.delete(`user:${id}`);
+}
+
 export async function getLead(env: Env, id: string) {
   const data = await env.KV_LEADS.get(`lead:${id}`);
   return data ? (JSON.parse(data) as LeadRecord) : null;

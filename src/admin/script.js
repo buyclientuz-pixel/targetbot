@@ -13,6 +13,8 @@ const leadFilters = {
   to: "",
 };
 
+let lastMetaAccountId = "";
+
 function humanize(value) {
   return value
     .toString()
@@ -48,6 +50,29 @@ function activateTab(targetId) {
 tabs.forEach((tab) => {
   tab.addEventListener("click", () => activateTab(tab.dataset.target));
 });
+
+async function openMetaSyncDialog() {
+  const defaultAccount = lastMetaAccountId || "act_";
+  const accountIdInput = prompt("ID рекламного аккаунта (act_...)", defaultAccount);
+  if (accountIdInput === null) return;
+  const accountId = accountIdInput.trim();
+  if (!accountId) {
+    alert("Укажите корректный ad_account_id в формате act_XXXX");
+    return;
+  }
+  const campaignInput = prompt("ID рекламной кампании (опционально)") ?? "";
+  const campaignId = campaignInput.trim();
+  try {
+    await api.syncMeta({ accountId, campaignId: campaignId || undefined });
+    lastMetaAccountId = accountId;
+    await renderDashboard();
+    await renderIntegrations();
+    alert("Синхронизация Meta выполнена");
+  } catch (error) {
+    console.error(error);
+    alert(`Не удалось синхронизировать Meta: ${error.message ?? error}`);
+  }
+}
 
 async function renderDashboard() {
   dashboard.innerHTML = `<div class="space-y-4">
@@ -234,11 +259,48 @@ async function renderLeads() {
 }
 
 async function renderIntegrations() {
+  let status = null;
+  try {
+    status = await api.getMetaStatus();
+  } catch (error) {
+    console.warn("Не удалось загрузить статус Meta", error);
+  }
+
+  const connected = Boolean(status?.connected);
+  const tokenInfo = status?.token ?? {};
+  const totals = status?.summary?.totals ?? {};
+  const lastSync = status?.lastSync?.fetchedAt
+    ? new Date(status.lastSync.fetchedAt).toLocaleString()
+    : "—";
+  const tokenUpdated = tokenInfo.updatedAt ? new Date(tokenInfo.updatedAt).toLocaleString() : "—";
+  const tokenExpires = tokenInfo.expiresAt ? new Date(tokenInfo.expiresAt).toLocaleString() : "—";
+  if (tokenInfo.accountId) {
+    lastMetaAccountId = tokenInfo.accountId;
+  }
+
   integrationsPanel.innerHTML = `<div class="space-y-4">
-    <section class="card">
-      <h2 class="card-title">Facebook Meta</h2>
-      <p class="text-sm text-slate-400">OAuth авторизация и синхронизация кампаний.</p>
-      <a class="btn-primary inline-flex items-center" href="/auth/facebook">🔗 Подключить Meta</a>
+    <section class="card space-y-4">
+      <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h2 class="card-title">Facebook Meta</h2>
+          <p class="text-sm text-slate-400">OAuth авторизация и синхронизация кампаний.</p>
+        </div>
+        <span class="badge ${connected ? "badge-success" : "badge-warning"}">${connected ? "Подключено" : "Не подключено"}</span>
+      </div>
+      <dl class="grid gap-2 text-sm text-slate-300">
+        <div class="flex justify-between"><dt>Аккаунт</dt><dd>${tokenInfo.accountId ?? "—"}</dd></div>
+        <div class="flex justify-between"><dt>Кампания</dt><dd>${tokenInfo.campaignId ?? "—"}</dd></div>
+        <div class="flex justify-between"><dt>Токен</dt><dd>${tokenInfo.accessToken ?? "—"}</dd></div>
+        <div class="flex justify-between"><dt>Обновлён</dt><dd>${tokenUpdated}</dd></div>
+        <div class="flex justify-between"><dt>Действителен до</dt><dd>${tokenExpires}</dd></div>
+        <div class="flex justify-between"><dt>Spend</dt><dd>${formatDecimal(totals.spend)}</dd></div>
+        <div class="flex justify-between"><dt>Лиды</dt><dd>${formatInteger(totals.leads)}</dd></div>
+        <div class="flex justify-between"><dt>Последняя синхронизация</dt><dd>${lastSync}</dd></div>
+      </dl>
+      <div class="flex flex-wrap gap-3">
+        <a class="btn-primary inline-flex items-center" href="/auth/facebook">🔗 Подключить Meta</a>
+        <button class="btn-secondary inline-flex items-center" id="openMetaSync">🔄 Синхронизировать</button>
+      </div>
     </section>
     <section class="card">
       <h2 class="card-title">Telegram Webhook</h2>
@@ -246,9 +308,12 @@ async function renderIntegrations() {
       <button class="btn-secondary" id="refreshWebhook">🔁 Обновить</button>
     </section>
   </div>`;
-  document.querySelector("#refreshWebhook").addEventListener("click", async () => {
+
+  document.querySelector("#openMetaSync")?.addEventListener("click", openMetaSyncDialog);
+  document.querySelector("#refreshWebhook")?.addEventListener("click", async () => {
     await api.refreshWebhook();
     alert("Вебхук обновлён");
+    await renderIntegrations();
   });
 }
 
@@ -322,11 +387,7 @@ async function bootstrap() {
   await renderSettings();
 }
 
-document.querySelector("#refreshMeta").addEventListener("click", async () => {
-  await api.syncMeta();
-  await renderDashboard();
-  alert("Синхронизация Meta выполнена");
-});
+document.querySelector("#refreshMeta").addEventListener("click", openMetaSyncDialog);
 
 document.querySelector("#checkWebhook").addEventListener("click", async () => {
   const status = await api.checkWebhook();

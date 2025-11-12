@@ -57,6 +57,10 @@ export const api = {
     const key = new URLSearchParams(window.location.search).get("key") ?? "";
     return request(`/api/settings?key=${key}`);
   },
+  async getMetaStatus() {
+    const key = new URLSearchParams(window.location.search).get("key") ?? "";
+    return request(`/meta/status?key=${key}`);
+  },
   async createApiKey({ label, role, owner } = {}) {
     const key = new URLSearchParams(window.location.search).get("key") ?? "";
     return request(`/api/settings?key=${key}`, {
@@ -71,11 +75,15 @@ export const api = {
       body: JSON.stringify({ action: "delete_key", key: keyValue }),
     });
   },
-  async syncMeta() {
+  async syncMeta(options = {}) {
     const key = new URLSearchParams(window.location.search).get("key") ?? "";
+    const payload = {};
+    if (options.accountId) payload.ad_account_id = options.accountId;
+    if (options.campaignId) payload.campaign_id = options.campaignId;
     return request(`/meta/sync?key=${key}`, {
       method: "POST",
-      body: JSON.stringify({ ad_account_id: "act_000000000000000" }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
     });
   },
   async checkWebhook() {

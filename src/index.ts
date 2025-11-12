@@ -8,7 +8,7 @@ import {
   listLeadsHandler,
   updateLeadHandler,
 } from "./api/leads";
-import { listUsersHandler, updateUserHandler } from "./api/users";
+import { deleteUserHandler, listUsersHandler, updateUserHandler } from "./api/users";
 import { listReportsHandler, createReportHandler } from "./api/reports";
 import { getSettingsHandler, updateSettingsHandler } from "./api/settings";
 import { dashboardHandler } from "./api/dashboard";
@@ -19,6 +19,7 @@ import { manageWebhookHandler } from "./bot/webhook";
 import { facebookAuthHandler, facebookCallbackHandler, metaRefreshHandler } from "./meta/auth";
 import { metaStatsHandler } from "./meta/stats";
 import { metaSyncHandler } from "./meta/sync";
+import { metaStatusHandler } from "./meta/status";
 import { jsonResponse, readJsonBody } from "./core/utils";
 
 const router = createRouter();
@@ -45,6 +46,7 @@ router.patch("/api/leads/:id", updateLeadHandler);
 router.get("/api/dashboard", dashboardHandler);
 router.get("/api/users", listUsersHandler);
 router.patch("/api/users/:id", updateUserHandler);
+router.delete("/api/users/:id", deleteUserHandler);
 router.get("/api/reports", listReportsHandler);
 router.post("/api/reports", createReportHandler);
 router.get("/api/settings", getSettingsHandler);
@@ -52,6 +54,7 @@ router.put("/api/settings", updateSettingsHandler);
 router.post("/meta/sync", metaSyncHandler);
 router.get("/meta/stats", metaStatsHandler);
 router.post("/meta/refresh", metaRefreshHandler);
+router.get("/meta/status", metaStatusHandler);
 router.get("/auth/facebook", facebookAuthHandler);
 router.get("/auth/facebook/callback", facebookCallbackHandler);
 router.get("/admin", async (context) => {

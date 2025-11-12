@@ -1,5 +1,5 @@
 import type { RouteHandler } from "../core/types";
-import { listUsers, saveUser } from "../core/db";
+import { deleteUser, listUsers, saveUser } from "../core/db";
 import { fail, ok, readJsonBody } from "../core/utils";
 import { requireAdmin } from "../core/auth";
 
@@ -25,4 +25,19 @@ export const updateUserHandler: RouteHandler = async (context) => {
   if (payload.meta) user.meta = payload.meta;
   await saveUser(context.env, user);
   return ok({ user });
+};
+
+export const deleteUserHandler: RouteHandler = async (context) => {
+  const authError = await requireAdmin(context);
+  if (authError) return authError;
+  const id = context.params.id;
+  if (!id) {
+    return fail("Missing user id", 400);
+  }
+  const existing = await context.env.KV_USERS.get(`user:${id}`);
+  if (!existing) {
+    return fail("User not found", 404);
+  }
+  await deleteUser(context.env, id);
+  return ok({ deleted: true, id });
 };

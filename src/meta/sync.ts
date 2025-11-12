@@ -1,6 +1,6 @@
 import type { RouteHandler } from "../core/types";
-import { fail, ok } from "../core/utils";
-import { getMetaToken } from "../core/db";
+import { fail, ok, readJsonBody } from "../core/utils";
+import { getMetaToken, saveMetaToken } from "../core/db";
 import { graphRequest } from "./client";
 import { requireAdmin } from "../core/auth";
 
@@ -19,8 +19,19 @@ export const metaSyncHandler: RouteHandler = async (context) => {
   const token = await getMetaToken(context.env);
   if (!token) return fail("Meta token not found", 404);
   const url = new URL(context.request.url);
-  const accountId = url.searchParams.get("ad_account_id");
+  const body = await readJsonBody<{
+    ad_account_id?: string;
+    accountId?: string;
+    campaign_id?: string;
+    campaignId?: string;
+  }>(context.request);
+
+  const accountId =
+    url.searchParams.get("ad_account_id") ?? body?.ad_account_id ?? body?.accountId ?? token.accountId ?? undefined;
   if (!accountId) return fail("Missing ad_account_id", 400);
+  const campaignId =
+    url.searchParams.get("campaign_id") ?? body?.campaign_id ?? body?.campaignId ?? token.campaignId ?? undefined;
+
   const campaigns = await graphRequest<CampaignResponse>(
     context.env,
     `${accountId}/campaigns`,
@@ -34,5 +45,8 @@ export const metaSyncHandler: RouteHandler = async (context) => {
     campaigns: campaigns.data,
   };
   await context.env.KV_META.put(`meta:sync:${accountId}`, JSON.stringify(summary));
+  if (campaignId || token.accountId !== accountId) {
+    await saveMetaToken(context.env, { ...token, accountId, campaignId });
+  }
   return ok({ summary });
 };
