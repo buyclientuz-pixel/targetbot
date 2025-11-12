@@ -22,7 +22,7 @@
     "validate:postdeploy": "node scripts/postdeploy-validate.mjs",
     "verify:deploy": "npm run lint:api && npm run check:config && npm run test:integration",
     "prebuild": "npm install --force --legacy-peer-deps",
-    "build": "npm run deploy:versions"
+    "build": "tsc"
   },
   "devDependencies": {
     "eslint": "^9.39.1",
