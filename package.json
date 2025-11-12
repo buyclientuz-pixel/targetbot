@@ -11,8 +11,8 @@
     "lint:api": "node scripts/lint-api.mjs",
     "lint:strings": "node scripts/lint-strings.mjs",
     "migrate:templates": "node tools/convertConcatToTemplate.js --apply && npm run format && npm run lint",
-    "deploy": "wrangler deploy",
-    "deploy:versions": "wrangler versions upload",
+    "deploy": "npm run build && wrangler deploy --minify",
+    "deploy:versions": "npm run build && wrangler versions upload",
     "deploy:full": "npm run lint && npm run format && npm run lint:api && npm run lint:strings && npm run deploy:versions",
     "check:config": "node scripts/check-config.mjs",
     "sync:secrets": "node scripts/sync-secrets.mjs",
@@ -21,10 +21,10 @@
     "test:fallback": "node scripts/simulate-fallback.mjs",
     "validate:postdeploy": "node scripts/postdeploy-validate.mjs",
     "verify:deploy": "npm run lint:api && npm run check:config && npm run test:integration",
-    "prebuild": "npm install --force --legacy-peer-deps",
-    "build": "tsc"
+    "build": "tsc --project tsconfig.json"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "latest",
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^9.1.2",
     "eslint-plugin-prettier": "^5.5.4",
