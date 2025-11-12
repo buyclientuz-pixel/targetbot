@@ -33,6 +33,30 @@ export interface MetaAdAccount {
   statusCode?: number;
   statusSeverity?: "success" | "warning" | "error";
   business?: { id?: string; name?: string } | null;
+  spend?: number;
+  spendCurrency?: string;
+  spendPeriod?: string;
+  spendFormatted?: string;
+  impressions?: number;
+  clicks?: number;
+  campaigns?: MetaCampaign[];
+}
+
+export interface MetaCampaign {
+  id: string;
+  accountId: string;
+  name: string;
+  status?: string;
+  effectiveStatus?: string;
+  objective?: string;
+  dailyBudget?: number;
+  spend?: number;
+  spendCurrency?: string;
+  spendPeriod?: string;
+  spendFormatted?: string;
+  impressions?: number;
+  clicks?: number;
+  updatedTime?: string;
 }
 
 export interface ProjectRecord {

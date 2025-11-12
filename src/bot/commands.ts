@@ -123,11 +123,19 @@ const handleAuth = async (context: BotContext): Promise<void> => {
 
   if (status === "valid") {
     try {
-      const accounts = await fetchAdAccounts(context.env, record);
+      const accounts = await fetchAdAccounts(context.env, record, {
+        includeSpend: true,
+        datePreset: "today",
+      });
       if (accounts.length) {
         const list = accounts
           .slice(0, 5)
-          .map((account) => `• ${escapeHtml(account.name)}${account.currency ? ` (${escapeHtml(account.currency)})` : ""}`)
+          .map((account) => {
+            const spendText = account.spendFormatted
+              ? ` — расход ${escapeHtml(account.spendFormatted)}${account.spendPeriod ? ` (${escapeHtml(account.spendPeriod)})` : ""}`
+              : "";
+            return `• ${escapeHtml(account.name)}${account.currency ? ` (${escapeHtml(account.currency)})` : ""}${spendText}`;
+          })
           .join("\n");
         lines.push("", "Подключённые рекламные аккаунты:", list);
         if (accounts.length > 5) {
@@ -221,14 +229,67 @@ const handleMetaAccounts = async (context: BotContext): Promise<void> => {
         ? "⚠️ Токен истёк. Обновите подключение через раздел Авторизация Facebook."
         : "❌ Токен не найден. Авторизуйтесь, чтобы получить список кабинетов.";
 
-  const lines = [
-    "🔗 Meta-аккаунты",
+  const lines = ["🔗 Meta-аккаунты", "", statusLabel];
+
+  if (status === "valid") {
+    try {
+      const accounts = await fetchAdAccounts(context.env, record, {
+        includeSpend: true,
+        includeCampaigns: true,
+        campaignsLimit: 3,
+        datePreset: "today",
+      });
+      if (accounts.length) {
+        lines.push("", "📊 Сводка по аккаунтам:");
+        const sorted = [...accounts].sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0));
+        sorted.forEach((account, index) => {
+          lines.push("", `${index + 1}️⃣ <b>${escapeHtml(account.name)}</b>${account.currency ? ` (${escapeHtml(account.currency)})` : ""}`);
+          lines.push(`ID: <code>${escapeHtml(account.id)}</code>`);
+          if (account.spendFormatted) {
+            lines.push(`💵 Расход ${escapeHtml(account.spendFormatted)}${account.spendPeriod ? ` (${escapeHtml(account.spendPeriod)})` : ""}`);
+          } else {
+            lines.push("💵 Расход недоступен.");
+          }
+          if (account.status) {
+            const statusCode = account.statusCode ? ` (код ${account.statusCode})` : "";
+            lines.push(`⚙️ Статус: ${escapeHtml(account.status)}${statusCode}`);
+          }
+          if (account.impressions !== undefined || account.clicks !== undefined) {
+            const impressions = account.impressions ?? 0;
+            const clicks = account.clicks ?? 0;
+            lines.push(`📈 Импрессии: ${impressions.toLocaleString("ru-RU")} · Клики: ${clicks.toLocaleString("ru-RU")}`);
+          }
+          if (account.campaigns?.length) {
+            lines.push("👀 Топ кампаний:");
+            account.campaigns.slice(0, 3).forEach((campaign) => {
+              const spend = campaign.spendFormatted
+                ? ` — ${escapeHtml(campaign.spendFormatted)}${campaign.spendPeriod ? ` (${escapeHtml(campaign.spendPeriod)})` : ""}`
+                : "";
+              lines.push(`   • ${escapeHtml(campaign.name)}${spend}`);
+            });
+            if (account.campaigns.length > 3) {
+              lines.push("   …");
+            }
+          }
+        });
+      } else {
+        lines.push("", "Доступные рекламные кабинеты не найдены.");
+      }
+    } catch (error) {
+      console.error("Failed to load Meta accounts", error);
+      lines.push("", "Не удалось получить список аккаунтов. Попробуйте обновить токен в разделе Авторизация Facebook.");
+    }
+  } else {
+    lines.push(
+      "",
+      "После подключения Facebook аккаунта бот автоматически подтянет рекламные кабинеты и покажет статистику расходов.",
+    );
+  }
+
+  lines.push(
     "",
-    statusLabel,
-    "",
-    "После подключения Facebook аккаунта бот автоматически подтянет рекламные кабинеты и покажет статистику расходов.",
     "Веб-панель синхронизирует тот же список в разделе Meta Accounts.",
-  ];
+  );
 
   await sendMessage(context, lines.join("\n"));
 };

@@ -1,5 +1,6 @@
 import {
   handleMetaAdAccounts,
+  handleMetaCampaigns,
   handleMetaOAuthCallback,
   handleMetaOAuthStart,
   handleMetaRefresh,
@@ -109,6 +110,9 @@ export default {
       }
       if (pathname.startsWith("/api/meta/adaccounts") && method === "GET") {
         return withCors(await handleMetaAdAccounts(request, env));
+      }
+      if (pathname.startsWith("/api/meta/campaigns") && method === "GET") {
+        return withCors(await handleMetaCampaigns(request, env));
       }
       if (pathname === "/api/meta/oauth/start" && method === "GET") {
         return withCors(await handleMetaOAuthStart(request, env));
@@ -238,7 +242,12 @@ export default {
         const projectSummaries: ProjectSummary[] = sortProjectSummaries(projectsWithLeads);
         const [meta, accounts] = await Promise.all([
           resolveMetaStatus(bindings, token),
-          fetchAdAccounts(bindings, token).catch(() => []),
+          fetchAdAccounts(bindings, token, {
+            includeSpend: true,
+            includeCampaigns: true,
+            campaignsLimit: 5,
+            datePreset: "today",
+          }).catch(() => []),
         ]);
         let flash: AdminFlashMessage | undefined;
         const metaStatusParam = url.searchParams.get("meta");

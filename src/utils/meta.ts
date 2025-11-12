@@ -1,5 +1,11 @@
 import { EnvBindings } from "./storage";
-import { MetaAdAccount, MetaStatusResponse, MetaTokenRecord, MetaTokenStatus } from "../types";
+import {
+  MetaAdAccount,
+  MetaCampaign,
+  MetaStatusResponse,
+  MetaTokenRecord,
+  MetaTokenStatus,
+} from "../types";
 
 const GRAPH_BASE = "https://graph.facebook.com";
 const DEFAULT_GRAPH_VERSION = "v19.0";
@@ -40,6 +46,22 @@ const ACCOUNT_STATUS_MAP: Record<number, { label: string; severity: "success" | 
   100: { label: "Активный (агр.)", severity: "success" },
   101: { label: "Закрыт (агр.)", severity: "error" },
 };
+
+export interface FetchAdAccountsOptions {
+  includeSpend?: boolean;
+  includeCampaigns?: boolean;
+  campaignsLimit?: number;
+  datePreset?: string;
+  since?: string;
+  until?: string;
+}
+
+export interface FetchCampaignsOptions {
+  limit?: number;
+  datePreset?: string;
+  since?: string;
+  until?: string;
+}
 
 const toStringArray = (value: unknown): string[] => {
   if (!value) {
@@ -109,6 +131,82 @@ const describeAccountStatus = (
     return { label: mapping.label, code, severity: mapping.severity };
   }
   return { label: `Неизвестно (код ${code})`, code, severity: "warning" };
+};
+
+const parseNumber = (value: unknown): number | undefined => {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const numeric = Number(value.trim());
+    if (!Number.isNaN(numeric)) {
+      return numeric;
+    }
+  }
+  return undefined;
+};
+
+const formatCurrencyValue = (amount: number | undefined, currency?: string): string | undefined => {
+  if (amount === undefined || Number.isNaN(amount)) {
+    return undefined;
+  }
+  if (!currency) {
+    return amount.toFixed(2);
+  }
+  try {
+    return new Intl.NumberFormat("ru-RU", { style: "currency", currency }).format(amount);
+  } catch (error) {
+    return `${amount.toFixed(2)} ${currency}`.trim();
+  }
+};
+
+const resolveInsightsWindow = (options: {
+  datePreset?: string;
+  since?: string;
+  until?: string;
+}): Record<string, string> => {
+  const params: Record<string, string> = {};
+  if (options.since || options.until) {
+    const since = (options.since || options.until || "").toString() || new Date().toISOString().slice(0, 10);
+    const until = (options.until || options.since || "").toString() || since;
+    params.time_range = JSON.stringify({ since, until });
+  } else if (options.datePreset && options.datePreset.trim()) {
+    params.date_preset = options.datePreset.trim();
+  } else {
+    params.date_preset = "today";
+  }
+  return params;
+};
+
+const resolvePeriodLabel = (options: { datePreset?: string; since?: string; until?: string }): string => {
+  if (options.datePreset && options.datePreset.trim()) {
+    return options.datePreset.trim();
+  }
+  if (options.since || options.until) {
+    const since = (options.since || options.until || "").toString();
+    const until = (options.until || options.since || "").toString();
+    if (since && until && since !== until) {
+      return `${since} → ${until}`;
+    }
+    return since || until || "custom";
+  }
+  return "today";
+};
+
+const safeGraphCall = async <T>(
+  env: EnvBindings & Record<string, unknown>,
+  path: string,
+  params: Record<string, string>,
+): Promise<T | null> => {
+  try {
+    return await callGraph<T>(env, path, params);
+  } catch (error) {
+    console.warn(`Graph API request failed for ${path}`, (error as Error).message);
+    return null;
+  }
 };
 
 const toIsoDate = (value: unknown): string | undefined => {
@@ -217,6 +315,43 @@ interface AdAccountsResponse {
   }>;
 }
 
+interface AccountInsightsResponse {
+  data?: Array<{
+    account_id?: string;
+    spend?: string;
+    account_currency?: string;
+    impressions?: string;
+    clicks?: string;
+    date_start?: string;
+    date_stop?: string;
+  }>;
+}
+
+interface CampaignsResponse {
+  data?: Array<{
+    id?: string;
+    name?: string;
+    status?: string;
+    effective_status?: string;
+    objective?: string;
+    updated_time?: string;
+    daily_budget?: string | number | null;
+  }>;
+}
+
+interface CampaignInsightsResponse {
+  data?: Array<{
+    campaign_id?: string;
+    campaign_name?: string;
+    spend?: string;
+    impressions?: string;
+    clicks?: string;
+    account_currency?: string;
+    date_start?: string;
+    date_stop?: string;
+  }>;
+}
+
 const statusFromRecord = async (
   env: EnvBindings & Record<string, unknown>,
   record: MetaTokenRecord | null,
@@ -259,6 +394,7 @@ export const resolveMetaStatus = async (
 export const fetchAdAccounts = async (
   env: EnvBindings & Record<string, unknown>,
   record: MetaTokenRecord | null,
+  options: FetchAdAccountsOptions = {},
 ): Promise<MetaAdAccount[]> => {
   const tokenRecord = effectiveToken(env, record);
   const status = ensureTokenFreshness(tokenRecord);
@@ -269,30 +405,24 @@ export const fetchAdAccounts = async (
   const accounts: MetaAdAccount[] = [];
   const seen = new Set<string>();
   const addAccount = (account: MetaAdAccount | null | undefined) => {
-    if (!account || !account.id) return;
-    if (seen.has(account.id)) return;
+    if (!account?.id || seen.has(account.id)) {
+      return;
+    }
     seen.add(account.id);
     accounts.push(account);
   };
 
-  const params = {
+  const baseParams = {
     access_token: tokenRecord.accessToken,
     fields: "id,name,currency,account_status,business",
   };
 
-  const safeCall = async <T>(path: string, callParams: Record<string, string>) => {
-    try {
-      return await callGraph<T>(env, path, { ...callParams });
-    } catch (error) {
-      console.warn(`Graph API request failed for ${path}`, (error as Error).message);
-      return null;
-    }
-  };
-
-  const meResponse = await safeCall<AdAccountsResponse>("me/adaccounts", params);
+  const meResponse = await safeGraphCall<AdAccountsResponse>(env, "me/adaccounts", baseParams);
   for (const item of meResponse?.data || []) {
     const id = item.id || (item as { account_id?: string }).account_id;
-    if (!id || !item.name) continue;
+    if (!id || !item.name) {
+      continue;
+    }
     const statusInfo = describeAccountStatus(item.account_status);
     addAccount({
       id,
@@ -310,10 +440,12 @@ export const fetchAdAccounts = async (
 
   const fetchAccountById = async (accountId: string) => {
     const normalized = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
-    const account = await safeCall<{ id?: string; name?: string; currency?: string; account_status?: number }>(
-      normalized,
-      params,
-    );
+    const account = await safeGraphCall<{
+      id?: string;
+      name?: string;
+      currency?: string;
+      account_status?: number;
+    }>(env, normalized, baseParams);
     if (account?.id && account.name) {
       const statusInfo = describeAccountStatus(account.account_status);
       addAccount({
@@ -341,10 +473,12 @@ export const fetchAdAccounts = async (
   }
 
   const fetchBusinessAccounts = async (businessId: string, edge: string) => {
-    const response = await safeCall<BusinessAccountsResponse>(`${businessId}/${edge}`, params);
+    const response = await safeGraphCall<BusinessAccountsResponse>(env, `${businessId}/${edge}`, baseParams);
     for (const item of response?.data || []) {
       const id = item.id || item.account_id;
-      if (!id || !item.name) continue;
+      if (!id || !item.name) {
+        continue;
+      }
       const statusInfo = describeAccountStatus(item.account_status);
       addAccount({
         id,
@@ -353,7 +487,9 @@ export const fetchAdAccounts = async (
         status: statusInfo.label,
         statusCode: statusInfo.code,
         statusSeverity: statusInfo.severity,
-        business: item.business ? { id: item.business.id, name: item.business.name } : { id: businessId, name: undefined },
+        business: item.business
+          ? { id: item.business.id, name: item.business.name }
+          : { id: businessId, name: undefined },
       });
     }
   };
@@ -366,7 +502,190 @@ export const fetchAdAccounts = async (
   );
 
   accounts.sort((a, b) => a.name.localeCompare(b.name));
+
+  const { includeSpend, includeCampaigns, campaignsLimit, datePreset, since, until } = options;
+  const insightWindow = resolveInsightsWindow({ datePreset, since, until });
+  const periodLabel = resolvePeriodLabel({ datePreset, since, until });
+
+  if (includeSpend) {
+    await Promise.all(
+      accounts.map(async (account) => {
+        const insights = await safeGraphCall<AccountInsightsResponse>(
+          env,
+          `${account.id}/insights`,
+          {
+            access_token: tokenRecord.accessToken,
+            fields: "spend,account_currency,impressions,clicks,date_start,date_stop",
+            level: "account",
+            time_increment: "all_days",
+            ...insightWindow,
+          },
+        );
+        const row = insights?.data?.[0];
+        if (!row) {
+          return;
+        }
+        const spend = parseNumber(row.spend);
+        const impressions = parseNumber(row.impressions);
+        const clicks = parseNumber(row.clicks);
+        const currency = row.account_currency || account.currency;
+        account.spend = spend;
+        account.spendCurrency = currency || account.currency;
+        account.spendPeriod = periodLabel;
+        account.spendFormatted = formatCurrencyValue(spend, currency || account.currency);
+        if (impressions !== undefined) {
+          account.impressions = impressions;
+        }
+        if (clicks !== undefined) {
+          account.clicks = clicks;
+        }
+      }),
+    );
+  }
+
+  if (includeCampaigns) {
+    await Promise.all(
+      accounts.map(async (account) => {
+        try {
+          const campaigns = await fetchCampaigns(env, tokenRecord, account.id, {
+            limit: campaignsLimit,
+            datePreset,
+            since,
+            until,
+          });
+          account.campaigns = campaigns;
+          if (!includeSpend && account.spend === undefined) {
+            const totalSpend = campaigns.reduce((sum, campaign) => sum + (campaign.spend ?? 0), 0);
+            if (totalSpend > 0) {
+              account.spend = totalSpend;
+              const campaignCurrency = campaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency;
+              account.spendCurrency = campaignCurrency || account.currency;
+              account.spendFormatted = formatCurrencyValue(account.spend, account.spendCurrency);
+              account.spendPeriod = campaigns[0]?.spendPeriod || periodLabel;
+            }
+          }
+        } catch (error) {
+          console.warn(`Failed to fetch campaigns for ${account.id}`, (error as Error).message);
+        }
+      }),
+    );
+  }
+
   return accounts;
+};
+
+export const fetchCampaigns = async (
+  env: EnvBindings & Record<string, unknown>,
+  record: MetaTokenRecord | null,
+  accountId: string,
+  options: FetchCampaignsOptions = {},
+): Promise<MetaCampaign[]> => {
+  const tokenRecord = effectiveToken(env, record);
+  const status = ensureTokenFreshness(tokenRecord);
+  if (status === "missing" || !tokenRecord?.accessToken) {
+    throw new Error("Meta token is missing");
+  }
+
+  const normalizedAccount = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+  const campaignsResponse = await safeGraphCall<CampaignsResponse>(
+    env,
+    `${normalizedAccount}/campaigns`,
+    {
+      access_token: tokenRecord.accessToken,
+      fields: "id,name,status,effective_status,objective,updated_time,daily_budget",
+      limit: String(options.limit ?? 25),
+    },
+  );
+
+  const campaigns: MetaCampaign[] = [];
+  const campaignMap = new Map<string, MetaCampaign>();
+
+  for (const item of campaignsResponse?.data || []) {
+    if (!item.id || !item.name) {
+      continue;
+    }
+    const dailyBudgetRaw = parseNumber(item.daily_budget ?? undefined);
+    const dailyBudget = dailyBudgetRaw !== undefined ? dailyBudgetRaw / 100 : undefined;
+    const campaign: MetaCampaign = {
+      id: item.id,
+      accountId: normalizedAccount,
+      name: item.name,
+      status: item.status || undefined,
+      effectiveStatus: item.effective_status || undefined,
+      objective: item.objective || undefined,
+      updatedTime: item.updated_time || undefined,
+      dailyBudget,
+    };
+    campaigns.push(campaign);
+    campaignMap.set(item.id, campaign);
+  }
+
+  const insightWindow = resolveInsightsWindow({
+    datePreset: options.datePreset,
+    since: options.since,
+    until: options.until,
+  });
+  const periodLabel = resolvePeriodLabel({
+    datePreset: options.datePreset,
+    since: options.since,
+    until: options.until,
+  });
+
+  const insightsResponse = await safeGraphCall<CampaignInsightsResponse>(
+    env,
+    `${normalizedAccount}/insights`,
+    {
+      access_token: tokenRecord.accessToken,
+      fields: "campaign_id,campaign_name,spend,impressions,clicks,account_currency,date_start,date_stop",
+      level: "campaign",
+      time_increment: "all_days",
+      ...insightWindow,
+    },
+  );
+
+  for (const row of insightsResponse?.data || []) {
+    const campaignId = row.campaign_id;
+    if (!campaignId) {
+      continue;
+    }
+    const campaign = campaignMap.get(campaignId);
+    if (!campaign) {
+      const fallback: MetaCampaign = {
+        id: campaignId,
+        accountId: normalizedAccount,
+        name: row.campaign_name || campaignId,
+      };
+      campaigns.push(fallback);
+      campaignMap.set(campaignId, fallback);
+    }
+    const target = campaignMap.get(campaignId);
+    if (!target) {
+      continue;
+    }
+    const spend = parseNumber(row.spend);
+    const impressions = parseNumber(row.impressions);
+    const clicks = parseNumber(row.clicks);
+    target.spend = spend;
+    target.spendCurrency = row.account_currency || target.spendCurrency;
+    target.spendPeriod = periodLabel;
+    target.spendFormatted = formatCurrencyValue(spend, target.spendCurrency);
+    if (impressions !== undefined) {
+      target.impressions = impressions;
+    }
+    if (clicks !== undefined) {
+      target.clicks = clicks;
+    }
+  }
+
+  campaigns.sort((a, b) => {
+    const spendDiff = (b.spend ?? 0) - (a.spend ?? 0);
+    if (spendDiff !== 0) {
+      return spendDiff;
+    }
+    return a.name.localeCompare(b.name);
+  });
+
+  return campaigns;
 };
 
 export const exchangeToken = async (

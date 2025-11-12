@@ -44,6 +44,37 @@ const accountStatusBadge = (account: MetaAdAccount): string => {
   return `<span class="${badgeClass}">${label}</span>`;
 };
 
+const accountSpendCell = (account: MetaAdAccount): string => {
+  if (!account.spendFormatted && account.spend === undefined) {
+    return '<span class="muted">—</span>';
+  }
+  const spendValue = account.spendFormatted
+    ? `<strong>${escapeHtml(account.spendFormatted)}</strong>`
+    : account.spend !== undefined
+      ? `<strong>${escapeHtml(account.spend.toFixed(2))}</strong>`
+      : '<span class="muted">—</span>';
+  const period = account.spendPeriod
+    ? `<div class="muted">${escapeHtml(account.spendPeriod)}</div>`
+    : "";
+  const metricsParts: string[] = [];
+  if (account.impressions !== undefined) {
+    metricsParts.push(`Импр.: ${account.impressions.toLocaleString("ru-RU")}`);
+  }
+  if (account.clicks !== undefined) {
+    metricsParts.push(`Клики: ${account.clicks.toLocaleString("ru-RU")}`);
+  }
+  const metricsLine = metricsParts.length
+    ? `<div class="muted">${escapeHtml(metricsParts.join(" · "))}</div>`
+    : "";
+  const topCampaign = account.campaigns?.[0];
+  const campaignLine = topCampaign
+    ? `<div class="muted">Топ: ${escapeHtml(topCampaign.name)}${
+        topCampaign.spendFormatted ? ` — ${escapeHtml(topCampaign.spendFormatted)}` : ""
+      }</div>`
+    : "";
+  return `<div>${spendValue}${period}${metricsLine}${campaignLine}</div>`;
+};
+
 const projectCard = (project: ProjectSummary): string => {
   const chat = project.telegramLink
     ? `<a class="btn btn-secondary" href="${escapeAttribute(project.telegramLink)}" target="_blank">Перейти в чат</a>`
@@ -94,6 +125,7 @@ const accountsTable = (accounts: MetaAdAccount[]): string => {
           <td>${escapeHtml(account.name || "—")}</td>
           <td>${escapeHtml(account.id || "—")}</td>
           <td>${escapeHtml(account.currency || "—")}</td>
+          <td>${accountSpendCell(account)}</td>
           <td>${accountStatusBadge(account)}</td>
           <td>${escapeHtml(account.business?.name || "—")}</td>
         </tr>
@@ -107,8 +139,58 @@ const accountsTable = (accounts: MetaAdAccount[]): string => {
           <th>Название</th>
           <th>ID</th>
           <th>Валюта</th>
+          <th>Расход</th>
           <th>Статус</th>
           <th>Бизнес</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+};
+
+const campaignsTable = (accounts: MetaAdAccount[]): string => {
+  const entries = accounts.flatMap((account) =>
+    (account.campaigns || []).map((campaign) => ({ account, campaign })),
+  );
+  if (!entries.length) {
+    return '<p class="muted">Нет данных по кампаниям Meta за выбранный период</p>';
+  }
+  const top = entries
+    .sort((a, b) => (b.campaign.spend ?? 0) - (a.campaign.spend ?? 0))
+    .slice(0, 10);
+  const rows = top
+    .map(({ account, campaign }) => {
+      const spend = campaign.spendFormatted
+        ? escapeHtml(campaign.spendFormatted)
+        : campaign.spend !== undefined
+          ? escapeHtml(campaign.spend.toFixed(2))
+          : "—";
+      const period = campaign.spendPeriod
+        ? `<div class="muted">${escapeHtml(campaign.spendPeriod)}</div>`
+        : "";
+      const statusParts = [campaign.status, campaign.effectiveStatus].filter(Boolean);
+      const status = statusParts.length ? escapeHtml(statusParts.join(" · ")) : "—";
+      return `
+        <tr>
+          <td>${escapeHtml(campaign.name)}</td>
+          <td>${escapeHtml(account.name)}<div class="muted">${escapeHtml(account.id)}</div></td>
+          <td><div><strong>${spend}</strong>${period}</div></td>
+          <td>${status}</td>
+        </tr>
+      `;
+    })
+    .join("\n");
+  return `
+    <table>
+      <thead>
+        <tr>
+          <th>Кампания</th>
+          <th>Аккаунт</th>
+          <th>Расход</th>
+          <th>Статус</th>
         </tr>
       </thead>
       <tbody>
@@ -122,6 +204,7 @@ export const renderAdminDashboard = ({ meta, accounts, projects, flash }: AdminD
   const flashBlock = flash
     ? `<div class="alert ${flash.type}">${escapeHtml(flash.message)}</div>`
     : "";
+  const spendPeriodLabel = accounts.find((account) => account.spendPeriod)?.spendPeriod;
   const body = `
     ${flashBlock}
     <section class="card">
@@ -135,7 +218,12 @@ export const renderAdminDashboard = ({ meta, accounts, projects, flash }: AdminD
     </section>
     <section class="card">
       <h2>Рекламные кабинеты</h2>
+      ${spendPeriodLabel ? `<p class="muted">Период: ${escapeHtml(spendPeriodLabel)}</p>` : ""}
       ${accountsTable(accounts)}
+    </section>
+    <section class="card">
+      <h2>Кампании Meta (топ 10)</h2>
+      ${campaignsTable(accounts)}
     </section>
     <section>
       <h2>Проекты</h2>

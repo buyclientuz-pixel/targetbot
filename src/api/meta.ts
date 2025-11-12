@@ -1,7 +1,7 @@
 import { jsonResponse } from "../utils/http";
-import { exchangeToken, fetchAdAccounts, refreshToken, resolveMetaStatus } from "../utils/meta";
+import { exchangeToken, fetchAdAccounts, fetchCampaigns, refreshToken, resolveMetaStatus } from "../utils/meta";
 import { EnvBindings, loadMetaToken, saveMetaToken } from "../utils/storage";
-import { ApiError, ApiSuccess, MetaAdAccount, MetaStatusResponse } from "../types";
+import { ApiError, ApiSuccess, MetaAdAccount, MetaCampaign, MetaStatusResponse } from "../types";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -52,7 +52,22 @@ export const handleMetaAdAccounts = async (
   try {
     const bindings = ensureEnv(env);
     const token = await loadMetaToken(bindings);
-    const accounts = await fetchAdAccounts(bindings, token);
+    const url = new URL(request.url);
+    const includeSpend = url.searchParams.get("includeSpend") === "true";
+    const includeCampaigns = url.searchParams.get("includeCampaigns") === "true";
+    const campaignLimitParam = url.searchParams.get("campaignLimit");
+    const campaignLimit = campaignLimitParam ? Number(campaignLimitParam) : undefined;
+    const datePreset = url.searchParams.get("datePreset") || undefined;
+    const since = url.searchParams.get("since") || undefined;
+    const until = url.searchParams.get("until") || undefined;
+    const accounts = await fetchAdAccounts(bindings, token, {
+      includeSpend,
+      includeCampaigns,
+      campaignsLimit: Number.isFinite(campaignLimit ?? NaN) ? campaignLimit : undefined,
+      datePreset,
+      since,
+      until,
+    });
     const payload: ApiSuccess<MetaAdAccount[]> = { ok: true, data: accounts };
     return jsonResponse(payload);
   } catch (error) {
@@ -60,6 +75,37 @@ export const handleMetaAdAccounts = async (
       ok: false,
       error: (error as Error).message,
     };
+    return jsonResponse(payload, { status: 400 });
+  }
+};
+
+export const handleMetaCampaigns = async (
+  request: Request,
+  env: unknown,
+): Promise<Response> => {
+  try {
+    const bindings = ensureEnv(env);
+    const token = await loadMetaToken(bindings);
+    const url = new URL(request.url);
+    const accountId = url.searchParams.get("accountId");
+    if (!accountId) {
+      throw new Error("accountId is required");
+    }
+    const limitParam = url.searchParams.get("limit");
+    const limit = limitParam ? Number(limitParam) : undefined;
+    const datePreset = url.searchParams.get("datePreset") || undefined;
+    const since = url.searchParams.get("since") || undefined;
+    const until = url.searchParams.get("until") || undefined;
+    const campaigns = await fetchCampaigns(bindings, token, accountId, {
+      limit: Number.isFinite(limit ?? NaN) ? limit : undefined,
+      datePreset,
+      since,
+      until,
+    });
+    const payload: ApiSuccess<MetaCampaign[]> = { ok: true, data: campaigns };
+    return jsonResponse(payload);
+  } catch (error) {
+    const payload: ApiError = { ok: false, error: (error as Error).message };
     return jsonResponse(payload, { status: 400 });
   }
 };
