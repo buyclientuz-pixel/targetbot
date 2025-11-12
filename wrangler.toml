@@ -1,25 +1,28 @@
 name = "th-reports"
 main = "src/index.ts"
-account_id = "02e61f874be22f0f3a6ee8f97ccccb1d"
-compatibility_date = "2024-01-01"
+compatibility_date = "2025-02-04"
+compatibility_flags = ["nodejs_compat"]
 
-[env.production]
-workers_dev = true
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+
+[observability.traces]
+enabled = false
+head_sampling_rate = 1
 
 [[kv_namespaces]]
-binding    = "REPORTS_NAMESPACE"
-id         = "c55f82210ade457c93aff4fe2ba8b007"
-preview_id = "c55f82210ade457c93aff4fe2ba8b007"
+binding = "DB"
+id = "0132cf582ce247d4b806a2be748e34c6"
 
-[[kv_namespaces]]
-binding    = "BILLING_NAMESPACE"
-id         = "c55f82210ade457c93aff4fe2ba8b007"
-preview_id = "c55f82210ade457c93aff4fe2ba8b007"
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "botbucket"
+preview_bucket_name = "botbucket"
 
-[[kv_namespaces]]
-binding    = "LOGS_NAMESPACE"
-id         = "c55f82210ade457c93aff4fe2ba8b007"
-preview_id = "c55f82210ade457c93aff4fe2ba8b007"
-
-[env.production.vars]
-ENVIRONMENT = "production"
+[triggers]
+crons = ["*/5 * * * *", "0 3 * * *"]
