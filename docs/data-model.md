@@ -37,6 +37,11 @@
 - `accountId`, `campaignId` — актуальные идентификаторы.
 - `expiresAt`, `updatedAt` — контроль жизненного цикла.
 
+### Meta Stats Summary (`KV_META`)
+- `meta:stats:last` — агрегированный снимок CPL/CTR для дашборда.
+- `totals` — сумма spend/leads/clicks/impressions, вычисленные CPL и CTR.
+- `insights[]` — нормализованные записи по кампаниям.
+
 ### Portal Keys (`KV_META`)
 - `key` — уникальный UUID-ключ, используемый в заголовке `X-Auth-Key`.
 - `role` — уровень доступа (`admin`, `manager`, `partner`, `service`).

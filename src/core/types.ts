@@ -33,6 +33,29 @@ export interface MetaTokenRecord {
   updatedAt: string;
 }
 
+export interface MetaInsight {
+  campaignId: string;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  leads: number;
+  cpl: number | null;
+  ctr: number | null;
+}
+
+export interface MetaStatsSummary {
+  updatedAt: string;
+  totals: {
+    spend: number;
+    leads: number;
+    clicks: number;
+    impressions: number;
+    cpl: number | null;
+    ctr: number | null;
+  };
+  insights: MetaInsight[];
+}
+
 export interface ReportSummary {
   id: string;
   period: {
@@ -54,6 +77,30 @@ export interface PortalKeyRecord {
   scopes?: string[];
   createdAt: string;
   lastUsedAt?: string;
+}
+
+export interface WebhookStatus {
+  configured: boolean;
+  url?: string;
+  pendingUpdateCount?: number;
+  hasCustomCertificate?: boolean;
+  lastErrorMessage?: string;
+  lastErrorDate?: string;
+  error?: string;
+}
+
+export interface DashboardSnapshot {
+  generatedAt: string;
+  leads: {
+    total: number;
+    today: number;
+    yesterday: number;
+    statuses: Record<string, number>;
+    sources: Record<string, number>;
+    recent: LeadRecord[];
+  };
+  meta?: MetaStatsSummary | null;
+  telegramWebhook: WebhookStatus;
 }
 
 export interface AuthenticatedRequest {

@@ -1,6 +1,7 @@
 import type {
   Env,
   LeadRecord,
+  MetaStatsSummary,
   MetaTokenRecord,
   PortalKeyRecord,
   ReportSummary,
@@ -10,6 +11,7 @@ import type {
 import { uuid } from "./utils";
 
 const PORTAL_KEY_PREFIX = "auth:key:";
+const META_STATS_KEY = "meta:stats:last";
 
 export async function getUser(env: Env, id: number) {
   const data = await env.KV_USERS.get(`user:${id}`);
@@ -83,6 +85,16 @@ export async function saveMetaToken(env: Env, token: MetaTokenRecord) {
 export async function getMetaToken(env: Env) {
   const data = await env.KV_META.get("meta:token");
   return data ? (JSON.parse(data) as MetaTokenRecord) : null;
+}
+
+export async function saveMetaStatsSummary(env: Env, summary: MetaStatsSummary) {
+  await env.KV_META.put(META_STATS_KEY, JSON.stringify(summary));
+  return summary;
+}
+
+export async function getMetaStatsSummary(env: Env) {
+  const data = await env.KV_META.get(META_STATS_KEY);
+  return data ? (JSON.parse(data) as MetaStatsSummary) : null;
 }
 
 export async function listReports(env: Env) {

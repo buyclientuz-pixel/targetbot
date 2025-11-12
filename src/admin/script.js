@@ -21,6 +21,21 @@ function humanize(value) {
     .join(" ");
 }
 
+const integerFormatter = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
+const decimalFormatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
+function formatInteger(value) {
+  return typeof value === "number" && Number.isFinite(value) ? integerFormatter.format(value) : "—";
+}
+
+function formatDecimal(value) {
+  return typeof value === "number" && Number.isFinite(value) ? decimalFormatter.format(value) : "—";
+}
+
+function formatPercentage(value) {
+  return typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+}
+
 function activateTab(targetId) {
   document.querySelectorAll(".tab-panel").forEach((panel) => {
     panel.classList.toggle("active", panel.id === targetId);
@@ -35,30 +50,64 @@ tabs.forEach((tab) => {
 });
 
 async function renderDashboard() {
-  dashboard.innerHTML = `<div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-    <article class="card">
-      <h2 class="card-title">Лиды сегодня</h2>
-      <p class="card-value" id="leads-today">—</p>
-    </article>
-    <article class="card">
-      <h2 class="card-title">Spend Meta</h2>
-      <p class="card-value" id="meta-spend">—</p>
-    </article>
-    <article class="card">
-      <h2 class="card-title">Средний CPL</h2>
-      <p class="card-value" id="meta-cpl">—</p>
-    </article>
-    <article class="card">
-      <h2 class="card-title">Webhook</h2>
-      <p class="card-value" id="telegram-webhook">—</p>
-    </article>
+  dashboard.innerHTML = `<div class="space-y-4">
+    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <article class="card">
+        <h2 class="card-title">Лиды</h2>
+        <p class="card-value" id="leads-today">—</p>
+        <p class="card-subvalue" id="leads-yesterday">Вчера: —</p>
+      </article>
+      <article class="card">
+        <h2 class="card-title">Spend Meta</h2>
+        <p class="card-value" id="meta-spend">—</p>
+        <p class="card-subvalue" id="meta-ctr">CTR: —</p>
+      </article>
+      <article class="card">
+        <h2 class="card-title">Средний CPL</h2>
+        <p class="card-value" id="meta-cpl">—</p>
+        <p class="card-subvalue" id="meta-leads">Лиды: —</p>
+      </article>
+      <article class="card">
+        <h2 class="card-title">Webhook</h2>
+        <p class="card-value" id="telegram-webhook">—</p>
+        <p class="card-subvalue" id="telegram-webhook-note"></p>
+      </article>
+    </div>
+    <p class="text-xs text-slate-500" id="dashboard-updated">Обновлено: —</p>
   </div>`;
-  const [leads, settings] = await Promise.all([api.getLeads(), api.getSettings()]);
-  const leadsToday = leads.leads?.filter((lead) => new Date(lead.createdAt).toDateString() === new Date().toDateString()) ?? [];
-  document.querySelector("#leads-today").textContent = String(leadsToday.length);
-  document.querySelector("#meta-spend").textContent = settings.metaToken?.spend ?? "—";
-  document.querySelector("#meta-cpl").textContent = settings.metaToken?.cpl ?? "—";
-  document.querySelector("#telegram-webhook").textContent = settings.telegramTokenConfigured ? "Активен" : "Не подключён";
+
+  const data = await api.getDashboard();
+  const snapshot = data.snapshot ?? data;
+  const leads = snapshot.leads ?? {};
+  const metaTotals = snapshot.meta?.totals ?? {};
+  const webhook = snapshot.telegramWebhook ?? {};
+
+  document.querySelector("#leads-today").textContent = formatInteger(leads.today);
+  document.querySelector("#leads-yesterday").textContent = `Вчера: ${formatInteger(leads.yesterday)}`;
+  document.querySelector("#meta-spend").textContent = formatDecimal(metaTotals.spend);
+  document.querySelector("#meta-cpl").textContent = formatDecimal(metaTotals.cpl ?? undefined);
+  document.querySelector("#meta-ctr").textContent = `CTR: ${formatPercentage(metaTotals.ctr ?? undefined)}`;
+  document.querySelector("#meta-leads").textContent = `Лиды: ${formatInteger(metaTotals.leads)}`;
+
+  const webhookStatus = webhook.configured
+    ? webhook.url
+      ? "Активен"
+      : "Ожидает URL"
+    : "Не подключён";
+  document.querySelector("#telegram-webhook").textContent = webhookStatus;
+
+  const webhookNotes = [];
+  if (webhook.url) webhookNotes.push(webhook.url);
+  if (typeof webhook.pendingUpdateCount === "number") {
+    webhookNotes.push(`Очередь: ${formatInteger(webhook.pendingUpdateCount)}`);
+  }
+  if (webhook.lastErrorMessage) webhookNotes.push(`Ошибка: ${webhook.lastErrorMessage}`);
+  if (webhook.error && !webhook.lastErrorMessage) webhookNotes.push(webhook.error);
+  document.querySelector("#telegram-webhook-note").textContent = webhookNotes.join(" · ") || "Без ошибок";
+
+  const updatedAt = snapshot.generatedAt ? new Date(snapshot.generatedAt).toLocaleString() : "—";
+  const metaUpdated = snapshot.meta?.updatedAt ? new Date(snapshot.meta.updatedAt).toLocaleString() : "—";
+  document.querySelector("#dashboard-updated").textContent = `Обновлено: ${updatedAt} · Meta: ${metaUpdated}`;
 }
 
 async function renderUsers() {

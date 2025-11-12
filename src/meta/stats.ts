@@ -1,8 +1,9 @@
 import type { RouteHandler } from "../core/types";
 import { fail, ok } from "../core/utils";
-import { getMetaToken } from "../core/db";
+import { getMetaToken, saveMetaStatsSummary } from "../core/db";
 import { graphRequest } from "./client";
 import { requireAdmin } from "../core/auth";
+import type { MetaStatsSummary } from "../core/types";
 
 interface InsightsResponse {
   data: Array<{
@@ -32,7 +33,9 @@ export const metaStatsHandler: RouteHandler = async (context) => {
   if (campaignId) params.filtering = JSON.stringify([{ field: "campaign.id", operator: "IN", value: [campaignId] }]);
   const insights = await graphRequest<InsightsResponse>(context.env, `${accountId}/insights`, params, token.accessToken);
   const normalized = insights.data.map((entry) => {
-    const leadsAction = entry.actions?.find((action) => action.action_type === "lead" || action.action_type === "onsite_conversion.lead_grouped");
+    const leadsAction = entry.actions?.find(
+      (action) => action.action_type === "lead" || action.action_type === "onsite_conversion.lead_grouped",
+    );
     const leads = leadsAction ? Number(leadsAction.value) : 0;
     const spend = Number(entry.spend);
     return {
@@ -45,5 +48,32 @@ export const metaStatsHandler: RouteHandler = async (context) => {
       ctr: Number(entry.impressions) > 0 ? Number(entry.clicks) / Number(entry.impressions) : null,
     };
   });
-  return ok({ insights: normalized });
+
+  const aggregate = normalized.reduce(
+    (acc, item) => {
+      acc.spend += item.spend;
+      acc.leads += item.leads;
+      acc.clicks += item.clicks;
+      acc.impressions += item.impressions;
+      return acc;
+    },
+    { spend: 0, leads: 0, clicks: 0, impressions: 0 },
+  );
+
+  const summary: MetaStatsSummary = {
+    updatedAt: new Date().toISOString(),
+    totals: {
+      spend: aggregate.spend,
+      leads: aggregate.leads,
+      clicks: aggregate.clicks,
+      impressions: aggregate.impressions,
+      cpl: aggregate.leads > 0 ? aggregate.spend / aggregate.leads : null,
+      ctr: aggregate.impressions > 0 ? aggregate.clicks / aggregate.impressions : null,
+    },
+    insights: normalized,
+  };
+
+  await saveMetaStatsSummary(context.env, summary);
+
+  return ok({ insights: normalized, summary });
 };

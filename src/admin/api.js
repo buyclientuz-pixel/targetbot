@@ -45,6 +45,10 @@ export const api = {
     const search = query.toString();
     return request(`/api/leads${search ? `?${search}` : ""}`);
   },
+  async getDashboard() {
+    const key = new URLSearchParams(window.location.search).get("key") ?? "";
+    return request(`/api/dashboard?key=${key}`);
+  },
   async getUsers() {
     const key = new URLSearchParams(window.location.search).get("key") ?? "";
     return request(`/api/users?key=${key}`);

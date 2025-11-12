@@ -54,6 +54,13 @@ body {
   color: #34d399;
 }
 
+.card-subvalue {
+  margin-top: 0.25rem;
+  font-size: 0.95rem;
+  color: #cbd5f5;
+  opacity: 0.85;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;

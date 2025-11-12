@@ -11,6 +11,7 @@ import {
 import { listUsersHandler, updateUserHandler } from "./api/users";
 import { listReportsHandler, createReportHandler } from "./api/reports";
 import { getSettingsHandler, updateSettingsHandler } from "./api/settings";
+import { dashboardHandler } from "./api/dashboard";
 import { renderAdminPage } from "./admin/page";
 import { requireAdmin } from "./core/auth";
 import { handleUpdate } from "./bot/handler";
@@ -41,6 +42,7 @@ router.get("/api/leads", listLeadsHandler);
 router.post("/api/leads", createLeadHandler);
 router.get("/api/leads/:id", getLeadHandler);
 router.patch("/api/leads/:id", updateLeadHandler);
+router.get("/api/dashboard", dashboardHandler);
 router.get("/api/users", listUsersHandler);
 router.patch("/api/users/:id", updateUserHandler);
 router.get("/api/reports", listReportsHandler);
