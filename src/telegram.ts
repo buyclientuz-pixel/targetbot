@@ -9,6 +9,7 @@ import {
   writeAlertsConfig,
   resolvePortalUrl,
   listProjectsWithoutAccount,
+  findProjectCard,
   findProjectForAccount,
   hasProjectChat,
 } from "./utils/projects";
@@ -36,6 +37,7 @@ import {
   WorkerEnv,
   MetaAccountInfo,
   MetaTokenStatus,
+  ProjectConfigRecord,
 } from "./types";
 import {
   formatCurrency,
@@ -57,10 +59,17 @@ interface TelegramUser {
   username?: string;
 }
 
+interface TelegramChat {
+  id: number | string;
+  type: string;
+  title?: string;
+  username?: string;
+}
+
 interface TelegramMessage {
   message_id: number;
   text?: string;
-  chat: { id: number | string; type: string };
+  chat: TelegramChat;
   from?: TelegramUser;
 }
 
@@ -502,45 +511,6 @@ const sendAdminProjectsOverview = async (
   );
 };
 
-const formatAccountOverview = (
-  account: MetaAccountInfo,
-  project: ProjectCard | null,
-  spendInfo: { value: number | null; label: string | null; currency: string } | null,
-  hasChat: boolean,
-  timeZone: string
-): string => {
-  const lines: string[] = [];
-  const icon = hasChat ? metaAccountStatusIcon(account.status) : "🔘";
-  lines.push(`${icon} <b>${escapeHtml(account.name || account.id)}</b>`);
-  lines.push(`ID: <code>${escapeHtml(account.id)}</code>`);
-  if (account.status) {
-    lines.push(`Статус: ${escapeHtml(String(account.status))}`);
-  }
-  if (project) {
-    lines.push(`Проект: ${escapeHtml(project.name)}`);
-    if (!hasChat) {
-      lines.push("Чат: не подключён");
-    } else {
-      const label = buildChatLabel(project);
-      if (label) {
-        lines.push(`Чат: ${escapeHtml(label)}`);
-      }
-    }
-  } else {
-    lines.push("Проект: не подключён");
-  }
-  if (spendInfo && spendInfo.value !== null) {
-    const spendText = formatCurrency(spendInfo.value, spendInfo.currency);
-    const suffix = spendInfo.label ? ` (${spendInfo.label})` : "";
-    lines.push(`💰 Потрачено: ${escapeHtml(`${spendText}${suffix}`)}`);
-  } else {
-    lines.push("💰 Потрачено: —");
-  }
-  const lastActivity = project?.updated_at || project?.last_sync || account.last_update || null;
-  lines.push(`📆 Последняя активность: ${escapeHtml(formatDateTime(lastActivity, timeZone))}`);
-  return lines.join("\n");
-};
-
 const sendAdminAccountsOverview = async (
   env: Record<string, unknown>,
   chatId: string,
@@ -563,7 +533,6 @@ const sendAdminAccountsOverview = async (
     return;
   }
 
-  const timeZone = getTimeZone(env);
   const cards: string[] = [];
   const inline_keyboard: Array<Array<Record<string, unknown>>> = [];
 
@@ -571,35 +540,39 @@ const sendAdminAccountsOverview = async (
     const project = findProjectForAccount(projects, account.id);
     const hasChat = project ? hasProjectChat(project) : false;
     const spendInfo = await resolveAccountSpend(env, project);
-    cards.push(formatAccountOverview(account, project, spendInfo, hasChat, timeZone));
+    const chatLabel = hasChat ? buildChatLabel(project) : null;
+    const statusIcon = metaAccountStatusIcon(account.status);
+    const spendBadge =
+      spendInfo && spendInfo.value !== null
+        ? formatCurrency(spendInfo.value, spendInfo.currency)
+        : "—";
+    const accountLineParts = [
+      `${statusIcon} <b>${escapeHtml(account.name)}</b>`,
+      chatLabel
+        ? `Чат: ${escapeHtml(chatLabel)}`
+        : "Чат: <i>не подключён</i>",
+      `Расход: ${escapeHtml(spendBadge)}`,
+      account.status ? `Статус: ${escapeHtml(account.status)}` : null,
+    ].filter(Boolean);
+    cards.push(accountLineParts.join("\n"));
 
-    if (project && hasChat) {
-      const spendBadge =
-        spendInfo && spendInfo.value !== null
-          ? formatCurrency(spendInfo.value, spendInfo.currency)
-          : "—";
-      inline_keyboard.push([
-        {
-          text: `${metaAccountStatusIcon(account.status)} ${account.name} | ${spendBadge}`,
-          callback_data: `admin:project:${project.id}`,
-        },
-      ]);
-    } else {
-      inline_keyboard.push([
-        {
-          text: `🔘 ${account.name} | Подключить`,
-          callback_data: `admin:account_link:${account.id}`,
-        },
-      ]);
-    }
+    const buttonLabel = chatLabel
+      ? `[ ${account.name} | ${chatLabel} ]`
+      : `[ ${account.name} | ➕ выбрать чат ]`;
+    inline_keyboard.push([
+      {
+        text: buttonLabel,
+        callback_data: project && hasChat ? `admin:project:${project.id}` : `admin:account_link:${account.id}`,
+      },
+    ]);
   }
 
   inline_keyboard.push([{ text: "⬅️ Главное меню", callback_data: "admin:menu" }]);
 
   const header = [
-    "📣 Рекламные аккаунты",
+    "👥 Аккаунты",
     "",
-    "Выберите аккаунт, чтобы открыть проект или привязать его к чат-группе.",
+    "Нажмите на кампанию, чтобы открыть карточку или подключить чат.",
     "",
   ];
 
@@ -1000,7 +973,7 @@ const buildAdminMenuKeyboard = (
   ]);
 
   inline_keyboard.push([
-    { text: "📣 Рекламные аккаунты", callback_data: "admin:accounts" },
+    { text: "👥 Аккаунты", callback_data: "admin:accounts" },
     { text: "💳 Оплаты", callback_data: "admin:billing" },
     { text: "⚙️ Тех.панель", callback_data: "admin:tech" },
   ]);
@@ -1768,6 +1741,233 @@ const formatCampaignList = (report: ProjectReport, limit = 5): string => {
       `• ${campaign.name} — ${formatCurrency(campaign.spend, report.currency)} / Лиды: ${formatNumber(campaign.leads)} / CTR: ${formatPercent(campaign.ctr)}`
   );
   return lines.join("\n");
+};
+
+const formatTelegramActor = (user?: TelegramUser): string => {
+  if (!user) {
+    return "unknown";
+  }
+  if (user.username && user.username.trim()) {
+    return `@${user.username.trim()} (${String(user.id)})`;
+  }
+  return String(user.id);
+};
+
+const isGroupChat = (chat: TelegramChat | null | undefined): boolean => {
+  if (!chat) {
+    return false;
+  }
+  const type = (chat.type || "").toLowerCase();
+  return type === "group" || type === "supergroup";
+};
+
+const normalizeChatUsername = (username?: string | null): string | null => {
+  if (!username) {
+    return null;
+  }
+  const trimmed = username.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.startsWith("@") ? trimmed : `@${trimmed}`;
+};
+
+const buildChatLinkFromUsername = (username: string | null): string | null => {
+  if (!username) {
+    return null;
+  }
+  const handle = username.replace(/^@/, "");
+  if (!handle) {
+    return null;
+  }
+  return `https://t.me/${handle}`;
+};
+
+const slugifyProjectName = (value: string): string => {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+};
+
+const sanitizeChatIdForSlug = (chatId: string): string => {
+  const digits = chatId.replace(/[^0-9]/g, "");
+  if (digits) {
+    return digits;
+  }
+  const hash = chatId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return Math.abs(hash).toString(36);
+};
+
+const generateChatProjectId = (
+  projects: ProjectCard[],
+  chatId: string,
+  displayName: string
+): string => {
+  const used = new Set(projects.map((project) => project.id));
+  const fallback = `tg-${sanitizeChatIdForSlug(chatId)}`;
+  const baseSlug = slugifyProjectName(displayName) || fallback;
+  let candidate = baseSlug;
+  let attempt = 2;
+  while (used.has(candidate)) {
+    candidate = `${baseSlug}-${attempt}`;
+    attempt += 1;
+  }
+  return candidate;
+};
+
+const findProjectByChatId = (projects: ProjectCard[], chatId: string): ProjectCard | null => {
+  const normalized = chatId.trim();
+  if (!normalized) {
+    return null;
+  }
+  return (
+    projects.find((project) => {
+      if (project.chat_id === null || project.chat_id === undefined) {
+        return false;
+      }
+      return String(project.chat_id).trim() === normalized;
+    }) || null
+  );
+};
+
+const registerChatGroup = async (
+  env: Record<string, unknown>,
+  chat: TelegramChat,
+  actor?: TelegramUser
+): Promise<{
+  project: ProjectCard;
+  created: boolean;
+  updatedName: boolean;
+  updatedUsername: boolean;
+  updatedLink: boolean;
+}> => {
+  const chatId = String(chat.id);
+  const projects = await loadProjectCards(env);
+  const existing = findProjectByChatId(projects, chatId);
+  const username = normalizeChatUsername(chat.username);
+  const chatLink = buildChatLinkFromUsername(username);
+  const title = typeof chat.title === "string" && chat.title.trim() ? chat.title.trim() : null;
+  const fallbackName = username || `Чат ${chatId.replace(/^-/, "")}`;
+  const displayName = title || fallbackName;
+
+  const patch: Partial<ProjectConfigRecord> = {
+    chat_id: chatId,
+  };
+
+  let updatedName = false;
+  if (!existing) {
+    patch.name = displayName;
+    updatedName = Boolean(displayName);
+  } else if (displayName && displayName !== existing.name) {
+    const existingName = existing.name ? existing.name.trim() : "";
+    const fallbackNames = new Set<string>([
+      existing.id,
+      fallbackName,
+      existing.chat_username || "",
+      existing.chat_link || "",
+      `ID: ${chatId}`,
+    ]);
+    if (!existingName || fallbackNames.has(existingName)) {
+      patch.name = displayName;
+      updatedName = true;
+    }
+  }
+
+  let updatedUsername = false;
+  if (username && (!existing || username !== existing.chat_username)) {
+    patch.chat_username = username;
+    updatedUsername = true;
+  }
+
+  let updatedLink = false;
+  if (chatLink && (!existing || chatLink !== existing.chat_link)) {
+    patch.chat_link = chatLink;
+    updatedLink = true;
+  }
+
+  const projectId = existing ? existing.id : generateChatProjectId(projects, chatId, displayName);
+  const record = await writeProjectConfig(env, projectId, patch);
+  if (!record) {
+    throw new Error("Failed to persist chat registration");
+  }
+
+  await appendLogEntry(env as any, {
+    level: "info",
+    message: `Telegram chat ${chatId} registered${existing ? "" : " (new)"} by ${formatTelegramActor(actor)}`,
+    timestamp: new Date().toISOString(),
+  });
+
+  const project =
+    (await findProjectCard(env, projectId)) ||
+    ({
+      id: projectId,
+      name: record.name || projectId,
+      chat_id: chatId,
+      chat_link: chatLink || null,
+      chat_username: username || null,
+    } as ProjectCard);
+
+  return {
+    project,
+    created: !existing,
+    updatedName,
+    updatedUsername,
+    updatedLink,
+  };
+};
+
+const handleRegisterCommand = async (
+  env: Record<string, unknown>,
+  message: TelegramMessage
+): Promise<void> => {
+  const chat = message.chat;
+  const chatId = String(chat.id);
+
+  if (!isGroupChat(chat)) {
+    await reply(env, chatId, "ℹ️ Команду /reg нужно отправлять в групповом чате, где добавлен бот.");
+    return;
+  }
+
+  try {
+    const result = await registerChatGroup(env, chat, message.from);
+    const { project, created, updatedName, updatedUsername, updatedLink } = result;
+    const chatLabel = buildChatLabel(project);
+    const changes: string[] = [];
+    if (!created && (updatedName || updatedUsername || updatedLink)) {
+      if (updatedName) {
+        changes.push("обновлено название");
+      }
+      if (updatedUsername || updatedLink) {
+        changes.push("обновлены контакты чата");
+      }
+    }
+
+    const header = created ? "✅ Чат зарегистрирован." : "ℹ️ Чат уже был зарегистрирован.";
+    const detailLines = [
+      header,
+      `ID проекта: <code>${escapeHtml(project.id)}</code>`,
+      `Название: <b>${escapeHtml(project.name || project.id)}</b>`,
+      chatLabel ? `Чат: ${escapeHtml(chatLabel)}` : null,
+      changes.length ? `Обновлено: ${changes.join(", ")}.` : null,
+      "Теперь привяжите рекламный аккаунт через /admin → Аккаунты.",
+    ].filter(Boolean);
+
+    await reply(env, chatId, detailLines.join("\n"), { parseMode: "HTML", disablePreview: true });
+  } catch (error) {
+    await appendLogEntry(env as any, {
+      level: "error",
+      message: `Chat registration failed for ${chatId}: ${(error as Error).message}`,
+      timestamp: new Date().toISOString(),
+    });
+    await reply(
+      env,
+      chatId,
+      "⚠️ Не удалось сохранить регистрацию чата. Проверьте права доступа и повторите попытку позже."
+    );
+  }
 };
 
 const reply = async (
@@ -2663,6 +2863,9 @@ export const handleTelegramWebhook = async (
         } else {
           await reply(env, chatId, "⛔ У вас нет доступа к админ-панели.");
         }
+        break;
+      case "/reg":
+        await handleRegisterCommand(env, message);
         break;
       case "/report":
         await handleReportCommand(env, chatId, commandData.args);
