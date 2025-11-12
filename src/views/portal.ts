@@ -1,99 +1,82 @@
-import { ProjectReport } from "../types";
-import { escapeHtml, joinHtml } from "../utils/html";
-import { renderLayout } from "./layout";
-import {
-  formatCurrency,
-  formatNumber,
-  formatPercent,
-  formatFrequency,
-  formatDateTime,
-} from "../utils/format";
+import { LeadRecord, ProjectRecord } from "../types";
+import { renderLayout } from "../components/layout";
 
-const STATUS_ICONS: Record<string, string> = {
-  active: "🟢",
-  pending: "🟡",
-  paused: "⚪️",
-  unknown: "⚪️",
+interface PortalViewProps {
+  project: ProjectRecord;
+  leads: LeadRecord[];
+}
+
+const leadRow = (lead: LeadRecord): string => {
+  const action =
+    lead.status === "done"
+      ? `<button class="btn btn-secondary" data-action="new" data-id="${lead.id}">↩️</button>`
+      : `<button class="btn btn-primary" data-action="done" data-id="${lead.id}">✔</button>`;
+  return `
+    <tr>
+      <td>${lead.name}</td>
+      <td>${lead.phone || "—"}</td>
+      <td>${lead.source}</td>
+      <td>${new Date(lead.createdAt).toLocaleString("ru-RU")}</td>
+      <td>${lead.status}</td>
+      <td>${action}</td>
+    </tr>
+  `;
 };
 
-const renderSummaryCard = (report: ProjectReport, timeZone: string): string => {
-  const summary = report.summary;
-  const statusIcon = STATUS_ICONS[report.status || "unknown"] || "⚪️";
-  const paymentInfo = report.billing || {};
-  const cardText = paymentInfo.card_last4 ? `•••• ${paymentInfo.card_last4}` : `—`;
-  const lastUpdated = formatDateTime(report.updated_at, timeZone);
-  const daysToPay = paymentInfo.days_to_pay;
-  const progress = typeof daysToPay === "number" && daysToPay >= 0 ? Math.min(daysToPay, 30) : null;
+export const renderPortal = ({ project, leads }: PortalViewProps): string => {
+  const rows = leads.map(leadRow).join("\n");
+  const body = `
+    <section class="card">
+      <h2>${project.name}</h2>
+      <p class="muted">Чат: ${project.telegramLink || project.telegramChatId || "—"}</p>
+      <p class="muted">Рекламный кабинет: ${project.adAccountId || "—"}</p>
+    </section>
+    <section class="card">
+      <h2>Лиды</h2>
+      <table id="leadsTable">
+        <thead>
+          <tr>
+            <th>Имя</th>
+            <th>Телефон</th>
+            <th>Источник</th>
+            <th>Дата</th>
+            <th>Статус</th>
+            <th>Действие</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </section>
+  `;
 
-  const header = joinHtml([
-    '<div class="rounded-xl border border-slate-800 bg-slate-950 p-6 shadow-lg">',
-    '<div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">',
-    '<div class="text-2xl font-semibold">',
-    `<span>${statusIcon} ${escapeHtml(report.project_name)}</span>`,
-    "</div>",
-    `<div class="text-sm text-slate-400">Последнее обновление: ${escapeHtml(lastUpdated)}</div>`,
-    "</div>",
-    '<div class="mt-4 grid gap-4 md:grid-cols-2">',
-    '<div class="space-y-2">',
-    '<div class="text-sm uppercase text-slate-400">Карта</div>',
-    `<div class="text-lg">${escapeHtml(cardText)}</div>`,
-    "</div>",
-    '<div class="space-y-2">',
-    '<div class="text-sm uppercase text-slate-400">Оплата через</div>',
-    `<div class="text-lg">${daysToPay !== null && daysToPay !== undefined ? `${daysToPay}д` : "—"}</div>`,
-    progress !== null
-      ? `<div class="h-2 rounded-full bg-slate-800"><div class="h-2 rounded-full bg-emerald-500" style="width: ${Math.max(0, ((30 - progress) * 100) / 30)}%"></div></div>`
-      : "",
-    "</div>",
-    "</div>",
-    '<hr class="my-6 border-slate-800" />',
-    '<div class="grid gap-4 md:grid-cols-3">',
-    '<div class="space-y-1">',
-    '<div class="text-sm text-slate-400">Активные кампании</div>',
-    `<div class="text-2xl font-semibold">${formatNumber(summary.active_campaigns || 0)}</div>`,
-    "</div>",
-    '<div class="space-y-1">',
-    '<div class="text-sm text-slate-400">Потрачено</div>',
-    `<div class="text-2xl font-semibold">${formatCurrency(summary.spend, report.currency)}</div>`,
-    "</div>",
-    '<div class="space-y-1">',
-    '<div class="text-sm text-slate-400">Лиды</div>',
-    `<div class="text-2xl font-semibold">${formatNumber(summary.leads)}</div>`,
-    "</div>",
-    "</div>",
-    '<div class="mt-6 grid gap-4 md:grid-cols-2">',
-    metricRow("Клики", formatNumber(summary.clicks)),
-    metricRow("Показы", formatNumber(summary.impressions)),
-    metricRow("Частота", formatFrequency(summary.frequency)),
-    metricRow("CPA", formatCurrency(summary.cpa, report.currency)),
-    metricRow("CPC", formatCurrency(summary.cpc, report.currency)),
-    metricRow("CTR", formatPercent(summary.ctr)),
-    "</div>",
-    '<hr class="my-6 border-slate-800" />',
-    '<div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">',
-    `<a href="/portal/${escapeHtml(report.project_id)}/campaigns" class="inline-flex items-center justify-center rounded-lg border border-emerald-500 px-4 py-2 text-sm font-semibold text-emerald-400 hover:bg-emerald-500/10">Все кампании</a>`,
-    report.chat_link
-      ? `<a href="${escapeHtml(report.chat_link)}" class="inline-flex items-center justify-center rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">Чат клиента</a>`
-      : '<span class="text-sm text-slate-500">Чат клиента не назначен</span>',
-    "</div>",
-    "</div>",
-  ]);
+  const scripts = `
+    document.querySelectorAll('#leadsTable button').forEach((button) => {
+      button.addEventListener('click', async (event) => {
+        const target = event.target as HTMLButtonElement;
+        const id = target.getAttribute('data-id');
+        const action = target.getAttribute('data-action');
+        if (!id || !action) return;
+        target.setAttribute('disabled', 'true');
+        try {
+          const response = await fetch('/api/leads/' + id, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ status: action === 'done' ? 'done' : 'new', projectId: '${project.id}' }),
+          });
+          const data = await response.json();
+          if (!data.ok) {
+            alert('Ошибка обновления статуса: ' + data.error);
+          } else {
+            window.location.reload();
+          }
+        } catch (error) {
+          alert('Ошибка сети: ' + error.message);
+        }
+      });
+    });
+  `;
 
-  return header;
-};
-
-const metricRow = (label: string, value: string): string => {
-  return `<div class="flex items-center justify-between rounded-lg bg-slate-900 px-4 py-3"><span class="text-sm text-slate-400">${escapeHtml(label)}</span><span class="text-lg font-semibold">\${escapeHtml(value)}</span>\${'</div>'}`;
-};
-
-export const renderPortalPage = (report: ProjectReport, timeZone: string): string => {
-  const content = joinHtml([
-    '<div class="space-y-6">',
-    renderSummaryCard(report, timeZone),
-    "</div>",
-  ]);
-
-  const sidebar = `<div class="p-6 space-y-6"><div class="text-sm font-semibold uppercase text-slate-500">Навигация</div><nav class="space-y-2"><a class="block rounded-lg px-3 py-2 text-sm font-medium bg-slate-900 text-emerald-400" href="/portal/${escapeHtml(report.project_id)}">Сводка</a><a class="block rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-slate-900" href="/portal/${escapeHtml(report.project_id)}/campaigns">Кампании</a><a class="block rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-slate-900" href="/admin?project=\${escapeHtml(report.project_id)}">Админ-панель</a>\${'</nav>'}</div>`;
-
-  return renderLayout(content, { title: `${report.project_name} — портал`, sidebar });
+  return renderLayout({ title: `Портал — ${project.name}`, body, scripts });
 };

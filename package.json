@@ -4,35 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "preinstall": "node scripts/preinstall-redirect.cjs",
-    "lint": "eslint 'src/**/*.{js,ts,tsx}' --quiet",
-    "format": "prettier --write 'src/**/*.{js,ts,tsx,json,html,css}'",
-    "lint:api": "node scripts/lint-api.mjs",
-    "lint:strings": "node scripts/lint-strings.mjs",
-    "migrate:templates": "node tools/convertConcatToTemplate.js --apply && npm run format && npm run lint",
-    "deploy": "npm run build && wrangler deploy --minify",
-    "deploy:versions": "npm run build && wrangler versions upload",
-    "deploy:full": "npm run lint && npm run format && npm run lint:api && npm run lint:strings && npm run deploy:versions",
-    "check:config": "node scripts/check-config.mjs",
-    "sync:secrets": "node scripts/sync-secrets.mjs",
-    "test:integration": "node scripts/run-integration.mjs",
-    "test:r2": "node scripts/r2-load-test.mjs",
-    "test:fallback": "node scripts/simulate-fallback.mjs",
-    "validate:postdeploy": "node scripts/postdeploy-validate.mjs",
-    "verify:deploy": "npm run lint:api && npm run check:config && npm run test:integration",
-    "build": "npm run bundle",
-    "bundle": "bun build src/index.ts --outdir dist --target browser --format esm --minify",
+    "lint": "eslint . --ext .ts,.js",
     "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "latest",
+    "@cloudflare/workers-types": "^4.20250111.0",
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^9.1.2",
     "eslint-plugin-prettier": "^5.5.4",
-    "glob": "^10.4.5",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3",
-    "wrangler": "4.47.0"
+    "wrangler": "^4.47.0"
   }
 }
