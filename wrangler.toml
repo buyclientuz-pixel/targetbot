@@ -26,3 +26,8 @@ preview_bucket_name = "botbucket"
 
 [triggers]
 crons = ["*/5 * * * *", "0 3 * * *"]
+
+[env.production]
+# minimal production env section so wrangler --env production has a target
+name = "th-reports-production"
+account_id = ""

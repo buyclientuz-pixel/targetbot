@@ -15,6 +15,7 @@
     "validate:postdeploy": "node scripts/postdeploy-validate.mjs"
   },
   "devDependencies": {
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "@cloudflare/workers-types": "^4.2025.0"
   }
 }
