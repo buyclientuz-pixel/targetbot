@@ -218,6 +218,10 @@ export interface WorkerEnv extends Record<string, unknown> {
   FB_ACCOUNT_IDS?: string;
   FACEBOOK_ACCOUNT_IDS?: string;
   AD_ACCOUNT_IDS?: string;
+  META_BUSINESS_IDS?: string;
+  FB_BUSINESS_IDS?: string;
+  FACEBOOK_BUSINESS_IDS?: string;
+  AD_BUSINESS_IDS?: string;
   BOT_TOKEN?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TG_API_TOKEN?: string;

@@ -37,13 +37,62 @@ const normalizeAccountId = (value: string): string => {
   return trimmed;
 };
 
-const parseAccountList = (value: unknown): string[] => {
-  if (!value || typeof value !== "string") {
+const collectStringTokens = (value: unknown): string[] => {
+  if (value === null || value === undefined) {
     return [];
   }
-  return value
-    .split(/[\s,;]+/)
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => collectStringTokens(entry));
+  }
+
+  if (typeof value === "object") {
+    return collectStringTokens(Object.values(value as Record<string, unknown>));
+  }
+
+  if (typeof value !== "string") {
+    return [];
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  const firstChar = trimmed[0];
+  const lastChar = trimmed[trimmed.length - 1];
+  if (
+    (firstChar === "[" && lastChar === "]") ||
+    (firstChar === "{" && lastChar === "}")
+  ) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      return collectStringTokens(parsed);
+    } catch (_error) {
+      // fall back to plain tokenization below
+    }
+  }
+
+  return trimmed.split(/[\s,;]+/);
+};
+
+const parseAccountList = (value: unknown): string[] => {
+  return collectStringTokens(value)
     .map((part) => normalizeAccountId(part))
+    .filter(Boolean);
+};
+
+const normalizeBusinessId = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed;
+};
+
+const parseBusinessList = (value: unknown): string[] => {
+  return collectStringTokens(value)
+    .map((part) => normalizeBusinessId(part))
     .filter(Boolean);
 };
 
@@ -189,26 +238,87 @@ const resolveConfiguredAccountIds = async (env: WorkerEnv): Promise<string[]> =>
   return [];
 };
 
-export const fetchAdAccounts = async (env: unknown): Promise<MetaAccountInfo[]> => {
-  const workerEnv = env as WorkerEnv;
+const resolveConfiguredBusinessIds = (env: WorkerEnv): string[] => {
+  const keys = [
+    "META_BUSINESS_IDS",
+    "FB_BUSINESS_IDS",
+    "FACEBOOK_BUSINESS_IDS",
+    "AD_BUSINESS_IDS",
+  ];
 
-  const directAccounts = await fetchDirectAdAccounts(workerEnv);
-  if (directAccounts.length) {
-    return dedupeAccounts(directAccounts);
-  }
-
-  const businessAccounts = await fetchBusinessAdAccounts(workerEnv);
-  if (businessAccounts.length) {
-    return dedupeAccounts(businessAccounts);
-  }
-
-  const configuredIds = await resolveConfiguredAccountIds(workerEnv);
-  if (configuredIds.length) {
-    const explicitAccounts = await fetchExplicitAdAccounts(workerEnv, configuredIds);
-    if (explicitAccounts.length) {
-      return dedupeAccounts(explicitAccounts);
+  for (const key of keys) {
+    const value = env[key as keyof WorkerEnv];
+    if (typeof value === "string" && value.trim()) {
+      const parsed = parseBusinessList(value);
+      if (parsed.length) {
+        return parsed;
+      }
     }
   }
 
   return [];
+};
+
+const fetchConfiguredBusinessAccounts = async (
+  env: WorkerEnv,
+  businessIds: string[]
+): Promise<MetaAccountInfo[]> => {
+  const collected: MetaAccountInfo[] = [];
+
+  for (const businessId of businessIds) {
+    const normalized = normalizeBusinessId(businessId);
+    if (!normalized) {
+      continue;
+    }
+
+    try {
+      const [owned, client] = await Promise.all([
+        callGraph(env as any, `${normalized}/owned_ad_accounts`, {
+          fields: ACCOUNT_FIELDS,
+          limit: "50",
+        }),
+        callGraph(env as any, `${normalized}/client_ad_accounts`, {
+          fields: ACCOUNT_FIELDS,
+          limit: "50",
+        }),
+      ]);
+
+      const ownedAccounts = Array.isArray(owned?.data) ? owned.data.map(mapAccountRecord) : [];
+      const clientAccounts = Array.isArray(client?.data) ? client.data.map(mapAccountRecord) : [];
+      collected.push(...ownedAccounts, ...clientAccounts);
+    } catch (error) {
+      console.warn(`Failed to fetch ad accounts for configured business ${normalized}`, error);
+    }
+  }
+
+  return collected;
+};
+
+export const fetchAdAccounts = async (env: unknown): Promise<MetaAccountInfo[]> => {
+  const workerEnv = env as WorkerEnv;
+
+  const [directAccounts, businessAccounts, configuredIds, configuredBusinessIds] = await Promise.all([
+    fetchDirectAdAccounts(workerEnv),
+    fetchBusinessAdAccounts(workerEnv),
+    resolveConfiguredAccountIds(workerEnv),
+    Promise.resolve(resolveConfiguredBusinessIds(workerEnv)),
+  ]);
+
+  const results: MetaAccountInfo[] = [];
+  results.push(...directAccounts, ...businessAccounts);
+
+  if (configuredIds.length) {
+    const explicitAccounts = await fetchExplicitAdAccounts(workerEnv, configuredIds);
+    results.push(...explicitAccounts);
+  }
+
+  if (configuredBusinessIds.length) {
+    const configuredBusinessAccounts = await fetchConfiguredBusinessAccounts(
+      workerEnv,
+      configuredBusinessIds
+    );
+    results.push(...configuredBusinessAccounts);
+  }
+
+  return dedupeAccounts(results);
 };
