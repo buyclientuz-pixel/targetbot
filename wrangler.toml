@@ -1,31 +1,27 @@
 name = "th-reports"
 main = "src/index.ts"
-compatibility_date = "2025-02-04"
-compatibility_flags = ["nodejs_compat"]
+account_id = "02e61f874be22f0f3a6ee8f97ccccb1d"
+compatibility_date = "2024-01-01"
 
-[build]
-command = "npm install --force --legacy-peer-deps && npm run build"
+[env.production]
+workers_dev = true
 
-[observability]
-enabled = false
-head_sampling_rate = 1
-
-[observability.logs]
-enabled = true
-head_sampling_rate = 1
-
-[observability.traces]
-enabled = false
-head_sampling_rate = 1
+# Replace the placeholder IDs below with the namespace IDs from
+# Cloudflare → Workers KV → Namespaces or `wrangler kv namespace list`.
+[[kv_namespaces]]
+binding = "REPORTS_NAMESPACE"
+id = "REPLACE_WITH_REPORTS_NAMESPACE_ID"
+# preview_id = "REPLACE_WITH_REPORTS_NAMESPACE_PREVIEW_ID"  # optional for `wrangler dev`
 
 [[kv_namespaces]]
-binding = "DB"
-id = "0132cf582ce247d4b806a2be748e34c6"
+binding = "BILLING_NAMESPACE"
+id = "REPLACE_WITH_BILLING_NAMESPACE_ID"
+# preview_id = "REPLACE_WITH_BILLING_NAMESPACE_PREVIEW_ID"
 
-[[r2_buckets]]
-binding = "R2"
-bucket_name = "botbucket"
-preview_bucket_name = "botbucket"
+[[kv_namespaces]]
+binding = "LOGS_NAMESPACE"
+id = "REPLACE_WITH_LOGS_NAMESPACE_ID"
+# preview_id = "REPLACE_WITH_LOGS_NAMESPACE_PREVIEW_ID"
 
-[triggers]
-crons = ["*/5 * * * *", "0 3 * * *"]
+[env.production.vars]
+ENVIRONMENT = "production"
