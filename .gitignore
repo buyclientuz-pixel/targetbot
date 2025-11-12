@@ -1,8 +1,11 @@
 node_modules/
 .wrangler/
-.env
+.env.local
 .env.*
+!.env
+!.env.example
 .dev.vars
+!.dev.vars
 .dev.vars.local
 !.dev.vars.example
 dist/
