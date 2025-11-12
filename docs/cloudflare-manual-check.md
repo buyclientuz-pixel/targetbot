@@ -1,6 +1,6 @@
 # Cloudflare Manual Verification Guide
 
-Следуйте этим шагам, чтобы убедиться, что TargetBot корректно запускается в локальном режиме `wrangler dev` и готов к ручному деплою на Cloudflare.
+Следуйте этим шагам, чтобы убедиться, что TargetBot корректно запускается в локальном режиме `wrangler dev` и готов к ручному деплою на Cloudflare. Если столкнётесь с ошибками, откройте также [Manual Deployment FAQ](./manual-deploy-faq.md).
 
 ## 1. Подготовьте переменные окружения
 
