@@ -17,6 +17,20 @@ const TOKEN_EXPIRES_KEYS = [
   "FB_ACCESS_TOKEN_EXPIRES",
   "META_TOKEN_EXPIRATION",
 ] as const;
+const APP_ID_KEYS = [
+  "FB_APP_ID",
+  "META_APP_ID",
+  "FACEBOOK_APP_ID",
+  "FB_CLIENT_ID",
+  "META_CLIENT_ID",
+] as const;
+const APP_SECRET_KEYS = [
+  "FB_APP_SECRET",
+  "META_APP_SECRET",
+  "FACEBOOK_APP_SECRET",
+  "FB_CLIENT_SECRET",
+  "META_CLIENT_SECRET",
+] as const;
 const ACCOUNT_ID_KEYS = [
   "META_AD_ACCOUNTS",
   "META_AD_ACCOUNT_IDS",
@@ -101,6 +115,39 @@ const collectEnvList = (env: Record<string, unknown>, keys: readonly string[]): 
     result.push(...toStringArray(value));
   }
   return Array.from(new Set(result.filter(Boolean)));
+};
+
+const resolveEnvString = (env: Record<string, unknown>, keys: readonly string[]): string | undefined => {
+  for (const key of keys) {
+    const value = env[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+};
+
+export const resolveMetaAppId = (env: Record<string, unknown>): string | undefined => {
+  return resolveEnvString(env, APP_ID_KEYS);
+};
+
+export const resolveMetaAppSecret = (env: Record<string, unknown>): string | undefined => {
+  return resolveEnvString(env, APP_SECRET_KEYS);
+};
+
+export const ensureMetaAppCredentials = (
+  env: Record<string, unknown>,
+): { appId: string; secret: string } => {
+  const appId = resolveMetaAppId(env);
+  const secret = resolveMetaAppSecret(env);
+  if (!appId || !secret) {
+    const idKeys = APP_ID_KEYS.join(", ");
+    const secretKeys = APP_SECRET_KEYS.join(", ");
+    throw new Error(
+      `Meta app credentials are not configured (expected one of ${idKeys} and ${secretKeys})`,
+    );
+  }
+  return { appId, secret };
 };
 
 const describeAccountStatus = (
@@ -693,11 +740,7 @@ export const exchangeToken = async (
   code: string,
   redirectUri: string,
 ): Promise<MetaTokenRecord> => {
-  const appId = env.FB_APP_ID as string | undefined;
-  const secret = env.FB_APP_SECRET as string | undefined;
-  if (!appId || !secret) {
-    throw new Error("FB_APP_ID and FB_APP_SECRET must be configured");
-  }
+  const { appId, secret } = ensureMetaAppCredentials(env);
   const version = getGraphVersion(env);
   const url = new URL(`${GRAPH_BASE}/${version}/oauth/access_token`);
   url.searchParams.set("client_id", appId);
@@ -730,11 +773,7 @@ export const refreshToken = async (
   env: EnvBindings & Record<string, unknown>,
   record: MetaTokenRecord,
 ): Promise<MetaTokenRecord> => {
-  const appId = env.FB_APP_ID as string | undefined;
-  const secret = env.FB_APP_SECRET as string | undefined;
-  if (!appId || !secret) {
-    throw new Error("FB_APP_ID and FB_APP_SECRET must be configured");
-  }
+  const { appId, secret } = ensureMetaAppCredentials(env);
   const version = getGraphVersion(env);
   const url = new URL(`${GRAPH_BASE}/${version}/oauth/access_token`);
   url.searchParams.set("grant_type", "fb_exchange_token");

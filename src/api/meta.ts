@@ -1,5 +1,12 @@
 import { jsonResponse } from "../utils/http";
-import { exchangeToken, fetchAdAccounts, fetchCampaigns, refreshToken, resolveMetaStatus } from "../utils/meta";
+import {
+  exchangeToken,
+  fetchAdAccounts,
+  fetchCampaigns,
+  refreshToken,
+  resolveMetaAppId,
+  resolveMetaStatus,
+} from "../utils/meta";
 import { EnvBindings, loadMetaToken, saveMetaToken } from "../utils/storage";
 import { ApiError, ApiSuccess, MetaAdAccount, MetaCampaign, MetaStatusResponse } from "../types";
 
@@ -116,9 +123,11 @@ export const handleMetaOAuthStart = async (
 ): Promise<Response> => {
   try {
     const bindings = ensureEnv(env);
-    const appId = bindings.FB_APP_ID as string | undefined;
+    const appId = resolveMetaAppId(bindings);
     if (!appId) {
-      throw new Error("FB_APP_ID is not configured");
+      throw new Error(
+        "Meta app ID is not configured (expected one of FB_APP_ID, META_APP_ID, FACEBOOK_APP_ID, FB_CLIENT_ID, META_CLIENT_ID)",
+      );
     }
     const redirectUri = buildRedirectUri(request);
     const version = (bindings.META_GRAPH_VERSION || bindings.FB_GRAPH_VERSION || "v19.0") as string;
