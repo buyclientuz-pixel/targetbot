@@ -11,6 +11,7 @@ import { handleMetaSync } from '../meta/sync';
 import { handleMetaStats } from '../meta/stats';
 import { handleMetaCallback } from '../meta/auth';
 import { handleTelegramWebhook } from '../bot/webhook';
+import { handleWebhookManage } from '../api/manage';
 import { json, notFound } from './utils';
 
 export function createRouter(env: Env) {
@@ -30,6 +31,7 @@ export function createRouter(env: Env) {
   router.get('/auth/facebook/callback', (request) => handleMetaCallback(request, env));
 
   router.post('/telegram/:botId', (request) => handleTelegramWebhook(request, env));
+  router.get('/manage/telegram/webhook', (request) => handleWebhookManage(request, env));
 
   router.get('/admin', (request) => {
     const url = new URL(request.url);

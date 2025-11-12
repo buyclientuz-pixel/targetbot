@@ -8,13 +8,23 @@ const tabs = [
   { id: 'settings', label: '🔒 Настройки' }
 ];
 
+const storedKey = sessionStorage.getItem('targetbot:adminKey') ?? '';
+let adminKey = new URLSearchParams(window.location.search).get('key') ?? storedKey;
+if (!adminKey) {
+  adminKey = prompt('Введите ключ администратора TargetBot') ?? '';
+}
+if (adminKey) {
+  sessionStorage.setItem('targetbot:adminKey', adminKey);
+}
+
 const state = {
   activeTab: 'dashboard',
   snapshot: null,
   leads: [],
   users: [],
   integrations: null,
-  settings: null
+  settings: null,
+  adminKey
 };
 
 async function fetchJSON(path, init = {}) {
@@ -22,6 +32,11 @@ async function fetchJSON(path, init = {}) {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...(state.adminKey
+        ? {
+            'x-auth-key': state.adminKey
+          }
+        : {}),
       ...(init.headers || {})
     }
   });
