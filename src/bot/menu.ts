@@ -39,11 +39,15 @@ export const acknowledgeCommand = async (context: BotContext): Promise<void> => 
   if (!context.chatId) {
     return;
   }
-  const text = context.text || "Команда принята. Меню будет расширено в следующих итерациях.";
+  const text =
+    context.text && context.text.trim()
+      ? `Команда «${context.text.trim()}» пока недоступна. Используйте кнопки ниже.`
+      : "Команда пока недоступна. Используйте кнопки ниже.";
   await sendTelegramMessage(context.env, {
     chatId: context.chatId,
     threadId: context.threadId,
     text,
+    replyMarkup: buildReplyMarkup(),
   });
 };
 

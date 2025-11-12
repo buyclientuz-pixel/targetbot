@@ -1,9 +1,10 @@
 import { createContext } from "./context";
-import { acknowledgeCommand, sendMainMenu } from "./menu";
+import { acknowledgeCommand } from "./menu";
+import { runCommand, resolveCommand } from "./commands";
 import { BotContext, TelegramUpdate } from "./types";
 import { jsonResponse } from "../utils/http";
 import { EnvBindings } from "../utils/storage";
-import { TelegramEnv } from "../utils/telegram";
+import { TelegramEnv, answerCallbackQuery } from "../utils/telegram";
 
 const ensureEnv = (env: unknown): (EnvBindings & TelegramEnv) | null => {
   if (!env || typeof env !== "object") {
@@ -15,32 +16,18 @@ const ensureEnv = (env: unknown): (EnvBindings & TelegramEnv) | null => {
   return env as EnvBindings & TelegramEnv;
 };
 
-const isStartCommand = (text: string | undefined): boolean => {
-  if (!text) {
-    return false;
+const handleUpdate = async (context: BotContext): Promise<void> => {
+  const command = resolveCommand(context.text);
+  if (command) {
+    const handled = await runCommand(command, context);
+    if (handled) {
+      return;
+    }
   }
-  const normalized = text.trim().toLowerCase();
-  return normalized === "/start" || normalized === "меню" || normalized === "/menu";
-};
-
-const handleCommand = async (context: BotContext): Promise<void> => {
-  if (!context.text) {
-    await acknowledgeCommand(context);
-    return;
-  }
-  if (context.text.startsWith("cmd:")) {
-    await acknowledgeCommand(context);
-    return;
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, "Команда пока недоступна");
   }
   await acknowledgeCommand(context);
-};
-
-const handleUpdate = async (context: BotContext): Promise<void> => {
-  if (isStartCommand(context.text)) {
-    await sendMainMenu(context);
-    return;
-  }
-  await handleCommand(context);
 };
 
 export const handleTelegramUpdate = async (request: Request, env: unknown): Promise<Response> => {

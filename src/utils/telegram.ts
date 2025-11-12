@@ -53,3 +53,27 @@ export const sendTelegramMessage = async (
     console.error("Failed to send Telegram message", await response.text());
   }
 };
+
+export const answerCallbackQuery = async (
+  env: TelegramEnv,
+  callbackId: string,
+  text?: string,
+): Promise<void> => {
+  const token = resolveToken(env);
+  if (!token) {
+    return;
+  }
+  const url = new URL(`${TELEGRAM_BASE}/bot${token}/answerCallbackQuery`);
+  const payload: Record<string, unknown> = { callback_query_id: callbackId };
+  if (text) {
+    payload.text = text;
+  }
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    console.error("Failed to answer callback query", await response.text());
+  }
+};
