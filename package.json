@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "npx wrangler@4.46.0 dev",
     "preinstall": "node scripts/preinstall-redirect.cjs",
-    "lint": "eslint 'src/**/*.{js,ts,tsx}' --quiet",
-    "format": "prettier --write 'src/**/*.{js,ts,tsx,json,html,css}'",
+    "lint": "npm run lint:api && npm run lint:strings",
+    "format": "node scripts/format-check.mjs",
     "lint:api": "node scripts/lint-api.mjs",
     "lint:strings": "node scripts/lint-strings.mjs",
     "migrate:templates": "node tools/convertConcatToTemplate.js --apply && npm run format && npm run lint",
@@ -22,12 +22,5 @@
     "prebuild": "npm install --force --legacy-peer-deps",
     "build": "npx wrangler@4.46.0 deploy"
   },
-  "devDependencies": {
-    "eslint": "^9.39.1",
-    "eslint-config-prettier": "^9.1.2",
-    "eslint-plugin-prettier": "^5.5.4",
-    "glob": "^10.4.5",
-    "prettier": "^3.6.2",
-    "typescript": "^5.9.3"
-  }
+  "devDependencies": {}
 }
