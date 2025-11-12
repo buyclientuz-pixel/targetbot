@@ -1,6 +1,6 @@
 import { jsonResponse } from "../utils/http";
 import { TelegramEnv } from "../utils/telegram";
-import { EnvBindings, listSettings } from "../utils/storage";
+import { EnvBindings, listSettings, saveSettings } from "../utils/storage";
 
 type ManageEnv = TelegramEnv & Partial<EnvBindings> & Record<string, unknown>;
 
@@ -12,6 +12,8 @@ const SETTINGS_WEBHOOK_KEYS = [
   "system.telegram.webhookUrl",
   "telegram.webhook.url",
 ] as const;
+
+const DEFAULT_SETTING_KEY = "bot.webhookUrl";
 
 const ensureEnv = (env: unknown): ManageEnv => {
   if (!env || typeof env !== "object") {
@@ -109,6 +111,8 @@ const resolveWebhookFromEnv = (env: ManageEnv): { url: string; source: string } 
     env.WEBHOOK_URL,
     env.PUBLIC_TELEGRAM_WEBHOOK,
     env.PUBLIC_WEBHOOK_URL,
+    env.PUBLIC_URL,
+    env.APP_WEBHOOK_URL,
   ];
   for (const candidate of directCandidates) {
     const direct = normalizeDirectWebhook(candidate);
@@ -126,6 +130,8 @@ const resolveWebhookFromEnv = (env: ManageEnv): { url: string; source: string } 
     env.WORKER_PUBLIC_URL,
     env.WORKER_BASE_URL,
     env.MANAGE_BASE_URL,
+    env.PUBLIC_URL,
+    env.APP_BASE_URL,
   ];
 
   for (const candidate of baseCandidates) {
@@ -165,6 +171,38 @@ const resolveWebhookTarget = async (
   return null;
 };
 
+const persistWebhookSetting = async (env: ManageEnv, url: string, source: string): Promise<void> => {
+  if (!env.DB || !env.R2) {
+    return;
+  }
+  try {
+    const settings = await listSettings({ DB: env.DB, R2: env.R2 });
+    const now = new Date().toISOString();
+    const existingIndex = settings.findIndex((entry) => entry.key === DEFAULT_SETTING_KEY);
+    const next = [...settings];
+    if (existingIndex >= 0) {
+      next[existingIndex] = {
+        ...next[existingIndex],
+        value: url,
+        updatedAt: now,
+      };
+    } else {
+      next.push({
+        key: DEFAULT_SETTING_KEY,
+        value: url,
+        scope: "bot",
+        updatedAt: now,
+      });
+    }
+    await saveSettings({ DB: env.DB, R2: env.R2 }, next);
+    if (source !== "env") {
+      Object.assign(env, { TELEGRAM_WEBHOOK_URL: url });
+    }
+  } catch (error) {
+    console.warn("Failed to persist webhook setting", error);
+  }
+};
+
 const revokeWebhook = async (token: string): Promise<void> => {
   const url = new URL(`https://api.telegram.org/bot${token}/deleteWebhook`);
   await fetch(url.toString(), { method: "POST" });
@@ -186,6 +224,12 @@ export const handleTelegramWebhookRefresh = async (request: Request, env: unknow
   const resolved = await resolveWebhookTarget(request, bindings);
   if (!resolved) {
     return jsonResponse({ ok: false, error: "Webhook URL is not configured" }, { status: 400 });
+  }
+
+  if (resolved.source !== "env") {
+    await persistWebhookSetting(bindings, resolved.url, resolved.source);
+  } else {
+    Object.assign(bindings, { TELEGRAM_WEBHOOK_URL: resolved.url });
   }
 
   const url = new URL(request.url);

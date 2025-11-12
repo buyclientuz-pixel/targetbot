@@ -6,6 +6,7 @@ import {
   refreshToken,
   resolveMetaAppId,
   resolveMetaStatus,
+  withMetaSettings,
 } from "../utils/meta";
 import { EnvBindings, loadMetaToken, saveMetaToken } from "../utils/storage";
 import { ApiError, ApiSuccess, MetaAdAccount, MetaCampaign, MetaStatusResponse } from "../types";
@@ -43,7 +44,8 @@ export const handleMetaStatus = async (
   try {
     const bindings = ensureEnv(env);
     const token = await loadMetaToken(bindings);
-    const status = await resolveMetaStatus(bindings, token);
+    const metaEnv = await withMetaSettings(bindings);
+    const status = await resolveMetaStatus(metaEnv, token);
     const payload: ApiSuccess<MetaStatusResponse> = { ok: true, data: status };
     return jsonResponse(payload);
   } catch (error) {
@@ -59,6 +61,7 @@ export const handleMetaAdAccounts = async (
   try {
     const bindings = ensureEnv(env);
     const token = await loadMetaToken(bindings);
+    const metaEnv = await withMetaSettings(bindings);
     const url = new URL(request.url);
     const includeSpend = url.searchParams.get("includeSpend") === "true";
     const includeCampaigns = url.searchParams.get("includeCampaigns") === "true";
@@ -67,7 +70,7 @@ export const handleMetaAdAccounts = async (
     const datePreset = url.searchParams.get("datePreset") || undefined;
     const since = url.searchParams.get("since") || undefined;
     const until = url.searchParams.get("until") || undefined;
-    const accounts = await fetchAdAccounts(bindings, token, {
+    const accounts = await fetchAdAccounts(metaEnv, token, {
       includeSpend,
       includeCampaigns,
       campaignsLimit: Number.isFinite(campaignLimit ?? NaN) ? campaignLimit : undefined,
@@ -93,6 +96,7 @@ export const handleMetaCampaigns = async (
   try {
     const bindings = ensureEnv(env);
     const token = await loadMetaToken(bindings);
+    const metaEnv = await withMetaSettings(bindings);
     const url = new URL(request.url);
     const accountId = url.searchParams.get("accountId");
     if (!accountId) {
@@ -103,7 +107,7 @@ export const handleMetaCampaigns = async (
     const datePreset = url.searchParams.get("datePreset") || undefined;
     const since = url.searchParams.get("since") || undefined;
     const until = url.searchParams.get("until") || undefined;
-    const campaigns = await fetchCampaigns(bindings, token, accountId, {
+    const campaigns = await fetchCampaigns(metaEnv, token, accountId, {
       limit: Number.isFinite(limit ?? NaN) ? limit : undefined,
       datePreset,
       since,
@@ -123,14 +127,15 @@ export const handleMetaOAuthStart = async (
 ): Promise<Response> => {
   try {
     const bindings = ensureEnv(env);
-    const appId = resolveMetaAppId(bindings);
+    const metaEnv = await withMetaSettings(bindings);
+    const appId = resolveMetaAppId(metaEnv);
     if (!appId) {
       throw new Error(
         "Meta app ID is not configured (expected one of FB_APP_ID, META_APP_ID, FACEBOOK_APP_ID, FB_CLIENT_ID, META_CLIENT_ID)",
       );
     }
     const redirectUri = buildRedirectUri(request);
-    const version = (bindings.META_GRAPH_VERSION || bindings.FB_GRAPH_VERSION || "v19.0") as string;
+    const version = (metaEnv.META_GRAPH_VERSION || metaEnv.FB_GRAPH_VERSION || "v19.0") as string;
     const oauthUrl = new URL(`https://www.facebook.com/${version}/dialog/oauth`);
     oauthUrl.searchParams.set("client_id", appId);
     oauthUrl.searchParams.set("redirect_uri", redirectUri);
@@ -162,12 +167,13 @@ export const handleMetaOAuthCallback = async (
 
   try {
     const bindings = ensureEnv(env);
+    const metaEnv = await withMetaSettings(bindings);
     const redirectUri = buildRedirectUri(request);
-    const token = await exchangeToken(bindings, code, redirectUri);
+    const token = await exchangeToken(metaEnv, code, redirectUri);
     await saveMetaToken(bindings, token);
     const [status, accounts] = await Promise.all([
-      resolveMetaStatus(bindings, token),
-      fetchAdAccounts(bindings, token).catch(() => [] as MetaAdAccount[]),
+      resolveMetaStatus(metaEnv, token),
+      fetchAdAccounts(metaEnv, token).catch(() => [] as MetaAdAccount[]),
     ]);
     if (wantsJson) {
       const payload: ApiSuccess<MetaStatusResponse> = {
@@ -206,13 +212,14 @@ export const handleMetaRefresh = async (
 ): Promise<Response> => {
   try {
     const bindings = ensureEnv(env);
+    const metaEnv = await withMetaSettings(bindings);
     const current = await loadMetaToken(bindings);
     if (!current) {
       throw new Error("Meta token is missing");
     }
-    const refreshed = await refreshToken(bindings, current);
+    const refreshed = await refreshToken(metaEnv, current);
     await saveMetaToken(bindings, refreshed);
-    const status = await resolveMetaStatus(bindings, refreshed);
+    const status = await resolveMetaStatus(metaEnv, refreshed);
     const payload: ApiSuccess<MetaStatusResponse> = { ok: true, data: status };
     return jsonResponse(payload);
   } catch (error) {

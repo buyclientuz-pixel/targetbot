@@ -1,4 +1,4 @@
-import { EnvBindings } from "./storage";
+import { EnvBindings, listSettings } from "./storage";
 import {
   MetaAdAccount,
   MetaCampaign,
@@ -45,6 +45,21 @@ const BUSINESS_ID_KEYS = [
   "META_BUSINESSES",
   "FB_BUSINESSES",
   "BUSINESS_IDS",
+] as const;
+
+const META_APP_SETTING_KEYS = [
+  "meta.appId",
+  "meta.app.id",
+  "meta.oauth.appId",
+  "system.meta.appId",
+] as const;
+
+const META_SECRET_SETTING_KEYS = [
+  "meta.appSecret",
+  "meta.app.secret",
+  "meta.oauth.appSecret",
+  "meta.oauth.secret",
+  "system.meta.appSecret",
 ] as const;
 
 const ACCOUNT_STATUS_MAP: Record<number, { label: string; severity: "success" | "warning" | "error" }> = {
@@ -133,6 +148,82 @@ export const resolveMetaAppId = (env: Record<string, unknown>): string | undefin
 
 export const resolveMetaAppSecret = (env: Record<string, unknown>): string | undefined => {
   return resolveEnvString(env, APP_SECRET_KEYS);
+};
+
+const extractSettingString = (
+  value: unknown,
+  nestedKeys: readonly string[] = ["value", "id", "appId", "secret", "url"],
+): string | undefined => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of nestedKeys) {
+    if (key in record) {
+      const nested = extractSettingString(record[key], nestedKeys);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+  return undefined;
+};
+
+const findSettingOverride = (
+  settings: Array<{ key: string; value: unknown }>,
+  keys: readonly string[],
+  nestedKeys?: readonly string[],
+): string | undefined => {
+  for (const key of keys) {
+    const entry = settings.find((item) => item.key === key);
+    if (!entry) {
+      continue;
+    }
+    const extracted = extractSettingString(entry.value, nestedKeys);
+    if (extracted) {
+      return extracted;
+    }
+  }
+  return undefined;
+};
+
+export const withMetaSettings = async (
+  env: EnvBindings & Record<string, unknown>,
+): Promise<EnvBindings & Record<string, unknown>> => {
+  if (!env.DB || !env.R2) {
+    return env;
+  }
+
+  try {
+    const settings = await listSettings(env);
+    const overrides: Record<string, unknown> = {};
+
+    if (!resolveMetaAppId(env)) {
+      const appId = findSettingOverride(settings, META_APP_SETTING_KEYS, ["appId", "id", "value"]);
+      if (appId) {
+        overrides.META_APP_ID = appId;
+      }
+    }
+
+    if (!resolveMetaAppSecret(env)) {
+      const secret = findSettingOverride(settings, META_SECRET_SETTING_KEYS, ["secret", "value"]);
+      if (secret) {
+        overrides.META_APP_SECRET = secret;
+      }
+    }
+
+    if (Object.keys(overrides).length > 0) {
+      return Object.assign({}, env, overrides);
+    }
+  } catch (error) {
+    console.warn("Failed to resolve Meta credentials from settings", error);
+  }
+
+  return env;
 };
 
 export const ensureMetaAppCredentials = (
@@ -740,8 +831,9 @@ export const exchangeToken = async (
   code: string,
   redirectUri: string,
 ): Promise<MetaTokenRecord> => {
-  const { appId, secret } = ensureMetaAppCredentials(env);
-  const version = getGraphVersion(env);
+  const metaEnv = await withMetaSettings(env);
+  const { appId, secret } = ensureMetaAppCredentials(metaEnv);
+  const version = getGraphVersion(metaEnv);
   const url = new URL(`${GRAPH_BASE}/${version}/oauth/access_token`);
   url.searchParams.set("client_id", appId);
   url.searchParams.set("client_secret", secret);
@@ -773,8 +865,9 @@ export const refreshToken = async (
   env: EnvBindings & Record<string, unknown>,
   record: MetaTokenRecord,
 ): Promise<MetaTokenRecord> => {
-  const { appId, secret } = ensureMetaAppCredentials(env);
-  const version = getGraphVersion(env);
+  const metaEnv = await withMetaSettings(env);
+  const { appId, secret } = ensureMetaAppCredentials(metaEnv);
+  const version = getGraphVersion(metaEnv);
   const url = new URL(`${GRAPH_BASE}/${version}/oauth/access_token`);
   url.searchParams.set("grant_type", "fb_exchange_token");
   url.searchParams.set("client_id", appId);
