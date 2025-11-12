@@ -81,6 +81,10 @@ export async function updateLead(env: Env, id: string, patch: Partial<LeadRecord
   return updated;
 }
 
+export async function deleteLead(env: Env, id: string) {
+  await env.KV_LEADS.delete(`lead:${id}`);
+}
+
 export async function saveMetaToken(env: Env, token: MetaTokenRecord) {
   await env.KV_META.put("meta:token", JSON.stringify(token));
   return token;

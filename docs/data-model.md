@@ -31,6 +31,7 @@
 - `source` — канал получения (`telegram`, `facebook`, `manual`).
 - `notes` — комментарии менеджеров.
 - `createdAt` / `updatedAt` — временные метки.
+- Записи удаляются через `DELETE /api/leads/:id` (доступно в админке и по REST API под авторизацией).
 
 ### Meta Token (`KV_META`)
 - `accessToken` — long-lived token Facebook Graph API.

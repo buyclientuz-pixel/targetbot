@@ -1,5 +1,5 @@
 import type { RouteHandler } from "../core/types";
-import { createLead, getLead, listLeads, updateLead } from "../core/db";
+import { createLead, deleteLead, getLead, listLeads, updateLead } from "../core/db";
 import { fail, ok, readJsonBody } from "../core/utils";
 import { requireAdmin, requirePortalSignature } from "../core/auth";
 
@@ -102,6 +102,15 @@ export const updateLeadHandler: RouteHandler = async (context) => {
   const updated = await updateLead(context.env, context.params.id, payload);
   if (!updated) return fail("Lead not found", 404);
   return ok({ lead: updated });
+};
+
+export const deleteLeadHandler: RouteHandler = async (context) => {
+  const authError = await requireAdmin(context);
+  if (authError) return authError;
+  const lead = await getLead(context.env, context.params.id);
+  if (!lead) return fail("Lead not found", 404);
+  await deleteLead(context.env, context.params.id);
+  return ok({ deleted: true, id: context.params.id });
 };
 
 function normalizeFilterValue(value: string | null, fallback: string) {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createLeadHandler, listLeadsHandler } from "../api/leads";
+import { createLeadHandler, deleteLeadHandler, listLeadsHandler } from "../api/leads";
 import { deleteUserHandler, listUsersHandler } from "../api/users";
 import { createContext } from "./helpers";
 
@@ -79,6 +79,32 @@ describe("leads api", () => {
     expect(filteredBody.filters.from).toBe("2024-05-01");
     expect(filteredBody.filters.to).toBe("2024-05-31");
     expect(filteredBody.available.sources).toContain("facebook");
+  });
+
+  it("deletes lead records", async () => {
+    const env = createContext().env;
+    const createResponse = await createLeadHandler(
+      createContext({ env, request: requestWithBody({ name: "Delete", contact: "delete@example.com" }) }),
+    );
+    const createBody = await createResponse.json();
+    const leadId = createBody.lead.id;
+
+    const deleteResponse = await deleteLeadHandler(
+      createContext({
+        env,
+        params: { id: leadId },
+        request: new Request(`https://example.com/api/leads/${leadId}?key=test`, { method: "DELETE" }),
+      }),
+    );
+    const deleteBody = await deleteResponse.json();
+    expect(deleteBody.deleted).toBe(true);
+    expect(deleteBody.id).toBe(leadId);
+
+    const listResponse = await listLeadsHandler(
+      createContext({ env, request: new Request("https://example.com/api/leads?key=test") }),
+    );
+    const listBody = await listResponse.json();
+    expect(listBody.leads.find((lead) => lead.id === leadId)).toBeUndefined();
   });
 });
 

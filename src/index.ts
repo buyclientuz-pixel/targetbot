@@ -4,6 +4,7 @@ import type { ScheduledController } from "@cloudflare/workers-types";
 import { healthHandler } from "./api/health";
 import {
   createLeadHandler,
+  deleteLeadHandler,
   getLeadHandler,
   listLeadsHandler,
   updateLeadHandler,
@@ -43,6 +44,7 @@ router.get("/api/leads", listLeadsHandler);
 router.post("/api/leads", createLeadHandler);
 router.get("/api/leads/:id", getLeadHandler);
 router.patch("/api/leads/:id", updateLeadHandler);
+router.delete("/api/leads/:id", deleteLeadHandler);
 router.get("/api/dashboard", dashboardHandler);
 router.get("/api/users", listUsersHandler);
 router.patch("/api/users/:id", updateUserHandler);

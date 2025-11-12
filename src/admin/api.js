@@ -45,6 +45,11 @@ export const api = {
     const search = query.toString();
     return request(`/api/leads${search ? `?${search}` : ""}`);
   },
+  async deleteLead(id) {
+    const key = new URLSearchParams(window.location.search).get("key") ?? "";
+    const query = key ? `?key=${key}` : "";
+    return request(`/api/leads/${id}${query}`, { method: "DELETE" });
+  },
   async getDashboard() {
     const key = new URLSearchParams(window.location.search).get("key") ?? "";
     return request(`/api/dashboard?key=${key}`);

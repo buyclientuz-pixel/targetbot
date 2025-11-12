@@ -198,7 +198,7 @@ async function renderLeads() {
     </section>
     <div class="overflow-x-auto">
       <table class="table">
-        <thead><tr><th>ID</th><th>Имя</th><th>Контакт</th><th>Источник</th><th>Статус</th><th>Создан</th><th>Обновлено</th></tr></thead>
+        <thead><tr><th>ID</th><th>Имя</th><th>Контакт</th><th>Источник</th><th>Статус</th><th>Создан</th><th>Обновлено</th><th>Действия</th></tr></thead>
         <tbody>
           ${data.leads
             .map(
@@ -210,9 +210,10 @@ async function renderLeads() {
                 <td><span class="badge">${humanize(lead.status)}</span></td>
                 <td>${new Date(lead.createdAt).toLocaleString()}</td>
                 <td>${new Date(lead.updatedAt).toLocaleString()}</td>
+                <td><button type="button" class="btn-danger lead-delete" data-lead-id="${lead.id}">Удалить</button></td>
               </tr>`,
             )
-            .join("") || `<tr><td colspan="7" class="text-center text-slate-400">Заявок не найдено</td></tr>`}
+            .join("") || `<tr><td colspan="8" class="text-center text-slate-400">Заявок не найдено</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -255,6 +256,29 @@ async function renderLeads() {
     leadFilters.from = "";
     leadFilters.to = "";
     await renderLeads();
+  });
+
+  leadsPanel.querySelectorAll(".lead-delete").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      const target = event.currentTarget;
+      if (!(target instanceof HTMLButtonElement)) return;
+      const id = target.dataset.leadId;
+      if (!id) return;
+      if (!confirm("Удалить эту заявку? Действие необратимо.")) {
+        return;
+      }
+      target.disabled = true;
+      target.classList.add("loading");
+      try {
+        await api.deleteLead(id);
+        await renderLeads();
+      } catch (error) {
+        console.error("Не удалось удалить заявку", error);
+        alert("Ошибка при удалении заявки. Подробнее в консоли.");
+        target.disabled = false;
+        target.classList.remove("loading");
+      }
+    });
   });
 }
 
