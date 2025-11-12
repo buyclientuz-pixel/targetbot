@@ -78,7 +78,15 @@ const truncateLabel = (label: string, max = 24): string => {
   return `${label.slice(0, max - 1)}…`;
 };
 
-const createSession = async (context: BotContext, mode: "auto" | "summary"): Promise<ReportSessionRecord | null> => {
+interface ReportWorkflowOptions {
+  projectId?: string;
+}
+
+const createSession = async (
+  context: BotContext,
+  mode: "auto" | "summary",
+  options: ReportWorkflowOptions = {},
+): Promise<ReportSessionRecord | null> => {
   const chatId = ensureChatId(context);
   if (!chatId) {
     return null;
@@ -93,6 +101,11 @@ const createSession = async (context: BotContext, mode: "auto" | "summary"): Pro
     return null;
   }
   const now = Date.now();
+  const selectedProjectId =
+    options.projectId && summaries.some((summary) => summary.id === options.projectId)
+      ? options.projectId
+      : undefined;
+
   const session: ReportSessionRecord = {
     id: createId(10),
     chatId,
@@ -100,7 +113,7 @@ const createSession = async (context: BotContext, mode: "auto" | "summary"): Pro
     username: context.username,
     type: mode,
     command: mode === "auto" ? "auto_report" : "summary",
-    projectIds: summaries.map((summary) => summary.id),
+    projectIds: selectedProjectId ? [selectedProjectId] : summaries.map((summary) => summary.id),
     projects: summaries.map((summary) => ({ id: summary.id, name: summary.name })),
     filters: { datePreset: "today" },
     title: mode === "auto" ? "Автоотчёт по проектам" : "Сводка по проектам",
@@ -113,8 +126,12 @@ const createSession = async (context: BotContext, mode: "auto" | "summary"): Pro
   return session;
 };
 
-export const startReportWorkflow = async (context: BotContext, mode: "auto" | "summary"): Promise<void> => {
-  const session = await createSession(context, mode);
+export const startReportWorkflow = async (
+  context: BotContext,
+  mode: "auto" | "summary",
+  options: ReportWorkflowOptions = {},
+): Promise<void> => {
+  const session = await createSession(context, mode, options);
   if (!session) {
     return;
   }

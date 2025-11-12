@@ -5,6 +5,7 @@ import { escapeAttribute, escapeHtml } from "../utils/html";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
 import {
   appendCommandLog,
+  listLeads,
   listPayments,
   listUsers,
   loadMetaToken,
@@ -12,6 +13,7 @@ import {
 import { createId } from "../utils/ids";
 import { sendTelegramMessage, answerCallbackQuery } from "../utils/telegram";
 import { fetchAdAccounts, resolveMetaStatus } from "../utils/meta";
+import { LeadRecord, MetaAdAccount, ProjectSummary } from "../types";
 
 const AUTH_URL_FALLBACK = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
 
@@ -71,6 +73,74 @@ const resolveManageWebhookUrl = (env: BotContext["env"]): string | null => {
   return fallback;
 };
 
+const buildAbsoluteUrl = (value: string | null | undefined, path: string): string | null => {
+  if (!value) {
+    return null;
+  }
+  try {
+    const url = new URL(value.includes("://") ? value : `https://${value}`);
+    url.pathname = path;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch (error) {
+    console.warn("Failed to build url", value, path, error);
+    return null;
+  }
+};
+
+const resolvePortalUrl = (env: BotContext["env"], projectId: string): string | null => {
+  const path = `/portal/${encodeURIComponent(projectId)}`;
+  const candidates = [
+    env.PORTAL_BASE_URL,
+    env.PUBLIC_WEB_URL,
+    env.PUBLIC_BASE_URL,
+    env.WORKER_BASE_URL,
+    env.ADMIN_BASE_URL,
+  ];
+  for (const candidate of candidates) {
+    const url = buildAbsoluteUrl(typeof candidate === "string" ? candidate : null, path);
+    if (url) {
+      return url;
+    }
+  }
+  return null;
+};
+
+const resolveAdminProjectUrl = (env: BotContext["env"], projectId: string): string | null => {
+  const path = `/admin/projects/${encodeURIComponent(projectId)}`;
+  const candidates = [
+    env.ADMIN_BASE_URL,
+    env.PUBLIC_WEB_URL,
+    env.PUBLIC_BASE_URL,
+    env.WORKER_BASE_URL,
+  ];
+  for (const candidate of candidates) {
+    const url = buildAbsoluteUrl(typeof candidate === "string" ? candidate : null, path);
+    if (url) {
+      return url;
+    }
+  }
+  return null;
+};
+
+const resolveNewProjectUrl = (env: BotContext["env"]): string | null => {
+  const path = "/admin/projects/new";
+  const candidates = [
+    env.ADMIN_BASE_URL,
+    env.PUBLIC_WEB_URL,
+    env.PUBLIC_BASE_URL,
+    env.WORKER_BASE_URL,
+  ];
+  for (const candidate of candidates) {
+    const url = buildAbsoluteUrl(typeof candidate === "string" ? candidate : null, path);
+    if (url) {
+      return url;
+    }
+  }
+  return null;
+};
+
 const HOME_MARKUP = {
   inline_keyboard: [[{ text: "⬅ Назад", callback_data: "cmd:menu" }]],
 };
@@ -80,6 +150,13 @@ const SETTINGS_MARKUP = {
     [{ text: "🔄 Обновить вебхуки", callback_data: "cmd:webhooks" }],
     [{ text: "🧩 Проверить токен Meta", callback_data: "cmd:auth" }],
     [{ text: "⬅ Назад", callback_data: "cmd:menu" }],
+  ],
+};
+
+const NEW_PROJECT_MARKUP = {
+  inline_keyboard: [
+    [{ text: "📊 Все проекты", callback_data: "cmd:projects" }],
+    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
   ],
 };
 
@@ -212,8 +289,498 @@ const handleAuth = async (context: BotContext): Promise<void> => {
   await sendMessage(context, lines.join("\n"));
 };
 
-const formatProjectLines = async (context: BotContext): Promise<string[]> => {
-  const summaries = sortProjectSummaries(await summarizeProjects(context.env));
+const loadProjectSummaries = async (context: BotContext): Promise<ProjectSummary[]> => {
+  return sortProjectSummaries(await summarizeProjects(context.env));
+};
+
+const loadProjectSummaryById = async (
+  context: BotContext,
+  projectId: string,
+): Promise<ProjectSummary | null> => {
+  const summaries = await summarizeProjects(context.env, { projectIds: [projectId] });
+  return summaries.length ? summaries[0] : null;
+};
+
+const truncateLabel = (label: string, max = 40): string => {
+  if (label.length <= max) {
+    return label;
+  }
+  return `${label.slice(0, max - 1)}…`;
+};
+
+const buildProjectListMarkup = (summaries: ProjectSummary[]) => {
+  const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+  summaries.forEach((project, index) => {
+    keyboard.push([
+      {
+        text: `${index + 1}️⃣ ${truncateLabel(project.name)}`,
+        callback_data: `proj:view:${project.id}`,
+      },
+    ]);
+  });
+  keyboard.push([{ text: "➕ Новый проект", callback_data: "proj:new" }]);
+  keyboard.push([{ text: "⬅ Назад", callback_data: "cmd:menu" }]);
+  return { inline_keyboard: keyboard };
+};
+
+const buildProjectActionsMarkup = (projectId: string) => ({
+  inline_keyboard: [
+    [
+      { text: "✏️ Изменить данные", callback_data: `proj:edit:${projectId}` },
+      { text: "📲 Чат-группа", callback_data: `proj:chat:${projectId}` },
+    ],
+    [
+      { text: "💬 Лиды", callback_data: `proj:leads:${projectId}` },
+      { text: "📈 Отчёт по рекламе", callback_data: `proj:report:${projectId}` },
+    ],
+    [
+      { text: "👀 Рекламные кампании", callback_data: `proj:campaigns:${projectId}` },
+      { text: "📤 Экспорт данных", callback_data: `proj:export:${projectId}` },
+    ],
+    [
+      { text: "🧩 Портал", callback_data: `proj:portal:${projectId}` },
+      { text: "💳 Оплата", callback_data: `proj:billing:${projectId}` },
+    ],
+    [
+      { text: "⚙ Настройки", callback_data: `proj:settings:${projectId}` },
+      { text: "❌ Удалить", callback_data: `proj:delete:${projectId}` },
+    ],
+    [{ text: "⬅ К списку", callback_data: "cmd:projects" }],
+    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+  ],
+});
+
+const buildProjectBackMarkup = (projectId: string) => ({
+  inline_keyboard: [
+    [
+      { text: "⬅ К карточке", callback_data: `proj:view:${projectId}` },
+      { text: "📊 Все проекты", callback_data: "cmd:projects" },
+    ],
+    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+  ],
+});
+
+const formatCurrencyValue = (amount: number | undefined, currency?: string): string | null => {
+  if (amount === undefined) {
+    return null;
+  }
+  const safeCurrency = currency && /^[A-Z]{3}$/.test(currency) ? currency : currency || "USD";
+  try {
+    return new Intl.NumberFormat("ru-RU", { style: "currency", currency: safeCurrency }).format(amount);
+  } catch (error) {
+    console.warn("Failed to format currency", safeCurrency, error);
+    return `${amount.toFixed(2)} ${safeCurrency}`;
+  }
+};
+
+const formatShortDate = (value?: string | null): string | null => {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return null;
+  }
+  return new Intl.DateTimeFormat("ru-RU", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(parsed));
+};
+
+type ProjectAccountStatus = "missing" | "expired" | "valid" | "error";
+
+interface ProjectAccountInfo {
+  status: ProjectAccountStatus;
+  account: MetaAdAccount | null;
+  error?: string;
+}
+
+const fetchProjectAccountInfo = async (
+  context: BotContext,
+  project: ProjectSummary,
+  options: { includeCampaigns?: boolean } = {},
+): Promise<ProjectAccountInfo> => {
+  if (!project.adAccountId) {
+    return { status: "missing", account: null };
+  }
+  const record = await loadMetaToken(context.env);
+  const statusInfo = await resolveMetaStatus(context.env, record);
+  if (statusInfo.status !== "valid") {
+    return { status: statusInfo.status, account: null };
+  }
+  try {
+    const accounts = await fetchAdAccounts(context.env, record, {
+      includeSpend: true,
+      includeCampaigns: options.includeCampaigns,
+      campaignsLimit: options.includeCampaigns ? 5 : undefined,
+      datePreset: "today",
+    });
+    const normalized = project.adAccountId.startsWith("act_")
+      ? project.adAccountId
+      : `act_${project.adAccountId}`;
+    const account =
+      accounts.find((item) => item.id === project.adAccountId || item.id === normalized) ?? null;
+    return { status: "valid", account };
+  } catch (error) {
+    console.error("Failed to fetch project account", project.id, error);
+    return { status: "error", account: null, error: (error as Error).message };
+  }
+};
+
+const describeBillingStatus = (summary: ProjectSummary): string => {
+  const billing = summary.billing;
+  if (billing.status === "missing") {
+    return "💳 Оплата: не настроена";
+  }
+  const statusMap: Record<string, string> = {
+    active: "активен",
+    pending: "ожидает",
+    overdue: "просрочен",
+    cancelled: "отменён",
+  };
+  const prefix = billing.overdue ? "⚠️" : billing.active ? "✅" : "💳";
+  const label = statusMap[billing.status] ?? billing.status;
+  const amount = billing.amountFormatted ?? formatCurrencyValue(billing.amount, billing.currency);
+  const parts = [`${prefix} Оплата: ${escapeHtml(label)}`];
+  if (amount) {
+    parts.push(`— ${escapeHtml(amount)}`);
+  }
+  if (billing.periodLabel) {
+    parts.push(`(${escapeHtml(billing.periodLabel)})`);
+  }
+  return parts.join(" ");
+};
+
+const describePaymentSchedule = (summary: ProjectSummary): string => {
+  const billing = summary.billing;
+  const paidAt = formatShortDate(billing.paidAt ?? null);
+  const dueDate = formatShortDate(billing.periodEnd ?? billing.periodStart ?? null);
+  if (paidAt) {
+    return `📅 Оплата произведена: ${escapeHtml(paidAt)}`;
+  }
+  if (dueDate) {
+    return `📅 Оплата: ${escapeHtml(dueDate)}`;
+  }
+  return "📅 Оплата: дата не указана";
+};
+
+const handleProjectView = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const accountInfo = await fetchProjectAccountInfo(context, summary);
+  const account = accountInfo.account;
+  const spendLabel = account?.spendFormatted ?? formatCurrencyValue(account?.spend, account?.spendCurrency);
+  const cpaValue =
+    account?.spend !== undefined && summary.leadStats.done > 0
+      ? account.spend / summary.leadStats.done
+      : null;
+  const cpaLabel = cpaValue !== null ? formatCurrencyValue(cpaValue, account?.spendCurrency || account?.currency) : null;
+  const metaLine = (() => {
+    if (!summary.adAccountId) {
+      return "🧩 Meta: не подключено";
+    }
+    if (account) {
+      return `🧩 Meta: подключено — ${escapeHtml(account.name)} (${escapeHtml(account.id)})`;
+    }
+    if (accountInfo.status === "expired") {
+      return "🧩 Meta: токен истёк, обновите авторизацию.";
+    }
+    if (accountInfo.status === "missing") {
+      return "🧩 Meta: токен не найден, выполните авторизацию Facebook.";
+    }
+    if (accountInfo.status === "error") {
+      return `🧩 Meta: не удалось загрузить данные (${escapeHtml(accountInfo.error || "ошибка")}).`;
+    }
+    return `🧩 Meta: ID <code>${escapeHtml(summary.adAccountId)}</code> — данные недоступны.`;
+  })();
+  const lines: string[] = [];
+  lines.push(`🏗 Проект: <b>${escapeHtml(summary.name)}</b>`);
+  lines.push(metaLine);
+  lines.push(
+    `📈 CPA (сегодня): ${cpaLabel ? escapeHtml(cpaLabel) : "—"} | Затраты: ${
+      spendLabel ? escapeHtml(spendLabel) : "—"
+    }`,
+  );
+  lines.push(
+    `💬 Лиды: ${summary.leadStats.total} (новые ${summary.leadStats.new}, завершено ${summary.leadStats.done})`,
+  );
+  lines.push(describeBillingStatus(summary));
+  lines.push(describePaymentSchedule(summary));
+  const chatLine = summary.telegramLink
+    ? `📲 Чат-группа: <a href="${escapeAttribute(summary.telegramLink)}">Перейти</a>`
+    : summary.telegramChatId
+      ? `📲 Чат: <code>${escapeHtml(summary.telegramChatId)}</code> (ссылка не указана)`
+      : "📲 Чат-группа: не подключена";
+  lines.push(chatLine);
+  const portalUrl = resolvePortalUrl(context.env, summary.id);
+  if (portalUrl) {
+    lines.push(`🧩 Портал: <a href="${escapeAttribute(portalUrl)}">Открыть клиентский портал</a>`);
+  }
+  const adminUrl = resolveAdminProjectUrl(context.env, summary.id);
+  if (adminUrl) {
+    lines.push(`✏️ Управление: <a href="${escapeAttribute(adminUrl)}">открыть в веб-панели</a>.`);
+  } else {
+    lines.push("✏️ Управляйте карточкой проекта через веб-панель TargetBot.");
+  }
+  if (accountInfo.status !== "valid" && summary.adAccountId) {
+    lines.push(
+      "",
+      "⚠️ Подключите или обновите токен Meta, чтобы видеть расходы и кампании прямо в боте.",
+    );
+  }
+  lines.push("", "Выберите действие на кнопках ниже.");
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectActionsMarkup(projectId) });
+};
+
+const handleProjectChat = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const lines = [`📲 Чат-группа — <b>${escapeHtml(summary.name)}</b>`, ""];
+  if (summary.telegramLink) {
+    lines.push(`Ссылка: <a href="${escapeAttribute(summary.telegramLink)}">перейти в чат</a>.`);
+  }
+  if (summary.telegramChatId) {
+    lines.push(`ID: <code>${escapeHtml(summary.telegramChatId)}</code>`);
+  }
+  if (summary.telegramThreadId !== undefined) {
+    lines.push(`Thread ID: <code>${escapeHtml(summary.telegramThreadId.toString())}</code>`);
+  }
+  if (!summary.telegramLink && !summary.telegramChatId) {
+    lines.push("Чат не подключён. Добавьте бота в группу и обновите карточку проекта в веб-панели.");
+  }
+  lines.push(
+    "",
+    "После изменения чата откройте веб-панель TargetBot → карточка проекта, чтобы сохранить новые параметры.",
+  );
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const formatLeadPreview = (lead: LeadRecord): string => {
+  const statusIcon = lead.status === "done" ? "✅" : "🆕";
+  const created = formatDateTime(lead.createdAt);
+  const phone = lead.phone ? `, ${escapeHtml(lead.phone)}` : "";
+  return `${statusIcon} ${escapeHtml(lead.name)}${phone} — ${escapeHtml(lead.source)} · ${escapeHtml(created)}`;
+};
+
+const handleProjectLeads = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const leads = await listLeads(context.env, summary.id).catch(() => [] as LeadRecord[]);
+  const sorted = leads.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  const preview = sorted.slice(0, 5);
+  const lines: string[] = [];
+  lines.push(`💬 Лиды — <b>${escapeHtml(summary.name)}</b>`);
+  lines.push(
+    `Всего: ${summary.leadStats.total} · Новые: ${summary.leadStats.new} · Завершено: ${summary.leadStats.done}`,
+  );
+  lines.push("\nПоследние заявки:");
+  if (preview.length) {
+    for (const lead of preview) {
+      lines.push(formatLeadPreview(lead));
+    }
+    if (sorted.length > preview.length) {
+      lines.push(`… и ещё ${sorted.length - preview.length} записей`);
+    }
+  } else {
+    lines.push("Пока нет заявок. Лиды из Facebook и других каналов появятся здесь автоматически.");
+  }
+  const portalUrl = resolvePortalUrl(context.env, summary.id);
+  if (portalUrl) {
+    lines.push(
+      "",
+      `🧩 Полный список доступен в клиентском портале: <a href="${escapeAttribute(portalUrl)}">открыть</a>.`,
+    );
+  }
+  lines.push(
+    "",
+    "Нажмите кнопку ✔ в портале, чтобы менять статусы без перезагрузки, или используйте раздел Проекты в веб-панели.",
+  );
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectReport = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const accountInfo = await fetchProjectAccountInfo(context, summary);
+  const account = accountInfo.account;
+  const spendLabel = account?.spendFormatted ?? formatCurrencyValue(account?.spend, account?.spendCurrency);
+  const lines = [
+    `📈 Отчёт по рекламе — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    `Лиды: ${summary.leadStats.total} · Новые: ${summary.leadStats.new} · Закрыто: ${summary.leadStats.done}`,
+    account
+      ? `Расход за сегодня: ${spendLabel ? escapeHtml(spendLabel) : "—"}`
+      : accountInfo.status === "valid"
+        ? "Расход недоступен: кабинет не найден среди активных аккаунтов."
+        : "Расходы недоступны: требуется действующий токен Meta.",
+    "",
+    "Используйте команду /summary для быстрой сводки или /auto_report для PDF-отчёта.",
+    "Кнопка «📤 Экспорт данных» запустит форму выбора проектов прямо в этом чате.",
+  ];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectCampaigns = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const accountInfo = await fetchProjectAccountInfo(context, summary, { includeCampaigns: true });
+  const account = accountInfo.account;
+  const lines: string[] = [];
+  lines.push(`👀 Рекламные кампании — <b>${escapeHtml(summary.name)}</b>`);
+  if (!summary.adAccountId) {
+    lines.push("Рекламный кабинет не подключён. Добавьте его в веб-панели, чтобы видеть кампании.");
+  } else if (!account) {
+    if (accountInfo.status === "expired") {
+      lines.push("Токен Meta истёк. Обновите авторизацию Facebook, чтобы получить список кампаний.");
+    } else if (accountInfo.status === "missing") {
+      lines.push("Токен Meta отсутствует. Выполните авторизацию в разделе «Авторизация Facebook».");
+    } else if (accountInfo.status === "error") {
+      lines.push(`Не удалось получить кампании: ${escapeHtml(accountInfo.error || "ошибка")}.`);
+    } else {
+      lines.push(
+        `Кабинет <code>${escapeHtml(summary.adAccountId)}</code> не найден среди доступных. Проверьте права доступа в Meta Business Manager.`,
+      );
+    }
+  } else if (account.campaigns?.length) {
+    const spendLabel = account.spendFormatted ?? formatCurrencyValue(account.spend, account.spendCurrency);
+    if (spendLabel) {
+      lines.push(`Расход за период: ${escapeHtml(spendLabel)}`);
+    }
+    lines.push("", "Топ кампаний:");
+    account.campaigns.slice(0, 5).forEach((campaign, index) => {
+      const spend = campaign.spendFormatted ?? formatCurrencyValue(campaign.spend, campaign.spendCurrency);
+      const metrics = spend ? ` — ${escapeHtml(spend)}` : "";
+      lines.push(`${index + 1}. ${escapeHtml(campaign.name)}${metrics}`);
+    });
+    if (account.campaigns.length > 5) {
+      lines.push(`… и ещё ${account.campaigns.length - 5} кампаний`);
+    }
+  } else {
+    lines.push("Активные кампании не найдены за выбранный период.");
+  }
+  lines.push(
+    "",
+    "Детальная аналитика доступна в веб-панели и в разделе «📈 Аналитика» главного меню.",
+  );
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectExport = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  await startReportWorkflow(context, "auto", { projectId });
+};
+
+const handleProjectPortal = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const portalUrl = resolvePortalUrl(context.env, summary.id);
+  const lines = [`🧩 Портал проекта — <b>${escapeHtml(summary.name)}</b>`, ""];
+  if (portalUrl) {
+    lines.push(`Ссылка: <a href="${escapeAttribute(portalUrl)}">${escapeHtml(portalUrl)}</a>`);
+    lines.push("Портал отображает лиды, статусы и оплату в реальном времени.");
+  } else {
+    lines.push(
+      "URL портала не определён. Укажите PUBLIC_WEB_URL или PORTAL_BASE_URL в конфигурации воркера, чтобы делиться ссылкой.",
+    );
+  }
+  lines.push(
+    "",
+    "В портале клиенты могут менять статусы лидов, просматривать расходы и скачивать отчёты.",
+  );
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectBilling = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const billing = summary.billing;
+  const lines: string[] = [];
+  lines.push(`💳 Оплата — <b>${escapeHtml(summary.name)}</b>`);
+  lines.push(describeBillingStatus(summary));
+  lines.push(describePaymentSchedule(summary));
+  if (billing.notes) {
+    lines.push("Заметка:");
+    lines.push(escapeHtml(billing.notes));
+  }
+  lines.push(
+    "",
+    "Управляйте оплатами в разделе 💰 Финансы веб-панели. Там же можно зафиксировать платёж и обновить тариф.",
+  );
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectSettings = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const adminUrl = resolveAdminProjectUrl(context.env, summary.id);
+  const lines = [
+    `⚙ Настройки проекта — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    "Карточка проекта синхронизируется с веб-панелью TargetBot.",
+    "Измените название, владельца, подключенный кабинет и чат из веб-панели — бот обновит данные автоматически.",
+  ];
+  if (adminUrl) {
+    lines.push("", `Открыть настройки: <a href="${escapeAttribute(adminUrl)}">перейти в веб-панель</a>.`);
+  }
+  lines.push(
+    "",
+    "Для глобальных параметров уведомлений используйте раздел ⚙ Настройки в главном меню.",
+  );
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectDelete = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const adminUrl = resolveAdminProjectUrl(context.env, summary.id);
+  const lines = [
+    `❌ Удаление проекта — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    "Удаление выполняется из веб-панели. После подтверждения TargetBot удалит архив лидов и оплат из R2.",
+    "Перед удалением убедитесь, что отчёты и оплаты выгружены для клиента.",
+  ];
+  if (adminUrl) {
+    lines.push("", `Открыть карточку для удаления: <a href="${escapeAttribute(adminUrl)}">перейти</a>.`);
+  }
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectNew = async (context: BotContext): Promise<void> => {
+  const newProjectUrl = resolveNewProjectUrl(context.env);
+  const lines = [
+    "➕ Новый проект",
+    "",
+    newProjectUrl
+      ? `Создайте проект в веб-панели: <a href="${escapeAttribute(newProjectUrl)}">перейти к форме</a>.`
+      : "Создайте проект через веб-панель TargetBot (/admin → Проекты).",
+    "После создания привяжите чат и рекламный кабинет, чтобы бот показывал статистику и лиды.",
+  ];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: NEW_PROJECT_MARKUP });
+};
+
+const formatProjectLines = (summaries: ProjectSummary[]): string[] => {
   if (!summaries.length) {
     return [
       "📊 Проекты",
@@ -272,8 +839,31 @@ const formatProjectLines = async (context: BotContext): Promise<string[]> => {
 };
 
 const handleProjects = async (context: BotContext): Promise<void> => {
-  const lines = await formatProjectLines(context);
-  await sendMessage(context, lines.join("\n"));
+  const summaries = await loadProjectSummaries(context);
+  const lines = formatProjectLines(summaries);
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: buildProjectListMarkup(summaries),
+  });
+};
+
+const ensureProjectSummary = async (
+  context: BotContext,
+  projectId: string,
+): Promise<ProjectSummary | null> => {
+  const summary = await loadProjectSummaryById(context, projectId);
+  if (summary) {
+    return summary;
+  }
+  await sendMessage(
+    context,
+    [
+      "📊 Проект не найден",
+      "",
+      `ID: <code>${escapeHtml(projectId)}</code>`,
+      "Проверьте список проектов в веб-панели и повторите попытку.",
+    ].join("\n"),
+  );
+  return null;
 };
 
 const handleUsers = async (context: BotContext): Promise<void> => {
@@ -597,6 +1187,14 @@ const logCommand = async (
   }
 };
 
+const logProjectAction = async (
+  context: BotContext,
+  action: string,
+  projectId?: string,
+): Promise<void> => {
+  await logCommand(context, `project:${action}`, projectId);
+};
+
 export const runCommand = async (command: string, context: BotContext): Promise<boolean> => {
   const handler = COMMAND_HANDLERS[command];
   if (!handler) {
@@ -608,4 +1206,100 @@ export const runCommand = async (command: string, context: BotContext): Promise<
     await answerCallbackQuery(context.env, context.update.callback_query.id);
   }
   return true;
+};
+
+export const handleProjectCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (!data.startsWith("proj:")) {
+    return false;
+  }
+  const [, action, ...rest] = data.split(":");
+  if (!action) {
+    return false;
+  }
+  const projectId = rest.length ? rest.join(":") : undefined;
+  const ensureId = async (): Promise<boolean> => {
+    await sendMessage(
+      context,
+      "Не удалось определить проект. Откройте список проектов и попробуйте снова.",
+    );
+    return true;
+  };
+  switch (action) {
+    case "view":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectView(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "chat":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectChat(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "leads":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectLeads(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "report":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectReport(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "campaigns":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectCampaigns(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "export":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectExport(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "portal":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectPortal(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "billing":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectBilling(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "settings":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectSettings(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "delete":
+      if (!projectId) {
+        return ensureId();
+      }
+      await handleProjectDelete(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "new":
+      await handleProjectNew(context);
+      await logProjectAction(context, action);
+      return true;
+    default:
+      return false;
+  }
 };
