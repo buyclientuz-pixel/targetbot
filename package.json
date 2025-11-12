@@ -1,14 +1,23 @@
 {
   "name": "targetbot",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-  "build": "npx wrangler deploy --dry-run",
-  "deploy": "npx wrangler deploy",
-  "dev": "npx wrangler dev",
-  "lint": "npx eslint . --ext .ts,.js"
-}
-
+    "build": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "predeploy": "npm run test && npm run typecheck"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240512.0",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0",
+    "wrangler": "4.47.0"
+  }
 }

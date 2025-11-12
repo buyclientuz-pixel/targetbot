@@ -1,28 +1,28 @@
-name = "th-reports"
+name = "targetbot"
 main = "src/index.ts"
-compatibility_date = "2025-02-04"
+compatibility_date = "2025-11-01"
 compatibility_flags = ["nodejs_compat"]
+usage_model = "bundled"
+workers_dev = true
 
-[observability]
-enabled = false
-head_sampling_rate = 1
-
-[observability.logs]
-enabled = true
-head_sampling_rate = 1
-
-[observability.traces]
-enabled = false
-head_sampling_rate = 1
+[kv_namespaces]
+[[kv_namespaces]]
+binding = "KV_USERS"
+id = "kv_users_targetbot"
 
 [[kv_namespaces]]
-binding = "DB"
-id = "0132cf582ce247d4b806a2be748e34c6"
+binding = "KV_LEADS"
+id = "kv_leads_targetbot"
 
+[[kv_namespaces]]
+binding = "KV_META"
+id = "kv_meta_targetbot"
+
+[[kv_namespaces]]
+binding = "KV_LOGS"
+id = "kv_logs_targetbot"
+
+[r2_buckets]
 [[r2_buckets]]
-binding = "R2"
-bucket_name = "botbucket"
-preview_bucket_name = "botbucket"
-
-[triggers]
-crons = ["*/5 * * * *", "0 3 * * *"]
+binding = "R2_REPORTS"
+bucket_name = "targetbot-reports"
