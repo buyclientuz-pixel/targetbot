@@ -22,6 +22,7 @@ export interface MetaStatusResponse {
   expiresAt?: string;
   refreshedAt?: string;
   issues?: string[];
+  accounts?: MetaAdAccount[];
 }
 
 export interface MetaAdAccount {

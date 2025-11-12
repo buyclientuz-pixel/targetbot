@@ -110,13 +110,25 @@ export const handleMetaOAuthCallback = async (
     const redirectUri = buildRedirectUri(request);
     const token = await exchangeToken(bindings, code, redirectUri);
     await saveMetaToken(bindings, token);
-    const status = await resolveMetaStatus(bindings, token);
+    const [status, accounts] = await Promise.all([
+      resolveMetaStatus(bindings, token),
+      fetchAdAccounts(bindings, token).catch(() => [] as MetaAdAccount[]),
+    ]);
     if (wantsJson) {
-      const payload: ApiSuccess<MetaStatusResponse> = { ok: true, data: status };
+      const payload: ApiSuccess<MetaStatusResponse> = {
+        ok: true,
+        data: { ...status, accounts },
+      };
       return jsonResponse(payload);
     }
     const redirect = new URL("/admin", url);
     redirect.searchParams.set("meta", "success");
+    if (status.expiresAt) {
+      redirect.searchParams.set("metaExpires", status.expiresAt);
+    }
+    const accountNames = accounts.map((account) => account.name).filter(Boolean);
+    redirect.searchParams.set("metaAccountTotal", String(accountNames.length));
+    accountNames.slice(0, 5).forEach((name) => redirect.searchParams.append("metaAccount", name));
     return Response.redirect(redirect.toString(), 302);
   } catch (error) {
     const message = (error as Error).message;

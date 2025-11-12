@@ -96,6 +96,10 @@ export default {
         );
       }
 
+      if (pathname === "/auth/facebook" && method === "GET") {
+        return withCors(await handleMetaOAuthStart(request, env));
+      }
+
       if (pathname === "/health") {
         return jsonResponse({ ok: true, data: { status: "healthy" } });
       }
@@ -239,7 +243,33 @@ export default {
         let flash: AdminFlashMessage | undefined;
         const metaStatusParam = url.searchParams.get("meta");
         if (metaStatusParam === "success") {
-          flash = { type: "success", message: "Meta OAuth успешно подключён." };
+          const accountNames = url.searchParams.getAll("metaAccount");
+          const accountTotalParam = url.searchParams.get("metaAccountTotal");
+          const totalCount = accountTotalParam ? Number(accountTotalParam) : accountNames.length;
+          const expiresParam = url.searchParams.get("metaExpires");
+          let message = "Meta OAuth успешно подключён.";
+          if (expiresParam) {
+            const expiresDate = Date.parse(expiresParam);
+            const formatted = Number.isNaN(expiresDate)
+              ? expiresParam
+              : new Intl.DateTimeFormat("ru-RU", {
+                  year: "numeric",
+                  month: "2-digit",
+                  day: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                }).format(new Date(expiresDate));
+            message += ` Токен активен до: ${formatted}.`;
+          }
+          if (accountNames.length) {
+            message += ` Подключённые аккаунты: ${accountNames.slice(0, 5).join(", ")}`;
+            if (totalCount > accountNames.length) {
+              message += ` и ещё ${totalCount - accountNames.length}.`;
+            }
+          } else if (totalCount > 0) {
+            message += ` Найдено рекламных аккаунтов: ${totalCount}.`;
+          }
+          flash = { type: "success", message };
         } else if (metaStatusParam === "error") {
           const message = url.searchParams.get("metaMessage") || "Не удалось завершить Meta OAuth.";
           flash = { type: "error", message };

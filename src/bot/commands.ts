@@ -10,8 +10,22 @@ import {
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { sendTelegramMessage, answerCallbackQuery } from "../utils/telegram";
+import { fetchAdAccounts, resolveMetaStatus } from "../utils/meta";
 
-const AUTH_URL = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
+const AUTH_URL_FALLBACK = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
+
+const resolveAuthUrl = (env: BotContext["env"]): string => {
+  const candidates = [
+    env.AUTH_FACEBOOK_URL,
+    env.META_AUTH_URL,
+    env.FB_AUTH_URL,
+    env.PUBLIC_WEB_URL ? `${env.PUBLIC_WEB_URL}/auth/facebook` : null,
+    env.PUBLIC_BASE_URL ? `${env.PUBLIC_BASE_URL}/auth/facebook` : null,
+    env.WORKER_BASE_URL ? `${env.WORKER_BASE_URL}/auth/facebook` : null,
+  ];
+  const resolved = candidates.find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return resolved ? resolved : AUTH_URL_FALLBACK;
+};
 
 const HOME_MARKUP = {
   inline_keyboard: [[{ text: "⬅ Назад", callback_data: "cmd:menu" }]],
@@ -83,7 +97,8 @@ const sendMessage = async (
 
 const handleAuth = async (context: BotContext): Promise<void> => {
   const record = await loadMetaToken(context.env);
-  const status = record?.status ?? "missing";
+  const statusInfo = await resolveMetaStatus(context.env, record);
+  const status = statusInfo.status;
   const statusLabel =
     status === "valid"
       ? "✅ Токен активен"
@@ -91,18 +106,38 @@ const handleAuth = async (context: BotContext): Promise<void> => {
         ? "⚠️ Токен истёк"
         : "❌ Токен не подключён";
 
-  const expires = record?.expiresAt ? formatDateTime(record.expiresAt) : "—";
+  const expires = statusInfo.expiresAt ? formatDateTime(statusInfo.expiresAt) : "—";
+  const authUrl = resolveAuthUrl(context.env);
   const lines = [
     "<b>🔐 Авторизация Facebook</b>",
     "",
     `${statusLabel}`,
     `Действителен до: <b>${expires}</b>`,
+    statusInfo.accountName ? `Аккаунт: <b>${escapeHtml(statusInfo.accountName)}</b>` : "",
     "",
     "Для подключения или обновления токена откройте веб-страницу авторизации.",
-    `🌍 <a href="${escapeAttribute(AUTH_URL)}">Открыть форму авторизации</a>`,
+    `🌍 <a href="${escapeAttribute(authUrl)}">Открыть форму авторизации</a>`,
     "",
     "После успешного входа данные синхронизируются с веб-панелью и ботом.",
-  ];
+  ].filter(Boolean);
+
+  if (status === "valid") {
+    try {
+      const accounts = await fetchAdAccounts(context.env, record);
+      if (accounts.length) {
+        const list = accounts
+          .slice(0, 5)
+          .map((account) => `• ${escapeHtml(account.name)}${account.currency ? ` (${escapeHtml(account.currency)})` : ""}`)
+          .join("\n");
+        lines.push("", "Подключённые рекламные аккаунты:", list);
+        if (accounts.length > 5) {
+          lines.push(`и ещё ${accounts.length - 5} аккаунтов…`);
+        }
+      }
+    } catch (error) {
+      console.warn("Failed to list Meta accounts", error);
+    }
+  }
 
   await sendMessage(context, lines.join("\n"));
 };
