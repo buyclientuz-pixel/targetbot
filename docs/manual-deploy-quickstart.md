@@ -8,7 +8,7 @@
 
 ## 2. Обновите админ-панель (если правили UI)
 ```bash
-npm run bundle:admin
+node scripts/embed-admin.mjs
 ```
 
 ## 3. Установите зависимости

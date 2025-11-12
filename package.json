@@ -7,10 +7,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "bundle:admin": "node scripts/embed-admin.mjs",
     "dev": "wrangler dev",
     "build": "tsc",
-    "deploy": "npx wrangler deploy --minify"
+    "deploy": "npx wrangler deploy --minify",
+    "install": "npm install"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240512.0",
