@@ -6,6 +6,20 @@ const leadsPanel = document.querySelector("#leads");
 const integrationsPanel = document.querySelector("#integrations");
 const settingsPanel = document.querySelector("#settings");
 const tabs = document.querySelectorAll(".tab-button");
+const leadFilters = {
+  status: "all",
+  source: "all",
+  from: "",
+  to: "",
+};
+
+function humanize(value) {
+  return value
+    .toString()
+    .split(/[\s_-]+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
 
 function activateTab(targetId) {
   document.querySelectorAll(".tab-panel").forEach((panel) => {
@@ -69,25 +83,105 @@ async function renderUsers() {
 }
 
 async function renderLeads() {
-  const data = await api.getLeads();
-  leadsPanel.innerHTML = `<div class="overflow-x-auto">
-    <table class="table">
-      <thead><tr><th>ID</th><th>Имя</th><th>Контакт</th><th>Статус</th><th>Обновлено</th></tr></thead>
-      <tbody>
-        ${data.leads
-          .map(
-            (lead) => `<tr>
-              <td>${lead.id}</td>
-              <td>${lead.name}</td>
-              <td>${lead.contact}</td>
-              <td><span class="badge">${lead.status}</span></td>
-              <td>${new Date(lead.updatedAt).toLocaleString()}</td>
-            </tr>`,
-          )
-          .join("")}
-      </tbody>
-    </table>
+  const data = await api.getLeads(leadFilters);
+  const statuses = data.available?.statuses ?? ["new", "in_progress", "closed"];
+  const sources = data.available?.sources ?? ["telegram", "facebook", "manual"];
+
+  leadsPanel.innerHTML = `<div class="space-y-4">
+    <section class="card space-y-4">
+      <div class="flex items-center justify-between">
+        <h2 class="card-title">Фильтры</h2>
+        <button type="button" class="btn-secondary" id="lead-filters-reset">Сбросить</button>
+      </div>
+      <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <label class="flex flex-col gap-2 text-sm text-slate-300">
+          <span>Статус</span>
+          <select id="lead-status-filter" class="rounded-lg border border-slate-600 bg-slate-900/60 px-3 py-2 text-slate-100">
+            <option value="all">Все статусы</option>
+            ${statuses
+              .map((status) => `<option value="${status}">${humanize(status)}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label class="flex flex-col gap-2 text-sm text-slate-300">
+          <span>Источник</span>
+          <select id="lead-source-filter" class="rounded-lg border border-slate-600 bg-slate-900/60 px-3 py-2 text-slate-100">
+            <option value="all">Все источники</option>
+            ${sources
+              .map((source) => `<option value="${source}">${humanize(source)}</option>`)
+              .join("")}
+          </select>
+        </label>
+        <label class="flex flex-col gap-2 text-sm text-slate-300">
+          <span>С даты</span>
+          <input type="date" id="lead-from-filter" class="rounded-lg border border-slate-600 bg-slate-900/60 px-3 py-2 text-slate-100" />
+        </label>
+        <label class="flex flex-col gap-2 text-sm text-slate-300">
+          <span>По дату</span>
+          <input type="date" id="lead-to-filter" class="rounded-lg border border-slate-600 bg-slate-900/60 px-3 py-2 text-slate-100" />
+        </label>
+      </div>
+    </section>
+    <div class="overflow-x-auto">
+      <table class="table">
+        <thead><tr><th>ID</th><th>Имя</th><th>Контакт</th><th>Источник</th><th>Статус</th><th>Создан</th><th>Обновлено</th></tr></thead>
+        <tbody>
+          ${data.leads
+            .map(
+              (lead) => `<tr>
+                <td>${lead.id}</td>
+                <td>${lead.name}</td>
+                <td>${lead.contact}</td>
+                <td>${lead.source ? humanize(lead.source) : "—"}</td>
+                <td><span class="badge">${humanize(lead.status)}</span></td>
+                <td>${new Date(lead.createdAt).toLocaleString()}</td>
+                <td>${new Date(lead.updatedAt).toLocaleString()}</td>
+              </tr>`,
+            )
+            .join("") || `<tr><td colspan="7" class="text-center text-slate-400">Заявок не найдено</td></tr>`}
+        </tbody>
+      </table>
+    </div>
   </div>`;
+
+  const statusSelect = leadsPanel.querySelector("#lead-status-filter");
+  const sourceSelect = leadsPanel.querySelector("#lead-source-filter");
+  const fromInput = leadsPanel.querySelector("#lead-from-filter");
+  const toInput = leadsPanel.querySelector("#lead-to-filter");
+  const resetButton = leadsPanel.querySelector("#lead-filters-reset");
+
+  if (statusSelect) statusSelect.value = leadFilters.status;
+  if (sourceSelect) sourceSelect.value = leadFilters.source;
+  if (fromInput) fromInput.value = leadFilters.from;
+  if (toInput) toInput.value = leadFilters.to;
+
+  statusSelect?.addEventListener("change", async (event) => {
+    leadFilters.status = event.target.value;
+    await renderLeads();
+  });
+
+  sourceSelect?.addEventListener("change", async (event) => {
+    leadFilters.source = event.target.value;
+    await renderLeads();
+  });
+
+  fromInput?.addEventListener("change", async (event) => {
+    leadFilters.from = event.target.value;
+    await renderLeads();
+  });
+
+  toInput?.addEventListener("change", async (event) => {
+    leadFilters.to = event.target.value;
+    await renderLeads();
+  });
+
+  resetButton?.addEventListener("click", async () => {
+    leadFilters.status = "all";
+    leadFilters.source = "all";
+    leadFilters.from = "";
+    leadFilters.to = "";
+    await renderLeads();
+  });
 }
 
 async function renderIntegrations() {

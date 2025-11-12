@@ -25,9 +25,25 @@ async function request(path, options = {}) {
 }
 
 export const api = {
-  async getLeads() {
-    const key = new URLSearchParams(window.location.search).get("key") ?? "";
-    return request(`/api/leads?key=${key}`);
+  async getLeads(filters = {}) {
+    const params = new URLSearchParams(window.location.search);
+    const key = params.get("key") ?? "";
+    const query = new URLSearchParams();
+    if (key) query.set("key", key);
+    if (filters.status && filters.status !== "all") {
+      query.set("status", filters.status);
+    }
+    if (filters.source && filters.source !== "all") {
+      query.set("source", filters.source);
+    }
+    if (filters.from) {
+      query.set("from", filters.from);
+    }
+    if (filters.to) {
+      query.set("to", filters.to);
+    }
+    const search = query.toString();
+    return request(`/api/leads${search ? `?${search}` : ""}`);
   },
   async getUsers() {
     const key = new URLSearchParams(window.location.search).get("key") ?? "";
