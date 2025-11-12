@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npx wrangler@4.46.0 dev",
+     "dev": "wrangler dev",
+  "deploy": "wrangler deploy",
+  "build": "wrangler deploy --dry-run",
+  "lint": "eslint . --ext .ts,.js"    "dev": "npx wrangler@4.46.0 dev",
     "lint:api": "node scripts/lint-api.mjs",
     "deploy": "npm run lint:api && npx wrangler@4.46.0 deploy",
     "check:config": "node scripts/check-config.mjs",
@@ -13,10 +16,4 @@
     "validate:postdeploy": "node scripts/postdeploy-validate.mjs"
   },
   "devDependencies": {}
-}
-"scripts": {
-  "dev": "wrangler dev",
-  "deploy": "wrangler deploy",
-  "build": "wrangler deploy --dry-run",
-  "lint": "eslint . --ext .ts,.js"
-}
+
