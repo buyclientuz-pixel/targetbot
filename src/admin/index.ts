@@ -38,6 +38,23 @@ const statusBadge = (meta: MetaStatusResponse | null): string => {
   return `<span class="badge ${statusClass}">${label}</span>`;
 };
 
+const accountStatusBadge = (account: MetaAdAccount): string => {
+  if (!account.status && account.statusCode === undefined) {
+    return '<span class="muted">—</span>';
+  }
+  const parts: string[] = [];
+  if (account.status) {
+    parts.push(escapeHtml(account.status));
+  }
+  if (account.statusCode !== undefined) {
+    parts.push(`код ${account.statusCode}`);
+  }
+  const label = parts.join(" · ");
+  const severity = account.statusSeverity;
+  const badgeClass = severity ? `badge ${severity}` : "badge warning";
+  return `<span class="${badgeClass}">${label}</span>`;
+};
+
 const projectCard = (project: ProjectSummary): string => {
   const chat = project.telegramLink
     ? `<a class="btn btn-secondary" href="${escapeAttribute(project.telegramLink)}" target="_blank">Перейти в чат</a>`
@@ -88,7 +105,7 @@ const accountsTable = (accounts: MetaAdAccount[]): string => {
           <td>${escapeHtml(account.name || "—")}</td>
           <td>${escapeHtml(account.id || "—")}</td>
           <td>${escapeHtml(account.currency || "—")}</td>
-          <td>${escapeHtml(account.status || "—")}</td>
+          <td>${accountStatusBadge(account)}</td>
           <td>${escapeHtml(account.business?.name || "—")}</td>
         </tr>
       `,

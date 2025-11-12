@@ -27,6 +27,20 @@ const BUSINESS_ID_KEYS = [
   "BUSINESS_IDS",
 ] as const;
 
+const ACCOUNT_STATUS_MAP: Record<number, { label: string; severity: "success" | "warning" | "error" }> = {
+  1: { label: "Активен", severity: "success" },
+  2: { label: "Отключён", severity: "error" },
+  3: { label: "Есть задолженность", severity: "warning" },
+  4: { label: "Проверка риска", severity: "warning" },
+  5: { label: "Ожидает оплату", severity: "warning" },
+  6: { label: "Ожидает подтверждение", severity: "warning" },
+  7: { label: "Льготный период", severity: "warning" },
+  8: { label: "Ожидает закрытие", severity: "warning" },
+  9: { label: "Закрыт", severity: "error" },
+  100: { label: "Активный (агр.)", severity: "success" },
+  101: { label: "Закрыт (агр.)", severity: "error" },
+};
+
 const toStringArray = (value: unknown): string[] => {
   if (!value) {
     return [];
@@ -65,6 +79,36 @@ const collectEnvList = (env: Record<string, unknown>, keys: readonly string[]): 
     result.push(...toStringArray(value));
   }
   return Array.from(new Set(result.filter(Boolean)));
+};
+
+const describeAccountStatus = (
+  status: unknown,
+): { label?: string; code?: number; severity?: "success" | "warning" | "error" } => {
+  if (status === null || status === undefined) {
+    return {};
+  }
+  let code: number | undefined;
+  if (typeof status === "number" && Number.isFinite(status)) {
+    code = Math.trunc(status);
+  } else if (typeof status === "string" && status.trim()) {
+    const trimmed = status.trim();
+    const numeric = Number(trimmed);
+    if (!Number.isNaN(numeric)) {
+      code = Math.trunc(numeric);
+    } else {
+      return { label: trimmed, severity: "warning" };
+    }
+  }
+
+  if (code === undefined) {
+    return {};
+  }
+
+  const mapping = ACCOUNT_STATUS_MAP[code];
+  if (mapping) {
+    return { label: mapping.label, code, severity: mapping.severity };
+  }
+  return { label: `Неизвестно (код ${code})`, code, severity: "warning" };
 };
 
 const toIsoDate = (value: unknown): string | undefined => {
@@ -249,11 +293,14 @@ export const fetchAdAccounts = async (
   for (const item of meResponse?.data || []) {
     const id = item.id || (item as { account_id?: string }).account_id;
     if (!id || !item.name) continue;
+    const statusInfo = describeAccountStatus(item.account_status);
     addAccount({
       id,
       name: item.name,
       currency: item.currency,
-      status: typeof item.account_status === "number" ? String(item.account_status) : undefined,
+      status: statusInfo.label,
+      statusCode: statusInfo.code,
+      statusSeverity: statusInfo.severity,
       business: item.business ? { id: item.business.id, name: item.business.name } : null,
     });
   }
@@ -268,11 +315,14 @@ export const fetchAdAccounts = async (
       params,
     );
     if (account?.id && account.name) {
+      const statusInfo = describeAccountStatus(account.account_status);
       addAccount({
         id: account.id,
         name: account.name,
         currency: account.currency,
-        status: typeof account.account_status === "number" ? String(account.account_status) : undefined,
+        status: statusInfo.label,
+        statusCode: statusInfo.code,
+        statusSeverity: statusInfo.severity,
       });
     }
   };
@@ -295,11 +345,14 @@ export const fetchAdAccounts = async (
     for (const item of response?.data || []) {
       const id = item.id || item.account_id;
       if (!id || !item.name) continue;
+      const statusInfo = describeAccountStatus(item.account_status);
       addAccount({
         id,
         name: item.name,
         currency: item.currency,
-        status: typeof item.account_status === "number" ? String(item.account_status) : undefined,
+        status: statusInfo.label,
+        statusCode: statusInfo.code,
+        statusSeverity: statusInfo.severity,
         business: item.business ? { id: item.business.id, name: item.business.name } : { id: businessId, name: undefined },
       });
     }

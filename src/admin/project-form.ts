@@ -24,7 +24,10 @@ const userOptions = (users: UserRecord[], selectedId?: string): string => {
 const accountOptions = (accounts: MetaAdAccount[], selectedId?: string): string => {
   const items = ['<option value="">— не привязан —</option>'];
   for (const account of accounts) {
-    const label = `${account.name}${account.id ? ` · ${account.id}` : ""}`;
+    const statusSuffix = account.status
+      ? ` (${account.status}${account.statusCode !== undefined ? ` · код ${account.statusCode}` : ""})`
+      : "";
+    const label = `${account.name}${account.id ? ` · ${account.id}` : ""}${statusSuffix}`;
     if (account.id) {
       items.push(option(account.id, label, account.id === selectedId));
     } else {

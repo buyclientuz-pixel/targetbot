@@ -29,6 +29,8 @@ export interface MetaAdAccount {
   name: string;
   currency?: string;
   status?: string;
+  statusCode?: number;
+  statusSeverity?: "success" | "warning" | "error";
   business?: { id?: string; name?: string } | null;
 }
 
