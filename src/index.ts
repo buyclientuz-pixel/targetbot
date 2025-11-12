@@ -23,20 +23,21 @@ import {
   handleUsersCreate,
   handleUsersList,
 } from "./api/users";
-import { AdminFlashMessage, ProjectSummary, renderAdminDashboard } from "./admin/index";
+import { AdminFlashMessage, renderAdminDashboard } from "./admin/index";
 import { renderUsersPage } from "./admin/users";
 import { renderProjectForm } from "./admin/project-form";
 import { renderPortal } from "./views/portal";
 import { htmlResponse, jsonResponse } from "./utils/http";
 import {
   EnvBindings,
-  listProjects,
   listUsers,
   loadMetaToken,
   loadProject,
   listLeads,
 } from "./utils/storage";
 import { fetchAdAccounts, resolveMetaStatus } from "./utils/meta";
+import { summarizeProjects, sortProjectSummaries } from "./utils/projects";
+import { ProjectSummary } from "./types";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -157,50 +158,11 @@ export default {
 
       if (pathname === "/admin" && method === "GET") {
         const bindings = ensureEnv(env);
-        const [projects, token] = await Promise.all([
-          listProjects(bindings),
+        const [projectsWithLeads, token] = await Promise.all([
+          summarizeProjects(bindings),
           loadMetaToken(bindings),
         ]);
-        const projectSummaries: ProjectSummary[] = await Promise.all(
-          projects.map(async (project) => {
-            const leads = await listLeads(bindings, project.id).catch(() => []);
-            let latestTimestamp = 0;
-            let newCount = 0;
-            let doneCount = 0;
-            for (const lead of leads) {
-              const created = Date.parse(lead.createdAt);
-              if (!Number.isNaN(created) && created > latestTimestamp) {
-                latestTimestamp = created;
-              }
-              if (lead.status === "done") {
-                doneCount += 1;
-              } else {
-                newCount += 1;
-              }
-            }
-            return {
-              ...project,
-              leadStats: {
-                total: leads.length,
-                new: newCount,
-                done: doneCount,
-                latestAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : undefined,
-              },
-            };
-          }),
-        );
-        projectSummaries.sort((a, b) => {
-          if (b.leadStats.new !== a.leadStats.new) {
-            return b.leadStats.new - a.leadStats.new;
-          }
-          const bLatest = b.leadStats.latestAt ? Date.parse(b.leadStats.latestAt) : 0;
-          const aLatest = a.leadStats.latestAt ? Date.parse(a.leadStats.latestAt) : 0;
-          if (bLatest !== aLatest) {
-            return bLatest - aLatest;
-          }
-          return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
-        });
-
+        const projectSummaries: ProjectSummary[] = sortProjectSummaries(projectsWithLeads);
         const [meta, accounts] = await Promise.all([
           resolveMetaStatus(bindings, token),
           fetchAdAccounts(bindings, token).catch(() => []),

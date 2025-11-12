@@ -6,8 +6,9 @@ import {
   loadProject,
   saveProjects,
 } from "../utils/storage";
-import { ApiError, ApiSuccess, ProjectRecord } from "../types";
+import { ApiError, ApiSuccess, ProjectRecord, ProjectSummary } from "../types";
 import { createId } from "../utils/ids";
+import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -18,9 +19,26 @@ const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
 
 const nowIso = () => new Date().toISOString();
 
-export const handleProjectsList = async (_request: Request, env: unknown): Promise<Response> => {
+export const handleProjectsList = async (request: Request, env: unknown): Promise<Response> => {
   try {
     const bindings = ensureEnv(env);
+    const url = new URL(request.url);
+    const includes = url
+      .searchParams
+      .getAll("include")
+      .flatMap((value) => value.split(","))
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    if (includes.includes("leadStats") || includes.includes("summary")) {
+      const summaries = await summarizeProjects(bindings);
+      const payload: ApiSuccess<ProjectSummary[]> = {
+        ok: true,
+        data: sortProjectSummaries(summaries),
+      };
+      return jsonResponse(payload);
+    }
+
     const projects = await listProjects(bindings);
     const payload: ApiSuccess<ProjectRecord[]> = { ok: true, data: projects };
     return jsonResponse(payload);

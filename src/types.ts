@@ -46,6 +46,17 @@ export interface ProjectRecord {
   updatedAt: string;
 }
 
+export interface ProjectLeadStats {
+  total: number;
+  new: number;
+  done: number;
+  latestAt?: string;
+}
+
+export interface ProjectSummary extends ProjectRecord {
+  leadStats: ProjectLeadStats;
+}
+
 export interface LeadRecord {
   id: string;
   projectId: string;

@@ -1,4 +1,4 @@
-import { MetaAdAccount, MetaStatusResponse, ProjectRecord } from "../types";
+import { MetaAdAccount, MetaStatusResponse, ProjectSummary } from "../types";
 import { renderLayout } from "../components/layout";
 import { escapeAttribute, escapeHtml } from "../utils/html";
 
@@ -7,17 +7,6 @@ export interface AdminDashboardProps {
   accounts: MetaAdAccount[];
   projects: ProjectSummary[];
   flash?: AdminFlashMessage;
-}
-
-export interface ProjectSummary extends ProjectRecord {
-  leadStats: LeadStats;
-}
-
-interface LeadStats {
-  total: number;
-  new: number;
-  done: number;
-  latestAt?: string;
 }
 
 export interface AdminFlashMessage {
