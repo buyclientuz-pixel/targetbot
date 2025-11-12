@@ -23,7 +23,7 @@ import {
   handleUsersCreate,
   handleUsersList,
 } from "./api/users";
-import { renderAdminDashboard } from "./admin/index";
+import { ProjectSummary, renderAdminDashboard } from "./admin/index";
 import { renderUsersPage } from "./admin/users";
 import { renderProjectForm } from "./admin/project-form";
 import { renderPortal } from "./views/portal";
@@ -161,11 +161,51 @@ export default {
           listProjects(bindings),
           loadMetaToken(bindings),
         ]);
+        const projectSummaries: ProjectSummary[] = await Promise.all(
+          projects.map(async (project) => {
+            const leads = await listLeads(bindings, project.id).catch(() => []);
+            let latestTimestamp = 0;
+            let newCount = 0;
+            let doneCount = 0;
+            for (const lead of leads) {
+              const created = Date.parse(lead.createdAt);
+              if (!Number.isNaN(created) && created > latestTimestamp) {
+                latestTimestamp = created;
+              }
+              if (lead.status === "done") {
+                doneCount += 1;
+              } else {
+                newCount += 1;
+              }
+            }
+            return {
+              ...project,
+              leadStats: {
+                total: leads.length,
+                new: newCount,
+                done: doneCount,
+                latestAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : undefined,
+              },
+            };
+          }),
+        );
+        projectSummaries.sort((a, b) => {
+          if (b.leadStats.new !== a.leadStats.new) {
+            return b.leadStats.new - a.leadStats.new;
+          }
+          const bLatest = b.leadStats.latestAt ? Date.parse(b.leadStats.latestAt) : 0;
+          const aLatest = a.leadStats.latestAt ? Date.parse(a.leadStats.latestAt) : 0;
+          if (bLatest !== aLatest) {
+            return bLatest - aLatest;
+          }
+          return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+        });
+
         const [meta, accounts] = await Promise.all([
           resolveMetaStatus(bindings, token),
           fetchAdAccounts(bindings, token).catch(() => []),
         ]);
-        const html = renderAdminDashboard({ meta, accounts, projects });
+        const html = renderAdminDashboard({ meta, accounts, projects: projectSummaries });
         return htmlResponse(html);
       }
 

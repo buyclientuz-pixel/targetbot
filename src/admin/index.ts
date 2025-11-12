@@ -5,7 +5,18 @@ import { escapeAttribute, escapeHtml } from "../utils/html";
 export interface AdminDashboardProps {
   meta: MetaStatusResponse | null;
   accounts: MetaAdAccount[];
-  projects: ProjectRecord[];
+  projects: ProjectSummary[];
+}
+
+export interface ProjectSummary extends ProjectRecord {
+  leadStats: LeadStats;
+}
+
+interface LeadStats {
+  total: number;
+  new: number;
+  done: number;
+  latestAt?: string;
 }
 
 const statusBadge = (meta: MetaStatusResponse | null): string => {
@@ -21,7 +32,7 @@ const statusBadge = (meta: MetaStatusResponse | null): string => {
   return `<span class="badge ${statusClass}">${label}</span>`;
 };
 
-const projectCard = (project: ProjectRecord): string => {
+const projectCard = (project: ProjectSummary): string => {
   const chat = project.telegramLink
     ? `<a class="btn btn-secondary" href="${escapeAttribute(project.telegramLink)}" target="_blank">Перейти в чат</a>`
     : project.telegramChatId
@@ -30,10 +41,26 @@ const projectCard = (project: ProjectRecord): string => {
   const account = project.adAccountId
     ? `<span class="muted">Рекламный кабинет: ${escapeHtml(project.adAccountId)}</span>`
     : '<span class="muted">Кабинет не выбран</span>';
+  const latestLead = project.leadStats.latestAt
+    ? new Date(project.leadStats.latestAt).toLocaleString("ru-RU")
+    : "—";
+  const leadBadge =
+    project.leadStats.new > 0
+      ? `<span class="badge warning">Новых лидов: ${project.leadStats.new}</span>`
+      : '<span class="badge success">Новых лидов нет</span>';
+  const leadSummary = `
+    <div class="muted">
+      Всего: ${project.leadStats.total} · Завершено: ${project.leadStats.done} · Последний лид: ${latestLead}
+    </div>
+  `;
   return `
     <div class="card">
       <h3>${escapeHtml(project.name)}</h3>
       <div class="muted">Обновлено: ${new Date(project.updatedAt).toLocaleString("ru-RU")}</div>
+      <div class="actions" style="margin-top:12px;">
+        ${leadBadge}
+      </div>
+      ${leadSummary}
       <div class="actions" style="margin-top:16px;">
         ${chat}
         ${account}
