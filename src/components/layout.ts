@@ -3,9 +3,34 @@ interface LayoutOptions {
   body: string;
   styles?: string;
   scripts?: string;
+  nav?: string;
 }
 
-export const renderLayout = ({ title, body, styles = "", scripts = "" }: LayoutOptions): string => {
+const baseNavLinks: { href: string; label: string; id: string }[] = [
+  { href: "/admin", label: "Панель", id: "dashboard" },
+  { href: "/admin/projects/new", label: "Новый проект", id: "projects" },
+  { href: "/admin/payments", label: "Платежи", id: "payments" },
+  { href: "/admin/users", label: "Пользователи", id: "users" },
+  { href: "/admin/settings", label: "Настройки", id: "settings" },
+];
+
+const renderNav = (active?: string, navOverride?: string): string => {
+  if (typeof navOverride === "string") {
+    return navOverride;
+  }
+  if (!active) {
+    return "";
+  }
+  const links = baseNavLinks
+    .map((link) => {
+      const isActive = link.id === active;
+      return `<a class="nav-link${isActive ? " active" : ""}" href="${link.href}">${link.label}</a>`;
+    })
+    .join("");
+  return `<nav class="top-nav">${links}</nav>`;
+};
+
+export const renderLayout = ({ title, body, styles = "", scripts = "", nav }: LayoutOptions): string => {
   return `<!doctype html>
 <html lang="ru">
   <head>
@@ -46,6 +71,10 @@ export const renderLayout = ({ title, body, styles = "", scripts = "" }: LayoutO
       .tabs { display: flex; gap: 12px; margin-top: 16px; }
       .tabs a { padding: 8px 14px; border-radius: 8px; background: #e4ebf5; color: #1f2933; text-decoration: none; font-weight: 600; }
       .tabs a.active { background: #1f75fe; color: #fff; }
+      .top-nav { display: flex; gap: 12px; padding: 12px 24px; background: #163d7a; }
+      .top-nav .nav-link { color: rgba(255,255,255,0.85); text-decoration: none; font-weight: 600; padding: 6px 12px; border-radius: 8px; }
+      .top-nav .nav-link:hover { background: rgba(255,255,255,0.12); }
+      .top-nav .nav-link.active { background: #fff; color: #163d7a; }
       ${styles}
     </style>
   </head>
@@ -53,6 +82,7 @@ export const renderLayout = ({ title, body, styles = "", scripts = "" }: LayoutO
     <header>
       <h1>${title}</h1>
     </header>
+    ${renderNav(undefined, nav)}
     <main>
       ${body}
     </main>
@@ -61,4 +91,13 @@ export const renderLayout = ({ title, body, styles = "", scripts = "" }: LayoutO
     </script>
   </body>
 </html>`;
+};
+
+interface AdminLayoutOptions extends Omit<LayoutOptions, "nav"> {
+  activeNav?: "dashboard" | "projects" | "payments" | "users" | "settings";
+}
+
+export const renderAdminLayout = ({ activeNav, ...options }: AdminLayoutOptions): string => {
+  const nav = renderNav(activeNav);
+  return renderLayout({ ...options, nav });
 };

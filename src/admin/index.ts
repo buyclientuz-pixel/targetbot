@@ -1,5 +1,12 @@
-import { MetaAdAccount, MetaStatusResponse, ProjectSummary, ReportRecord } from "../types";
-import { renderLayout } from "../components/layout";
+import {
+  CommandLogRecord,
+  MetaAdAccount,
+  MetaStatusResponse,
+  ProjectSummary,
+  ReportRecord,
+  SettingRecord,
+} from "../types";
+import { renderAdminLayout } from "../components/layout";
 import { escapeAttribute, escapeHtml } from "../utils/html";
 
 export interface AdminDashboardProps {
@@ -7,6 +14,8 @@ export interface AdminDashboardProps {
   accounts: MetaAdAccount[];
   projects: ProjectSummary[];
   reports: ReportRecord[];
+  settings: SettingRecord[];
+  commandLogs: CommandLogRecord[];
   flash?: AdminFlashMessage;
 }
 
@@ -339,7 +348,115 @@ const renderReportsTable = (reports: ReportRecord[]): string => {
   `;
 };
 
-export const renderAdminDashboard = ({ meta, accounts, projects, reports, flash }: AdminDashboardProps): string => {
+const previewJsonValue = (value: SettingRecord["value"], limit = 120): string => {
+  if (value === null) {
+    return '<span class="muted">null</span>';
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return '<span class="muted">пустая строка</span>';
+    }
+    const text = trimmed.length > limit ? `${trimmed.slice(0, limit - 1)}…` : trimmed;
+    return escapeHtml(text);
+  }
+  try {
+    const json = JSON.stringify(value);
+    const text = json.length > limit ? `${json.slice(0, limit - 1)}…` : json;
+    return escapeHtml(text);
+  } catch (error) {
+    return '<span class="muted">[не удалось отобразить]</span>';
+  }
+};
+
+const renderSettingsPreview = (settings: SettingRecord[]): string => {
+  if (!settings.length) {
+    return '<p class="muted">Настройки ещё не заданы.</p>';
+  }
+  const preview = settings
+    .slice(0, 5)
+    .map((setting) => {
+      const updated = new Date(setting.updatedAt).toLocaleString("ru-RU");
+      return `
+        <tr>
+          <td>${escapeHtml(setting.key)}</td>
+          <td>${escapeHtml(setting.scope)}</td>
+          <td>${previewJsonValue(setting.value)}</td>
+          <td>${escapeHtml(updated)}</td>
+        </tr>
+      `;
+    })
+    .join("\n");
+  return `
+    <table>
+      <thead>
+        <tr>
+          <th>Ключ</th>
+          <th>Область</th>
+          <th>Значение</th>
+          <th>Обновлено</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${preview}
+      </tbody>
+    </table>
+  `;
+};
+
+const renderCommandLogsTable = (logs: CommandLogRecord[]): string => {
+  if (!logs.length) {
+    return '<p class="muted">Команд ещё не выполняли.</p>';
+  }
+  const rows = logs.slice(0, 15).map((entry) => {
+    const created = new Date(entry.createdAt).toLocaleString("ru-RU");
+    let payload = "<span class=\"muted\">—</span>";
+    if (entry.payload !== undefined) {
+      try {
+        const json = typeof entry.payload === "string" ? entry.payload : JSON.stringify(entry.payload);
+        const normalized = json.length > 160 ? `${json.slice(0, 159)}…` : json;
+        payload = escapeHtml(normalized);
+      } catch (error) {
+        payload = '<span class="muted">[ошибка]</span>';
+      }
+    }
+    return `
+      <tr>
+        <td>${escapeHtml(created)}</td>
+        <td><strong>${escapeHtml(entry.command)}</strong><div class="muted">${escapeHtml(entry.id)}</div></td>
+        <td>${payload}</td>
+        <td>${entry.userId ? escapeHtml(entry.userId) : '<span class="muted">—</span>'}</td>
+        <td>${entry.chatId ? escapeHtml(entry.chatId) : '<span class="muted">—</span>'}</td>
+      </tr>
+    `;
+  });
+  return `
+    <table>
+      <thead>
+        <tr>
+          <th>Время</th>
+          <th>Команда</th>
+          <th>Детали</th>
+          <th>User</th>
+          <th>Chat</th>
+        </tr>
+      </thead>
+      <tbody id="commandLogsBody">
+        ${rows.join("\n")}
+      </tbody>
+    </table>
+  `;
+};
+
+export const renderAdminDashboard = ({
+  meta,
+  accounts,
+  projects,
+  reports,
+  settings,
+  commandLogs,
+  flash,
+}: AdminDashboardProps): string => {
   const flashBlock = flash
     ? `<div class="alert ${flash.type}">${escapeHtml(flash.message)}</div>`
     : "";
@@ -383,6 +500,21 @@ export const renderAdminDashboard = ({ meta, accounts, projects, reports, flash 
     <section class="card">
       <h2>Последние отчёты</h2>
       ${renderReportsTable(reports)}
+    </section>
+    <section class="card">
+      <h2>Системные настройки</h2>
+      <p class="muted">Настройки синхронизируются через KV и доступны Telegram-боту и веб-панели.</p>
+      ${renderSettingsPreview(settings)}
+      <div class="actions">
+        <a class="btn btn-secondary" href="/admin/settings">Управлять настройками</a>
+      </div>
+    </section>
+    <section class="card">
+      <div class="actions" style="justify-content: space-between; align-items: center; margin-top:0;">
+        <h2 style="margin:0;">Журнал команд</h2>
+        <button class="btn btn-secondary" id="refreshCommandLogs">Обновить</button>
+      </div>
+      ${renderCommandLogsTable(commandLogs)}
     </section>
   `;
 
@@ -458,7 +590,55 @@ export const renderAdminDashboard = ({ meta, accounts, projects, reports, flash 
         }
       });
     }
+
+    const refreshLogsBtn = document.getElementById('refreshCommandLogs');
+    const logsBody = document.getElementById('commandLogsBody');
+    if (refreshLogsBtn && logsBody) {
+      refreshLogsBtn.addEventListener('click', async () => {
+        refreshLogsBtn.setAttribute('disabled', 'true');
+        refreshLogsBtn.textContent = 'Обновляем…';
+        try {
+          const response = await fetch('/api/logs/commands?limit=20');
+          const data = await response.json();
+          if (!data.ok || !Array.isArray(data.data)) {
+            throw new Error(data.error || 'неизвестная ошибка');
+          }
+          const rows = data.data.map((entry) => {
+            const created = new Date(entry.createdAt).toLocaleString('ru-RU');
+            let payload = '—';
+            if (entry.payload !== undefined && entry.payload !== null) {
+              try {
+                const raw = typeof entry.payload === 'string' ? entry.payload : JSON.stringify(entry.payload);
+                payload = raw.length > 160 ? raw.slice(0, 159) + '…' : raw;
+              } catch (error) {
+                payload = '[ошибка]';
+              }
+            }
+            const escape = (value) => {
+              const element = document.createElement('span');
+              element.textContent = String(value ?? '');
+              return element.innerHTML;
+            };
+            return \`
+              <tr>
+                <td>\${escape(created)}</td>
+                <td><strong>\${escape(entry.command)}</strong><div class="muted">\${escape(entry.id)}</div></td>
+                <td>\${escape(payload)}</td>
+                <td>\${entry.userId ? escape(entry.userId) : '<span class="muted">—</span>'}</td>
+                <td>\${entry.chatId ? escape(entry.chatId) : '<span class="muted">—</span>'}</td>
+              </tr>
+            \`;
+          });
+          logsBody.innerHTML = rows.join('');
+        } catch (error) {
+          alert('Не удалось обновить журнал: ' + error.message);
+        } finally {
+          refreshLogsBtn.removeAttribute('disabled');
+          refreshLogsBtn.textContent = 'Обновить';
+        }
+      });
+    }
   `;
 
-  return renderLayout({ title: "Targetbot Admin", body, scripts });
+  return renderAdminLayout({ title: "Targetbot Admin", body, scripts, activeNav: "dashboard" });
 };

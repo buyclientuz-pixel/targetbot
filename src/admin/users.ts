@@ -1,5 +1,5 @@
 import { UserRecord } from "../types";
-import { renderLayout } from "../components/layout";
+import { renderAdminLayout } from "../components/layout";
 import { escapeAttribute, escapeHtml } from "../utils/html";
 
 export const renderUsersPage = (users: UserRecord[]): string => {
@@ -91,5 +91,5 @@ export const renderUsersPage = (users: UserRecord[]): string => {
     });
   `;
 
-  return renderLayout({ title: "Targetbot — пользователи", body, scripts });
+  return renderAdminLayout({ title: "Targetbot — пользователи", body, scripts, activeNav: "users" });
 };

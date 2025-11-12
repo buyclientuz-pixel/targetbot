@@ -42,18 +42,22 @@ import {
   handleSettingsList,
   handleSettingsUpsert,
 } from "./api/settings";
+import { handleCommandLogsList } from "./api/logs";
 import { handleTelegramWebhookRefresh } from "./api/manage";
 import { AdminFlashMessage, renderAdminDashboard } from "./admin/index";
 import { renderUsersPage } from "./admin/users";
 import { renderProjectForm } from "./admin/project-form";
 import { renderPaymentsPage } from "./admin/payments";
+import { renderSettingsPage } from "./admin/settings";
 import { renderPortal } from "./views/portal";
 import { htmlResponse, jsonResponse } from "./utils/http";
 import {
   EnvBindings,
+  listCommandLogs,
   listPayments,
   listProjects,
   listReports,
+  listSettings,
   listUsers,
   loadMetaToken,
   loadProject,
@@ -223,6 +227,10 @@ export default {
         return withCors(await handleSettingGet(request, env, key));
       }
 
+      if (pathname === "/api/logs/commands" && method === "GET") {
+        return withCors(await handleCommandLogsList(request, env));
+      }
+
       if (pathname === "/api/users" && method === "GET") {
         return withCors(await handleUsersList(request, env));
       }
@@ -243,10 +251,12 @@ export default {
 
       if (pathname === "/admin" && method === "GET") {
         const bindings = ensureEnv(env);
-        const [projectsWithLeads, token, reports] = await Promise.all([
+        const [projectsWithLeads, token, reports, settings, commandLogs] = await Promise.all([
           summarizeProjects(bindings),
           loadMetaToken(bindings),
           listReports(bindings),
+          listSettings(bindings),
+          listCommandLogs(bindings),
         ]);
         const projectSummaries: ProjectSummary[] = sortProjectSummaries(projectsWithLeads);
         const [meta, accounts] = await Promise.all([
@@ -295,7 +305,15 @@ export default {
         const recentReports = [...reports]
           .sort((a, b) => Date.parse(b.generatedAt || b.createdAt) - Date.parse(a.generatedAt || a.createdAt))
           .slice(0, 5);
-        const html = renderAdminDashboard({ meta, accounts, projects: projectSummaries, reports: recentReports, flash });
+        const html = renderAdminDashboard({
+          meta,
+          accounts,
+          projects: projectSummaries,
+          reports: recentReports,
+          settings,
+          commandLogs: commandLogs.slice(0, 20),
+          flash,
+        });
         return htmlResponse(html);
       }
 
@@ -333,6 +351,12 @@ export default {
         const bindings = ensureEnv(env);
         const users = await listUsers(bindings);
         return htmlResponse(renderUsersPage(users));
+      }
+
+      if (pathname === "/admin/settings" && method === "GET") {
+        const bindings = ensureEnv(env);
+        const settings = await listSettings(bindings);
+        return htmlResponse(renderSettingsPage({ settings }));
       }
 
       if (pathname.startsWith("/admin/payments") && method === "GET") {

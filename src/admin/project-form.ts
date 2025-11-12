@@ -1,5 +1,5 @@
 import { MetaAdAccount, ProjectRecord, UserRecord } from "../types";
-import { renderLayout } from "../components/layout";
+import { renderAdminLayout } from "../components/layout";
 import { escapeAttribute, escapeHtml } from "../utils/html";
 
 interface ProjectFormProps {
@@ -182,5 +182,5 @@ export const renderProjectForm = ({ mode, project, users, accounts }: ProjectFor
     input:focus, select:focus { outline: 2px solid #1f75fe44; border-color: #1f75fe; }
   `;
 
-  return renderLayout({ title, body, scripts, styles });
+  return renderAdminLayout({ title, body, scripts, styles, activeNav: "projects" });
 };

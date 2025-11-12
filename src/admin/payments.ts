@@ -1,5 +1,5 @@
 import { PaymentRecord, PaymentStatus, ProjectRecord } from "../types";
-import { renderLayout } from "../components/layout";
+import { renderAdminLayout } from "../components/layout";
 import { escapeAttribute, escapeHtml } from "../utils/html";
 
 interface PaymentsPageProps {
@@ -280,6 +280,6 @@ export const renderPaymentsPage = ({ payments, projects, activeProjectId }: Paym
     td.actions .btn { margin-right: 6px; }
   `;
 
-  return renderLayout({ title: "Оплаты проектов", body, scripts, styles });
+  return renderAdminLayout({ title: "Оплаты проектов", body, scripts, styles, activeNav: "payments" });
 };
 
