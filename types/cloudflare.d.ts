@@ -1,52 +1,42 @@
-declare interface R2Object {
-  key: string;
-  size: number;
-  body?: ReadableStream<Uint8Array> | null;
+interface KVNamespace {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string, options?: KVPutOptions): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
+interface KVPutOptions {
+  expiration?: number;
+  expirationTtl?: number;
+}
+
+interface R2Bucket {
+  get(key: string): Promise<R2ObjectBody | null>;
+  put(key: string, value: string | ArrayBuffer | ReadableStream | Blob, options?: R2PutOptions): Promise<R2Object | null>;
+  delete(key: string): Promise<void>;
+}
+
+interface R2ObjectBody {
   text(): Promise<string>;
   json<T = unknown>(): Promise<T>;
 }
 
-declare interface R2ObjectsList {
-  objects: Array<{ key: string; size: number; uploaded?: string }>;
+interface R2PutOptions {
+  httpMetadata?: {
+    contentType?: string;
+    contentLanguage?: string;
+    contentDisposition?: string;
+    contentEncoding?: string;
+    cacheControl?: string;
+  };
 }
 
-declare interface R2ListOptions {
-  prefix?: string;
-  limit?: number;
-  cursor?: string;
+interface R2Object {
+  key: string;
+  size: number;
+  uploaded: string;
 }
 
-declare interface R2PutOptions {
-  httpMetadata?: Record<string, string>;
-  customMetadata?: Record<string, string>;
-}
-
-declare interface R2Bucket {
-  get(key: string): Promise<R2Object | null>;
-  put(key: string, value: BodyInit | null, options?: R2PutOptions): Promise<void>;
-  delete(key: string): Promise<void>;
-  list(options?: R2ListOptions): Promise<R2ObjectsList>;
-}
-
-declare interface KVNamespaceListResult {
-  keys: Array<{ name: string; expiration?: number; metadata?: unknown }>;
-  list_complete?: boolean;
-  cursor?: string;
-}
-
-declare interface KVNamespace {
-  get(key: string, options?: { type?: "text" | "json" | "arrayBuffer" }): Promise<any>;
-  put(key: string, value: string | ArrayBuffer | ArrayBufferView, options?: { expiration?: number; expirationTtl?: number; metadata?: unknown }): Promise<void>;
-  delete(key: string): Promise<void>;
-  list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<KVNamespaceListResult>;
-}
-
-declare interface DurableObjectNamespace {}
-
-declare interface WorkerExecutionContext {
-  waitUntil(promise: Promise<unknown>): void;
-}
-
-declare interface WorkerEnv {
-  [key: string]: unknown;
-}
+declare type Env = Record<string, unknown> & {
+  DB: KVNamespace;
+  R2: R2Bucket;
+};
