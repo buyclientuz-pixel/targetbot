@@ -1,99 +1,187 @@
-import { ProjectReport } from "../types";
-import { escapeHtml, joinHtml } from "../utils/html";
-import { renderLayout } from "./layout";
-import {
-  formatCurrency,
-  formatNumber,
-  formatPercent,
-  formatFrequency,
-  formatDateTime,
-} from "../utils/format";
+import { LeadRecord, ProjectRecord } from "../types";
+import { renderLayout } from "../components/layout";
 
-const STATUS_ICONS: Record<string, string> = {
-  active: "🟢",
-  pending: "🟡",
-  paused: "⚪️",
-  unknown: "⚪️",
+interface PortalViewProps {
+  project: ProjectRecord;
+  leads: LeadRecord[];
+}
+
+const statusBadge = (status: LeadRecord["status"]): string => {
+  const meta =
+    status === "done"
+      ? { label: "Завершён", variant: "success" }
+      : { label: "Новый", variant: "warning" };
+  return `<span class="badge ${meta.variant}">${meta.label}</span>`;
 };
 
-const renderSummaryCard = (report: ProjectReport, timeZone: string): string => {
-  const summary = report.summary;
-  const statusIcon = STATUS_ICONS[report.status || "unknown"] || "⚪️";
-  const paymentInfo = report.billing || {};
-  const cardText = paymentInfo.card_last4 ? `•••• ${paymentInfo.card_last4}` : `—`;
-  const lastUpdated = formatDateTime(report.updated_at, timeZone);
-  const daysToPay = paymentInfo.days_to_pay;
-  const progress = typeof daysToPay === "number" && daysToPay >= 0 ? Math.min(daysToPay, 30) : null;
-
-  const header = joinHtml([
-    '<div class="rounded-xl border border-slate-800 bg-slate-950 p-6 shadow-lg">',
-    '<div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">',
-    '<div class="text-2xl font-semibold">',
-    `<span>${statusIcon} ${escapeHtml(report.project_name)}</span>`,
-    "</div>",
-    `<div class="text-sm text-slate-400">Последнее обновление: ${escapeHtml(lastUpdated)}</div>`,
-    "</div>",
-    '<div class="mt-4 grid gap-4 md:grid-cols-2">',
-    '<div class="space-y-2">',
-    '<div class="text-sm uppercase text-slate-400">Карта</div>',
-    `<div class="text-lg">${escapeHtml(cardText)}</div>`,
-    "</div>",
-    '<div class="space-y-2">',
-    '<div class="text-sm uppercase text-slate-400">Оплата через</div>',
-    `<div class="text-lg">${daysToPay !== null && daysToPay !== undefined ? `${daysToPay}д` : "—"}</div>`,
-    progress !== null
-      ? `<div class="h-2 rounded-full bg-slate-800"><div class="h-2 rounded-full bg-emerald-500" style="width: ${Math.max(0, ((30 - progress) * 100) / 30)}%"></div></div>`
-      : "",
-    "</div>",
-    "</div>",
-    '<hr class="my-6 border-slate-800" />',
-    '<div class="grid gap-4 md:grid-cols-3">',
-    '<div class="space-y-1">',
-    '<div class="text-sm text-slate-400">Активные кампании</div>',
-    `<div class="text-2xl font-semibold">${formatNumber(summary.active_campaigns || 0)}</div>`,
-    "</div>",
-    '<div class="space-y-1">',
-    '<div class="text-sm text-slate-400">Потрачено</div>',
-    `<div class="text-2xl font-semibold">${formatCurrency(summary.spend, report.currency)}</div>`,
-    "</div>",
-    '<div class="space-y-1">',
-    '<div class="text-sm text-slate-400">Лиды</div>',
-    `<div class="text-2xl font-semibold">${formatNumber(summary.leads)}</div>`,
-    "</div>",
-    "</div>",
-    '<div class="mt-6 grid gap-4 md:grid-cols-2">',
-    metricRow("Клики", formatNumber(summary.clicks)),
-    metricRow("Показы", formatNumber(summary.impressions)),
-    metricRow("Частота", formatFrequency(summary.frequency)),
-    metricRow("CPA", formatCurrency(summary.cpa, report.currency)),
-    metricRow("CPC", formatCurrency(summary.cpc, report.currency)),
-    metricRow("CTR", formatPercent(summary.ctr)),
-    "</div>",
-    '<hr class="my-6 border-slate-800" />',
-    '<div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">',
-    `<a href="/portal/${escapeHtml(report.project_id)}/campaigns" class="inline-flex items-center justify-center rounded-lg border border-emerald-500 px-4 py-2 text-sm font-semibold text-emerald-400 hover:bg-emerald-500/10">Все кампании</a>`,
-    report.chat_link
-      ? `<a href="${escapeHtml(report.chat_link)}" class="inline-flex items-center justify-center rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">Чат клиента</a>`
-      : '<span class="text-sm text-slate-500">Чат клиента не назначен</span>',
-    "</div>",
-    "</div>",
-  ]);
-
-  return header;
+const leadRow = (lead: LeadRecord): string => {
+  const action =
+    lead.status === "done"
+      ? `<button class="btn btn-secondary" data-action="new" data-id="${lead.id}">↩️</button>`
+      : `<button class="btn btn-primary" data-action="done" data-id="${lead.id}">✔</button>`;
+  return `
+    <tr data-status="${lead.status}">
+      <td>${lead.name}</td>
+      <td>${lead.phone || "—"}</td>
+      <td>${lead.source}</td>
+      <td>${new Date(lead.createdAt).toLocaleString("ru-RU")}</td>
+      <td data-role="status">${statusBadge(lead.status)}</td>
+      <td data-role="action">${action}</td>
+    </tr>
+  `;
 };
 
-const metricRow = (label: string, value: string): string => {
-  return `<div class="flex items-center justify-between rounded-lg bg-slate-900 px-4 py-3"><span class="text-sm text-slate-400">${escapeHtml(label)}</span><span class="text-lg font-semibold">\${escapeHtml(value)}</span>\${'</div>'}`;
-};
+export const renderPortal = ({ project, leads }: PortalViewProps): string => {
+  const rows = leads.map(leadRow).join("\n");
+  const newCount = leads.filter((lead) => lead.status === "new").length;
+  const doneCount = leads.filter((lead) => lead.status === "done").length;
+  const emptyStateClass = leads.length === 0 ? "" : "hidden";
+  const body = `
+    <section class="card">
+      <h2>${project.name}</h2>
+      <p class="muted">Чат: ${project.telegramLink || project.telegramChatId || "—"}</p>
+      <p class="muted">Рекламный кабинет: ${project.adAccountId || "—"}</p>
+    </section>
+    <section class="card">
+      <h2>Лиды</h2>
+      <div class="actions" id="leadFilters">
+        <button class="btn btn-secondary active" data-filter="all">Все <span class="count" data-role="count">${leads.length}</span></button>
+        <button class="btn btn-secondary" data-filter="new">Новые <span class="count" data-role="count">${newCount}</span></button>
+        <button class="btn btn-secondary" data-filter="done">Завершённые <span class="count" data-role="count">${doneCount}</span></button>
+      </div>
+      <table id="leadsTable">
+        <thead>
+          <tr>
+            <th>Имя</th>
+            <th>Телефон</th>
+            <th>Источник</th>
+            <th>Дата</th>
+            <th>Статус</th>
+            <th>Действие</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+      <p id="leadsEmpty" class="empty-state ${emptyStateClass}">Лидов для выбранного фильтра пока нет.</p>
+    </section>
+  `;
 
-export const renderPortalPage = (report: ProjectReport, timeZone: string): string => {
-  const content = joinHtml([
-    '<div class="space-y-6">',
-    renderSummaryCard(report, timeZone),
-    "</div>",
-  ]);
+  const projectIdLiteral = JSON.stringify(project.id);
 
-  const sidebar = `<div class="p-6 space-y-6"><div class="text-sm font-semibold uppercase text-slate-500">Навигация</div><nav class="space-y-2"><a class="block rounded-lg px-3 py-2 text-sm font-medium bg-slate-900 text-emerald-400" href="/portal/${escapeHtml(report.project_id)}">Сводка</a><a class="block rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-slate-900" href="/portal/${escapeHtml(report.project_id)}/campaigns">Кампании</a><a class="block rounded-lg px-3 py-2 text-sm text-slate-300 hover:bg-slate-900" href="/admin?project=\${escapeHtml(report.project_id)}">Админ-панель</a>\${'</nav>'}</div>`;
+  const scripts = `
+    (function () {
+      const statusMap = {
+        new: { label: 'Новый', badge: 'warning', action: { target: 'done', text: '✔', className: 'btn-primary' } },
+        done: { label: 'Завершён', badge: 'success', action: { target: 'new', text: '↩️', className: 'btn-secondary' } },
+      };
 
-  return renderLayout(content, { title: `${report.project_name} — портал`, sidebar });
+      const filters = Array.from(document.querySelectorAll('#leadFilters button'));
+      const rows = Array.from(document.querySelectorAll('#leadsTable tbody tr'));
+      const emptyState = document.getElementById('leadsEmpty');
+      const countTargets = new Map(filters.map((button) => {
+        const filter = button.getAttribute('data-filter') || 'all';
+        const span = button.querySelector('[data-role="count"]');
+        return [filter, span];
+      }));
+      let activeFilter = 'all';
+
+      const recalcCounts = () => {
+        let newCount = 0;
+        let doneCount = 0;
+        rows.forEach((row) => {
+          const status = row.getAttribute('data-status');
+          if (status === 'new') newCount += 1;
+          else if (status === 'done') doneCount += 1;
+        });
+        const setCount = (filter, value) => {
+          const target = countTargets.get(filter);
+          if (target instanceof HTMLElement) {
+            target.textContent = String(value);
+          }
+        };
+        setCount('all', rows.length);
+        setCount('new', newCount);
+        setCount('done', doneCount);
+      };
+
+      const applyFilter = () => {
+        let visibleCount = 0;
+        rows.forEach((row) => {
+          const status = row.getAttribute('data-status');
+          const visible = activeFilter === 'all' || status === activeFilter;
+          row.style.display = visible ? '' : 'none';
+          if (visible) visibleCount += 1;
+        });
+        if (emptyState instanceof HTMLElement) {
+          emptyState.classList.toggle('hidden', visibleCount > 0);
+        }
+      };
+
+      filters.forEach((button) => {
+        button.addEventListener('click', () => {
+          filters.forEach((btn) => btn.classList.remove('active'));
+          button.classList.add('active');
+          activeFilter = button.getAttribute('data-filter') || 'all';
+          applyFilter();
+        });
+      });
+
+      const updateRow = (row, status) => {
+        const meta = statusMap[status];
+        if (!meta) return;
+        row.setAttribute('data-status', status);
+        const statusCell = row.querySelector('[data-role="status"]');
+        if (statusCell) {
+          statusCell.innerHTML = '<span class="badge ' + meta.badge + '">' + meta.label + '</span>';
+        }
+        const actionCell = row.querySelector('[data-role="action"]');
+        const button = actionCell ? actionCell.querySelector('button') : null;
+        if (button) {
+          button.classList.remove('btn-primary', 'btn-secondary');
+          button.classList.add(meta.action.className);
+          button.setAttribute('data-action', meta.action.target);
+          button.textContent = meta.action.text;
+        }
+      };
+
+      document.querySelectorAll('#leadsTable button').forEach((button) => {
+        button.addEventListener('click', async (event) => {
+          const target = event.currentTarget;
+          if (!(target instanceof HTMLButtonElement)) return;
+          const row = target.closest('tr');
+          const id = target.getAttribute('data-id');
+          const action = target.getAttribute('data-action');
+          if (!row || !id || !action) return;
+          target.setAttribute('disabled', 'true');
+          try {
+            const response = await fetch('/api/leads/' + id, {
+              method: 'PATCH',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ status: action === 'done' ? 'done' : 'new', projectId: ${projectIdLiteral} }),
+            });
+            const data = await response.json();
+            if (!data.ok || !data.data || (data.data.status !== 'new' && data.data.status !== 'done')) {
+              alert('Ошибка обновления статуса: ' + (data.error || 'неизвестная ошибка'));
+              return;
+            }
+            updateRow(row, data.data.status);
+            recalcCounts();
+            applyFilter();
+          } catch (error) {
+            const message = error && error.message ? error.message : String(error);
+            alert('Ошибка сети: ' + message);
+          } finally {
+            target.removeAttribute('disabled');
+          }
+        });
+      });
+
+      recalcCounts();
+      applyFilter();
+    })();
+  `;
+
+  return renderLayout({ title: `Портал — ${project.name}`, body, scripts });
 };
