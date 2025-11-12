@@ -76,6 +76,45 @@ const accountSpendCell = (account: MetaAdAccount): string => {
 };
 
 const projectCard = (project: ProjectSummary): string => {
+  const billing = project.billing;
+  const billingStatusLabel = (() => {
+    if (billing.status === "missing") {
+      return '<span class="badge warning">Оплата не настроена</span>';
+    }
+    const severityClass = billing.overdue ? "badge error" : billing.active ? "badge success" : "badge warning";
+    const statusMap: Record<string, string> = {
+      active: "Активен",
+      pending: "Ожидает оплаты",
+      overdue: "Просрочен",
+      cancelled: "Отменён",
+    };
+    const statusLabel = statusMap[billing.status] ?? billing.status;
+    return `<span class="${severityClass}">Биллинг: ${escapeHtml(statusLabel)}</span>`;
+  })();
+
+  const billingMeta = (() => {
+    if (billing.status === "missing") {
+      return '<span class="muted">Создайте запись оплаты, чтобы разблокировать портал и отчёты.</span>';
+    }
+    const parts: string[] = [];
+    if (billing.amountFormatted) {
+      parts.push(billing.amountFormatted);
+    } else if (billing.amount !== undefined) {
+      parts.push(`${billing.amount.toFixed(2)} ${escapeHtml(billing.currency || "USD")}`);
+    }
+    if (billing.periodLabel) {
+      parts.push(billing.periodLabel);
+    }
+    if (billing.paidAt) {
+      const paidAt = new Date(billing.paidAt).toLocaleString("ru-RU");
+      parts.push(`Оплачен: ${escapeHtml(paidAt)}`);
+    }
+    if (billing.overdue) {
+      parts.push("⚠️ Требуется внимание");
+    }
+    return parts.length ? `<span class="muted">${parts.map(escapeHtml).join(" · ")}</span>` : "";
+  })();
+
   const chat = project.telegramLink
     ? `<a class="btn btn-secondary" href="${escapeAttribute(project.telegramLink)}" target="_blank">Перейти в чат</a>`
     : project.telegramChatId
@@ -102,12 +141,15 @@ const projectCard = (project: ProjectSummary): string => {
       <div class="muted">Обновлено: ${new Date(project.updatedAt).toLocaleString("ru-RU")}</div>
       <div class="actions" style="margin-top:12px;">
         ${leadBadge}
+        ${billingStatusLabel}
       </div>
       ${leadSummary}
+      ${billingMeta ? `<div class="muted" style="margin-top:8px;">${billingMeta}</div>` : ""}
       <div class="actions" style="margin-top:16px;">
         ${chat}
         ${account}
         <a class="btn btn-secondary" href="/admin/projects/${escapeAttribute(project.id)}">Редактировать</a>
+        <a class="btn btn-secondary" href="/admin/payments?project=${escapeAttribute(project.id)}">Платежи</a>
         <a class="btn btn-primary" href="/portal/${escapeAttribute(project.id)}" target="_blank">Открыть портал</a>
       </div>
     </div>

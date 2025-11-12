@@ -1,12 +1,6 @@
 import { jsonResponse, parseJsonRequest } from "../utils/http";
-import {
-  EnvBindings,
-  deleteLeads,
-  listProjects,
-  loadProject,
-  saveProjects,
-} from "../utils/storage";
-import { ApiError, ApiSuccess, ProjectRecord, ProjectSummary } from "../types";
+import { EnvBindings, deleteLeads, listProjects, loadProject, saveProjects } from "../utils/storage";
+import { ApiSuccess, ProjectRecord, ProjectSummary } from "../types";
 import { createId } from "../utils/ids";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
 
@@ -30,7 +24,8 @@ export const handleProjectsList = async (request: Request, env: unknown): Promis
       .map((value) => value.trim())
       .filter(Boolean);
 
-    if (includes.includes("leadStats") || includes.includes("summary")) {
+    const wantsSummary = includes.some((entry) => ["leadStats", "summary", "billing"].includes(entry));
+    if (wantsSummary) {
       const summaries = await summarizeProjects(bindings);
       const payload: ApiSuccess<ProjectSummary[]> = {
         ok: true,

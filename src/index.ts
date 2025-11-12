@@ -45,17 +45,20 @@ import { handleTelegramWebhookRefresh } from "./api/manage";
 import { AdminFlashMessage, renderAdminDashboard } from "./admin/index";
 import { renderUsersPage } from "./admin/users";
 import { renderProjectForm } from "./admin/project-form";
+import { renderPaymentsPage } from "./admin/payments";
 import { renderPortal } from "./views/portal";
 import { htmlResponse, jsonResponse } from "./utils/http";
 import {
   EnvBindings,
+  listPayments,
+  listProjects,
   listUsers,
   loadMetaToken,
   loadProject,
   listLeads,
 } from "./utils/storage";
 import { fetchAdAccounts, resolveMetaStatus } from "./utils/meta";
-import { summarizeProjects, sortProjectSummaries } from "./utils/projects";
+import { projectBilling, summarizeProjects, sortProjectSummaries } from "./utils/projects";
 import { ProjectSummary } from "./types";
 import { handleTelegramUpdate } from "./bot/router";
 
@@ -323,6 +326,18 @@ export default {
         return htmlResponse(renderUsersPage(users));
       }
 
+      if (pathname.startsWith("/admin/payments") && method === "GET") {
+        const bindings = ensureEnv(env);
+        const [payments, projects] = await Promise.all([
+          listPayments(bindings),
+          listProjects(bindings),
+        ]);
+        const activeProject = url.searchParams.get("project");
+        return htmlResponse(
+          renderPaymentsPage({ payments, projects, activeProjectId: activeProject }),
+        );
+      }
+
       const portalMatch = pathname.match(/^\/portal\/([^/]+)$/);
       if (portalMatch && method === "GET") {
         const projectId = decodeURIComponent(portalMatch[1]);
@@ -331,8 +346,12 @@ export default {
         if (!project) {
           return htmlResponse("<h1>Проект не найден</h1>", { status: 404 });
         }
-        const leads = await listLeads(bindings, projectId);
-        const html = renderPortal({ project, leads });
+        const [leads, payments] = await Promise.all([
+          listLeads(bindings, projectId),
+          listPayments(bindings),
+        ]);
+        const billing = projectBilling.summarize(payments.filter((entry) => entry.projectId === projectId));
+        const html = renderPortal({ project, leads, billing });
         return htmlResponse(html);
       }
 

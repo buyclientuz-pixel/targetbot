@@ -78,8 +78,24 @@ export interface ProjectLeadStats {
   latestAt?: string;
 }
 
+export interface ProjectBillingSummary {
+  status: PaymentStatus | "missing";
+  active: boolean;
+  overdue: boolean;
+  amount?: number;
+  currency?: string;
+  amountFormatted?: string;
+  periodStart?: string;
+  periodEnd?: string;
+  periodLabel?: string;
+  paidAt?: string | null;
+  updatedAt?: string;
+  notes?: string;
+}
+
 export interface ProjectSummary extends ProjectRecord {
   leadStats: ProjectLeadStats;
+  billing: ProjectBillingSummary;
 }
 
 export interface LeadRecord {

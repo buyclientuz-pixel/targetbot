@@ -170,11 +170,33 @@ const formatProjectLines = async (context: BotContext): Promise<string[]> => {
       : "🧩 Meta: не подключено";
     const stats = project.leadStats;
     const statsLine = `💬 Лиды: ${stats.total} (новые ${stats.new}, завершено ${stats.done})`;
+    const billing = project.billing;
+    const billingLine = (() => {
+      if (billing.status === "missing") {
+        return "💳 Оплата: не настроена";
+      }
+      const statusMap: Record<string, string> = {
+        active: "Активен",
+        pending: "Ожидает оплаты",
+        overdue: "Просрочен",
+        cancelled: "Отменён",
+      };
+      const label = statusMap[billing.status] ?? billing.status;
+      const amount = billing.amountFormatted
+        ? billing.amountFormatted
+        : billing.amount !== undefined
+          ? `${billing.amount.toFixed(2)} ${billing.currency || "USD"}`
+          : null;
+      const period = billing.periodLabel ? ` · ${billing.periodLabel}` : "";
+      const prefix = billing.overdue ? "⚠️" : "💳";
+      return `${prefix} Оплата: ${escapeHtml(label)}${amount ? ` — ${escapeHtml(amount)}` : ""}${escapeHtml(period)}`;
+    })();
     return [
       `${numberEmoji} <b>${escapeHtml(project.name)}</b>`,
       chatLine,
       adAccountLine,
       statsLine,
+      billingLine,
     ].join("\n");
   });
 
@@ -313,7 +335,10 @@ const handleAnalytics = async (context: BotContext): Promise<void> => {
 };
 
 const handleFinance = async (context: BotContext): Promise<void> => {
-  const payments = await listPayments(context.env);
+  const [payments, summaries] = await Promise.all([
+    listPayments(context.env),
+    summarizeProjects(context.env),
+  ]);
   const total = payments.length;
   const byStatus = payments.reduce(
     (acc, payment) => {
@@ -323,18 +348,44 @@ const handleFinance = async (context: BotContext): Promise<void> => {
     {} as Record<string, number>,
   );
 
-  const lines = [
-    "💰 Финансы",
-    "",
-    total
-      ? `Всего записей: <b>${total}</b>`
-      : "Платёжные данные пока не добавлены.",
-    total ? `Активные: ${byStatus.active ?? 0}` : "",
-    total ? `Просроченные: ${byStatus.overdue ?? 0}` : "",
-    total ? `Ожидают оплаты: ${byStatus.pending ?? 0}` : "",
-    "",
-    "Оплата через бота и автоматические алерты появятся после интеграции платежного модуля.",
-  ].filter(Boolean);
+  const lines = ["💰 Финансы", ""];
+  if (total) {
+    lines.push(`Всего оплат: <b>${total}</b>`);
+    lines.push(`Активные: ${byStatus.active ?? 0}`);
+    lines.push(`Ожидают оплаты: ${byStatus.pending ?? 0}`);
+    lines.push(`Просроченные: ${byStatus.overdue ?? 0}`);
+  } else {
+    lines.push("Платёжные записи пока не добавлены.");
+  }
+
+  if (summaries.length) {
+    lines.push("", "📊 Статус по проектам:");
+    for (const project of sortProjectSummaries(summaries)) {
+      const billing = project.billing;
+      let statusText: string;
+      if (billing.status === "missing") {
+        statusText = "не настроена";
+      } else {
+        const statusMap: Record<string, string> = {
+          active: "активен",
+          pending: "ожидает",
+          overdue: "просрочен",
+          cancelled: "отменён",
+        };
+        const amount = billing.amountFormatted
+          ? billing.amountFormatted
+          : billing.amount !== undefined
+            ? `${billing.amount.toFixed(2)} ${billing.currency || "USD"}`
+            : undefined;
+        const suffix = amount ? ` · ${amount}` : "";
+        statusText = `${statusMap[billing.status] ?? billing.status}${suffix}`;
+      }
+      const indicator = billing.overdue ? "⚠️" : billing.active ? "✅" : "💳";
+      lines.push(`${indicator} ${escapeHtml(project.name)} — ${escapeHtml(statusText)}`);
+    }
+  }
+
+  lines.push("", "Используйте веб-панель для детализации оплат и обновления статусов.");
 
   await sendMessage(context, lines.join("\n"));
 };

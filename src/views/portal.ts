@@ -1,9 +1,11 @@
-import { LeadRecord, ProjectRecord } from "../types";
+import { LeadRecord, ProjectBillingSummary, ProjectRecord } from "../types";
 import { renderLayout } from "../components/layout";
+import { escapeHtml } from "../utils/html";
 
 interface PortalViewProps {
   project: ProjectRecord;
   leads: LeadRecord[];
+  billing: ProjectBillingSummary;
 }
 
 const statusBadge = (status: LeadRecord["status"]): string => {
@@ -31,7 +33,47 @@ const leadRow = (lead: LeadRecord): string => {
   `;
 };
 
-export const renderPortal = ({ project, leads }: PortalViewProps): string => {
+const billingSection = (billing: ProjectBillingSummary): string => {
+  if (billing.status === "missing") {
+    return '<p class="muted">Платежи не настроены. Добавьте оплату, чтобы разблокировать отчёты и портал.</p>';
+  }
+
+  const statusMap: Record<string, { label: string; className: string }> = {
+    active: { label: "Активный период", className: "badge success" },
+    pending: { label: "Ожидает оплаты", className: "badge warning" },
+    overdue: { label: "Просрочено", className: "badge error" },
+    cancelled: { label: "Отменено", className: "badge warning" },
+  };
+  const meta = statusMap[billing.status] ?? { label: billing.status, className: "badge warning" };
+  const lines: string[] = [];
+  if (billing.amountFormatted) {
+    lines.push(`Сумма: <strong>${escapeHtml(billing.amountFormatted)}</strong>`);
+  } else if (billing.amount !== undefined) {
+    const amountLabel = `${billing.amount.toFixed(2)} ${billing.currency || "USD"}`;
+    lines.push(`Сумма: <strong>${escapeHtml(amountLabel)}</strong>`);
+  }
+  if (billing.periodLabel) {
+    lines.push(`Период: ${escapeHtml(billing.periodLabel)}`);
+  }
+  if (billing.paidAt) {
+    const formatted = new Date(billing.paidAt).toLocaleString("ru-RU");
+    lines.push(`Оплачен: ${escapeHtml(formatted)}`);
+  }
+  if (billing.notes) {
+    lines.push(`Заметки: ${escapeHtml(billing.notes)}`);
+  }
+  if (billing.overdue) {
+    lines.push("⚠️ Портал ограничен до обновления оплаты.");
+  }
+  return `
+    <div class="billing-status">
+      <span class="${meta.className}">${meta.label}</span>
+      ${lines.length ? `<p class="muted">${lines.map((line) => line).join(" · ")}</p>` : ""}
+    </div>
+  `;
+};
+
+export const renderPortal = ({ project, leads, billing }: PortalViewProps): string => {
   const rows = leads.map(leadRow).join("\n");
   const newCount = leads.filter((lead) => lead.status === "new").length;
   const doneCount = leads.filter((lead) => lead.status === "done").length;
@@ -41,6 +83,7 @@ export const renderPortal = ({ project, leads }: PortalViewProps): string => {
       <h2>${project.name}</h2>
       <p class="muted">Чат: ${project.telegramLink || project.telegramChatId || "—"}</p>
       <p class="muted">Рекламный кабинет: ${project.adAccountId || "—"}</p>
+      ${billingSection(billing)}
     </section>
     <section class="card">
       <h2>Лиды</h2>
