@@ -11,6 +11,12 @@ head_sampling_rate = 1
 enabled = true
 head_sampling_rate = 1
 
+[triggers]
+routes = ["https://th-reports.buyclientuz.workers.dev/*"]
+
+[vars]
+ENV = "production"
+
 [observability.traces]
 enabled = false
 head_sampling_rate = 1
