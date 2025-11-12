@@ -76,6 +76,10 @@ export const saveLeads = async (
   await writeJsonToR2(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, leads);
 };
 
+export const deleteLeads = async (env: EnvBindings, projectId: string): Promise<void> => {
+  await env.R2.delete(`${LEAD_INDEX_PREFIX}${projectId}.json`);
+};
+
 export const listUsers = async (env: EnvBindings): Promise<UserRecord[]> => {
   return readJsonFromR2<UserRecord[]>(env, USER_INDEX_KEY, []);
 };

@@ -1,5 +1,11 @@
 import { jsonResponse, parseJsonRequest } from "../utils/http";
-import { EnvBindings, listProjects, loadProject, saveProjects } from "../utils/storage";
+import {
+  EnvBindings,
+  deleteLeads,
+  listProjects,
+  loadProject,
+  saveProjects,
+} from "../utils/storage";
 import { ApiError, ApiSuccess, ProjectRecord } from "../types";
 import { createId } from "../utils/ids";
 
@@ -107,6 +113,9 @@ export const handleProjectDelete = async (
       return jsonResponse({ ok: false, error: "Project not found" }, { status: 404 });
     }
     await saveProjects(bindings, filtered);
+    await deleteLeads(bindings, projectId).catch((error) => {
+      console.warn("Failed to delete project leads", projectId, error);
+    });
     return jsonResponse({ ok: true, data: { id: projectId } });
   } catch (error) {
     return jsonResponse({ ok: false, error: (error as Error).message }, { status: 500 });
