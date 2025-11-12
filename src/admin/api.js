@@ -4,6 +4,7 @@ const headers = () => {
   const baseHeaders = { "content-type": "application/json" };
   if (key) {
     baseHeaders.Authorization = `Bearer ${key}`;
+    baseHeaders["X-Auth-Key"] = key;
   }
   return baseHeaders;
 };
@@ -35,6 +36,20 @@ export const api = {
   async getSettings() {
     const key = new URLSearchParams(window.location.search).get("key") ?? "";
     return request(`/api/settings?key=${key}`);
+  },
+  async createApiKey({ label, role, owner } = {}) {
+    const key = new URLSearchParams(window.location.search).get("key") ?? "";
+    return request(`/api/settings?key=${key}`, {
+      method: "PUT",
+      body: JSON.stringify({ action: "create_key", label, role, owner }),
+    });
+  },
+  async deleteApiKey(keyValue) {
+    const key = new URLSearchParams(window.location.search).get("key") ?? "";
+    return request(`/api/settings?key=${key}`, {
+      method: "PUT",
+      body: JSON.stringify({ action: "delete_key", key: keyValue }),
+    });
   },
   async syncMeta() {
     const key = new URLSearchParams(window.location.search).get("key") ?? "";

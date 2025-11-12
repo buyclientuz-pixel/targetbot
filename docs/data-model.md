@@ -1,19 +1,19 @@
 # ER-диаграмма TargetBot
 
 ```
-┌────────────┐       ┌─────────────┐       ┌───────────────┐       ┌──────────────┐
-│  User      │1     *│   Lead      │       │ MetaToken     │       │ Report       │
-│────────────│-------│─────────────│       │───────────────│       │──────────────│
-│ id (PK)    │       │ id (PK)     │       │ accessToken   │       │ id (PK)      │
-│ role       │       │ userId (FK) │──────▶│ accountId     │       │ filename     │
-│ username   │       │ name        │       │ campaignId    │       │ periodFrom   │
-│ firstName  │       │ contact     │       │ expiresAt     │       │ periodTo     │
-│ lastName   │       │ status      │       │ updatedAt     │       │ createdAt    │
-│ token      │       │ notes       │       │ refreshToken? │       │ url (R2)     │
-│ createdAt  │       │ source      │       │               │       │             │
-└────────────┘       │ createdAt   │       └───────────────┘       └──────────────┘
-                     │ updatedAt   │
-                     └─────────────┘
+┌────────────┐       ┌─────────────┐       ┌───────────────┐       ┌──────────────┐       ┌──────────────┐
+│  User      │1     *│   Lead      │       │ MetaToken     │       │ Report       │       │ PortalKey     │
+│────────────│-------│─────────────│       │───────────────│       │──────────────│       │──────────────│
+│ id (PK)    │       │ id (PK)     │       │ accessToken   │       │ id (PK)      │       │ key (PK)      │
+│ role       │       │ userId (FK) │──────▶│ accountId     │       │ filename     │       │ role          │
+│ username   │       │ name        │       │ campaignId    │       │ periodFrom   │       │ label         │
+│ firstName  │       │ contact     │       │ expiresAt     │       │ periodTo     │       │ owner         │
+│ lastName   │       │ status      │       │ updatedAt     │       │ createdAt    │       │ createdAt     │
+│ token      │       │ notes       │       │ refreshToken? │       │ url (R2)     │       │ lastUsedAt    │
+│ createdAt  │       │ source      │       │               │       │              │       │ scopes?       │
+└────────────┘       │ createdAt   │       └───────────────┘       └──────────────┘       └──────────────┘
+                    │ updatedAt   │
+                    └─────────────┘
 ```
 
 ## Таблицы и ключевые поля
@@ -36,6 +36,13 @@
 - `accessToken` — long-lived token Facebook Graph API.
 - `accountId`, `campaignId` — актуальные идентификаторы.
 - `expiresAt`, `updatedAt` — контроль жизненного цикла.
+
+### Portal Keys (`KV_META`)
+- `key` — уникальный UUID-ключ, используемый в заголовке `X-Auth-Key`.
+- `role` — уровень доступа (`admin`, `manager`, `partner`, `service`).
+- `label` — произвольное описание / название интеграции.
+- `owner` — ID связанного пользователя или партнёра (опционально).
+- `lastUsedAt` — последняя отметка использования ключа.
 
 ### Отчёты (`R2_REPORTS`)
 - `id` — имя отчёта (например, дата).

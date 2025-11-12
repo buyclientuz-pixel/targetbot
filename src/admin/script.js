@@ -111,6 +111,7 @@ async function renderIntegrations() {
 
 async function renderSettings() {
   const settings = await api.getSettings();
+  const keys = settings.apiKeys ?? [];
   settingsPanel.innerHTML = `<div class="grid gap-4">
     <article class="card">
       <h2 class="card-title">Общие настройки</h2>
@@ -120,7 +121,54 @@ async function renderSettings() {
         <div class="flex justify-between"><dt>Facebook App</dt><dd>${settings.facebookAppId ?? "—"}</dd></div>
       </dl>
     </article>
+    <article class="card space-y-4">
+      <div class="flex items-center justify-between">
+        <h2 class="card-title">API ключи</h2>
+        <button class="btn-primary" id="createApiKey">➕ Создать</button>
+      </div>
+      <p class="text-sm text-slate-400">Используйте ключи для интеграции партнёров и сервисов через заголовок <code>X-Auth-Key</code>.</p>
+      <div class="overflow-x-auto">
+        <table class="table">
+          <thead><tr><th>Ключ</th><th>Метка</th><th>Роль</th><th>Создан</th><th>Последнее использование</th><th></th></tr></thead>
+          <tbody>
+            ${keys
+              .map(
+                (key) => `<tr>
+                  <td class="font-mono text-xs">${key.key}</td>
+                  <td>${key.label ?? "—"}</td>
+                  <td><span class="badge">${key.role}</span></td>
+                  <td>${new Date(key.createdAt).toLocaleString()}</td>
+                  <td>${key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : "—"}</td>
+                  <td class="text-right"><button class="btn-secondary delete-api-key" data-key="${key.key}">Удалить</button></td>
+                </tr>`,
+              )
+              .join("") || `<tr><td colspan="6" class="text-center text-slate-400">Ключи ещё не созданы</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </article>
   </div>`;
+
+  document.querySelector("#createApiKey").addEventListener("click", async () => {
+    const label = prompt("Название ключа", "Партнёр");
+    if (label === null) return;
+    const role = prompt("Роль для ключа (admin/manager/partner/service)", "partner");
+    if (role === null) return;
+    const owner = prompt("Идентификатор владельца (опционально)") || undefined;
+    const response = await api.createApiKey({ label, role: role.trim().toLowerCase(), owner });
+    alert(`Создан ключ: ${response.key.key}`);
+    await renderSettings();
+  });
+
+  document.querySelectorAll(".delete-api-key").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const keyValue = button.dataset.key;
+      if (!keyValue) return;
+      if (!confirm("Удалить ключ?")) return;
+      await api.deleteApiKey(keyValue);
+      await renderSettings();
+    });
+  });
 }
 
 async function bootstrap() {

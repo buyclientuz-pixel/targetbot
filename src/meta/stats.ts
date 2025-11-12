@@ -15,7 +15,7 @@ interface InsightsResponse {
 }
 
 export const metaStatsHandler: RouteHandler = async (context) => {
-  const authError = requireAdmin(context);
+  const authError = await requireAdmin(context);
   if (authError) return authError;
   const token = await getMetaToken(context.env);
   if (!token) return fail("Meta token not found", 404);

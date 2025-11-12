@@ -1,16 +1,18 @@
 import type { RouteHandler } from "../core/types";
 import { createLead, getLead, listLeads, updateLead } from "../core/db";
 import { fail, ok, readJsonBody } from "../core/utils";
-import { requireAdmin } from "../core/auth";
+import { requireAdmin, requirePortalSignature } from "../core/auth";
 
 export const listLeadsHandler: RouteHandler = async (context) => {
-  const authError = requireAdmin(context);
+  const authError = await requireAdmin(context);
   if (authError) return authError;
   const leads = await listLeads(context.env);
   return ok({ leads });
 };
 
 export const createLeadHandler: RouteHandler = async (context) => {
+  const authError = await requirePortalSignature(context, { roles: ["admin", "manager", "partner", "service"] });
+  if (authError) return authError;
   const payload = await readJsonBody<{
     name?: string;
     contact?: string;
@@ -21,19 +23,21 @@ export const createLeadHandler: RouteHandler = async (context) => {
   if (!payload?.name || !payload.contact) {
     return fail("Missing lead name or contact", 400);
   }
+  const authData = context.data?.auth as { owner?: string | number } | undefined;
+  const ownerId = authData?.owner !== undefined ? Number(authData.owner) : undefined;
   const lead = await createLead(context.env, {
     name: payload.name,
     contact: payload.contact,
     notes: payload.notes,
     source: payload.source ?? "manual",
     status: "new",
-    userId: payload.userId ?? 0,
+    userId: Number.isFinite(ownerId) ? Number(ownerId) : payload.userId ?? 0,
   });
   return ok({ lead });
 };
 
 export const getLeadHandler: RouteHandler = async (context) => {
-  const authError = requireAdmin(context);
+  const authError = await requireAdmin(context);
   if (authError) return authError;
   const lead = await getLead(context.env, context.params.id);
   if (!lead) return fail("Lead not found", 404);
@@ -41,7 +45,7 @@ export const getLeadHandler: RouteHandler = async (context) => {
 };
 
 export const updateLeadHandler: RouteHandler = async (context) => {
-  const authError = requireAdmin(context);
+  const authError = await requireAdmin(context);
   if (authError) return authError;
   const payload = await readJsonBody<Partial<{ status: string; notes: string }>>(context.request);
   if (!payload) return fail("Missing body", 400);

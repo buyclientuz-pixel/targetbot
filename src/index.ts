@@ -52,8 +52,8 @@ router.get("/meta/stats", metaStatsHandler);
 router.post("/meta/refresh", metaRefreshHandler);
 router.get("/auth/facebook", facebookAuthHandler);
 router.get("/auth/facebook/callback", facebookCallbackHandler);
-router.get("/admin", (context) => {
-  const authError = requireAdmin(context);
+router.get("/admin", async (context) => {
+  const authError = await requireAdmin(context);
   if (authError) return authError;
   return renderAdminPage();
 });

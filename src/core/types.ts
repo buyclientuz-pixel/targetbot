@@ -44,6 +44,18 @@ export interface ReportSummary {
   filename: string;
 }
 
+export type PortalKeyRole = "admin" | "manager" | "partner" | "service";
+
+export interface PortalKeyRecord {
+  key: string;
+  role: PortalKeyRole;
+  label?: string;
+  owner?: string;
+  scopes?: string[];
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
 export interface AuthenticatedRequest {
   isAdmin: boolean;
   user?: UserRecord;

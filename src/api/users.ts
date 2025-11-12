@@ -4,14 +4,14 @@ import { fail, ok, readJsonBody } from "../core/utils";
 import { requireAdmin } from "../core/auth";
 
 export const listUsersHandler: RouteHandler = async (context) => {
-  const authError = requireAdmin(context);
+  const authError = await requireAdmin(context);
   if (authError) return authError;
   const users = await listUsers(context.env);
   return ok({ users });
 };
 
 export const updateUserHandler: RouteHandler = async (context) => {
-  const authError = requireAdmin(context);
+  const authError = await requireAdmin(context);
   if (authError) return authError;
   const payload = await readJsonBody<{
     role?: string;

@@ -5,7 +5,10 @@ import { createContext } from "./helpers";
 function requestWithBody(body: unknown, method = "POST") {
   return new Request("https://example.com/api/leads", {
     method,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "x-auth-key": "test",
+    },
     body: JSON.stringify(body),
   });
 }
@@ -19,7 +22,7 @@ describe("leads api", () => {
 
     const listRequest = createContext({
       env: base.env,
-      request: new Request("https://example.com/api/leads?key=test"),
+      request: new Request("https://example.com/api/leads", { headers: { "x-auth-key": "test" } }),
     });
     const listResponse = await listLeadsHandler(listRequest);
     const listBody = await listResponse.json();

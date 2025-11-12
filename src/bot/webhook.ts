@@ -35,7 +35,7 @@ async function deleteWebhook(token: string) {
 }
 
 export const manageWebhookHandler: RouteHandler = async (context) => {
-  const authError = requireAdmin(context);
+  const authError = await requireAdmin(context);
   if (authError) return authError;
   const url = new URL(context.request.url);
   const action = url.searchParams.get("action") ?? "status";

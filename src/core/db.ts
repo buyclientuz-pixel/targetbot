@@ -1,5 +1,15 @@
-import type { Env, LeadRecord, MetaTokenRecord, ReportSummary, UserRecord } from "./types";
+import type {
+  Env,
+  LeadRecord,
+  MetaTokenRecord,
+  PortalKeyRecord,
+  ReportSummary,
+  UserRecord,
+  PortalKeyRole,
+} from "./types";
 import { uuid } from "./utils";
+
+const PORTAL_KEY_PREFIX = "auth:key:";
 
 export async function getUser(env: Env, id: number) {
   const data = await env.KV_USERS.get(`user:${id}`);
@@ -102,4 +112,50 @@ export async function getReport(env: Env, key: string) {
   const object = await env.R2_REPORTS.get(`reports/${key}`);
   if (!object) return null;
   return object.text();
+}
+
+export async function listPortalKeys(env: Env) {
+  const list = await env.KV_META.list({ prefix: PORTAL_KEY_PREFIX });
+  const keys: PortalKeyRecord[] = [];
+  for (const item of list.keys) {
+    const value = await env.KV_META.get(item.name);
+    if (!value) continue;
+    const record = JSON.parse(value) as PortalKeyRecord;
+    if (!record.key) {
+      record.key = item.name.replace(PORTAL_KEY_PREFIX, "");
+    }
+    keys.push(record);
+  }
+  keys.sort((a, b) => (a.createdAt > b.createdAt ? -1 : 1));
+  return keys;
+}
+
+export async function getPortalKey(env: Env, key: string) {
+  const value = await env.KV_META.get(`${PORTAL_KEY_PREFIX}${key}`);
+  if (!value) return null;
+  const record = JSON.parse(value) as PortalKeyRecord;
+  if (!record.key) record.key = key;
+  return record;
+}
+
+export async function savePortalKey(env: Env, record: PortalKeyRecord) {
+  await env.KV_META.put(`${PORTAL_KEY_PREFIX}${record.key}`, JSON.stringify(record));
+  return record;
+}
+
+export async function createPortalKey(env: Env, options: { label?: string; role?: PortalKeyRole; owner?: string }) {
+  const key = uuid().replace(/-/g, "");
+  const record: PortalKeyRecord = {
+    key,
+    role: options.role ?? "partner",
+    label: options.label,
+    owner: options.owner,
+    createdAt: new Date().toISOString(),
+  };
+  await savePortalKey(env, record);
+  return record;
+}
+
+export async function deletePortalKey(env: Env, key: string) {
+  await env.KV_META.delete(`${PORTAL_KEY_PREFIX}${key}`);
 }
