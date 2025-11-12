@@ -1,0 +1,20 @@
+# Wrangler `.dev.vars` template for TargetBot
+# Duplicate this file as `.dev.vars` and supply real secrets to run `wrangler dev` locally.
+
+TELEGRAM_TOKEN="0000000000:example-telegram-token"
+FACEBOOK_APP_ID="your-facebook-app-id"
+FACEBOOK_APP_SECRET="your-facebook-app-secret"
+FACEBOOK_REDIRECT_URL="https://your-worker.example.com/auth/facebook/callback"
+WORKER_PUBLIC_URL="https://your-worker.example.com"
+ADMIN_KEY="!change-me"
+JWT_SECRET="replace-with-strong-secret"
+
+FACEBOOK_AD_ACCOUNT_ID="act_000000000000000"
+FACEBOOK_CAMPAIGN_ID="000000000000000000"
+
+CLOUDFLARE_API_TOKEN="your-cloudflare-api-token"
+CLOUDFLARE_ACCOUNT_ID="your-cloudflare-account-id"
+
+R2_ACCESS_KEY_ID="your-r2-access-key"
+R2_SECRET_ACCESS_KEY="your-r2-secret-key"
+R2_BUCKET_NAME="targetbot-reports"
