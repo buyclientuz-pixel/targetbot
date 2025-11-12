@@ -10,7 +10,7 @@
     "dev": "wrangler dev",
     "build": "tsc",
     "deploy": "npx wrangler deploy --minify",
-    "install": "npm install --ignore-scripts"
+    "install": "npm install"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240512.0",
