@@ -1,5 +1,6 @@
 import { MetaAdAccount, MetaStatusResponse, ProjectRecord } from "../types";
 import { renderLayout } from "../components/layout";
+import { escapeAttribute, escapeHtml } from "../utils/html";
 
 export interface AdminDashboardProps {
   meta: MetaStatusResponse | null;
@@ -12,7 +13,8 @@ const statusBadge = (meta: MetaStatusResponse | null): string => {
     return '<span class="badge warning">Нет токена</span>';
   }
   if (!meta.ok) {
-    return `<span class="badge error">${meta.issues?.[0] || "Ошибка Meta"}</span>`;
+    const message = meta.issues?.[0] ? escapeHtml(meta.issues[0]) : "Ошибка Meta";
+    return `<span class="badge error">${message}</span>`;
   }
   const statusClass = meta.status === "valid" ? "success" : "warning";
   const label = meta.status === "valid" ? "Токен активен" : "Требуется обновление";
@@ -21,21 +23,22 @@ const statusBadge = (meta: MetaStatusResponse | null): string => {
 
 const projectCard = (project: ProjectRecord): string => {
   const chat = project.telegramLink
-    ? `<a class="btn btn-secondary" href="${project.telegramLink}" target="_blank">Перейти в чат</a>`
+    ? `<a class="btn btn-secondary" href="${escapeAttribute(project.telegramLink)}" target="_blank">Перейти в чат</a>`
     : project.telegramChatId
-    ? `<span class="muted">Чат: ${project.telegramChatId}</span>`
+    ? `<span class="muted">Чат: ${escapeHtml(project.telegramChatId)}</span>`
     : '<span class="muted">Чат не подключён</span>';
   const account = project.adAccountId
-    ? `<span class="muted">Рекламный кабинет: ${project.adAccountId}</span>`
+    ? `<span class="muted">Рекламный кабинет: ${escapeHtml(project.adAccountId)}</span>`
     : '<span class="muted">Кабинет не выбран</span>';
   return `
     <div class="card">
-      <h3>${project.name}</h3>
+      <h3>${escapeHtml(project.name)}</h3>
       <div class="muted">Обновлено: ${new Date(project.updatedAt).toLocaleString("ru-RU")}</div>
       <div class="actions" style="margin-top:16px;">
         ${chat}
         ${account}
-        <a class="btn btn-primary" href="/portal/${project.id}" target="_blank">Открыть портал</a>
+        <a class="btn btn-secondary" href="/admin/projects/${escapeAttribute(project.id)}">Редактировать</a>
+        <a class="btn btn-primary" href="/portal/${escapeAttribute(project.id)}" target="_blank">Открыть портал</a>
       </div>
     </div>
   `;
@@ -49,11 +52,11 @@ const accountsTable = (accounts: MetaAdAccount[]): string => {
     .map(
       (account) => `
         <tr>
-          <td>${account.name}</td>
-          <td>${account.id}</td>
-          <td>${account.currency || "—"}</td>
-          <td>${account.status || "—"}</td>
-          <td>${account.business?.name || "—"}</td>
+          <td>${escapeHtml(account.name || "—")}</td>
+          <td>${escapeHtml(account.id || "—")}</td>
+          <td>${escapeHtml(account.currency || "—")}</td>
+          <td>${escapeHtml(account.status || "—")}</td>
+          <td>${escapeHtml(account.business?.name || "—")}</td>
         </tr>
       `,
     )

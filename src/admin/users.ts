@@ -1,15 +1,16 @@
 import { UserRecord } from "../types";
 import { renderLayout } from "../components/layout";
+import { escapeAttribute, escapeHtml } from "../utils/html";
 
 export const renderUsersPage = (users: UserRecord[]): string => {
   const rows = users
     .map(
       (user) => `
-        <tr data-id="${user.id}">
-          <td>${user.id}</td>
-          <td>${user.name}</td>
-          <td>${user.username || "—"}</td>
-          <td>${user.role}</td>
+        <tr data-id="${escapeAttribute(user.id)}">
+          <td>${escapeHtml(user.id)}</td>
+          <td>${escapeHtml(user.name)}</td>
+          <td>${escapeHtml(user.username || "—")}</td>
+          <td>${escapeHtml(user.role)}</td>
           <td>${new Date(user.createdAt).toLocaleString("ru-RU")}</td>
           <td>
             <select class="role-select">

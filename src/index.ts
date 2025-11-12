@@ -25,9 +25,17 @@ import {
 } from "./api/users";
 import { renderAdminDashboard } from "./admin/index";
 import { renderUsersPage } from "./admin/users";
+import { renderProjectForm } from "./admin/project-form";
 import { renderPortal } from "./views/portal";
 import { htmlResponse, jsonResponse } from "./utils/http";
-import { EnvBindings, listProjects, listUsers, loadMetaToken, loadProject, listLeads } from "./utils/storage";
+import {
+  EnvBindings,
+  listProjects,
+  listUsers,
+  loadMetaToken,
+  loadProject,
+  listLeads,
+} from "./utils/storage";
 import { fetchAdAccounts, resolveMetaStatus } from "./utils/meta";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
@@ -159,6 +167,36 @@ export default {
         ]);
         const html = renderAdminDashboard({ meta, accounts, projects });
         return htmlResponse(html);
+      }
+
+      if (pathname === "/admin/projects/new" && method === "GET") {
+        const bindings = ensureEnv(env);
+        const [users, token] = await Promise.all([
+          listUsers(bindings),
+          loadMetaToken(bindings),
+        ]);
+        const accounts = await fetchAdAccounts(bindings, token).catch(() => []);
+        return htmlResponse(
+          renderProjectForm({ mode: "create", users, accounts }),
+        );
+      }
+
+      const editProjectMatch = pathname.match(/^\/admin\/projects\/([^/]+)$/);
+      if (editProjectMatch && method === "GET") {
+        const projectId = decodeURIComponent(editProjectMatch[1]);
+        const bindings = ensureEnv(env);
+        const project = await loadProject(bindings, projectId);
+        if (!project) {
+          return htmlResponse("<h1>Проект не найден</h1>", { status: 404 });
+        }
+        const [users, token] = await Promise.all([
+          listUsers(bindings),
+          loadMetaToken(bindings),
+        ]);
+        const accounts = await fetchAdAccounts(bindings, token).catch(() => []);
+        return htmlResponse(
+          renderProjectForm({ mode: "edit", project, users, accounts }),
+        );
       }
 
       if (pathname === "/admin/users" && method === "GET") {
