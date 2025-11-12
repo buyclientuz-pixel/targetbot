@@ -388,7 +388,7 @@ const sendAdminProjectsOverview = async (
     const leadsText = formatNumber(summary?.leads ?? null);
     const clicksText = formatNumber(summary?.clicks ?? null);
     const ctrText = formatPercent(summary?.ctr ?? null);
-    const summaryExtras = summary as Record<string, unknown> | null;
+    const summaryExtras = (summary as unknown) as Record<string, unknown> | null;
     const rawLastActive = summaryExtras && "last_active" in summaryExtras ? (summaryExtras as any).last_active : undefined;
     let lastActivityIso: string | null = null;
     if (typeof rawLastActive === "string") {
