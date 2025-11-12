@@ -1,0 +1,6 @@
+⚠️ npm install — Not run in CI environment (requires network access)
+⚠️ npm run build — Not run in CI environment (requires project secrets)
+⚠️ npx wrangler deploy — Not run (Cloudflare credentials unavailable in local environment)
+⚠️ /auth/facebook/callback — Verification pending (requires live deployment)
+⚠️ /manage/telegram/webhook — Verification pending (requires live deployment)
+⏱ Время выполнения: N/A (manual verification required)

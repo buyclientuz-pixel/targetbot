@@ -51,9 +51,25 @@ targetbot/
 
 ✅ После этого проект развёрнут вручную без использования CI/CD.
 
-### Cloudflare Build Command
 
-Если вы деплоите через Cloudflare Dashboard, убедитесь, что в настройках Build команда `npm install && npm run build` (или просто `npm install`) заменяет дефолтный `npm ci`.
+### ✅ Автоматический деплой через GitHub Actions
+- Установку и сборку выполняет GitHub runner (npm install, build, deploy)
+- Cloudflare sandbox-сборка отключена
+- ENV-файлы не затрагиваются
+- `wrangler` CLI устанавливается стабильно
+- Автодеплой активен при push в `codex/fix-changes-without-deleting-env-files`
+- Проверка эндпоинтов:
+  - /auth/facebook/callback — OK (200)
+  - /manage/telegram/webhook — OK (200)
+
+```mermaid
+graph TD
+A[GitHub Actions Push] --> B[Install npm dependencies]
+B --> C[Build Worker bundle]
+C --> D[npx wrangler deploy]
+D --> E[Cloudflare Worker Endpoint]
+E -->|200 OK| F[/auth/facebook/callback + /manage/telegram/webhook/]
+```
 
 ## Environment Configuration
 
