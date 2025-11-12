@@ -677,7 +677,7 @@ npm run deploy -- --env production
 - [x] Deploy confirmation
 
 #### npm install shim
-- [x] Added npm command shim to coerce `npm ci`/`npm clean-install` into `npm install --force --legacy-peer-deps` during Cloudflare builds.
+- [x] Добавлен `npm-shrinkwrap.json`, чтобы Cloudflare `npm clean-install` всегда находил lock-файл даже при нестандартных шагах сборки.
 
 ---
 
