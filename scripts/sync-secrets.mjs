@@ -20,8 +20,15 @@ function loadDotEnv() {
       if (eq === -1) continue;
       const key = trimmed.slice(0, eq).trim();
       const value = trimmed.slice(eq + 1).trim().replace(/^['"]|['"]$/g, '');
-      if (key && !(key in process.env)) {
-        process.env[key] = value;
+      // If a variable is not defined at all, or is defined but empty in the
+      // environment (common when workflow maps a missing secret to an empty
+      // value), prefer the value from .env. This makes local .env a reliable
+      // fallback in CI when secrets are not present.
+      if (key) {
+        const existing = process.env[key];
+        if (existing == null || (typeof existing === 'string' && existing.trim() === '')) {
+          process.env[key] = value;
+        }
       }
     }
   } catch (error) {
