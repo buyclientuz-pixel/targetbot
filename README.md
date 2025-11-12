@@ -209,6 +209,8 @@ npm ERR! code E403
 npm ERR! 403 Forbidden - GET https://registry.npmjs.org/wrangler
 ```
 
+Пошаговый план проверки и ожидаемые логи описаны в [docs/build-deploy-qa.md](docs/build-deploy-qa.md). После получения доступа к npm registry выполните сценарий и замените приведённый выше блок фактическими результатами.
+
 ## Настройка Meta и рекламных кабинетов
 - `FB_APP_ID`, `FB_APP_SECRET` — параметры приложения Facebook для OAuth.
 - `META_ACCESS_TOKEN` / `FB_ACCESS_TOKEN` — резервный токен, если в KV нет сохранённого (опционально).
@@ -400,6 +402,11 @@ npm ERR! 403 Forbidden - GET https://registry.npmjs.org/wrangler
 - Следующие задачи: Выполнить `npm install`, `npm run build` и `npm run deploy` в окружении с доступом к registry и приложить успешные выводы к README.
 
 ### Remaining backlog (после 25 задач)
-- [ ] Запустить полный набор build/deploy команд и сохранить успешные логи (требуется окружение с доступом к npm registry и установленным `wrangler`).
+- [ ] Выполнить `npm install`, `npm run build` и `npm run deploy` в окружении с доступом к registry и сохранить успешные логи (см. [docs/build-deploy-qa.md](docs/build-deploy-qa.md)).
 - [x] Провести итоговые smoke-запросы к Meta API и сравнить статусы кабинетов в админке.
+
+### Progress 26
+- Что сделано: Подготовлен чек-лист `docs/build-deploy-qa.md` с подробными шагами проверки `npm install`/`npm run build`/`npm run deploy` и ожидаемыми логами; README ссылается на документ для финального обновления вывода команд.
+- Какая задача сейчас в работе: Финальные проверки — ожидание успешных логов build/deploy.
+- Следующие задачи: Выполнить команды в среде с доступом к npm registry и обновить раздел «Логи команд сборки/деплоя».
 
