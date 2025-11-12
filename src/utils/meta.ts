@@ -4,6 +4,118 @@ import { MetaAdAccount, MetaStatusResponse, MetaTokenRecord, MetaTokenStatus } f
 const GRAPH_BASE = "https://graph.facebook.com";
 const DEFAULT_GRAPH_VERSION = "v19.0";
 
+const TOKEN_KEYS = ["META_ACCESS_TOKEN", "FB_ACCESS_TOKEN", "GRAPH_API_TOKEN", "META_TOKEN"] as const;
+const TOKEN_EXPIRES_KEYS = [
+  "META_ACCESS_TOKEN_EXPIRES",
+  "META_TOKEN_EXPIRES_AT",
+  "FB_ACCESS_TOKEN_EXPIRES",
+  "META_TOKEN_EXPIRATION",
+] as const;
+const ACCOUNT_ID_KEYS = [
+  "META_AD_ACCOUNTS",
+  "META_AD_ACCOUNT_IDS",
+  "META_ACCOUNT_IDS",
+  "FB_AD_ACCOUNTS",
+  "FB_AD_ACCOUNT_IDS",
+  "AD_ACCOUNT_IDS",
+] as const;
+const BUSINESS_ID_KEYS = [
+  "META_BUSINESS_IDS",
+  "FB_BUSINESS_IDS",
+  "META_BUSINESSES",
+  "FB_BUSINESSES",
+  "BUSINESS_IDS",
+] as const;
+
+const toStringArray = (value: unknown): string[] => {
+  if (!value) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item : String(item)))
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return toStringArray(parsed);
+      }
+    } catch (error) {
+      // fall through to delimiter-based parsing
+    }
+    return trimmed
+      .split(/[,\n\r\t ]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [String(value).trim()].filter(Boolean);
+};
+
+const collectEnvList = (env: Record<string, unknown>, keys: readonly string[]): string[] => {
+  const result: string[] = [];
+  for (const key of keys) {
+    const value = env[key];
+    result.push(...toStringArray(value));
+  }
+  return Array.from(new Set(result.filter(Boolean)));
+};
+
+const toIsoDate = (value: unknown): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const parsed = Date.parse(trimmed);
+    if (!Number.isNaN(parsed)) {
+      return new Date(parsed).toISOString();
+    }
+    const asNumber = Number(trimmed);
+    if (Number.isFinite(asNumber)) {
+      return new Date(asNumber * (asNumber > 1_000_000_000 ? 1 : 1000)).toISOString();
+    }
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value * (value > 1_000_000_000 ? 1 : 1000)).toISOString();
+  }
+  return undefined;
+};
+
+const resolveEnvToken = (env: Record<string, unknown>): MetaTokenRecord | null => {
+  for (const key of TOKEN_KEYS) {
+    const candidate = env[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      const expiresSource = TOKEN_EXPIRES_KEYS.map((expiresKey) => env[expiresKey]).find((value) => value !== undefined);
+      return {
+        accessToken: candidate.trim(),
+        expiresAt: toIsoDate(expiresSource),
+        status: "valid",
+      };
+    }
+  }
+  return null;
+};
+
+const effectiveToken = (
+  env: EnvBindings & Record<string, unknown>,
+  record: MetaTokenRecord | null,
+): MetaTokenRecord | null => {
+  if (record?.accessToken) {
+    return record;
+  }
+  return resolveEnvToken(env);
+};
+
 const getGraphVersion = (env: Record<string, unknown>): string => {
   const version = (env.META_GRAPH_VERSION || env.FB_GRAPH_VERSION) as string | undefined;
   return version || DEFAULT_GRAPH_VERSION;
@@ -97,35 +209,110 @@ export const resolveMetaStatus = async (
   env: EnvBindings & Record<string, unknown>,
   record: MetaTokenRecord | null,
 ): Promise<MetaStatusResponse> => {
-  return statusFromRecord(env, record);
+  return statusFromRecord(env, effectiveToken(env, record));
 };
 
 export const fetchAdAccounts = async (
   env: EnvBindings & Record<string, unknown>,
   record: MetaTokenRecord | null,
 ): Promise<MetaAdAccount[]> => {
-  const status = ensureTokenFreshness(record);
-  if (status === "missing") {
+  const tokenRecord = effectiveToken(env, record);
+  const status = ensureTokenFreshness(tokenRecord);
+  if (status === "missing" || !tokenRecord?.accessToken) {
     throw new Error("Meta token is missing");
   }
-  if (!record) {
-    throw new Error("Meta token is unavailable");
-  }
-  const response = await callGraph<AdAccountsResponse>(env, "me/adaccounts", {
-    access_token: record.accessToken,
-    fields: "id,name,currency,account_status,business",
-  });
+
   const accounts: MetaAdAccount[] = [];
-  for (const item of response.data || []) {
-    if (!item.id || !item.name) continue;
-    accounts.push({
-      id: item.id,
+  const seen = new Set<string>();
+  const addAccount = (account: MetaAdAccount | null | undefined) => {
+    if (!account || !account.id) return;
+    if (seen.has(account.id)) return;
+    seen.add(account.id);
+    accounts.push(account);
+  };
+
+  const params = {
+    access_token: tokenRecord.accessToken,
+    fields: "id,name,currency,account_status,business",
+  };
+
+  const safeCall = async <T>(path: string, callParams: Record<string, string>) => {
+    try {
+      return await callGraph<T>(env, path, { ...callParams });
+    } catch (error) {
+      console.warn(`Graph API request failed for ${path}`, (error as Error).message);
+      return null;
+    }
+  };
+
+  const meResponse = await safeCall<AdAccountsResponse>("me/adaccounts", params);
+  for (const item of meResponse?.data || []) {
+    const id = item.id || (item as { account_id?: string }).account_id;
+    if (!id || !item.name) continue;
+    addAccount({
+      id,
       name: item.name,
       currency: item.currency,
       status: typeof item.account_status === "number" ? String(item.account_status) : undefined,
       business: item.business ? { id: item.business.id, name: item.business.name } : null,
     });
   }
+
+  const configuredAccountIds = collectEnvList(env, ACCOUNT_ID_KEYS);
+  const businessIds = collectEnvList(env, BUSINESS_ID_KEYS);
+
+  const fetchAccountById = async (accountId: string) => {
+    const normalized = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+    const account = await safeCall<{ id?: string; name?: string; currency?: string; account_status?: number }>(
+      normalized,
+      params,
+    );
+    if (account?.id && account.name) {
+      addAccount({
+        id: account.id,
+        name: account.name,
+        currency: account.currency,
+        status: typeof account.account_status === "number" ? String(account.account_status) : undefined,
+      });
+    }
+  };
+
+  await Promise.all(configuredAccountIds.map(fetchAccountById));
+
+  interface BusinessAccountsResponse {
+    data?: Array<{
+      id?: string;
+      account_id?: string;
+      name?: string;
+      currency?: string;
+      account_status?: number;
+      business?: { id?: string; name?: string } | null;
+    }>;
+  }
+
+  const fetchBusinessAccounts = async (businessId: string, edge: string) => {
+    const response = await safeCall<BusinessAccountsResponse>(`${businessId}/${edge}`, params);
+    for (const item of response?.data || []) {
+      const id = item.id || item.account_id;
+      if (!id || !item.name) continue;
+      addAccount({
+        id,
+        name: item.name,
+        currency: item.currency,
+        status: typeof item.account_status === "number" ? String(item.account_status) : undefined,
+        business: item.business ? { id: item.business.id, name: item.business.name } : { id: businessId, name: undefined },
+      });
+    }
+  };
+
+  await Promise.all(
+    businessIds.flatMap((businessId) => [
+      fetchBusinessAccounts(businessId, "owned_ad_accounts"),
+      fetchBusinessAccounts(businessId, "client_ad_accounts"),
+    ]),
+  );
+
+  accounts.sort((a, b) => a.name.localeCompare(b.name));
   return accounts;
 };
 
