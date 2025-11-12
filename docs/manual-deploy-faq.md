@@ -1,6 +1,6 @@
 # Manual Deployment FAQ
 
-Справочник по распространённым ошибкам при ручном деплое TargetBot на Cloudflare Workers.
+Справочник по распространённым ошибкам при ручном деплое TargetBot на Cloudflare Workers. Перед началом релиза можно быстро пробежаться по [Manual Deployment Quickstart](./manual-deploy-quickstart.md), а затем вернуться сюда при возникновении ошибок.
 
 ## 1. `Error: Failed to fetch environment` при `wrangler dev`
 
