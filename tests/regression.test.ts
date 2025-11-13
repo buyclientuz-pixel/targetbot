@@ -142,7 +142,7 @@ test("evaluateQaDataset flags missing references and reschedules schedules", () 
 test("ensureTelegramUrl normalizes chat identifiers", () => {
   expect.equal(
     ensureTelegramUrl("-1001234567890"),
-    "tg://openmessage?chat_id=-1001234567890",
+    "https://t.me/c/1234567890/2",
   );
   expect.equal(ensureTelegramUrl("@targetbot"), "https://t.me/targetbot");
   expect.equal(ensureTelegramUrl("+InviteCode"), "https://t.me/+InviteCode");
@@ -151,11 +151,11 @@ test("ensureTelegramUrl normalizes chat identifiers", () => {
 test("resolveChatLink prefers explicit link but falls back to chat id", () => {
   expect.equal(
     resolveChatLink(undefined, "-1009876543210"),
-    "tg://openmessage?chat_id=-1009876543210",
+    "https://t.me/c/9876543210/2",
   );
   expect.equal(
     resolveChatLink("tg://openmessage?chat_id=-1001", "-1009876543210"),
-    "tg://openmessage?chat_id=-1001",
+    "https://t.me/c/1/2",
   );
   expect.equal(
     ensureTelegramUrlFromId("123456"),
