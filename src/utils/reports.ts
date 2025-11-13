@@ -1,8 +1,8 @@
 import { MetaAdAccount, ProjectSummary, ReportRecord, ReportType } from "../types";
 import { EnvBindings, appendReportRecord, loadMetaToken, saveReportAsset } from "./storage";
-import { summarizeProjects, sortProjectSummaries } from "./projects";
+import { summarizeProjects, sortProjectSummaries, extractProjectReportPreferences } from "./projects";
 import { createId } from "./ids";
-import { fetchAdAccounts } from "./meta";
+import { fetchAdAccounts, fetchCampaigns, withMetaSettings } from "./meta";
 import { escapeHtml } from "./html";
 
 const GLOBAL_PROJECT_ID = "__multi__";
@@ -97,6 +97,99 @@ const formatSpend = (account: MetaAdAccount | undefined): string | undefined => 
     return account.spendCurrency ? `${amount} ${account.spendCurrency}` : amount;
   }
   return undefined;
+};
+
+const formatCurrencyAmount = (amount: number | undefined, currency?: string): string => {
+  if (amount === undefined || !Number.isFinite(amount) || amount === 0) {
+    return "—";
+  }
+  const safeCurrency = currency && /^[A-Z]{3}$/.test(currency) ? currency : "USD";
+  try {
+    return new Intl.NumberFormat("ru-RU", {
+      style: "currency",
+      currency: safeCurrency,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch (error) {
+    console.warn("Failed to format currency amount", safeCurrency, error);
+    return `${amount.toFixed(2)} ${safeCurrency}`;
+  }
+};
+
+interface CampaignSpendOverride {
+  label: string;
+  spend?: number;
+  currency?: string;
+  period?: string;
+}
+
+const collectPreferredCampaignSpend = async (
+  env: EnvBindings & Record<string, unknown>,
+  summaries: ProjectSummary[],
+  filters: { datePreset?: string; since?: string; until?: string },
+): Promise<Map<string, CampaignSpendOverride>> => {
+  const requests = summaries
+    .map((summary) => {
+      const preferences = extractProjectReportPreferences(summary.settings);
+      if (!preferences.campaignIds.length || !summary.adAccountId) {
+        return null;
+      }
+      return {
+        projectId: summary.id,
+        accountId: summary.adAccountId,
+        campaignIds: preferences.campaignIds,
+      };
+    })
+    .filter((value): value is { projectId: string; accountId: string; campaignIds: string[] } => Boolean(value));
+
+  if (!requests.length) {
+    return new Map();
+  }
+
+  const token = await loadMetaToken(env);
+  if (!token) {
+    return new Map();
+  }
+  const metaEnv = await withMetaSettings(env);
+  const overrides = new Map<string, CampaignSpendOverride>();
+
+  await Promise.all(
+    requests.map(async ({ projectId, accountId, campaignIds }) => {
+      try {
+        const campaigns = await fetchCampaigns(metaEnv, token, accountId, {
+          limit: Math.max(campaignIds.length, 25),
+          datePreset: filters.datePreset,
+          since: filters.since,
+          until: filters.until,
+        });
+        if (!campaigns.length) {
+          overrides.set(projectId, { label: "—" });
+          return;
+        }
+        const selectedIds = new Set(campaignIds);
+        const selected = campaigns.filter((campaign) => selectedIds.has(campaign.id));
+        if (!selected.length) {
+          overrides.set(projectId, { label: "—" });
+          return;
+        }
+        const spend = selected.reduce((total, campaign) => total + (campaign.spend ?? 0), 0);
+        const currency =
+          selected.find((campaign) => campaign.spendCurrency)?.spendCurrency ||
+          campaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency;
+        const period =
+          selected.find((campaign) => campaign.spendPeriod)?.spendPeriod ||
+          campaigns.find((campaign) => campaign.spendPeriod)?.spendPeriod ||
+          filters.datePreset;
+        const formatted = formatCurrencyAmount(spend, currency);
+        const label = formatted === "—" ? "—" : period ? `${formatted} · ${period}` : formatted;
+        overrides.set(projectId, { label, spend, currency, period });
+      } catch (error) {
+        console.warn("Failed to collect campaign spend", projectId, error);
+      }
+    }),
+  );
+
+  return overrides;
 };
 
 const billingLabel = (summary: ProjectSummary): string => {
@@ -205,15 +298,17 @@ export const generateReport = async (
   const filters = resolveFilters(options);
   const summaries = sortProjectSummaries(await summarizeProjects(env, { projectIds: options.projectIds }));
   const accounts = await accountSpendMap(env, options.includeMeta !== false, filters);
+  const overrides = await collectPreferredCampaignSpend(env, summaries, filters);
 
   const rows = summaries.map((summary) => {
     const account = summary.adAccountId ? accounts.get(summary.adAccountId) : undefined;
+    const override = overrides.get(summary.id);
     return {
       id: summary.id,
       name: summary.name,
       leads: summary.leadStats,
       billing: billingLabel(summary),
-      spend: formatSpend(account),
+      spend: override?.label ?? formatSpend(account),
     };
   });
 

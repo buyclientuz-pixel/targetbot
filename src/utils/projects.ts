@@ -2,6 +2,8 @@ import {
   JsonObject,
   ProjectSettings,
   ProjectReportFrequency,
+  ProjectReportPreferences,
+  PortalMetricKey,
   LeadRecord,
   PaymentRecord,
   ProjectBillingSummary,
@@ -26,6 +28,44 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   quietWeekends: false,
   silentReports: false,
   leadAlerts: true,
+};
+
+const DEFAULT_REPORT_METRICS: PortalMetricKey[] = [
+  "leads_total",
+  "leads_new",
+  "leads_done",
+  "spend",
+  "impressions",
+  "clicks",
+];
+
+export const DEFAULT_REPORT_PREFERENCES: ProjectReportPreferences = {
+  campaignIds: [],
+  metrics: [...DEFAULT_REPORT_METRICS],
+};
+
+const sanitizeMetrics = (values: unknown): PortalMetricKey[] => {
+  if (!Array.isArray(values)) {
+    return [...DEFAULT_REPORT_METRICS];
+  }
+  const normalized = values
+    .map((value) => String(value).trim())
+    .filter((value): value is PortalMetricKey => (DEFAULT_REPORT_METRICS as string[]).includes(value));
+  return normalized.length ? normalized : [...DEFAULT_REPORT_METRICS];
+};
+
+const sanitizeCampaignIds = (values: unknown): string[] => {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const unique = new Set<string>();
+  values.forEach((value) => {
+    const id = String(value).trim();
+    if (id) {
+      unique.add(id);
+    }
+  });
+  return Array.from(unique);
 };
 
 export const extractProjectSettings = (raw: unknown): ProjectSettings => {
@@ -68,6 +108,68 @@ export const applyProjectSettingsPatch = (
   settings["reports"] = reports;
   settings["alerts"] = alerts;
 
+  return settings;
+};
+
+export const extractProjectReportPreferences = (raw: unknown): ProjectReportPreferences => {
+  const settings = ensureObject(raw);
+  const reports = ensureObject(settings["reports"]);
+  const preferences = ensureObject(reports["preferences"]);
+
+  const campaignSource = Array.isArray(reports["defaultCampaignIds"])
+    ? reports["defaultCampaignIds"]
+    : Array.isArray(preferences["campaignIds"])
+      ? preferences["campaignIds"]
+      : [];
+
+  const metricsSource = Array.isArray(reports["metrics"])
+    ? reports["metrics"]
+    : Array.isArray(preferences["metrics"])
+      ? preferences["metrics"]
+      : Array.isArray((reports as { defaultMetrics?: unknown[] }).defaultMetrics)
+        ? (reports as { defaultMetrics?: unknown[] }).defaultMetrics
+        : undefined;
+
+  return {
+    campaignIds: sanitizeCampaignIds(campaignSource),
+    metrics: sanitizeMetrics(metricsSource),
+  } satisfies ProjectReportPreferences;
+};
+
+export const applyProjectReportPreferencesPatch = (
+  current: unknown,
+  patch: Partial<ProjectReportPreferences>,
+): JsonObject => {
+  if (!patch.campaignIds && !patch.metrics) {
+    return ensureObject(current);
+  }
+  const settings = ensureObject(current);
+  const reports = ensureObject(settings["reports"]);
+  const preferences = ensureObject(reports["preferences"]);
+
+  if (patch.campaignIds) {
+    const campaigns = sanitizeCampaignIds(patch.campaignIds);
+    reports["defaultCampaignIds"] = campaigns;
+    if (campaigns.length) {
+      preferences["campaignIds"] = campaigns;
+    } else {
+      delete preferences["campaignIds"];
+    }
+  }
+
+  if (patch.metrics) {
+    const metrics = sanitizeMetrics(patch.metrics);
+    reports["metrics"] = metrics;
+    preferences["metrics"] = metrics;
+  }
+
+  if (Object.keys(preferences).length) {
+    reports["preferences"] = preferences;
+  } else {
+    delete reports["preferences"];
+  }
+
+  settings["reports"] = reports;
   return settings;
 };
 

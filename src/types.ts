@@ -229,6 +229,11 @@ export interface ProjectSettings {
   leadAlerts: boolean;
 }
 
+export interface ProjectReportPreferences {
+  campaignIds: string[];
+  metrics: PortalMetricKey[];
+}
+
 export interface ProjectSummary extends ProjectRecord {
   leadStats: ProjectLeadStats;
   billing: ProjectBillingSummary;

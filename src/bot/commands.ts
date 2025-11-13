@@ -8,6 +8,7 @@ import {
   sortProjectSummaries,
   extractProjectSettings,
   applyProjectSettingsPatch,
+  applyProjectReportPreferencesPatch,
   DEFAULT_PROJECT_SETTINGS,
 } from "../utils/projects";
 import {
@@ -81,6 +82,7 @@ import {
   ProjectBillingState,
   ProjectSettings,
   ProjectReportFrequency,
+  ProjectReportPreferences,
   TelegramGroupLinkRecord,
   UserRecord,
   UserRole,
@@ -562,6 +564,22 @@ const loadProjectPortalRecord = async (
     console.warn("Failed to load portal record", projectId, error);
     return null;
   }
+};
+
+const updateProjectReportPreferences = async (
+  context: BotContext,
+  projectId: string,
+  patch: Partial<ProjectReportPreferences>,
+): Promise<void> => {
+  if (!patch.campaignIds && !patch.metrics) {
+    return;
+  }
+  const summary = await loadProjectSummaryById(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const updatedSettings = applyProjectReportPreferencesPatch(summary.settings ?? {}, patch);
+  await updateProjectRecord(context.env, projectId, { settings: updatedSettings });
 };
 
 const truncateLabel = (label: string, max = 40): string => {
@@ -1535,17 +1553,16 @@ const handleProjectCampaignAction = async (
     return;
   }
   if (action === "save") {
-    const currentSettings = (summary.settings as Record<string, unknown>) ?? {};
-    const reportsSettings = (currentSettings.reports as Record<string, unknown>) ?? {};
-    const updatedSettings = {
-      ...currentSettings,
-      reports: {
-        ...reportsSettings,
-        defaultCampaignIds: selection,
-      },
-    } as typeof summary.settings;
-    await updateProjectRecord(context.env, projectId, { settings: updatedSettings });
-    await sendMessage(context, "Список кампаний сохранён для отчётов по умолчанию.", {
+    await updateProjectReportPreferences(context, projectId, { campaignIds: selection });
+    const portalRecord = await ensurePortalRecord(context, projectId);
+    const updatedPortal: ProjectPortalRecord = {
+      ...portalRecord,
+      mode: "manual",
+      campaignIds: selection,
+      updatedAt: new Date().toISOString(),
+    };
+    await savePortalRecord(context.env, updatedPortal);
+    await sendMessage(context, "Список кампаний сохранён для отчётов и клиентского портала.", {
       replyMarkup: buildProjectBackMarkup(projectId),
     });
     return;
@@ -1689,7 +1706,11 @@ const handleProjectPortalCreate = async (context: BotContext, projectId: string)
   if (!summary) {
     return;
   }
-  await ensurePortalRecord(context, projectId);
+  const record = await ensurePortalRecord(context, projectId);
+  await updateProjectReportPreferences(context, projectId, {
+    campaignIds: record.campaignIds,
+    metrics: record.metrics,
+  });
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, "Портал создан");
   }
@@ -1706,6 +1727,10 @@ const handleProjectPortalRegenerate = async (context: BotContext, projectId: str
     lastRegeneratedAt: now,
   };
   await savePortalRecord(context.env, updated);
+  await updateProjectReportPreferences(context, projectId, {
+    campaignIds: updated.campaignIds,
+    metrics: updated.metrics,
+  });
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, "Ссылка обновлена");
   }
@@ -1730,6 +1755,10 @@ const handleProjectPortalMode = async (
     updatedAt: now,
   };
   await savePortalRecord(context.env, updated);
+  await updateProjectReportPreferences(context, projectId, {
+    campaignIds: updated.campaignIds,
+    metrics: updated.metrics,
+  });
   if (context.update.callback_query?.id) {
     const label = mode === "auto" ? "Авто" : "Ручной";
     const text = wasMode === mode ? undefined : `Режим: ${label}`;
@@ -1785,6 +1814,7 @@ const handleProjectPortalMetricToggle = async (
     updatedAt: new Date().toISOString(),
   };
   await savePortalRecord(context.env, updated);
+  await updateProjectReportPreferences(context, projectId, { metrics: updated.metrics });
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, hasMetric ? "Скрыто" : "Добавлено");
   }
@@ -1875,6 +1905,7 @@ const handleProjectPortalCampaignToggle = async (
     updatedAt: new Date().toISOString(),
   };
   await savePortalRecord(context.env, updated);
+  await updateProjectReportPreferences(context, projectId, { campaignIds: updated.campaignIds });
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, exists ? "Удалено" : "Добавлено");
   }
@@ -1893,6 +1924,7 @@ const handleProjectPortalCampaignClear = async (context: BotContext, projectId: 
     updatedAt: new Date().toISOString(),
   };
   await savePortalRecord(context.env, updated);
+  await updateProjectReportPreferences(context, projectId, { campaignIds: updated.campaignIds });
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, "Список очищен");
   }
