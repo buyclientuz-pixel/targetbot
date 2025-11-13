@@ -6,6 +6,7 @@ import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
 import {
   appendCommandLog,
   clearPendingMetaLink,
+  clearPendingUserOperation,
   listChatRegistrations,
   listMetaAccountLinks,
   listLeads,
@@ -23,6 +24,8 @@ import {
   saveTelegramGroupLinks,
   saveUsers,
   loadProject,
+  loadPendingUserOperation,
+  savePendingUserOperation,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
@@ -36,7 +39,9 @@ import {
   ProjectSummary,
   TelegramGroupLinkRecord,
   UserRecord,
+  UserRole,
 } from "../types";
+import { calculateLeadAnalytics } from "../utils/analytics";
 
 const AUTH_URL_FALLBACK = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
 
@@ -755,6 +760,99 @@ const buildProjectBackMarkup = (projectId: string) => ({
   ],
 });
 
+const USER_ROLE_SEQUENCE: UserRole[] = ["owner", "manager", "client"];
+
+const USER_ROLE_LABEL: Record<UserRole, string> = {
+  owner: "Владелец",
+  manager: "Менеджер",
+  client: "Клиент",
+};
+
+const USER_ROLE_ICON: Record<UserRole, string> = {
+  owner: "👑",
+  manager: "👔",
+  client: "🙋",
+};
+
+const USER_ROLE_ORDER: Record<UserRole, number> = {
+  owner: 0,
+  manager: 1,
+  client: 2,
+};
+
+const describeUserRole = (role: UserRole): string => `${USER_ROLE_ICON[role]} ${USER_ROLE_LABEL[role]}`;
+
+const formatUserTitle = (user: UserRecord): string => {
+  if (user.username && user.username.trim()) {
+    return `@${user.username.trim()}`;
+  }
+  if (user.name && user.name.trim()) {
+    return user.name.trim();
+  }
+  return user.id;
+};
+
+const sortUsers = (users: UserRecord[]): UserRecord[] => {
+  return [...users].sort((a, b) => {
+    const roleOrder = USER_ROLE_ORDER[a.role] - USER_ROLE_ORDER[b.role];
+    if (roleOrder !== 0) {
+      return roleOrder;
+    }
+    const nameA = formatUserTitle(a).toLowerCase();
+    const nameB = formatUserTitle(b).toLowerCase();
+    if (nameA !== nameB) {
+      return nameA.localeCompare(nameB, "ru-RU");
+    }
+    return Date.parse(a.createdAt) - Date.parse(b.createdAt);
+  });
+};
+
+const buildUserRoleButtons = (
+  callbackBuilder: (role: UserRole) => string,
+  currentRole?: UserRole,
+) => {
+  const buttons = USER_ROLE_SEQUENCE.map((role) => ({
+    text: `${currentRole === role ? "✅" : USER_ROLE_ICON[role]} ${USER_ROLE_LABEL[role]}`,
+    callback_data: callbackBuilder(role),
+  }));
+  return [buttons.slice(0, 2), [buttons[2]]];
+};
+
+const buildUserListMarkup = (users: UserRecord[]) => {
+  const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+  sortUsers(users).forEach((user) => {
+    const label = `${USER_ROLE_ICON[user.role]} ${formatUserTitle(user)}`;
+    keyboard.push([{ text: label, callback_data: `user:view:${user.id}` }]);
+  });
+  keyboard.push([{ text: "➕ Добавить пользователя", callback_data: "user:add" }]);
+  keyboard.push([{ text: "🏠 Меню", callback_data: "cmd:menu" }]);
+  return { inline_keyboard: keyboard };
+};
+
+const buildUserActionsMarkup = (user: UserRecord) => {
+  const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+  buildUserRoleButtons((role) => `user:role:${user.id}:${role}`, user.role).forEach((row) => keyboard.push(row));
+  keyboard.push([{ text: "🗑 Удалить", callback_data: `user:delete:${user.id}` }]);
+  keyboard.push([{ text: "👥 К списку", callback_data: "cmd:users" }]);
+  keyboard.push([{ text: "🏠 Меню", callback_data: "cmd:menu" }]);
+  return { inline_keyboard: keyboard };
+};
+
+const USER_CREATION_ROLE_MARKUP = {
+  inline_keyboard: [
+    ...buildUserRoleButtons((role) => `user:create-role:${role}`),
+    [{ text: "❌ Отменить", callback_data: "user:cancel" }],
+    [{ text: "👥 К списку", callback_data: "cmd:users" }],
+  ],
+};
+
+const USER_CANCEL_MARKUP = {
+  inline_keyboard: [
+    [{ text: "❌ Отменить", callback_data: "user:cancel" }],
+    [{ text: "👥 К списку", callback_data: "cmd:users" }],
+  ],
+};
+
 const formatCurrencyValue = (amount: number | undefined, currency?: string): string | null => {
   if (amount === undefined) {
     return null;
@@ -1389,31 +1487,340 @@ const ensureProjectSummary = async (
   return null;
 };
 
+const buildUserOverviewLines = (users: UserRecord[]): string[] => {
+  const sorted = sortUsers(users);
+  const totalsByRole = USER_ROLE_SEQUENCE.map((role) => ({
+    role,
+    count: sorted.filter((user) => user.role === role).length,
+  }));
+
+  const lines: string[] = ["👥 Пользователи", ""];
+  if (!sorted.length) {
+    lines.push("Пока нет зарегистрированных пользователей.");
+    lines.push("Добавьте первого участника кнопкой ниже.");
+    return lines;
+  }
+
+  lines.push(`Всего: <b>${sorted.length}</b>`);
+  totalsByRole.forEach((entry) => {
+    lines.push(`${USER_ROLE_ICON[entry.role]} ${USER_ROLE_LABEL[entry.role]}: ${entry.count}`);
+  });
+  lines.push(
+    "",
+    "Выберите пользователя, чтобы изменить роль или удалить его. Кнопка ниже добавит нового участника.",
+  );
+  return lines;
+};
+
 const handleUsers = async (context: BotContext): Promise<void> => {
   const users = await listUsers(context.env);
-  const total = users.length;
-  const roles = users.reduce(
-    (acc, user) => {
-      acc[user.role] = (acc[user.role] || 0) + 1;
-      return acc;
-    },
-    {} as Record<string, number>,
+  const sorted = sortUsers(users);
+  const lines = buildUserOverviewLines(sorted);
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: buildUserListMarkup(sorted),
+  });
+};
+
+const buildUserDeleteMarkup = (userId: string) => ({
+  inline_keyboard: [
+    [
+      { text: "✅ Удалить", callback_data: `user:delete-confirm:${userId}` },
+      { text: "⬅ Назад", callback_data: `user:view:${userId}` },
+    ],
+    [{ text: "👥 К списку", callback_data: "cmd:users" }],
+    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+  ],
+});
+
+interface UserCandidate {
+  id: string;
+  username?: string | null;
+  name?: string | null;
+}
+
+const extractUserCandidate = (context: BotContext): UserCandidate | null => {
+  const message = context.update.message ?? context.update.edited_message;
+  if (!message) {
+    return null;
+  }
+
+  const contact = (message as { contact?: { user_id?: number; first_name?: string; last_name?: string } }).contact;
+  if (contact?.user_id) {
+    const nameParts = [contact.first_name, contact.last_name].filter(Boolean).join(" ");
+    return {
+      id: contact.user_id.toString(),
+      name: nameParts || null,
+    };
+  }
+
+  const forward = (message as { forward_from?: { id?: number; username?: string; first_name?: string; last_name?: string } })
+    .forward_from;
+  if (forward?.id) {
+    const nameParts = [forward.first_name, forward.last_name].filter(Boolean).join(" ");
+    return {
+      id: forward.id.toString(),
+      username: forward.username ?? null,
+      name: nameParts || null,
+    };
+  }
+
+  const text = message.text?.trim();
+  if (text) {
+    const idMatch = text.match(/\d{4,}/);
+    if (!idMatch) {
+      return null;
+    }
+    const usernameMatch = text.match(/@([a-zA-Z0-9_]{4,})/);
+    const cleanedName = text.replace(/@([a-zA-Z0-9_]{4,})/g, "").replace(/\d{4,}/g, "").trim();
+    return {
+      id: idMatch[0],
+      username: usernameMatch ? usernameMatch[1] : null,
+      name: cleanedName || null,
+    };
+  }
+
+  return null;
+};
+
+const renderUserCard = async (
+  context: BotContext,
+  user: UserRecord,
+  options: { prefix?: string } = {},
+): Promise<void> => {
+  const lines: string[] = [];
+  if (options.prefix) {
+    lines.push(options.prefix, "");
+  }
+  lines.push(`👤 ${escapeHtml(formatUserTitle(user))}`);
+  lines.push(`ID: <code>${escapeHtml(user.id)}</code>`);
+  if (user.username) {
+    lines.push(`Username: @${escapeHtml(user.username)}`);
+  }
+  if (user.name && (!user.username || user.name !== user.username)) {
+    lines.push(`Имя: ${escapeHtml(user.name)}`);
+  }
+  lines.push(`Роль: ${escapeHtml(describeUserRole(user.role))}`);
+  if (user.registeredAt) {
+    lines.push(`Зарегистрирован: ${formatDateTime(user.registeredAt)}`);
+  }
+  lines.push(
+    "",
+    "Используйте кнопки ниже, чтобы обновить роль или удалить пользователя.",
   );
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildUserActionsMarkup(user) });
+};
 
+const handleUserView = async (context: BotContext, userId: string): Promise<void> => {
+  const users = await listUsers(context.env);
+  const user = users.find((entry) => entry.id === userId);
+  if (!user) {
+    await sendMessage(
+      context,
+      [
+        "👥 Пользователь не найден",
+        "",
+        `ID: <code>${escapeHtml(userId)}</code>`,
+        "Обновите список и попробуйте снова.",
+      ].join("\n"),
+      { replyMarkup: { inline_keyboard: [[{ text: "👥 К списку", callback_data: "cmd:users" }]] } },
+    );
+    return;
+  }
+  await renderUserCard(context, user);
+};
+
+const handleUserAdd = async (context: BotContext): Promise<void> => {
+  if (!context.userId) {
+    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду.");
+    return;
+  }
+  await savePendingUserOperation(context.env, context.userId, { action: "create" });
   const lines = [
-    "👥 Пользователи",
+    "👥 Добавление пользователя",
     "",
-    total
-      ? `Всего пользователей: <b>${total}</b>`
-      : "Пока нет зарегистрированных пользователей.",
-    total ? `Владельцы: ${roles.owner ?? 0}` : "",
-    total ? `Менеджеры: ${roles.manager ?? 0}` : "",
-    total ? `Клиенты: ${roles.client ?? 0}` : "",
-    "",
-    "Перейдите в веб-панель /admin/users для создания и управления ролями.",
-  ].filter(Boolean);
+    "Отправьте отдельным сообщением Telegram ID пользователя, его контакт или пересланное сообщение.",
+    "После получения данных выберите роль из списка.",
+  ];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: USER_CANCEL_MARKUP });
+};
 
-  await sendMessage(context, lines.join("\n"));
+const handleUserCancel = async (context: BotContext): Promise<void> => {
+  if (context.userId) {
+    await clearPendingUserOperation(context.env, context.userId).catch((error) =>
+      console.warn("Failed to clear pending user operation", error),
+    );
+  }
+  const users = await listUsers(context.env);
+  const sorted = sortUsers(users);
+  const lines = ["❌ Операция отменена.", "", ...buildUserOverviewLines(sorted)];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildUserListMarkup(sorted) });
+};
+
+const handleUserRoleChange = async (
+  context: BotContext,
+  userId: string,
+  role: UserRole,
+): Promise<void> => {
+  const users = await listUsers(context.env);
+  const index = users.findIndex((entry) => entry.id === userId);
+  if (index < 0) {
+    await sendMessage(context, "👥 Пользователь не найден. Обновите список.", {
+      replyMarkup: { inline_keyboard: [[{ text: "👥 К списку", callback_data: "cmd:users" }]] },
+    });
+    return;
+  }
+
+  const current = users[index];
+  if (current.role === role) {
+    await renderUserCard(context, current, { prefix: "ℹ️ Роль уже назначена." });
+    return;
+  }
+
+  const updated: UserRecord = {
+    ...current,
+    role,
+    registeredAt: current.registeredAt ?? current.createdAt,
+  };
+  users[index] = updated;
+  await saveUsers(context.env, users);
+  await renderUserCard(context, updated, { prefix: "✅ Роль обновлена." });
+};
+
+const handleUserDeletePrompt = async (context: BotContext, userId: string): Promise<void> => {
+  const users = await listUsers(context.env);
+  const user = users.find((entry) => entry.id === userId);
+  if (!user) {
+    await sendMessage(context, "👥 Пользователь не найден. Обновите список.", {
+      replyMarkup: { inline_keyboard: [[{ text: "👥 К списку", callback_data: "cmd:users" }]] },
+    });
+    return;
+  }
+  const lines = [
+    "🗑 Удаление пользователя",
+    "",
+    `ID: <code>${escapeHtml(user.id)}</code>`,
+    `Имя: ${escapeHtml(formatUserTitle(user))}`,
+    "",
+    "Удаление приведёт к потере доступа к проектам и отчётам. Подтвердите действие.",
+  ];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildUserDeleteMarkup(user.id) });
+};
+
+const handleUserDeleteConfirm = async (context: BotContext, userId: string): Promise<void> => {
+  const users = await listUsers(context.env);
+  const index = users.findIndex((entry) => entry.id === userId);
+  if (index < 0) {
+    await sendMessage(context, "👥 Пользователь уже удалён.", {
+      replyMarkup: { inline_keyboard: [[{ text: "👥 К списку", callback_data: "cmd:users" }]] },
+    });
+    return;
+  }
+  const removed = users.splice(index, 1)[0];
+  await saveUsers(context.env, users);
+  const sorted = sortUsers(users);
+  const lines = [
+    "🗑 Пользователь удалён",
+    "",
+    `ID: <code>${escapeHtml(removed.id)}</code>`,
+    removed.username ? `Username: @${escapeHtml(removed.username)}` : null,
+    removed.name ? `Имя: ${escapeHtml(removed.name)}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  await sendMessage(context, lines, { replyMarkup: buildUserListMarkup(sorted) });
+};
+
+const handleUserCreateRole = async (context: BotContext, role: UserRole): Promise<void> => {
+  if (!context.userId) {
+    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду.");
+    return;
+  }
+  const pending = await loadPendingUserOperation(context.env, context.userId);
+  if (!pending || pending.action !== "create-role" || !pending.targetUserId) {
+    await sendMessage(context, "❌ Запрос не найден. Начните добавление пользователя заново.");
+    return;
+  }
+
+  const users = await listUsers(context.env);
+  if (users.some((entry) => entry.id === pending.targetUserId)) {
+    await clearPendingUserOperation(context.env, context.userId);
+    await sendMessage(context, "ℹ️ Пользователь уже существует. Обновите список.", {
+      replyMarkup: buildUserListMarkup(sortUsers(users)),
+    });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const record: UserRecord = {
+    id: pending.targetUserId,
+    username: pending.username ?? undefined,
+    name: pending.name ?? undefined,
+    role,
+    createdAt: now,
+    registeredAt: now,
+  };
+
+  users.push(record);
+  await saveUsers(context.env, users);
+  await clearPendingUserOperation(context.env, context.userId);
+  await renderUserCard(context, record, { prefix: "✅ Пользователь добавлен." });
+};
+
+export const handlePendingUserInput = async (context: BotContext): Promise<boolean> => {
+  const adminId = context.userId;
+  if (!adminId || context.update.callback_query) {
+    return false;
+  }
+  const pending = await loadPendingUserOperation(context.env, adminId);
+  if (!pending) {
+    return false;
+  }
+  if (pending.action === "create-role") {
+    await sendMessage(context, "ℹ️ Выберите роль с помощью кнопок ниже.", {
+      replyMarkup: USER_CREATION_ROLE_MARKUP,
+    });
+    return true;
+  }
+
+  const candidate = extractUserCandidate(context);
+  if (!candidate) {
+    await sendMessage(
+      context,
+      "❌ Не удалось определить Telegram ID. Отправьте цифровой ID, контакт или пересланное сообщение пользователя.",
+      { replyMarkup: USER_CANCEL_MARKUP },
+    );
+    return true;
+  }
+
+  const users = await listUsers(context.env);
+  const existing = users.find((entry) => entry.id === candidate.id);
+  if (existing) {
+    await clearPendingUserOperation(context.env, adminId);
+    await renderUserCard(context, existing, { prefix: "ℹ️ Пользователь уже зарегистрирован." });
+    return true;
+  }
+
+  await savePendingUserOperation(context.env, adminId, {
+    action: "create-role",
+    targetUserId: candidate.id,
+    username: candidate.username ?? null,
+    name: candidate.name ?? null,
+  });
+
+  const summaryLines = [
+    "👥 Новый пользователь",
+    "",
+    `ID: <code>${escapeHtml(candidate.id)}</code>`,
+    candidate.username ? `Username: @${escapeHtml(candidate.username)}` : null,
+    candidate.name ? `Имя: ${escapeHtml(candidate.name)}` : null,
+    "",
+    "Выберите роль для нового пользователя.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  await sendMessage(context, summaryLines, { replyMarkup: USER_CREATION_ROLE_MARKUP });
+  return true;
 };
 
 const handleMetaAccounts = async (context: BotContext): Promise<void> => {
@@ -1734,23 +2141,61 @@ const handleMetaProjectView = async (context: BotContext, projectId: string): Pr
   await handleProjectView(context, projectId);
 };
 
-const handleAnalytics = async (context: BotContext): Promise<void> => {
-  const summaries = sortProjectSummaries(await summarizeProjects(context.env));
-  const lines: string[] = ["📈 Аналитика", ""];
-  if (summaries.length) {
-    for (const project of summaries) {
-      const cpa = project.leadStats.done
-        ? (project.leadStats.total / project.leadStats.done).toFixed(1)
-        : "—";
-      lines.push(`📊 ${escapeHtml(project.name)} — лидов: ${project.leadStats.total}, закрыто: ${project.leadStats.done}, CPA: ${cpa}`);
-    }
-  } else {
-    lines.push("Нет данных для аналитики. Добавьте проекты и лиды, чтобы сформировать отчёт.");
-  }
-  lines.push("", "Фильтры по периодам и экспорт появятся в следующих итерациях веб-панели.");
-  lines.push("", "Команды /summary и /auto_report сформируют отчёты прямо в этом чате.");
+const buildAnalyticsMarkup = () => ({
+  inline_keyboard: [
+    [{ text: "📈 По проектам", callback_data: "analytics:projects" }],
+    [{ text: "📥 Экспорт", callback_data: "analytics:export" }],
+    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+  ],
+});
 
-  await sendMessage(context, lines.join("\n"));
+const describeLeadCounters = (value: number): string => value.toString();
+
+const handleAnalytics = async (context: BotContext): Promise<void> => {
+  const analytics = await calculateLeadAnalytics(context.env);
+  const lines: string[] = ["📈 Аналитика", ""];
+  lines.push(`Сегодня: <b>${describeLeadCounters(analytics.totals.today)}</b>`);
+  lines.push(`Неделя: <b>${describeLeadCounters(analytics.totals.week)}</b>`);
+  lines.push(`Месяц: <b>${describeLeadCounters(analytics.totals.month)}</b>`);
+  lines.push(`Всего: <b>${describeLeadCounters(analytics.totals.total)}</b>`);
+  if (analytics.lastLeadAt) {
+    lines.push("", `Последний лид: ${formatDateTime(analytics.lastLeadAt)}`);
+  }
+  lines.push(
+    "",
+    "Нажмите «📈 По проектам», чтобы увидеть разбивку по каждому проекту, или «📥 Экспорт», чтобы собрать отчёт.",
+  );
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildAnalyticsMarkup() });
+};
+
+const handleAnalyticsProjects = async (context: BotContext): Promise<void> => {
+  const analytics = await calculateLeadAnalytics(context.env);
+  const lines: string[] = ["📈 Лиды по проектам", ""];
+  if (!analytics.projects.length) {
+    lines.push("Лиды ещё не поступали. Как только появятся новые заявки, статистика обновится автоматически.");
+  } else {
+    analytics.projects.forEach((project, index) => {
+      lines.push(
+        `${index + 1}. ${escapeHtml(project.projectName)} — сегодня: ${project.today}, неделя: ${project.week}, месяц: ${project.month}, всего: ${project.total}`,
+      );
+    });
+  }
+  lines.push(
+    "",
+    "Используйте кнопки ниже, чтобы вернуться к общей аналитике или сразу выгрузить отчёт.",
+  );
+  const replyMarkup = {
+    inline_keyboard: [
+      [{ text: "⬅ К аналитике", callback_data: "cmd:analytics" }],
+      [{ text: "📥 Экспорт", callback_data: "analytics:export" }],
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+    ],
+  };
+  await sendMessage(context, lines.join("\n"), { replyMarkup });
+};
+
+const handleAnalyticsExport = async (context: BotContext): Promise<void> => {
+  await startReportWorkflow(context, "summary");
 };
 
 const handleFinance = async (context: BotContext): Promise<void> => {
@@ -1804,9 +2249,21 @@ const handleFinance = async (context: BotContext): Promise<void> => {
     }
   }
 
-  lines.push("", "Используйте веб-панель для детализации оплат и обновления статусов.");
+  lines.push(
+    "",
+    "Откройте карточку проекта → «💰 Оплата», чтобы зафиксировать платёж или обновить тариф.",
+  );
 
-  await sendMessage(context, lines.join("\n"));
+  const replyMarkup = {
+    inline_keyboard: [
+      [{ text: "📊 Проекты", callback_data: "cmd:projects" }],
+      [{ text: "📈 Аналитика", callback_data: "cmd:analytics" }],
+      [{ text: "📥 Экспорт", callback_data: "analytics:export" }],
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+    ],
+  };
+
+  await sendMessage(context, lines.join("\n"), { replyMarkup });
 };
 
 const handleSettings = async (context: BotContext): Promise<void> => {
@@ -1974,6 +2431,95 @@ export const runCommand = async (command: string, context: BotContext): Promise<
     await answerCallbackQuery(context.env, context.update.callback_query.id);
   }
   return true;
+};
+
+export const handleAnalyticsCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (!data.startsWith("analytics:")) {
+    return false;
+  }
+  await ensureAdminUser(context);
+  const [, action] = data.split(":");
+  switch (action) {
+    case "projects":
+      await handleAnalyticsProjects(context);
+      return true;
+    case "export":
+      await handleAnalyticsExport(context);
+      return true;
+    default:
+      return false;
+  }
+};
+
+export const handleUserCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (!data.startsWith("user:")) {
+    return false;
+  }
+  await ensureAdminUser(context);
+  const [, action, ...rest] = data.split(":");
+  switch (action) {
+    case "add":
+      await handleUserAdd(context);
+      return true;
+    case "view": {
+      const userId = rest.join(":");
+      if (!userId) {
+        await sendMessage(context, "Не указан пользователь. Обновите список.", {
+          replyMarkup: { inline_keyboard: [[{ text: "👥 К списку", callback_data: "cmd:users" }]] },
+        });
+        return true;
+      }
+      await handleUserView(context, userId);
+      return true;
+    }
+    case "role": {
+      const [userId, roleValue] = rest;
+      if (!userId || !roleValue) {
+        await sendMessage(context, "Не удалось определить пользователя или роль.");
+        return true;
+      }
+      if (!USER_ROLE_SEQUENCE.includes(roleValue as UserRole)) {
+        await sendMessage(context, "Неизвестная роль. Доступны: владелец, менеджер, клиент.");
+        return true;
+      }
+      await handleUserRoleChange(context, userId, roleValue as UserRole);
+      return true;
+    }
+    case "delete": {
+      const userId = rest.join(":");
+      if (!userId) {
+        await sendMessage(context, "Пользователь не найден. Обновите список.");
+        return true;
+      }
+      await handleUserDeletePrompt(context, userId);
+      return true;
+    }
+    case "delete-confirm": {
+      const userId = rest.join(":");
+      if (!userId) {
+        await sendMessage(context, "Пользователь не найден. Обновите список.");
+        return true;
+      }
+      await handleUserDeleteConfirm(context, userId);
+      return true;
+    }
+    case "cancel":
+      await handleUserCancel(context);
+      return true;
+    case "create-role": {
+      const roleValue = rest.join(":");
+      if (!USER_ROLE_SEQUENCE.includes(roleValue as UserRole)) {
+        await sendMessage(context, "Выберите роль с помощью кнопок ниже.", {
+          replyMarkup: USER_CREATION_ROLE_MARKUP,
+        });
+        return true;
+      }
+      await handleUserCreateRole(context, roleValue as UserRole);
+      return true;
+    }
+    default:
+      return false;
+  }
 };
 
 export const handleProjectCallback = async (context: BotContext, data: string): Promise<boolean> => {

@@ -1,6 +1,14 @@
 import { createContext } from "./context";
 import { acknowledgeCommand } from "./menu";
-import { runCommand, resolveCommand, handleProjectCallback, handleMetaCallback } from "./commands";
+import {
+  runCommand,
+  resolveCommand,
+  handleProjectCallback,
+  handleMetaCallback,
+  handlePendingUserInput,
+  handleUserCallback,
+  handleAnalyticsCallback,
+} from "./commands";
 import { handleReportCallback, isReportCallbackData } from "./reports";
 import { BotContext, TelegramUpdate } from "./types";
 import { jsonResponse } from "../utils/http";
@@ -167,6 +175,13 @@ const handleUpdate = async (context: BotContext): Promise<void> => {
     return;
   }
 
+  if (!context.update.callback_query && !command) {
+    const pendingHandled = await handlePendingUserInput(context);
+    if (pendingHandled) {
+      return;
+    }
+  }
+
   const callbackData = context.update.callback_query?.data;
   if (isReportCallbackData(callbackData)) {
     const handled = await handleReportCallback(context, callbackData!);
@@ -175,6 +190,20 @@ const handleUpdate = async (context: BotContext): Promise<void> => {
     }
   }
   if (callbackData) {
+    const handledAnalytics = await handleAnalyticsCallback(context, callbackData);
+    if (handledAnalytics) {
+      if (context.update.callback_query?.id) {
+        await answerCallbackQuery(context.env, context.update.callback_query.id);
+      }
+      return;
+    }
+    const handledUser = await handleUserCallback(context, callbackData);
+    if (handledUser) {
+      if (context.update.callback_query?.id) {
+        await answerCallbackQuery(context.env, context.update.callback_query.id);
+      }
+      return;
+    }
     const handledMeta = await handleMetaCallback(context, callbackData);
     if (handledMeta) {
       if (context.update.callback_query?.id) {

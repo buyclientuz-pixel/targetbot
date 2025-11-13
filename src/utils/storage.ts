@@ -31,6 +31,7 @@ const META_ACCOUNTS_KEY = "meta/accounts.json";
 const TELEGRAM_GROUPS_KEY = "telegram/groups.json";
 const META_PROJECTS_KEY = "meta/projects.json";
 const META_PENDING_PREFIX = "meta/link/pending/";
+const USER_PENDING_PREFIX = "users/pending/";
 
 const USER_KV_INDEX_KEY = "users:index";
 const PROJECT_KV_INDEX_KEY = "projects:index";
@@ -705,4 +706,54 @@ export const clearPendingMetaLink = async (
   userId: string,
 ): Promise<void> => {
   await env.DB.delete(pendingMetaLinkKey(userId));
+};
+
+export type PendingUserAction = "create" | "create-role";
+
+export interface PendingUserOperation {
+  action: PendingUserAction;
+  targetUserId?: string;
+  username?: string | null;
+  name?: string | null;
+  updatedAt?: string;
+}
+
+const pendingUserKey = (userId: string): string => `${USER_PENDING_PREFIX}${userId}`;
+
+export const loadPendingUserOperation = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<PendingUserOperation | null> => {
+  const stored = await env.DB.get(pendingUserKey(userId));
+  if (!stored) {
+    return null;
+  }
+  try {
+    return JSON.parse(stored) as PendingUserOperation;
+  } catch (error) {
+    console.error("Failed to parse pending user operation", error);
+    return null;
+  }
+};
+
+export const savePendingUserOperation = async (
+  env: EnvBindings,
+  userId: string,
+  operation: PendingUserOperation,
+  ttlSeconds = 900,
+): Promise<void> => {
+  const payload = {
+    ...operation,
+    updatedAt: new Date().toISOString(),
+  } satisfies PendingUserOperation;
+  await env.DB.put(pendingUserKey(userId), JSON.stringify(payload), {
+    expirationTtl: Math.max(60, ttlSeconds),
+  });
+};
+
+export const clearPendingUserOperation = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<void> => {
+  await env.DB.delete(pendingUserKey(userId));
 };
