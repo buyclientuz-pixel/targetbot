@@ -347,7 +347,7 @@ const buildSelectionMessage = (session: ReportSessionRecord) => {
   lines.push("Выберите проекты, которые войдут в отчёт:");
   lines.push("");
   if (!session.projects.length) {
-    lines.push("Проекты не найдены — создайте их в веб-панели.");
+    lines.push("Проекты не найдены. Создайте их через бот.");
   } else {
     for (const project of session.projects) {
       const selected = session.projectIds.includes(project.id);
@@ -496,7 +496,7 @@ const createSession = async (
     await sendTelegramMessage(context.env, {
       chatId,
       threadId: context.threadId,
-      text: "Отчёт пока не из чего формировать: добавьте проекты и лиды в веб-панели.",
+      text: "Отчёт пока не из чего формировать: добавьте проекты и лиды через бот.",
     });
     return null;
   }

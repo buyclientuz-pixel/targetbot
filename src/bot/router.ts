@@ -143,7 +143,7 @@ const sendRestrictedNotice = async (context: BotContext, policy: ChatPolicy): Pr
   const parts: string[] = [];
   if (policy.role === "client" && policy.project) {
     parts.push(`Чат привязан к проекту <b>${escapeHtml(policy.project.name)}</b>.`);
-    parts.push("Управление доступно администраторам и в веб-панели /admin.");
+    parts.push("Управление доступно только администраторам TargetBot.");
   } else if (policy.role === "client") {
     parts.push("Чат уже привязан к проекту. Команды отключены.");
   } else {
