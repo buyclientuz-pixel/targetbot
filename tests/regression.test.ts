@@ -108,9 +108,15 @@ test("evaluateQaDataset flags missing references and reschedules schedules", () 
       id: "pr1",
       projectId: "p-missing",
       status: "pending",
+      stage: "pending",
+      method: null,
       notifiedCount: 0,
       createdAt: new Date("2025-02-21T10:00:00Z").toISOString(),
       updatedAt: new Date("2025-02-21T10:00:00Z").toISOString(),
+      nextFollowUpAt: null,
+      adminChatId: null,
+      clientChatId: null,
+      lastClientPromptAt: null,
     },
   ];
   const schedules: ReportScheduleRecord[] = [
@@ -220,9 +226,15 @@ test("evaluateQaDataset keeps clean dataset untouched", () => {
       id: "pr1",
       projectId: "p1",
       status: "pending",
+      stage: "pending",
+      method: null,
       notifiedCount: 0,
       createdAt: new Date("2025-02-21T10:00:00Z").toISOString(),
       updatedAt: new Date("2025-02-21T10:00:00Z").toISOString(),
+      nextFollowUpAt: null,
+      adminChatId: null,
+      clientChatId: null,
+      lastClientPromptAt: null,
     },
   ];
   const schedules: ReportScheduleRecord[] = [

@@ -373,15 +373,32 @@ export interface LeadReminderRecord {
 
 export type PaymentReminderStatus = "pending" | "upcoming" | "overdue";
 
+export type PaymentReminderStage =
+  | "pending"
+  | "admin_notified"
+  | "awaiting_client_choice"
+  | "awaiting_transfer_confirmation"
+  | "awaiting_admin_confirmation"
+  | "declined"
+  | "completed";
+
+export type PaymentReminderMethod = "cash" | "transfer" | null;
+
 export interface PaymentReminderRecord {
   id: string;
   projectId: string;
   status: PaymentReminderStatus;
+  stage: PaymentReminderStage;
+  method?: PaymentReminderMethod;
   dueDate?: string | null;
   notifiedCount: number;
   createdAt: string;
   updatedAt: string;
   lastNotifiedAt?: string | null;
+  nextFollowUpAt?: string | null;
+  adminChatId?: string | null;
+  clientChatId?: string | null;
+  lastClientPromptAt?: string | null;
 }
 
 export type PaymentStatus = "pending" | "active" | "overdue" | "cancelled";

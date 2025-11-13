@@ -1275,6 +1275,19 @@ const normalizePaymentReminderRecord = (
   const statusSource = data.status;
   const status: PaymentReminderRecord["status"] =
     statusSource === "upcoming" || statusSource === "overdue" ? statusSource : "pending";
+  const stageSource = data.stage ?? data.workflowStage ?? data.paymentStage;
+  const stage: PaymentReminderRecord["stage"] =
+    stageSource === "admin_notified" ||
+    stageSource === "awaiting_client_choice" ||
+    stageSource === "awaiting_transfer_confirmation" ||
+    stageSource === "awaiting_admin_confirmation" ||
+    stageSource === "declined" ||
+    stageSource === "completed"
+      ? stageSource
+      : "pending";
+  const methodSource = data.method ?? data.paymentMethod ?? data.channel;
+  const method: PaymentReminderRecord["method"] =
+    methodSource === "cash" || methodSource === "transfer" ? methodSource : null;
   const dueSource = data.dueDate ?? data.due_date ?? data.nextPaymentDate ?? data.next_payment_date;
   const dueDate =
     typeof dueSource === "string" && dueSource.trim() && !Number.isNaN(Date.parse(dueSource))
@@ -1304,15 +1317,49 @@ const normalizePaymentReminderRecord = (
       : lastSource === null
         ? null
         : undefined;
+  const followUpSource = data.nextFollowUpAt ?? data.next_follow_up_at ?? data.followUpAt;
+  const nextFollowUpAt =
+    typeof followUpSource === "string" && followUpSource.trim() && !Number.isNaN(Date.parse(followUpSource))
+      ? new Date(followUpSource).toISOString()
+      : followUpSource === null
+        ? null
+        : undefined;
+  const adminChatSource = data.adminChatId ?? data.admin_chat_id ?? data.adminChat;
+  const adminChatId =
+    typeof adminChatSource === "string" && adminChatSource.trim()
+      ? adminChatSource.trim()
+      : adminChatSource === null
+        ? null
+        : undefined;
+  const clientChatSource = data.clientChatId ?? data.client_chat_id ?? data.clientChat;
+  const clientChatId =
+    typeof clientChatSource === "string" && clientChatSource.trim()
+      ? clientChatSource.trim()
+      : clientChatSource === null
+        ? null
+        : undefined;
+  const clientPromptSource = data.lastClientPromptAt ?? data.last_client_prompt_at ?? data.clientPromptedAt;
+  const lastClientPromptAt =
+    typeof clientPromptSource === "string" && clientPromptSource.trim() && !Number.isNaN(Date.parse(clientPromptSource))
+      ? new Date(clientPromptSource).toISOString()
+      : clientPromptSource === null
+        ? null
+        : undefined;
   return {
     id,
     projectId,
     status,
+    stage,
+    method,
     dueDate,
     notifiedCount,
     createdAt,
     updatedAt,
     lastNotifiedAt,
+    nextFollowUpAt,
+    adminChatId,
+    clientChatId,
+    lastClientPromptAt,
   };
 };
 
@@ -1410,13 +1457,65 @@ export const savePaymentReminders = async (
       id: record.id,
       project_id: record.projectId,
       status: record.status,
+      stage: record.stage,
+      method: record.method ?? null,
       due_date: record.dueDate ?? null,
       notified_count: record.notifiedCount,
       last_notified_at: record.lastNotifiedAt ?? null,
+      next_follow_up_at: record.nextFollowUpAt ?? null,
+      admin_chat_id: record.adminChatId ?? null,
+      client_chat_id: record.clientChatId ?? null,
+      last_client_prompt_at: record.lastClientPromptAt ?? null,
       created_at: record.createdAt,
       updated_at: record.updatedAt,
     }),
   });
+};
+
+export const loadPaymentReminderRecord = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<PaymentReminderRecord | null> => {
+  const reminders = await listPaymentReminders(env).catch(() => [] as PaymentReminderRecord[]);
+  return reminders.find((record) => record.projectId === projectId) ?? null;
+};
+
+export const applyPaymentReminderPatch = async (
+  env: EnvBindings,
+  projectId: string,
+  patch: Partial<PaymentReminderRecord>,
+  defaults: Partial<PaymentReminderRecord> = {},
+): Promise<PaymentReminderRecord> => {
+  const reminders = await listPaymentReminders(env).catch(() => [] as PaymentReminderRecord[]);
+  const nowIso = new Date().toISOString();
+  const index = reminders.findIndex((record) => record.projectId === projectId);
+  const base =
+    index >= 0
+      ? reminders[index]
+      : normalizePaymentReminderRecord({
+          id: `payrem_${createId(10)}`,
+          projectId,
+          status: "pending",
+          stage: "pending",
+          notifiedCount: 0,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        });
+  const merged = normalizePaymentReminderRecord({
+    ...base,
+    ...defaults,
+    ...patch,
+    id: base.id,
+    projectId,
+    updatedAt: nowIso,
+  });
+  if (index >= 0) {
+    reminders[index] = merged;
+  } else {
+    reminders.push(merged);
+  }
+  await savePaymentReminders(env, reminders);
+  return merged;
 };
 
 export const clearPaymentReminder = async (env: EnvBindings, projectId: string): Promise<void> => {
