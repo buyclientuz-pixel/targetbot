@@ -93,17 +93,21 @@ export type PortalMetricKey =
   | "ctr"
   | "cpc"
   | "reach"
+  | "messages"
   | "conversations"
   | "cpm"
   | "purchases"
   | "cpa"
   | "roas"
+  | "conversions"
   | "engagements"
   | "cpe"
   | "thruplays"
   | "cpv"
   | "installs"
-  | "cpi";
+  | "cpi"
+  | "freq"
+  | "cpurchase";
 
 export type ReportRoutingTarget = "chat" | "admin" | "both";
 

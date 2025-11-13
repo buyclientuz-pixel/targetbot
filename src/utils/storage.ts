@@ -108,17 +108,21 @@ const PORTAL_ALLOWED_METRICS: PortalMetricKey[] = [
   "ctr",
   "cpc",
   "reach",
+  "messages",
   "conversations",
   "cpm",
   "purchases",
   "cpa",
   "roas",
+  "conversions",
   "engagements",
   "cpe",
   "thruplays",
   "cpv",
   "installs",
   "cpi",
+  "freq",
+  "cpurchase",
 ];
 
 const sanitizePortalMetrics = (values: unknown): PortalMetricKey[] => {

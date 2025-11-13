@@ -11,6 +11,7 @@ import {
   ProjectSummary,
 } from "../types";
 import { EnvBindings, listLeads, listPayments, listProjects } from "./storage";
+import { KPI_LABELS } from "./kpi";
 
 export interface SummarizeProjectsOptions {
   projectIds?: string[];
@@ -39,6 +40,10 @@ const DEFAULT_REPORT_METRICS: PortalMetricKey[] = [
   "clicks",
 ];
 
+const AVAILABLE_REPORT_METRICS = new Set<PortalMetricKey>(
+  Object.keys(KPI_LABELS) as PortalMetricKey[],
+);
+
 export const DEFAULT_REPORT_PREFERENCES: ProjectReportPreferences = {
   campaignIds: [],
   metrics: [...DEFAULT_REPORT_METRICS],
@@ -50,7 +55,7 @@ const sanitizeMetrics = (values: unknown): PortalMetricKey[] => {
   }
   const normalized = values
     .map((value) => String(value).trim())
-    .filter((value): value is PortalMetricKey => (DEFAULT_REPORT_METRICS as string[]).includes(value));
+    .filter((value): value is PortalMetricKey => AVAILABLE_REPORT_METRICS.has(value as PortalMetricKey));
   return normalized.length ? normalized : [...DEFAULT_REPORT_METRICS];
 };
 

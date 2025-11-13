@@ -82,7 +82,7 @@ import { runReportSchedules } from "./utils/report-scheduler";
 import { runAutoReportEngine } from "./utils/auto-report-engine";
 import { TelegramEnv } from "./utils/telegram";
 import { runRegressionChecks } from "./utils/qa";
-import { KPI_LABELS } from "./utils/kpi";
+import { KPI_LABELS, syncCampaignObjectives } from "./utils/kpi";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -457,6 +457,7 @@ export default {
               limit: portalRecord.mode === "manual" ? Math.max(10, portalRecord.campaignIds.length || 10) : 25,
               datePreset: "today",
             });
+            await syncCampaignObjectives(bindings, project.id, campaigns);
           }
         } catch (error) {
           console.warn("Failed to load portal campaigns", project.id, (error as Error).message);
@@ -510,6 +511,7 @@ export default {
             leads: acc.leads + (campaign.leads ?? 0),
             conversations: acc.conversations + (campaign.conversations ?? 0),
             purchases: acc.purchases + (campaign.purchases ?? 0),
+            conversions: acc.conversions + (campaign.conversions ?? 0),
             engagements: acc.engagements + (campaign.engagements ?? 0),
             thruplays: acc.thruplays + (campaign.thruplays ?? 0),
             installs: acc.installs + (campaign.installs ?? 0),
@@ -523,6 +525,7 @@ export default {
             leads: 0,
             conversations: 0,
             purchases: 0,
+            conversions: 0,
             engagements: 0,
             thruplays: 0,
             installs: 0,
@@ -549,6 +552,8 @@ export default {
           cpc:
             clicksTotal > 0 && spendTotal > 0 ? formatCurrency(spendTotal / clicksTotal) : "—",
           reach: aggregates.reach > 0 ? formatNumber(Math.round(aggregates.reach)) : "—",
+          messages:
+            aggregates.conversations > 0 ? formatNumber(Math.round(aggregates.conversations)) : "—",
           conversations:
             aggregates.conversations > 0 ? formatNumber(Math.round(aggregates.conversations)) : "—",
           cpm:
@@ -578,6 +583,16 @@ export default {
           cpi:
             aggregates.installs > 0 && spendTotal > 0
               ? formatCurrency(spendTotal / aggregates.installs)
+              : "—",
+          conversions:
+            aggregates.conversions > 0 ? formatNumber(Math.round(aggregates.conversions)) : "—",
+          freq:
+            aggregates.reach > 0 && impressionsTotal > 0
+              ? (impressionsTotal / aggregates.reach).toFixed(2)
+              : "—",
+          cpurchase:
+            aggregates.purchases > 0 && spendTotal > 0
+              ? formatCurrency(spendTotal / aggregates.purchases)
               : "—",
         } as Record<PortalMetricKey, string>;
 

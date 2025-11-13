@@ -2342,6 +2342,7 @@ const handleProjectPortalCampaigns = async (context: BotContext, projectId: stri
   let campaigns: MetaCampaign[] = [];
   try {
     campaigns = await fetchCampaigns(metaEnv, token, summary.adAccountId, { limit: 50, datePreset: "today" });
+    await syncCampaignObjectives(context.env, summary.id, campaigns);
   } catch (error) {
     console.warn("Failed to fetch campaigns for portal", projectId, error);
   }

@@ -1,8 +1,15 @@
-import { MetaAdAccount, ProjectSummary, ReportRecord, ReportType } from "../types";
-import { EnvBindings, appendReportRecord, loadMetaToken, saveReportAsset } from "./storage";
+import { MetaAdAccount, PortalMetricKey, ProjectSummary, ReportRecord, ReportType } from "../types";
+import {
+  EnvBindings,
+  appendReportRecord,
+  loadMetaToken,
+  saveReportAsset,
+  listCampaignObjectivesForProject,
+} from "./storage";
 import { summarizeProjects, sortProjectSummaries, extractProjectReportPreferences } from "./projects";
 import { createId } from "./ids";
 import { fetchAdAccounts, fetchCampaigns, withMetaSettings } from "./meta";
+import { syncCampaignObjectives, getCampaignKPIs } from "./kpi";
 import { escapeHtml } from "./html";
 
 const GLOBAL_PROJECT_ID = "__multi__";
@@ -162,6 +169,7 @@ const collectPreferredCampaignSpend = async (
           since: filters.since,
           until: filters.until,
         });
+        await syncCampaignObjectives(env, projectId, campaigns);
         if (!campaigns.length) {
           overrides.set(projectId, { label: "—" });
           return;
@@ -190,6 +198,33 @@ const collectPreferredCampaignSpend = async (
   );
 
   return overrides;
+};
+
+const collectProjectObjectiveMetrics = async (
+  env: EnvBindings,
+  summaries: ProjectSummary[],
+): Promise<Map<string, PortalMetricKey[]>> => {
+  const entries = await Promise.all(
+    summaries.map(async (summary) => {
+      try {
+        const objectives = await listCampaignObjectivesForProject(env, summary.id);
+        const metrics = new Set<PortalMetricKey>();
+        Object.values(objectives).forEach((objective) => {
+          if (typeof objective === "string" && objective.trim()) {
+            getCampaignKPIs(objective).forEach((metric) => metrics.add(metric));
+          }
+        });
+        if (!metrics.size) {
+          return [summary.id, getCampaignKPIs(null)] as const;
+        }
+        return [summary.id, Array.from(metrics)] as const;
+      } catch (error) {
+        console.warn("Failed to resolve campaign objectives for report", summary.id, error);
+        return [summary.id, getCampaignKPIs(null)] as const;
+      }
+    }),
+  );
+  return new Map(entries);
 };
 
 const billingLabel = (summary: ProjectSummary): string => {
@@ -299,6 +334,8 @@ export const generateReport = async (
   const summaries = sortProjectSummaries(await summarizeProjects(env, { projectIds: options.projectIds }));
   const accounts = await accountSpendMap(env, options.includeMeta !== false, filters);
   const overrides = await collectPreferredCampaignSpend(env, summaries, filters);
+  const objectiveMetrics = await collectProjectObjectiveMetrics(env, summaries);
+  const objectiveKpiRecord = Object.fromEntries(objectiveMetrics) as Record<string, PortalMetricKey[]>;
 
   const rows = summaries.map((summary) => {
     const account = summary.adAccountId ? accounts.get(summary.adAccountId) : undefined;
@@ -363,6 +400,7 @@ export const generateReport = async (
       periodLabel,
       command: options.command,
       includeMeta: options.includeMeta !== false,
+      objectiveKpis: objectiveKpiRecord,
     },
   };
 

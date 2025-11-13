@@ -19,7 +19,13 @@ import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery, sendTele
 import { generateReport } from "../utils/reports";
 import { summarizeProjects, sortProjectSummaries, applyProjectReportPreferencesPatch } from "../utils/projects";
 import { fetchCampaigns, withMetaSettings } from "../utils/meta";
-import { resolveCampaignKpis, persistCampaignKpis, resolveObjectiveKpis, syncCampaignObjectives, KPI_LABELS } from "../utils/kpi";
+import {
+  resolveCampaignKpis,
+  persistCampaignKpis,
+  syncCampaignObjectives,
+  KPI_LABELS,
+  getCampaignKPIs,
+} from "../utils/kpi";
 import { PortalMetricKey, ProjectSummary, MetaCampaign } from "../types";
 
 const REPORT_SESSION_TTL_MS = 30 * 60 * 1000;
@@ -142,17 +148,21 @@ const KPI_BASE_ORDER: PortalMetricKey[] = [
   "ctr",
   "cpc",
   "reach",
+  "messages",
   "conversations",
   "purchases",
   "cpa",
   "roas",
   "cpm",
+  "conversions",
   "engagements",
   "cpe",
   "thruplays",
   "cpv",
   "installs",
   "cpi",
+  "freq",
+  "cpurchase",
   "leads_total",
   "leads_new",
   "leads_done",
@@ -161,7 +171,7 @@ const KPI_BASE_ORDER: PortalMetricKey[] = [
 ];
 
 const buildKpiMetricOrder = (objective: string | null | undefined): PortalMetricKey[] => {
-  const ordered = [...resolveObjectiveKpis(objective), ...KPI_BASE_ORDER];
+  const ordered = [...getCampaignKPIs(objective), ...KPI_BASE_ORDER];
   const seen = new Set<PortalMetricKey>();
   const result: PortalMetricKey[] = [];
   ordered.forEach((key) => {
