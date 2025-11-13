@@ -11,8 +11,12 @@ import {
   JsonObject,
   PaymentReminderRecord,
   PaymentRecord,
+  PendingCampaignSelectionRecord,
+  PendingPortalOperation,
+  PortalMetricKey,
   ProjectBillingState,
   ProjectDeletionSummary,
+  ProjectPortalRecord,
   ProjectRecord,
   ReportFilters,
   ReportRecord,
@@ -69,6 +73,30 @@ const LEAD_REMINDER_KV_PREFIX = "reminders:lead:";
 const PAYMENT_REMINDER_KV_PREFIX = "reminders:payment:";
 const REPORT_SCHEDULE_KV_PREFIX = "reports:schedule:";
 const REPORT_DELIVERY_KV_PREFIX = "reports:delivery:";
+const PORTAL_INDEX_KEY = "portals/index.json";
+const PORTAL_KV_INDEX_KEY = "portals:index";
+const PORTAL_KV_PREFIX = "portal:";
+const PORTAL_PENDING_PREFIX = "portal/pending/";
+const CAMPAIGN_PENDING_PREFIX = "campaigns/pending/";
+
+const PORTAL_ALLOWED_METRICS: PortalMetricKey[] = [
+  "leads_total",
+  "leads_new",
+  "leads_done",
+  "spend",
+  "impressions",
+  "clicks",
+];
+
+const sanitizePortalMetrics = (values: unknown): PortalMetricKey[] => {
+  if (!Array.isArray(values)) {
+    return [...PORTAL_ALLOWED_METRICS];
+  }
+  const normalized = values
+    .map((value) => String(value).trim())
+    .filter((value): value is PortalMetricKey => PORTAL_ALLOWED_METRICS.includes(value as PortalMetricKey));
+  return normalized.length > 0 ? normalized : [...PORTAL_ALLOWED_METRICS];
+};
 
 const MAX_REPORT_RECORDS = 200;
 const MAX_REPORT_DELIVERIES = 200;
@@ -1247,6 +1275,117 @@ export const saveReportDeliveries = async (
   });
 };
 
+const normalizePortalRecord = (input: ProjectPortalRecord | Record<string, unknown>): ProjectPortalRecord => {
+  const data = input as Record<string, unknown>;
+  const nowIso = new Date().toISOString();
+  const portalId = typeof data.portalId === "string" ? data.portalId : (data.portal_id as string) || "";
+  const projectId = typeof data.projectId === "string" ? data.projectId : (data.project_id as string) || "";
+  const mode = data.mode === "manual" ? "manual" : "auto";
+  const campaignIds = Array.isArray(data.campaignIds)
+    ? data.campaignIds.map(String)
+    : Array.isArray((data as { campaign_ids?: unknown }).campaign_ids)
+      ? ((data as { campaign_ids?: unknown }).campaign_ids as unknown[]).map((value) => String(value))
+      : [];
+  const metricsSource = Array.isArray(data.metrics)
+    ? data.metrics
+    : Array.isArray((data as { metrics?: unknown }).metrics)
+      ? ((data as { metrics?: unknown }).metrics as unknown[])
+      : PORTAL_ALLOWED_METRICS;
+  const metrics = sanitizePortalMetrics(metricsSource);
+  return {
+    portalId,
+    projectId,
+    mode: mode === "manual" ? "manual" : "auto",
+    campaignIds,
+    metrics,
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : (data.created_at as string) || nowIso,
+    updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : (data.updated_at as string) || nowIso,
+    lastRegeneratedAt:
+      typeof data.lastRegeneratedAt === "string"
+        ? data.lastRegeneratedAt
+        : (data.last_regenerated_at as string) ?? null,
+    lastSharedAt:
+      typeof data.lastSharedAt === "string" ? data.lastSharedAt : (data.last_shared_at as string) ?? null,
+    lastReportId:
+      typeof data.lastReportId === "string" ? data.lastReportId : (data.last_report_id as string) ?? null,
+  } satisfies ProjectPortalRecord;
+};
+
+export const listPortals = async (env: EnvBindings): Promise<ProjectPortalRecord[]> => {
+  const stored = await readJsonFromR2<ProjectPortalRecord[] | Record<string, unknown>[] | null>(
+    env,
+    PORTAL_INDEX_KEY,
+    [],
+  );
+  return (stored ?? []).map(normalizePortalRecord);
+};
+
+export const savePortals = async (env: EnvBindings, portals: ProjectPortalRecord[]): Promise<void> => {
+  await writeJsonToR2(env, PORTAL_INDEX_KEY, portals);
+  await syncKvRecords({
+    env,
+    indexKey: PORTAL_KV_INDEX_KEY,
+    prefix: PORTAL_KV_PREFIX,
+    items: portals,
+    getId: (portal) => portal.portalId,
+    serialize: (portal) => ({
+      portal_id: portal.portalId,
+      project_id: portal.projectId,
+      mode: portal.mode,
+      campaign_ids: portal.campaignIds,
+      metrics: portal.metrics,
+      created_at: portal.createdAt,
+      updated_at: portal.updatedAt,
+      last_regenerated_at: portal.lastRegeneratedAt ?? null,
+      last_shared_at: portal.lastSharedAt ?? null,
+      last_report_id: portal.lastReportId ?? null,
+    }),
+  });
+};
+
+export const loadPortalById = async (
+  env: EnvBindings,
+  portalId: string,
+): Promise<ProjectPortalRecord | null> => {
+  const portals = await listPortals(env);
+  return portals.find((portal) => portal.portalId === portalId) ?? null;
+};
+
+export const loadPortalByProjectId = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<ProjectPortalRecord | null> => {
+  const portals = await listPortals(env);
+  return portals.find((portal) => portal.projectId === projectId) ?? null;
+};
+
+export const savePortalRecord = async (
+  env: EnvBindings,
+  record: ProjectPortalRecord,
+): Promise<ProjectPortalRecord> => {
+  const portals = await listPortals(env);
+  const index = portals.findIndex((portal) => portal.portalId === record.portalId);
+  const normalized = normalizePortalRecord(record);
+  if (index >= 0) {
+    portals[index] = normalized;
+  } else {
+    portals.push(normalized);
+  }
+  await savePortals(env, portals);
+  return normalized;
+};
+
+export const deletePortalRecord = async (
+  env: EnvBindings,
+  portalId: string,
+): Promise<void> => {
+  const portals = await listPortals(env);
+  const filtered = portals.filter((portal) => portal.portalId !== portalId);
+  if (filtered.length !== portals.length) {
+    await savePortals(env, filtered);
+  }
+};
+
 export const listSettings = async (env: EnvBindings): Promise<SettingRecord[]> => {
   return readJsonFromR2<SettingRecord[]>(env, SETTINGS_KEY, []);
 };
@@ -1379,6 +1518,7 @@ export const deleteProjectCascade = async (
     paymentReminders,
     schedules,
     reports,
+    portals,
   ] = await Promise.all([
     listMetaAccountLinks(env).catch(() => [] as MetaAccountLinkRecord[]),
     listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]),
@@ -1388,6 +1528,7 @@ export const deleteProjectCascade = async (
     listPaymentReminders(env).catch(() => [] as PaymentReminderRecord[]),
     listReportSchedules(env).catch(() => [] as ReportScheduleRecord[]),
     listReports(env).catch(() => [] as ReportRecord[]),
+    listPortals(env).catch(() => [] as ProjectPortalRecord[]),
   ]);
 
   const account = metaAccounts.find(
@@ -1418,6 +1559,9 @@ export const deleteProjectCascade = async (
 
   const paymentRemindersRemaining = paymentReminders.filter((record) => record.projectId !== projectId);
   const removedPaymentReminders = paymentReminders.length - paymentRemindersRemaining.length;
+
+  const portalsRemaining = portals.filter((portal) => portal.projectId !== projectId);
+  const removedPortal = portals.length !== portalsRemaining.length;
 
   let updatedSchedulesCount = 0;
   const updatedSchedules = schedules.map((schedule) => {
@@ -1481,6 +1625,9 @@ export const deleteProjectCascade = async (
   if (reportPartition.removed.length > 0) {
     storageUpdates.push(saveReports(env, reportPartition.kept));
   }
+  if (removedPortal) {
+    storageUpdates.push(savePortals(env, portalsRemaining));
+  }
 
   await Promise.all(storageUpdates);
 
@@ -1514,6 +1661,7 @@ export const deleteProjectCascade = async (
     clearedLeadReminders: removedLeadReminders,
     clearedPaymentReminders: removedPaymentReminders,
     updatedSchedules: updatedSchedulesCount,
+    portalRemoved: removedPortal,
   } satisfies ProjectDeletionSummary;
 };
 
@@ -1864,4 +2012,78 @@ export const clearPendingUserOperation = async (
   userId: string,
 ): Promise<void> => {
   await env.DB.delete(pendingUserKey(userId));
+};
+
+const pendingPortalKey = (userId: string): string => `${PORTAL_PENDING_PREFIX}${userId}`;
+
+export const loadPendingPortalOperation = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<PendingPortalOperation | null> => {
+  const stored = await env.DB.get(pendingPortalKey(userId));
+  if (!stored) {
+    return null;
+  }
+  try {
+    return JSON.parse(stored) as PendingPortalOperation;
+  } catch (error) {
+    console.error("Failed to parse pending portal operation", error);
+    return null;
+  }
+};
+
+export const savePendingPortalOperation = async (
+  env: EnvBindings,
+  userId: string,
+  operation: PendingPortalOperation,
+  ttlSeconds = 900,
+): Promise<void> => {
+  const payload = { ...operation, updatedAt: new Date().toISOString() } satisfies PendingPortalOperation;
+  await env.DB.put(pendingPortalKey(userId), JSON.stringify(payload), {
+    expirationTtl: Math.max(60, ttlSeconds),
+  });
+};
+
+export const clearPendingPortalOperation = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<void> => {
+  await env.DB.delete(pendingPortalKey(userId));
+};
+
+const pendingCampaignKey = (userId: string): string => `${CAMPAIGN_PENDING_PREFIX}${userId}`;
+
+export const loadPendingCampaignSelection = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<PendingCampaignSelectionRecord | null> => {
+  const stored = await env.DB.get(pendingCampaignKey(userId));
+  if (!stored) {
+    return null;
+  }
+  try {
+    return JSON.parse(stored) as PendingCampaignSelectionRecord;
+  } catch (error) {
+    console.error("Failed to parse campaign selection", error);
+    return null;
+  }
+};
+
+export const savePendingCampaignSelection = async (
+  env: EnvBindings,
+  userId: string,
+  payload: PendingCampaignSelectionRecord,
+  ttlSeconds = 900,
+): Promise<void> => {
+  const record = { ...payload, updatedAt: new Date().toISOString() } satisfies PendingCampaignSelectionRecord;
+  await env.DB.put(pendingCampaignKey(userId), JSON.stringify(record), {
+    expirationTtl: Math.max(60, ttlSeconds),
+  });
+};
+
+export const clearPendingCampaignSelection = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<void> => {
+  await env.DB.delete(pendingCampaignKey(userId));
 };

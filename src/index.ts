@@ -69,10 +69,12 @@ import {
   loadMetaToken,
   loadProject,
   listLeads,
+  loadPortalById,
+  loadPortalByProjectId,
 } from "./utils/storage";
-import { fetchAdAccounts, resolveMetaStatus } from "./utils/meta";
+import { fetchAdAccounts, fetchCampaigns, resolveMetaStatus, withMetaSettings } from "./utils/meta";
 import { projectBilling, summarizeProjects, sortProjectSummaries } from "./utils/projects";
-import { ProjectSummary } from "./types";
+import { MetaCampaign, PortalMetricKey, ProjectSummary } from "./types";
 import { handleTelegramUpdate } from "./bot/router";
 import { handleMetaWebhook } from "./api/meta-webhook";
 import { runReminderSweep } from "./utils/reminders";
@@ -414,18 +416,122 @@ export default {
 
       const portalMatch = pathname.match(/^\/portal\/([^/]+)$/);
       if (portalMatch && method === "GET") {
-        const projectId = decodeURIComponent(portalMatch[1]);
+        const slug = decodeURIComponent(portalMatch[1]);
         const bindings = ensureEnv(env);
-        const project = await loadProject(bindings, projectId);
+        let portalRecord = await loadPortalById(bindings, slug);
+        let project = portalRecord ? await loadProject(bindings, portalRecord.projectId) : null;
+
+        if (!portalRecord && !project) {
+          project = await loadProject(bindings, slug);
+          if (project) {
+            portalRecord = await loadPortalByProjectId(bindings, project.id);
+          }
+        }
+
         if (!project) {
           return htmlResponse("<h1>Проект не найден</h1>", { status: 404 });
         }
+
+        if (!portalRecord) {
+          return htmlResponse(
+            "<h1>Портал не настроен</h1><p>Администратор ещё не создал портал для этого проекта. Обратитесь к команде поддержки TargetBot.</p>",
+            { status: 404 },
+          );
+        }
+
         const [leads, payments] = await Promise.all([
-          listLeads(bindings, projectId),
+          listLeads(bindings, project.id),
           listPayments(bindings),
         ]);
-        const billing = projectBilling.summarize(payments.filter((entry) => entry.projectId === projectId));
-        const html = renderPortal({ project, leads, billing });
+        const billing = projectBilling.summarize(payments.filter((entry) => entry.projectId === project.id));
+
+        let campaigns: MetaCampaign[] = [];
+        try {
+          if (project.adAccountId) {
+            const token = await loadMetaToken(bindings);
+            const metaEnv = await withMetaSettings(bindings);
+            campaigns = await fetchCampaigns(metaEnv, token, project.adAccountId, {
+              limit: portalRecord.mode === "manual" ? Math.max(10, portalRecord.campaignIds.length || 10) : 25,
+              datePreset: "today",
+            });
+          }
+        } catch (error) {
+          console.warn("Failed to load portal campaigns", project.id, (error as Error).message);
+        }
+
+        const selectedCampaigns = (() => {
+          if (!campaigns.length) {
+            return [] as MetaCampaign[];
+          }
+          const sorted = campaigns.slice().sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0));
+          if (portalRecord.mode === "manual" && portalRecord.campaignIds.length) {
+            const ids = new Set(portalRecord.campaignIds);
+            const manual = sorted.filter((campaign) => ids.has(campaign.id));
+            return manual.length ? manual : sorted.slice(0, 10);
+          }
+          return sorted.slice(0, 10);
+        })();
+
+        const leadsNew = leads.filter((lead) => lead.status === "new").length;
+        const leadsDone = leads.filter((lead) => lead.status === "done").length;
+        const leadsTotal = leads.length;
+
+        const spendCurrency =
+          selectedCampaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency || campaigns[0]?.spendCurrency;
+        const spendTotal = selectedCampaigns.reduce((total, campaign) => total + (campaign.spend ?? 0), 0);
+        const impressionsTotal = selectedCampaigns.reduce((total, campaign) => total + (campaign.impressions ?? 0), 0);
+        const clicksTotal = selectedCampaigns.reduce((total, campaign) => total + (campaign.clicks ?? 0), 0);
+
+        const formatNumber = (value: number): string => new Intl.NumberFormat("ru-RU").format(value);
+        const formatCurrency = (value: number): string => {
+          if (!Number.isFinite(value) || value === 0) {
+            return "—";
+          }
+          try {
+            return new Intl.NumberFormat("ru-RU", {
+              style: "currency",
+              currency: spendCurrency || "USD",
+              maximumFractionDigits: 2,
+            }).format(value);
+          } catch {
+            return `${value.toFixed(2)} ${spendCurrency || "USD"}`;
+          }
+        };
+
+        const metricLabels: Record<PortalMetricKey, string> = {
+          leads_total: "Лиды всего",
+          leads_new: "Новые лиды",
+          leads_done: "Завершённые лиды",
+          spend: "Расход",
+          impressions: "Показы",
+          clicks: "Клики",
+        };
+
+        const metricValues: Record<PortalMetricKey, string> = {
+          leads_total: formatNumber(leadsTotal),
+          leads_new: formatNumber(leadsNew),
+          leads_done: formatNumber(leadsDone),
+          spend: spendTotal > 0 ? formatCurrency(spendTotal) : "—",
+          impressions: impressionsTotal > 0 ? formatNumber(impressionsTotal) : "—",
+          clicks: clicksTotal > 0 ? formatNumber(clicksTotal) : "—",
+        };
+
+        const preferredMetrics = portalRecord.metrics.length
+          ? portalRecord.metrics
+          : (["leads_total", "leads_new", "leads_done", "spend"] as PortalMetricKey[]);
+
+        const metrics = preferredMetrics
+          .map((key) => ({ key, label: metricLabels[key], value: metricValues[key] }))
+          .filter((entry) => entry.value && entry.value !== "—");
+
+        const html = renderPortal({
+          project,
+          leads,
+          billing,
+          campaigns: selectedCampaigns,
+          metrics,
+          mode: portalRecord.mode,
+        });
         return htmlResponse(html);
       }
 

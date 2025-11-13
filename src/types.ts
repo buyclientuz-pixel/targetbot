@@ -59,6 +59,29 @@ export interface MetaCampaign {
   updatedTime?: string;
 }
 
+export type PortalMode = "auto" | "manual";
+
+export type PortalMetricKey =
+  | "leads_total"
+  | "leads_new"
+  | "leads_done"
+  | "spend"
+  | "impressions"
+  | "clicks";
+
+export interface ProjectPortalRecord {
+  portalId: string;
+  projectId: string;
+  mode: PortalMode;
+  campaignIds: string[];
+  metrics: PortalMetricKey[];
+  createdAt: string;
+  updatedAt: string;
+  lastRegeneratedAt?: string | null;
+  lastSharedAt?: string | null;
+  lastReportId?: string | null;
+}
+
 export interface MetaOAuthStatePayload {
   origin?: "telegram" | "admin" | "external";
   chatId?: string;
@@ -160,6 +183,7 @@ export interface ProjectDeletionSummary {
   clearedLeadReminders: number;
   clearedPaymentReminders: number;
   updatedSchedules: number;
+  portalRemoved?: boolean;
 }
 
 export interface ChatRegistrationRecord {
@@ -199,6 +223,19 @@ export interface ProjectBillingSummary {
 export interface ProjectSummary extends ProjectRecord {
   leadStats: ProjectLeadStats;
   billing: ProjectBillingSummary;
+}
+
+export interface PendingPortalOperation {
+  projectId: string;
+  action: "metrics" | "campaigns";
+  page?: number;
+  updatedAt: string;
+}
+
+export interface PendingCampaignSelectionRecord {
+  projectId: string;
+  campaignIds: string[];
+  updatedAt: string;
 }
 
 export interface LeadRecord {

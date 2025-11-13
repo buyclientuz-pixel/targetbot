@@ -1,11 +1,27 @@
-import { LeadRecord, ProjectBillingSummary, ProjectRecord } from "../types";
+import {
+  LeadRecord,
+  MetaCampaign,
+  PortalMetricKey,
+  PortalMode,
+  ProjectBillingSummary,
+  ProjectRecord,
+} from "../types";
 import { renderLayout } from "../components/layout";
 import { escapeHtml } from "../utils/html";
+
+interface PortalMetricEntry {
+  key: PortalMetricKey;
+  label: string;
+  value: string;
+}
 
 interface PortalViewProps {
   project: ProjectRecord;
   leads: LeadRecord[];
   billing: ProjectBillingSummary;
+  campaigns: MetaCampaign[];
+  metrics: PortalMetricEntry[];
+  mode: PortalMode;
 }
 
 const statusBadge = (status: LeadRecord["status"]): string => {
@@ -73,18 +89,102 @@ const billingSection = (billing: ProjectBillingSummary): string => {
   `;
 };
 
-export const renderPortal = ({ project, leads, billing }: PortalViewProps): string => {
+const renderMetrics = (metrics: PortalMetricEntry[]): string => {
+  if (!metrics.length) {
+    return '';
+  }
+  const cards = metrics
+    .map(
+      (metric) => `
+        <div class="metric">
+          <span class="metric-label">${escapeHtml(metric.label)}</span>
+          <span class="metric-value">${escapeHtml(metric.value)}</span>
+        </div>
+      `,
+    )
+    .join("\n");
+  return `
+    <section class="card">
+      <h2>Ключевые показатели</h2>
+      <div class="metrics-grid">
+        ${cards}
+      </div>
+    </section>
+  `;
+};
+
+const formatCampaignStatus = (campaign: MetaCampaign): string => {
+  const effective = campaign.effectiveStatus || campaign.status || "UNKNOWN";
+  const label = effective.replace(/_/g, " ");
+  const upper = effective.toUpperCase();
+  if (upper.startsWith("ACTIVE")) {
+    return `<span class="badge success">${escapeHtml(label)}</span>`;
+  }
+  if (upper.includes("PAUSED") || upper.includes("DISABLE")) {
+    return `<span class="badge warning">${escapeHtml(label)}</span>`;
+  }
+  return `<span class="badge muted">${escapeHtml(label)}</span>`;
+};
+
+const renderCampaigns = (campaigns: MetaCampaign[]): string => {
+  if (!campaigns.length) {
+    return '';
+  }
+  const rows = campaigns
+    .map((campaign) => {
+      const spend = campaign.spendFormatted || (campaign.spend !== undefined ? `${campaign.spend.toFixed(2)} ${campaign.spendCurrency || ""}`.trim() : "—");
+      const impressions = campaign.impressions !== undefined ? campaign.impressions.toLocaleString("ru-RU") : "—";
+      const clicks = campaign.clicks !== undefined ? campaign.clicks.toLocaleString("ru-RU") : "—";
+      return `
+        <tr>
+          <td>${escapeHtml(campaign.name)}</td>
+          <td>${formatCampaignStatus(campaign)}</td>
+          <td>${escapeHtml(spend)}</td>
+          <td>${escapeHtml(impressions)}</td>
+          <td>${escapeHtml(clicks)}</td>
+        </tr>
+      `;
+    })
+    .join("\n");
+  return `
+    <section class="card">
+      <h2>Рекламные кампании</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Название</th>
+            <th>Статус</th>
+            <th>Расход</th>
+            <th>Показы</th>
+            <th>Клики</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </section>
+  `;
+};
+
+const modeLabel = (mode: PortalMode): string => {
+  return mode === "manual" ? "Режим: ручной" : "Режим: автоматический";
+};
+
+export const renderPortal = ({ project, leads, billing, campaigns, metrics, mode }: PortalViewProps): string => {
   const rows = leads.map(leadRow).join("\n");
   const newCount = leads.filter((lead) => lead.status === "new").length;
   const doneCount = leads.filter((lead) => lead.status === "done").length;
   const emptyStateClass = leads.length === 0 ? "" : "hidden";
+  const metricsBlock = renderMetrics(metrics);
+  const campaignBlock = renderCampaigns(campaigns);
   const body = `
     <section class="card">
       <h2>${project.name}</h2>
       <p class="muted">Чат: ${project.telegramLink || project.telegramChatId || "—"}</p>
       <p class="muted">Рекламный кабинет: ${project.adAccountId || "—"}</p>
+      <p class="muted">${escapeHtml(modeLabel(mode))}</p>
       ${billingSection(billing)}
     </section>
+    ${metricsBlock}
     <section class="card">
       <h2>Лиды</h2>
       <div class="actions" id="leadFilters">
@@ -109,6 +209,7 @@ export const renderPortal = ({ project, leads, billing }: PortalViewProps): stri
       </table>
       <p id="leadsEmpty" class="empty-state ${emptyStateClass}">Лидов для выбранного фильтра пока нет.</p>
     </section>
+    ${campaignBlock}
   `;
 
   const projectIdLiteral = JSON.stringify(project.id);
@@ -226,5 +327,12 @@ export const renderPortal = ({ project, leads, billing }: PortalViewProps): stri
     })();
   `;
 
-  return renderLayout({ title: `Портал — ${project.name}`, body, scripts });
+  const styles = `
+    .metrics-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-top: 16px; }
+    .metric { background: #f8fafc; border: 1px solid #d9e2ec; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+    .metric-label { color: #627d98; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric-value { font-size: 20px; font-weight: 700; color: #102a43; }
+  `;
+
+  return renderLayout({ title: `Портал — ${project.name}`, body, scripts, styles });
 };

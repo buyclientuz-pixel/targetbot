@@ -13,6 +13,14 @@ import {
 const GRAPH_BASE = "https://graph.facebook.com";
 const DEFAULT_GRAPH_VERSION = "v19.0";
 
+const graphVersion = (env: Record<string, unknown>): string => {
+  const raw = (env as { META_GRAPH_VERSION?: unknown }).META_GRAPH_VERSION;
+  if (typeof raw === "string" && raw.trim()) {
+    return raw.trim();
+  }
+  return DEFAULT_GRAPH_VERSION;
+};
+
 const TOKEN_KEYS = [
   "META_ACCESS_TOKEN",
   "FB_ACCESS_TOKEN",
@@ -216,6 +224,8 @@ export interface FetchCampaignsOptions {
   since?: string;
   until?: string;
 }
+
+export type CampaignStatusValue = "ACTIVE" | "PAUSED";
 
 const toStringArray = (value: unknown): string[] => {
   if (!value) {
@@ -991,6 +1001,52 @@ export const fetchCampaigns = async (
   });
 
   return campaigns;
+};
+
+export const updateCampaignStatus = async (
+  env: EnvBindings & Record<string, unknown>,
+  record: MetaTokenRecord | null,
+  campaignId: string,
+  status: CampaignStatusValue,
+): Promise<boolean> => {
+  const tokenRecord = effectiveToken(env, record);
+  const freshness = ensureTokenFreshness(tokenRecord);
+  if (freshness === "missing" || !tokenRecord?.accessToken) {
+    throw new Error("Meta token is missing");
+  }
+  const version = graphVersion(env);
+  const url = new URL(`${GRAPH_BASE}/${version}/${campaignId}`);
+  const params = new URLSearchParams();
+  params.set("access_token", tokenRecord.accessToken);
+  params.set("status", status);
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    body: params,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to update campaign ${campaignId}: ${text}`);
+  }
+  const json = (await response.json()) as { success?: boolean };
+  return Boolean(json?.success);
+};
+
+export const updateCampaignStatuses = async (
+  env: EnvBindings & Record<string, unknown>,
+  record: MetaTokenRecord | null,
+  campaignIds: string[],
+  status: CampaignStatusValue,
+): Promise<{ updated: string[]; failed: { id: string; error: string }[] }> => {
+  const results: { updated: string[]; failed: { id: string; error: string }[] } = { updated: [], failed: [] };
+  for (const id of campaignIds) {
+    try {
+      await updateCampaignStatus(env, record, id, status);
+      results.updated.push(id);
+    } catch (error) {
+      results.failed.push({ id, error: (error as Error).message });
+    }
+  }
+  return results;
 };
 
 export const fetchLeadDetails = async (

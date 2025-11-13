@@ -114,3 +114,58 @@ export const answerCallbackQuery = async (
     console.error("Failed to answer callback query", await response.text());
   }
 };
+
+export interface TelegramDocumentOptions {
+  chatId: string;
+  data: string | ArrayBuffer | Uint8Array;
+  fileName: string;
+  contentType?: string;
+  caption?: string;
+  threadId?: number;
+  replyMarkup?: unknown;
+}
+
+export const sendTelegramDocument = async (
+  env: TelegramEnv,
+  options: TelegramDocumentOptions,
+): Promise<void> => {
+  const token = resolveToken(env);
+  if (!token) {
+    console.warn("Telegram token is missing");
+    return;
+  }
+  const url = new URL(`${TELEGRAM_BASE}/bot${token}/sendDocument`);
+  const form = new FormData();
+  form.append("chat_id", options.chatId);
+  if (typeof options.threadId === "number") {
+    form.append("message_thread_id", String(options.threadId));
+  }
+  if (options.caption) {
+    form.append("caption", options.caption);
+    form.append("parse_mode", "HTML");
+  }
+  if (options.replyMarkup) {
+    form.append("reply_markup", JSON.stringify(options.replyMarkup));
+  }
+
+  let blob: Blob;
+  if (typeof options.data === "string") {
+    blob = new Blob([options.data], { type: options.contentType || "text/plain; charset=utf-8" });
+  } else if (options.data instanceof ArrayBuffer) {
+    blob = new Blob([options.data], { type: options.contentType || "application/octet-stream" });
+  } else {
+    const copy = new Uint8Array(options.data.byteLength);
+    copy.set(options.data);
+    blob = new Blob([copy.buffer], { type: options.contentType || "application/octet-stream" });
+  }
+
+  form.append("document", blob, options.fileName);
+
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    console.error("Failed to send Telegram document", await response.text());
+  }
+};

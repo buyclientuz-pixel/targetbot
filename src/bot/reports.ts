@@ -7,9 +7,10 @@ import {
   saveReportSession,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
-import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "../utils/telegram";
+import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery, sendTelegramDocument } from "../utils/telegram";
 import { generateReport } from "../utils/reports";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
+import { getReportAsset } from "../utils/storage";
 
 const REPORT_SESSION_TTL_MS = 30 * 60 * 1000;
 
@@ -233,25 +234,14 @@ const sendReportSummary = async (
     return;
   }
   const record = result.record;
-  const webUrl =
-    context.env.PUBLIC_WEB_URL ||
-    context.env.PUBLIC_BASE_URL ||
-    context.env.WORKER_BASE_URL ||
-    context.env.ADMIN_BASE_URL;
-  const footer: string[] = [];
-  footer.push(`ID отчёта: <code>${escapeHtml(record.id)}</code>`);
-  if (webUrl) {
-    footer.push(
-      `Откройте <a href="${escapeAttribute(`${webUrl}/admin`)}">веб-панель</a> для скачивания и экспорта.`,
-    );
-  } else {
-    footer.push("Скачать отчёт можно в веб-панели TargetBot.");
-  }
-  const text = `${result.html}\n\n${footer.join("\n")}`;
+  const text = `${result.html}\n\nID отчёта: <code>${escapeHtml(record.id)}</code>`;
   await sendTelegramMessage(context.env, {
     chatId,
     threadId: context.threadId,
     text,
+    replyMarkup: {
+      inline_keyboard: [[{ text: "⬇️ Скачать отчёт", callback_data: `report:download:${record.id}` }]],
+    },
   });
 };
 
@@ -263,6 +253,34 @@ export const handleReportCallback = async (context: BotContext, data: string): P
   const parsed = resolveCallback(data);
   if (!parsed) {
     return false;
+  }
+  if (parsed.action === "download") {
+    const reportId = parsed.sessionId;
+    const chatId = ensureChatId(context);
+    if (!chatId) {
+      return true;
+    }
+    const asset = await getReportAsset(context.env, reportId);
+    if (!asset) {
+      await sendTelegramMessage(context.env, {
+        chatId,
+        threadId: context.threadId,
+        text: "Файл отчёта не найден. Сформируйте его заново.",
+      });
+      return true;
+    }
+    await sendTelegramDocument(context.env, {
+      chatId,
+      threadId: context.threadId,
+      data: asset.body,
+      fileName: `report_${reportId}.html`,
+      contentType: asset.contentType || "text/html; charset=utf-8",
+      caption: "⬇️ Отчёт загружен.",
+    });
+    if (context.update.callback_query?.id) {
+      await answerCallbackQuery(context.env, context.update.callback_query.id, "Отправлено");
+    }
+    return true;
   }
   const session = await loadReportSession(context.env, parsed.sessionId);
   if (!session) {

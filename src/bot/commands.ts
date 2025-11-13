@@ -10,6 +10,8 @@ import {
   clearPendingBillingOperation,
   clearPendingMetaLink,
   clearPendingUserOperation,
+  clearPendingPortalOperation,
+  clearPendingCampaignSelection,
   listChatRegistrations,
   listMetaAccountLinks,
   listLeads,
@@ -20,6 +22,8 @@ import {
   loadMetaToken,
   loadPendingMetaLink,
   loadPendingBillingOperation,
+  loadPendingPortalOperation,
+  loadPendingCampaignSelection,
   saveChatRegistrations,
   saveMetaAccountLinks,
   savePendingMetaLink,
@@ -32,19 +36,35 @@ import {
   loadProject,
   loadPendingUserOperation,
   savePendingUserOperation,
+  savePendingPortalOperation,
+  savePendingCampaignSelection,
+  loadPortalByProjectId,
+  savePortalRecord,
+  getReportAsset,
   MetaLinkFlow,
   PendingMetaLinkState,
   updateProjectRecord,
   clearPaymentReminder,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
-import { fetchAdAccounts, resolveMetaStatus } from "../utils/meta";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramDocument } from "../utils/telegram";
+import {
+  fetchAdAccounts,
+  fetchCampaigns,
+  resolveMetaStatus,
+  updateCampaignStatuses,
+  withMetaSettings,
+} from "../utils/meta";
+import { generateReport } from "../utils/reports";
 import {
   ChatRegistrationRecord,
   LeadRecord,
   MetaAccountLinkRecord,
   MetaAdAccount,
+  MetaCampaign,
+  PortalMetricKey,
+  PortalMode,
+  ProjectPortalRecord,
   PaymentRecord,
   ProjectDeletionSummary,
   ProjectRecord,
@@ -73,8 +93,11 @@ const buildAbsoluteUrl = (value: string | null | undefined, path: string): strin
   }
 };
 
-const resolvePortalUrl = (env: BotContext["env"], projectId: string): string | null => {
-  const path = `/portal/${encodeURIComponent(projectId)}`;
+const resolvePortalUrl = (env: BotContext["env"], portalId: string | null | undefined): string | null => {
+  if (!portalId) {
+    return null;
+  }
+  const path = `/portal/${encodeURIComponent(portalId)}`;
   const candidates = [
     env.PORTAL_BASE_URL,
     env.PUBLIC_WEB_URL,
@@ -110,6 +133,38 @@ const resolveAdminProjectUrl = (env: BotContext["env"], projectId: string): stri
 
 const HOME_MARKUP = {
   inline_keyboard: [[{ text: "⬅ Назад", callback_data: "cmd:menu" }]],
+};
+
+const DEFAULT_PORTAL_METRICS: PortalMetricKey[] = [
+  "leads_total",
+  "leads_new",
+  "leads_done",
+  "spend",
+  "impressions",
+  "clicks",
+];
+
+const PORTAL_METRIC_LABELS: Record<PortalMetricKey, string> = {
+  leads_total: "Лиды всего",
+  leads_new: "Новые лиды",
+  leads_done: "Завершено",
+  spend: "Расход",
+  impressions: "Показы",
+  clicks: "Клики",
+};
+
+const REPORT_PERIODS = [
+  { key: "today", label: "Сегодня", datePreset: "today" },
+  { key: "yesterday", label: "Вчера", datePreset: "yesterday" },
+  { key: "7d", label: "Неделя", datePreset: "last_7d" },
+  { key: "30d", label: "Месяц", datePreset: "last_30d" },
+  { key: "lifetime", label: "Вся история", datePreset: "lifetime" },
+] as const;
+
+type ReportPeriodKey = (typeof REPORT_PERIODS)[number]["key"];
+
+const resolveReportPeriod = (key: string): (typeof REPORT_PERIODS)[number] => {
+  return REPORT_PERIODS.find((period) => period.key === key) ?? REPORT_PERIODS[0];
 };
 
 const resolveReportLink = (env: BotContext["env"], reportId: string): string => {
@@ -209,6 +264,16 @@ const ensureChatId = (context: BotContext): string | null => {
     return null;
   }
   return context.chatId;
+};
+
+const resolveOperatorId = (context: BotContext): string | null => {
+  if (context.userId) {
+    return context.userId;
+  }
+  if (context.chatId) {
+    return context.chatId;
+  }
+  return null;
 };
 
 const sendMessage = async (
@@ -467,6 +532,25 @@ const loadProjectSummaryById = async (
 ): Promise<ProjectSummary | null> => {
   const summaries = await summarizeProjects(context.env, { projectIds: [projectId] });
   return summaries.length ? summaries[0] : null;
+};
+
+const loadProjectPortalRecord = async (
+  context: BotContext,
+  projectId: string,
+): Promise<ProjectPortalRecord | null> => {
+  try {
+    const record = await loadPortalByProjectId(context.env, projectId);
+    if (!record) {
+      return null;
+    }
+    return {
+      ...record,
+      metrics: record.metrics && record.metrics.length ? record.metrics : [...DEFAULT_PORTAL_METRICS],
+    };
+  } catch (error) {
+    console.warn("Failed to load portal record", projectId, error);
+    return null;
+  }
 };
 
 const truncateLabel = (label: string, max = 40): string => {
@@ -826,7 +910,13 @@ interface ProjectAccountInfo {
 const fetchProjectAccountInfo = async (
   context: BotContext,
   project: ProjectSummary,
-  options: { includeCampaigns?: boolean } = {},
+  options: {
+    includeCampaigns?: boolean;
+    campaignsLimit?: number;
+    datePreset?: string;
+    since?: string;
+    until?: string;
+  } = {},
 ): Promise<ProjectAccountInfo> => {
   if (!project.adAccountId) {
     return { status: "missing", account: null };
@@ -840,8 +930,10 @@ const fetchProjectAccountInfo = async (
     const accounts = await fetchAdAccounts(context.env, record, {
       includeSpend: true,
       includeCampaigns: options.includeCampaigns,
-      campaignsLimit: options.includeCampaigns ? 5 : undefined,
-      datePreset: "today",
+      campaignsLimit: options.includeCampaigns ? options.campaignsLimit ?? 5 : undefined,
+      datePreset: options.datePreset ?? "today",
+      since: options.since,
+      until: options.until,
     });
     const normalized = project.adAccountId.startsWith("act_")
       ? project.adAccountId
@@ -947,7 +1039,8 @@ const handleProjectView = async (context: BotContext, projectId: string): Promis
   } else {
     lines.push(chatLine);
   }
-  const portalUrl = resolvePortalUrl(context.env, summary.id);
+  const portalRecord = await loadProjectPortalRecord(context, summary.id);
+  const portalUrl = resolvePortalUrl(context.env, portalRecord?.portalId);
   if (portalUrl) {
     lines.push(`🧩 Портал: <a href="${escapeAttribute(portalUrl)}">Открыть клиентский портал</a>`);
   }
@@ -999,6 +1092,48 @@ const formatLeadPreview = (lead: LeadRecord): string => {
   const created = formatDateTime(lead.createdAt);
   const phone = lead.phone ? `, ${escapeHtml(lead.phone)}` : "";
   return `${statusIcon} ${escapeHtml(lead.name)}${phone} — ${escapeHtml(lead.source)} · ${escapeHtml(created)}`;
+};
+
+const computeLeadStatsForPeriod = (
+  leads: LeadRecord[],
+  period: ReportPeriodKey,
+): { total: number; new: number; done: number } => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const now = new Date();
+  const startOfUtcDay = (date: Date) => Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const todayStart = startOfUtcDay(now);
+  let since: number | null = null;
+  let until: number | null = null;
+  if (period === "today") {
+    since = todayStart;
+    until = todayStart + dayMs;
+  } else if (period === "yesterday") {
+    since = todayStart - dayMs;
+    until = todayStart;
+  } else if (period === "7d") {
+    since = todayStart - 6 * dayMs;
+    until = todayStart + dayMs;
+  } else if (period === "30d") {
+    since = todayStart - 29 * dayMs;
+    until = todayStart + dayMs;
+  }
+  const filtered = leads.filter((lead) => {
+    const created = Date.parse(lead.createdAt);
+    if (Number.isNaN(created)) {
+      return false;
+    }
+    if (since !== null && created < since) {
+      return false;
+    }
+    if (until !== null && created >= until) {
+      return false;
+    }
+    return true;
+  });
+  const total = filtered.length;
+  const newCount = filtered.filter((lead) => lead.status !== "done").length;
+  const doneCount = filtered.filter((lead) => lead.status === "done").length;
+  return { total, new: newCount, done: doneCount };
 };
 
 const toggleLeadStatus = async (
@@ -1063,7 +1198,8 @@ const handleProjectLeads = async (context: BotContext, projectId: string): Promi
   } else {
     lines.push("Пока нет заявок. Лиды из Facebook и других каналов появятся здесь автоматически.");
   }
-  const portalUrl = resolvePortalUrl(context.env, summary.id);
+  const portalRecord = await loadProjectPortalRecord(context, summary.id);
+  const portalUrl = resolvePortalUrl(context.env, portalRecord?.portalId);
   if (portalUrl) {
     lines.push(
       "",
@@ -1091,28 +1227,104 @@ const handleProjectLeads = async (context: BotContext, projectId: string): Promi
   });
 };
 
-const handleProjectReport = async (context: BotContext, projectId: string): Promise<void> => {
+const handleProjectReport = async (
+  context: BotContext,
+  projectId: string,
+  periodKey: ReportPeriodKey = "today",
+): Promise<void> => {
   const summary = await ensureProjectSummary(context, projectId);
   if (!summary) {
     return;
   }
-  const accountInfo = await fetchProjectAccountInfo(context, summary);
+  const period = resolveReportPeriod(periodKey);
+  const accountInfo = await fetchProjectAccountInfo(context, summary, { datePreset: period.datePreset });
   const account = accountInfo.account;
   const spendLabel = account?.spendFormatted ?? formatCurrencyValue(account?.spend, account?.spendCurrency);
+  const leads = await listLeads(context.env, summary.id).catch(() => [] as LeadRecord[]);
+  const leadStats = computeLeadStatsForPeriod(leads, period.key as ReportPeriodKey);
   const lines = [
     `📈 Отчёт по рекламе — <b>${escapeHtml(summary.name)}</b>`,
+    `Период: <b>${escapeHtml(period.label)}</b>`,
     "",
-    `Лиды: ${summary.leadStats.total} · Новые: ${summary.leadStats.new} · Закрыто: ${summary.leadStats.done}`,
+    `Лиды: ${leadStats.total} (новые ${leadStats.new}, закрыто ${leadStats.done})`,
     account
-      ? `Расход за сегодня: ${spendLabel ? escapeHtml(spendLabel) : "—"}`
+      ? `Расход: ${spendLabel ? escapeHtml(spendLabel) : "—"}`
       : accountInfo.status === "valid"
         ? "Расход недоступен: кабинет не найден среди активных аккаунтов."
         : "Расходы недоступны: требуется действующий токен Meta.",
     "",
-    "Используйте команду /summary для быстрой сводки или /auto_report для PDF-отчёта.",
-    "Кнопка «📤 Экспорт данных» запустит форму выбора проектов прямо в этом чате.",
+    "Выберите период или отправьте отчёт клиенту.",
   ];
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+  const buttons = REPORT_PERIODS.map((periodOption) => ({
+    text: `${periodOption.key === period.key ? "✅" : "☑️"} ${periodOption.label}`,
+    callback_data: `proj:report-period:${projectId}:${periodOption.key}`,
+  }));
+  const periodRows: { text: string; callback_data: string }[][] = [];
+  for (let i = 0; i < buttons.length; i += 2) {
+    periodRows.push(buttons.slice(i, i + 2));
+  }
+  periodRows.push([{ text: "📨 В чат клиента", callback_data: `proj:report-send:${projectId}:${period.key}` }]);
+  periodRows.push([{ text: "⬅ К проекту", callback_data: `proj:view:${projectId}` }]);
+  await sendMessage(context, lines.join("\n"), { replyMarkup: { inline_keyboard: periodRows } });
+};
+
+const handleProjectReportSend = async (
+  context: BotContext,
+  projectId: string,
+  periodKey: ReportPeriodKey,
+): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  if (!summary.telegramChatId) {
+    await sendMessage(context, "К проекту не привязан чат клиента. Подключите группу в разделе «📲 Чат-группа».", {
+      replyMarkup: buildProjectBackMarkup(projectId),
+    });
+    return;
+  }
+  const period = resolveReportPeriod(periodKey);
+  const report = await generateReport(context.env, {
+    type: "summary",
+    projectIds: [projectId],
+    datePreset: period.datePreset,
+    includeMeta: true,
+    channel: "telegram",
+    triggeredBy: context.username,
+    command: "project_report",
+  });
+  const asset = await getReportAsset(context.env, report.record.id);
+  const chatId = summary.telegramChatId.toString();
+  const message = `${report.html}\n\nПериод: <b>${escapeHtml(period.label)}</b>`;
+  await sendTelegramMessage(context.env, {
+    chatId,
+    text: message,
+  });
+  if (asset) {
+    const fileName = `${summary.name.replace(/[^\w]+/g, "_")}_${period.key}.html`;
+    await sendTelegramDocument(context.env, {
+      chatId,
+      data: asset.body,
+      fileName,
+      contentType: asset.contentType || "text/html; charset=utf-8",
+      caption: `Отчёт по проекту ${escapeHtml(summary.name)} — ${escapeHtml(period.label)}`,
+    });
+  }
+  await sendMessage(context, "Отчёт отправлен в чат клиента.", { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const campaignStatusIcon = (campaign: MetaCampaign): string => {
+  const status = (campaign.effectiveStatus || campaign.status || "").toUpperCase();
+  if (status.includes("ACTIVE")) {
+    return "🟢";
+  }
+  if (status.includes("PAUSED") || status.includes("DISABLE")) {
+    return "⏸";
+  }
+  if (status.includes("ARCHIVE")) {
+    return "📦";
+  }
+  return "⚙️";
 };
 
 const handleProjectCampaigns = async (context: BotContext, projectId: string): Promise<void> => {
@@ -1120,46 +1332,201 @@ const handleProjectCampaigns = async (context: BotContext, projectId: string): P
   if (!summary) {
     return;
   }
-  const accountInfo = await fetchProjectAccountInfo(context, summary, { includeCampaigns: true });
-  const account = accountInfo.account;
-  const lines: string[] = [];
-  lines.push(`👀 Рекламные кампании — <b>${escapeHtml(summary.name)}</b>`);
   if (!summary.adAccountId) {
-    lines.push("Рекламный кабинет не подключён. Привяжите Meta-аккаунт через раздел «📊 Проекты».");
-  } else if (!account) {
-    if (accountInfo.status === "expired") {
-      lines.push("Токен Meta истёк. Обновите авторизацию Facebook, чтобы получить список кампаний.");
-    } else if (accountInfo.status === "missing") {
-      lines.push("Токен Meta отсутствует. Выполните авторизацию в разделе «Авторизация Facebook».");
-    } else if (accountInfo.status === "error") {
-      lines.push(`Не удалось получить кампании: ${escapeHtml(accountInfo.error || "ошибка")}.`);
-    } else {
-      lines.push(
-        `Кабинет <code>${escapeHtml(summary.adAccountId)}</code> не найден среди доступных. Проверьте права доступа в Meta Business Manager.`,
-      );
-    }
-  } else if (account.campaigns?.length) {
-    const spendLabel = account.spendFormatted ?? formatCurrencyValue(account.spend, account.spendCurrency);
-    if (spendLabel) {
-      lines.push(`Расход за период: ${escapeHtml(spendLabel)}`);
-    }
-    lines.push("", "Топ кампаний:");
-    account.campaigns.slice(0, 5).forEach((campaign, index) => {
-      const spend = campaign.spendFormatted ?? formatCurrencyValue(campaign.spend, campaign.spendCurrency);
-      const metrics = spend ? ` — ${escapeHtml(spend)}` : "";
-      lines.push(`${index + 1}. ${escapeHtml(campaign.name)}${metrics}`);
+    await sendMessage(context, "Рекламный кабинет не подключён. Привяжите Meta-аккаунт, чтобы управлять кампаниями.", {
+      replyMarkup: buildProjectBackMarkup(projectId),
     });
-    if (account.campaigns.length > 5) {
-      lines.push(`… и ещё ${account.campaigns.length - 5} кампаний`);
-    }
-  } else {
-    lines.push("Активные кампании не найдены за выбранный период.");
+    return;
   }
-  lines.push(
+  const accountInfo = await fetchProjectAccountInfo(context, summary, {
+    includeCampaigns: true,
+    campaignsLimit: 50,
+  });
+  const account = accountInfo.account;
+  if (!account || !account.campaigns?.length) {
+    const message =
+      accountInfo.status === "valid"
+        ? "Кампании не найдены за выбранный период."
+        : "Не удалось загрузить кампании. Обновите авторизацию Meta.";
+    await sendMessage(context, message, { replyMarkup: buildProjectBackMarkup(projectId) });
+    return;
+  }
+  const operatorId = resolveOperatorId(context);
+  let pending = operatorId ? await loadPendingCampaignSelection(context.env, operatorId) : null;
+  if (!pending || pending.projectId !== projectId) {
+    pending = { projectId, campaignIds: [], updatedAt: new Date().toISOString() };
+    if (operatorId) {
+      await savePendingCampaignSelection(context.env, operatorId, pending);
+    }
+  }
+  const campaigns = account.campaigns
+    .slice()
+    .sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0))
+    .slice(0, 20);
+  const rows = campaigns.map((campaign) => [{
+    text: `${pending?.campaignIds.includes(campaign.id) ? "✅" : campaignStatusIcon(campaign)} ${truncateCampaignLabel(campaign.name)}`,
+    callback_data: `proj:campaign-toggle:${projectId}:${campaign.id}`,
+  }]);
+  rows.push([{ text: "⚙️ Выбрать действие", callback_data: `proj:campaign-actions:${projectId}` }]);
+  rows.push([{ text: "⬅ К проекту", callback_data: `proj:view:${projectId}` }]);
+  const lines = [
+    `👀 Рекламные кампании — <b>${escapeHtml(summary.name)}</b>`,
+    `Выбрано: ${pending?.campaignIds.length ?? 0}`,
     "",
-    "Расширенная аналитика доступна в разделе «📈 Аналитика» главного меню.",
-  );
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+    "Отметьте кампании и нажмите «Выбрать действие», чтобы управлять статусами или сохранить выбор по умолчанию.",
+  ];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: { inline_keyboard: rows } });
+};
+
+const handleProjectCampaignToggle = async (
+  context: BotContext,
+  projectId: string,
+  campaignId: string,
+): Promise<void> => {
+  const operatorId = resolveOperatorId(context);
+  if (!operatorId) {
+    await sendMessage(context, "Не удалось определить оператора. Попробуйте снова.");
+    return;
+  }
+  const pending = (await loadPendingCampaignSelection(context.env, operatorId)) ?? {
+    projectId,
+    campaignIds: [],
+    updatedAt: new Date().toISOString(),
+  };
+  if (pending.projectId !== projectId) {
+    pending.projectId = projectId;
+    pending.campaignIds = [];
+  }
+  const exists = pending.campaignIds.includes(campaignId);
+  pending.campaignIds = exists
+    ? pending.campaignIds.filter((id) => id !== campaignId)
+    : [...pending.campaignIds, campaignId];
+  await savePendingCampaignSelection(context.env, operatorId, pending);
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, exists ? "Исключено" : "Выбрано");
+  }
+  await handleProjectCampaigns(context, projectId);
+};
+
+const handleProjectCampaignActions = async (context: BotContext, projectId: string): Promise<void> => {
+  const operatorId = resolveOperatorId(context);
+  if (!operatorId) {
+    await sendMessage(context, "Не удалось определить оператора. Попробуйте снова.");
+    return;
+  }
+  const pending = await loadPendingCampaignSelection(context.env, operatorId);
+  const selected = pending && pending.projectId === projectId ? pending.campaignIds.length : 0;
+  const lines = [
+    "⚙️ Действия с кампаниями",
+    "",
+    selected
+      ? `Выбрано кампаний: <b>${selected}</b>. Выберите действие.`
+      : "Кампании не выбраны. Отметьте кампании в списке и повторите.",
+  ];
+  const keyboard = [
+    [{ text: "⏸ Массовое отключение", callback_data: `proj:campaign-action:${projectId}:disable` }],
+    [{ text: "▶️ Массовое включение", callback_data: `proj:campaign-action:${projectId}:enable` }],
+    [{ text: "⭐️ Сохранить для отчётов", callback_data: `proj:campaign-action:${projectId}:save` }],
+    [{ text: "📊 Отчёт по выбранным", callback_data: `proj:campaign-action:${projectId}:report` }],
+    [{ text: "⬅ Назад", callback_data: `proj:campaigns:${projectId}` }],
+  ];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: { inline_keyboard: keyboard } });
+};
+
+const handleProjectCampaignAction = async (
+  context: BotContext,
+  projectId: string,
+  action: string,
+): Promise<void> => {
+  const operatorId = resolveOperatorId(context);
+  if (!operatorId) {
+    await sendMessage(context, "Не удалось определить оператора. Попробуйте снова.");
+    return;
+  }
+  const pending = await loadPendingCampaignSelection(context.env, operatorId);
+  const selection = pending && pending.projectId === projectId ? pending.campaignIds : [];
+  if (!selection.length && action !== "report") {
+    await sendMessage(context, "Выберите кампании в списке, чтобы применить действие.", {
+      replyMarkup: buildProjectBackMarkup(projectId),
+    });
+    return;
+  }
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  if (!summary.adAccountId) {
+    await sendMessage(context, "Рекламный кабинет не подключён. Привяжите Meta-аккаунт.", {
+      replyMarkup: buildProjectBackMarkup(projectId),
+    });
+    return;
+  }
+  const metaEnv = await withMetaSettings(context.env);
+  const token = await loadMetaToken(context.env);
+  if (action === "disable" || action === "enable") {
+    const status = action === "disable" ? "PAUSED" : "ACTIVE";
+    const result = await updateCampaignStatuses(metaEnv, token, selection, status);
+    const lines = [
+      status === "PAUSED"
+        ? "⏸ Кампании переведены в статус «Пауза»."
+        : "▶️ Кампании активированы.",
+      `Обновлено: ${result.updated.length}.`,
+    ];
+    if (result.failed.length) {
+      lines.push(`Ошибок: ${result.failed.length}.`, "Проверьте права доступа в Meta Business Manager.");
+    }
+    await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+    return;
+  }
+  if (action === "save") {
+    const currentSettings = (summary.settings as Record<string, unknown>) ?? {};
+    const reportsSettings = (currentSettings.reports as Record<string, unknown>) ?? {};
+    const updatedSettings = {
+      ...currentSettings,
+      reports: {
+        ...reportsSettings,
+        defaultCampaignIds: selection,
+      },
+    } as typeof summary.settings;
+    await updateProjectRecord(context.env, projectId, { settings: updatedSettings });
+    await sendMessage(context, "Список кампаний сохранён для отчётов по умолчанию.", {
+      replyMarkup: buildProjectBackMarkup(projectId),
+    });
+    return;
+  }
+  if (action === "report") {
+    const accountInfo = await fetchProjectAccountInfo(context, summary, {
+      includeCampaigns: true,
+      campaignsLimit: 50,
+    });
+    const campaigns = accountInfo.account?.campaigns ?? [];
+    const selectedCampaigns = selection.length
+      ? campaigns.filter((campaign) => selection.includes(campaign.id))
+      : campaigns.slice(0, 10);
+    if (!selectedCampaigns.length) {
+      await sendMessage(context, "Кампании не найдены. Обновите список и попробуйте снова.", {
+        replyMarkup: buildProjectBackMarkup(projectId),
+      });
+      return;
+    }
+    const lines = [
+      `📊 Отчёт по выбранным кампаниям — <b>${escapeHtml(summary.name)}</b>`,
+      "",
+    ];
+    selectedCampaigns.forEach((campaign, index) => {
+      const spend = campaign.spendFormatted ?? formatCurrencyValue(campaign.spend, campaign.spendCurrency) ?? "—";
+      const impressions = campaign.impressions !== undefined ? campaign.impressions.toLocaleString("ru-RU") : "—";
+      const clicks = campaign.clicks !== undefined ? campaign.clicks.toLocaleString("ru-RU") : "—";
+      lines.push(
+        `${index + 1}. ${escapeHtml(campaign.name)} — ${escapeHtml(spend)} · Показы: ${escapeHtml(impressions)} · Клики: ${escapeHtml(clicks)}`,
+      );
+    });
+    await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+    return;
+  }
+  await sendMessage(context, "Неизвестное действие. Выберите вариант из списка.", {
+    replyMarkup: buildProjectBackMarkup(projectId),
+  });
 };
 
 const handleProjectExport = async (context: BotContext, projectId: string): Promise<void> => {
@@ -1175,21 +1542,373 @@ const handleProjectPortal = async (context: BotContext, projectId: string): Prom
   if (!summary) {
     return;
   }
-  const portalUrl = resolvePortalUrl(context.env, summary.id);
+  const portalRecord = await loadProjectPortalRecord(context, projectId);
+  if (!portalRecord) {
+    const lines = [
+      `🧩 Портал проекта — <b>${escapeHtml(summary.name)}</b>`,
+      "",
+      "Портал ещё не создан. После создания здесь появится ссылка для клиентов и инструменты управления отображением данных.",
+    ];
+    const keyboard = {
+      inline_keyboard: [
+        [{ text: "✨ Создать портал", callback_data: `proj:portal-create:${projectId}` }],
+        [{ text: "⬅ К проекту", callback_data: `proj:view:${projectId}` }],
+      ],
+    };
+    await sendMessage(context, lines.join("\n"), { replyMarkup: keyboard });
+    return;
+  }
+
+  const portalUrl = resolvePortalUrl(context.env, portalRecord.portalId);
+  const metricsList = portalRecord.metrics.map((key) => PORTAL_METRIC_LABELS[key] ?? key).join(", ");
+  const campaignInfo =
+    portalRecord.mode === "manual"
+      ? portalRecord.campaignIds.length
+        ? `${portalRecord.campaignIds.length} кампаний выбрано`
+        : "Ручной режим: выберите кампании"
+      : "Авто: активные кампании Meta";
   const lines = [`🧩 Портал проекта — <b>${escapeHtml(summary.name)}</b>`, ""];
   if (portalUrl) {
     lines.push(`Ссылка: <a href="${escapeAttribute(portalUrl)}">${escapeHtml(portalUrl)}</a>`);
-    lines.push("Портал отображает лиды, статусы и оплату в реальном времени.");
   } else {
-    lines.push(
-      "URL портала не определён. Укажите PUBLIC_WEB_URL или PORTAL_BASE_URL в конфигурации воркера, чтобы делиться ссылкой.",
-    );
+    lines.push("Ссылка ещё не сгенерирована. Используйте кнопку «Перегенерировать ссылку»." );
+  }
+  lines.push(
+    `Режим: <b>${portalRecord.mode === "manual" ? "ручной" : "автоматический"}</b> · Метрики: <b>${escapeHtml(metricsList)}</b>`,
+  );
+  lines.push(`Кампании: <b>${escapeHtml(campaignInfo)}</b>`);
+  if (portalRecord.lastSharedAt) {
+    lines.push(`Последняя отправка клиенту: ${escapeHtml(formatDateTime(portalRecord.lastSharedAt))}`);
   }
   lines.push(
     "",
-    "В портале клиенты могут менять статусы лидов, просматривать расходы и скачивать отчёты.",
+    "Используйте кнопки ниже, чтобы отправить портал клиенту, выбрать показатели и управлять списком кампаний.",
   );
+
+  const keyboard: { text: string; callback_data?: string; url?: string }[][] = [];
+  if (portalUrl) {
+    keyboard.push([{ text: "🔗 Открыть портал", url: portalUrl }]);
+  }
+  keyboard.push([{ text: "📨 Отправить в чат", callback_data: `proj:portal-share:${projectId}` }]);
+  keyboard.push([
+    { text: `${portalRecord.mode === "auto" ? "✅" : "⚪️"} Авто`, callback_data: `proj:portal-mode:${projectId}:auto` },
+    { text: `${portalRecord.mode === "manual" ? "✅" : "⚪️"} Ручной`, callback_data: `proj:portal-mode:${projectId}:manual` },
+  ]);
+  keyboard.push([{ text: "📊 Метрики", callback_data: `proj:portal-metrics:${projectId}` }]);
+  keyboard.push([{ text: "🎯 Кампании", callback_data: `proj:portal-campaigns:${projectId}` }]);
+  keyboard.push([{ text: "🔁 Перегенерировать ссылку", callback_data: `proj:portal-regenerate:${projectId}` }]);
+  keyboard.push([{ text: "⬅ К проекту", callback_data: `proj:view:${projectId}` }]);
+
+  await sendMessage(context, lines.join("\n"), { replyMarkup: { inline_keyboard: keyboard } });
+};
+
+const createPortalRecord = async (context: BotContext, projectId: string): Promise<ProjectPortalRecord> => {
+  const now = new Date().toISOString();
+  const record: ProjectPortalRecord = {
+    portalId: createId(16),
+    projectId,
+    mode: "auto",
+    campaignIds: [],
+    metrics: [...DEFAULT_PORTAL_METRICS],
+    createdAt: now,
+    updatedAt: now,
+    lastRegeneratedAt: now,
+    lastSharedAt: null,
+    lastReportId: null,
+  };
+  await savePortalRecord(context.env, record);
+  return record;
+};
+
+const ensurePortalRecord = async (context: BotContext, projectId: string): Promise<ProjectPortalRecord> => {
+  const existing = await loadProjectPortalRecord(context, projectId);
+  if (existing) {
+    return existing;
+  }
+  return createPortalRecord(context, projectId);
+};
+
+const handleProjectPortalCreate = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const record = await ensurePortalRecord(context, projectId);
+  const portalUrl = resolvePortalUrl(context.env, record.portalId);
+  const lines = [
+    `✅ Портал создан для проекта <b>${escapeHtml(summary.name)}</b>.`,
+    portalUrl ? `Ссылка: <a href="${escapeAttribute(portalUrl)}">${escapeHtml(portalUrl)}</a>` : "Ссылка будет доступна после генерации.",
+  ];
   await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectPortalRegenerate = async (context: BotContext, projectId: string): Promise<void> => {
+  const portalRecord = await loadProjectPortalRecord(context, projectId);
+  if (!portalRecord) {
+    await sendMessage(context, "Портал ещё не создан. Используйте «Создать портал».", {
+      replyMarkup: buildProjectBackMarkup(projectId),
+    });
+    return;
+  }
+  const now = new Date().toISOString();
+  const updated: ProjectPortalRecord = {
+    ...portalRecord,
+    portalId: createId(16),
+    updatedAt: now,
+    lastRegeneratedAt: now,
+  };
+  await savePortalRecord(context.env, updated);
+  const portalUrl = resolvePortalUrl(context.env, updated.portalId);
+  const lines = [
+    "🔁 Ссылка портала обновлена.",
+    portalUrl ? `Новый адрес: <a href="${escapeAttribute(portalUrl)}">${escapeHtml(portalUrl)}</a>` : "Укажите PUBLIC_WEB_URL или PORTAL_BASE_URL для публикации ссылки.",
+  ];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectPortalMode = async (
+  context: BotContext,
+  projectId: string,
+  mode: PortalMode,
+): Promise<void> => {
+  if (mode !== "auto" && mode !== "manual") {
+    await sendMessage(context, "Неизвестный режим портала. Доступны авто и ручной.");
+    return;
+  }
+  const portalRecord = await ensurePortalRecord(context, projectId);
+  if (portalRecord.mode === mode) {
+    await handleProjectPortal(context, projectId);
+    return;
+  }
+  const now = new Date().toISOString();
+  const updated: ProjectPortalRecord = {
+    ...portalRecord,
+    mode,
+    updatedAt: now,
+  };
+  await savePortalRecord(context.env, updated);
+  const label = mode === "auto" ? "автоматический режим" : "ручной режим";
+  await sendMessage(context, `Режим портала обновлён: ${label}.`, { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const renderPortalMetricsMessage = (record: ProjectPortalRecord) => {
+  const lines = [
+    "📊 Метрики портала",
+    "",
+    "Выберите показатели, которые будут отображаться в клиентском портале.",
+  ];
+  const keyboard = DEFAULT_PORTAL_METRICS.map((metric) => [{
+    text: `${record.metrics.includes(metric) ? "✅" : "☑️"} ${PORTAL_METRIC_LABELS[metric]}`,
+    callback_data: `proj:portal-metric-toggle:${record.projectId}:${metric}`,
+  }]);
+  keyboard.push([{ text: "⬅ Назад", callback_data: `proj:portal:${record.projectId}` }]);
+  return { text: lines.join("\n"), replyMarkup: { inline_keyboard: keyboard } };
+};
+
+const handleProjectPortalMetrics = async (context: BotContext, projectId: string): Promise<void> => {
+  const record = await ensurePortalRecord(context, projectId);
+  const { text, replyMarkup } = renderPortalMetricsMessage(record);
+  await sendMessage(context, text, { replyMarkup });
+};
+
+const handleProjectPortalMetricToggle = async (
+  context: BotContext,
+  projectId: string,
+  metric: PortalMetricKey,
+): Promise<void> => {
+  if (!DEFAULT_PORTAL_METRICS.includes(metric)) {
+    await sendMessage(context, "Неизвестная метрика. Используйте кнопки на экране.");
+    return;
+  }
+  const record = await ensurePortalRecord(context, projectId);
+  const hasMetric = record.metrics.includes(metric);
+  let nextMetrics = hasMetric
+    ? record.metrics.filter((item) => item !== metric)
+    : [...record.metrics, metric];
+  if (!nextMetrics.length) {
+    if (context.update.callback_query?.id) {
+      await answerCallbackQuery(context.env, context.update.callback_query.id, "Оставьте хотя бы одну метрику");
+    }
+    await handleProjectPortalMetrics(context, projectId);
+    return;
+  }
+  const updated: ProjectPortalRecord = {
+    ...record,
+    metrics: nextMetrics,
+    updatedAt: new Date().toISOString(),
+  };
+  await savePortalRecord(context.env, updated);
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, hasMetric ? "Скрыто" : "Добавлено");
+  }
+  const { text, replyMarkup } = renderPortalMetricsMessage(updated);
+  const chatId = ensureChatId(context);
+  if (chatId && context.update.callback_query?.message) {
+    await editTelegramMessage(context.env, {
+      chatId,
+      messageId: context.update.callback_query.message.message_id,
+      text,
+      replyMarkup,
+    });
+  }
+};
+
+const truncateCampaignLabel = (label: string, max = 40): string => {
+  if (label.length <= max) {
+    return label;
+  }
+  return `${label.slice(0, max - 1)}…`;
+};
+
+const handleProjectPortalCampaigns = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const portalRecord = await ensurePortalRecord(context, projectId);
+  if (!summary.adAccountId) {
+    await sendMessage(context, "Рекламный кабинет не подключён. Привяжите Meta-аккаунт, чтобы выбирать кампании.", {
+      replyMarkup: buildProjectBackMarkup(projectId),
+    });
+    return;
+  }
+  const token = await loadMetaToken(context.env);
+  const metaEnv = await withMetaSettings(context.env);
+  let campaigns: MetaCampaign[] = [];
+  try {
+    campaigns = await fetchCampaigns(metaEnv, token, summary.adAccountId, { limit: 50, datePreset: "today" });
+  } catch (error) {
+    console.warn("Failed to fetch campaigns for portal", projectId, error);
+  }
+  if (!campaigns.length) {
+    await sendMessage(context, "Кампании не найдены. Проверьте активность в рекламном кабинете.", {
+      replyMarkup: buildProjectBackMarkup(projectId),
+    });
+    return;
+  }
+  const sorted = campaigns
+    .slice()
+    .sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0))
+    .slice(0, 25);
+  const rows = sorted.map((campaign) => [{
+    text: `${portalRecord.campaignIds.includes(campaign.id) ? "✅" : "☑️"} ${truncateCampaignLabel(campaign.name)}`,
+    callback_data: `proj:portal-campaign-toggle:${projectId}:${campaign.id}`,
+  }]);
+  if (portalRecord.campaignIds.length) {
+    rows.push([{ text: "🧹 Очистить выбор", callback_data: `proj:portal-campaign-clear:${projectId}` }]);
+  }
+  rows.push([{ text: "⬅ Назад", callback_data: `proj:portal:${projectId}` }]);
+  const lines = [
+    "🎯 Кампании портала",
+    "",
+    portalRecord.mode === "manual"
+      ? "Выберите кампании, которые будут отображаться в клиентском портале."
+      : "Автоматический режим использует активные кампании. Включите ручной режим, чтобы зафиксировать список.",
+    "",
+    `Выбрано: ${portalRecord.campaignIds.length}`,
+  ];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: { inline_keyboard: rows } });
+};
+
+const handleProjectPortalCampaignToggle = async (
+  context: BotContext,
+  projectId: string,
+  campaignId: string,
+): Promise<void> => {
+  const record = await ensurePortalRecord(context, projectId);
+  const exists = record.campaignIds.includes(campaignId);
+  const nextCampaigns = exists
+    ? record.campaignIds.filter((id) => id !== campaignId)
+    : [...record.campaignIds, campaignId];
+  const nextMode: PortalMode = record.mode === "manual" || !exists ? "manual" : record.mode;
+  const updated: ProjectPortalRecord = {
+    ...record,
+    campaignIds: nextCampaigns,
+    mode: nextMode,
+    updatedAt: new Date().toISOString(),
+  };
+  await savePortalRecord(context.env, updated);
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, exists ? "Удалено" : "Добавлено");
+  }
+  await handleProjectPortalCampaigns(context, projectId);
+};
+
+const handleProjectPortalCampaignClear = async (context: BotContext, projectId: string): Promise<void> => {
+  const record = await ensurePortalRecord(context, projectId);
+  if (!record.campaignIds.length) {
+    await handleProjectPortalCampaigns(context, projectId);
+    return;
+  }
+  const updated: ProjectPortalRecord = {
+    ...record,
+    campaignIds: [],
+    updatedAt: new Date().toISOString(),
+  };
+  await savePortalRecord(context.env, updated);
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, "Список очищен");
+  }
+  await handleProjectPortalCampaigns(context, projectId);
+};
+
+const handleProjectPortalShare = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  if (!summary.telegramChatId) {
+    await sendMessage(context, "К проекту не привязан чат. Подключите Telegram-группу, чтобы отправлять портал клиентам.", {
+      replyMarkup: buildProjectBackMarkup(projectId),
+    });
+    return;
+  }
+  const portalRecord = await ensurePortalRecord(context, projectId);
+  const portalUrl = resolvePortalUrl(context.env, portalRecord.portalId);
+  if (!portalUrl) {
+    await sendMessage(context, "Ссылка портала не настроена. Укажите PUBLIC_WEB_URL или PORTAL_BASE_URL.", {
+      replyMarkup: buildProjectBackMarkup(projectId),
+    });
+    return;
+  }
+  const report = await generateReport(context.env, {
+    type: "summary",
+    projectIds: [projectId],
+    datePreset: "today",
+    includeMeta: true,
+    channel: "telegram",
+    triggeredBy: context.username,
+    command: "portal_share",
+  });
+  const asset = await getReportAsset(context.env, report.record.id);
+  const chatId = summary.telegramChatId.toString();
+  const replyMarkup = {
+    inline_keyboard: [[{ text: "Открыть портал", url: portalUrl }]],
+  };
+  await sendTelegramMessage(context.env, {
+    chatId,
+    text: `${report.html}\n\n🔗 <a href="${escapeAttribute(portalUrl)}">Открыть портал</a>`,
+    replyMarkup,
+  });
+  if (asset) {
+    const fileName = `${summary.name.replace(/[^\w]+/g, "_")}_today.html`;
+    await sendTelegramDocument(context.env, {
+      chatId,
+      data: asset.body,
+      fileName,
+      contentType: asset.contentType || "text/html; charset=utf-8",
+      caption: `Отчёт по проекту ${escapeHtml(summary.name)} за сегодня`,
+    });
+  }
+  const now = new Date().toISOString();
+  const updatedRecord: ProjectPortalRecord = {
+    ...portalRecord,
+    lastSharedAt: now,
+    lastReportId: report.record.id,
+    updatedAt: now,
+  };
+  await savePortalRecord(context.env, updatedRecord);
+  await sendMessage(context, "Портал и отчёт отправлены в чат клиента.", { replyMarkup: buildProjectBackMarkup(projectId) });
 };
 
 const BILLING_STATUS_LABELS: Record<ProjectBillingState, string> = {
@@ -2959,6 +3678,24 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       await handleProjectReport(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
+    case "report-period": {
+      const [projectId, periodKey] = rest;
+      if (!projectId || !periodKey) {
+        return ensureId();
+      }
+      await handleProjectReport(context, projectId, periodKey as ReportPeriodKey);
+      await logProjectAction(context, action, projectId, periodKey);
+      return true;
+    }
+    case "report-send": {
+      const [projectId, periodKey] = rest;
+      if (!projectId || !periodKey) {
+        return ensureId();
+      }
+      await handleProjectReportSend(context, projectId, periodKey as ReportPeriodKey);
+      await logProjectAction(context, action, projectId, periodKey);
+      return true;
+    }
     case "campaigns":
       if (!rest[0]) {
         return ensureId();
@@ -2966,6 +3703,31 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       await handleProjectCampaigns(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
+    case "campaign-toggle": {
+      const [projectId, campaignId] = rest;
+      if (!projectId || !campaignId) {
+        return ensureId();
+      }
+      await handleProjectCampaignToggle(context, projectId, campaignId);
+      await logProjectAction(context, action, projectId, campaignId);
+      return true;
+    }
+    case "campaign-actions":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectCampaignActions(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "campaign-action": {
+      const [projectId, campaignAction] = rest;
+      if (!projectId || !campaignAction) {
+        return ensureId();
+      }
+      await handleProjectCampaignAction(context, projectId, campaignAction);
+      await logProjectAction(context, action, projectId, campaignAction);
+      return true;
+    }
     case "export":
       if (!rest[0]) {
         return ensureId();
@@ -2978,6 +3740,75 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
         return ensureId();
       }
       await handleProjectPortal(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "portal-create":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectPortalCreate(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "portal-regenerate":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectPortalRegenerate(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "portal-share":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectPortalShare(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "portal-mode": {
+      const [projectId, mode] = rest;
+      if (!projectId || !mode) {
+        return ensureId();
+      }
+      await handleProjectPortalMode(context, projectId, mode as PortalMode);
+      await logProjectAction(context, action, projectId, mode);
+      return true;
+    }
+    case "portal-metrics":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectPortalMetrics(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "portal-metric-toggle": {
+      const [projectId, metric] = rest;
+      if (!projectId || !metric) {
+        return ensureId();
+      }
+      await handleProjectPortalMetricToggle(context, projectId, metric as PortalMetricKey);
+      await logProjectAction(context, action, projectId, metric);
+      return true;
+    }
+    case "portal-campaigns":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectPortalCampaigns(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "portal-campaign-toggle": {
+      const [projectId, campaignId] = rest;
+      if (!projectId || !campaignId) {
+        return ensureId();
+      }
+      await handleProjectPortalCampaignToggle(context, projectId, campaignId);
+      await logProjectAction(context, action, projectId, campaignId);
+      return true;
+    }
+    case "portal-campaign-clear":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectPortalCampaignClear(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
     case "billing":
