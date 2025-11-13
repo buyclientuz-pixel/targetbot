@@ -125,19 +125,20 @@ flowchart LR
 
 ## Iteration Progress
 
-- Выполнено: автоматизированы статусы лидов прямо в боте, добавлены inline-настройки биллинга (статус, дата, тариф) и отображение последних платежей.
-- Осталось: внедрить напоминания по лидам и оплатам, интегрировать Meta вебхуки и углублённую отчётность с кастомными расписаниями.
+- Выполнено: подключены вебхуки Meta Leadgen, лиды автоматически создаются в проектах и отправляются уведомления в Telegram-группы; события сохраняются в журнал с KV-репликой.
+- Осталось: внедрить напоминания по лидам и оплатам, расширить автоматические отчёты и SLA-уведомления.
 - Итераций до полного покрытия ТЗ: ≈1 финальная итерация (webhooks + расширенные отчёты).
 
 ### Текущее состояние задач
 
 **Выполнено в этой итерации**
-- Inline-переключение статусов лидов и обновление сводки без перехода в веб-панель.
-- Управление биллингом проекта из бота: статус, дата следующей оплаты, тариф и предпросмотр последних платежей.
+- Интегрирован webhook `/meta/webhook` с поддержкой верификации и автоматическим созданием лидов по событиям Meta.
+- В реальном времени отправляются уведомления в привязанные Telegram-группы через кнопку `proj:leads:{projectId}`.
+- История webhook-событий хранится в R2 и синхронно реплицируется в Workers KV.
 
 **Осталось закрыть**
 - Напоминания по лидам и оплатам (уведомления, SLA).
-- Интеграция Meta webhooks и расширенные отчётные сценарии.
+- Расширенные отчётные сценарии и автоматические экспорты.
 
 ## Data Model (ER Diagram)
 
@@ -148,6 +149,8 @@ erDiagram
     META_ACCOUNTS ||--|| PROJECTS : links
     PROJECTS ||--o{ TELEGRAM_GROUPS : notifies
     PROJECTS ||--o{ PAYMENTS : invoices
+    META_ACCOUNTS ||--o{ META_WEBHOOK_EVENTS : emits
+    PROJECTS ||--o{ META_WEBHOOK_EVENTS : records
 
     USERS {
         string id
@@ -193,6 +196,17 @@ erDiagram
         string period_start
         string period_end
     }
+    META_WEBHOOK_EVENTS {
+        string id
+        string object
+        string field
+        string lead_id
+        string ad_account_id
+        string project_id
+        boolean processed
+        string created_at
+        string updated_at
+    }
 ```
 
 ## Callback schema
@@ -208,7 +222,7 @@ erDiagram
 
 | Модуль | Конечные точки | Описание |
 | ------ | -------------- | -------- |
-| Meta | `GET /api/meta/status`, `GET /api/meta/adaccounts`, `GET /api/meta/campaigns`, `GET /api/meta/oauth/start`, `GET /auth/facebook/callback` (alias: `/api/meta/oauth/callback`), `POST /api/meta/refresh` | OAuth, выбор кабинетов и метрики кампаний |
+| Meta | `GET /api/meta/status`, `GET /api/meta/adaccounts`, `GET /api/meta/campaigns`, `GET /api/meta/oauth/start`, `GET /auth/facebook/callback` (alias: `/api/meta/oauth/callback`), `POST /api/meta/refresh`, `GET/POST /meta/webhook` | OAuth, выбор кабинетов, метрики кампаний и приём webhook событий |
 | Projects | `GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/:id`, `GET /api/projects/:id/leads` | CRUD проектов и привязки |
 | Leads | `POST /api/leads`, `GET /api/leads?projectId=`, `PATCH /api/leads/:id` | Приём и обработка лидов |
 | Users | `GET/POST /api/users`, `PATCH/DELETE /api/users/:id` | Управление пользователями и ролями |
@@ -233,6 +247,13 @@ erDiagram
 - `settings.ts` фиксирует настройки автоотчётов, языков и форматов уведомлений, синхронизируя их между ботом и веб-панелью.
 - `/admin/settings` управляет KV-настройками через API `/api/settings`, позволяя обновлять параметры отчётов, расписаний и локализации.
 - `GET /api/logs/commands` и раздел журнала в /admin отображают единый лог действий Telegram-бота и веб-панели.
+
+## Meta Leadgen Webhook
+
+- Endpoint: `GET/POST /meta/webhook` (верификация `hub.challenge` и обработка событий `leadgen`).
+- Токен проверки берётся из переменных окружения (`META_WEBHOOK_VERIFY_TOKEN`, `FB_WEBHOOK_VERIFY_TOKEN` и др.) либо из настройки `meta.webhook.verifyToken` в KV.
+- Каждое событие leadgen находит привязанный проект по `ad_account_id`, подтягивает детали лида из Graph API и сохраняет запись в `leads/{projectId}.json` + Workers KV.
+- Бот отправляет уведомление в привязанную Telegram-группу с кнопкой `proj:leads:{projectId}` и фиксирует событие в журнале `meta/webhook/events.json`.
 
 ## Progress Log
 

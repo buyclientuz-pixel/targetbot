@@ -6,6 +6,8 @@ import {
   MetaStatusResponse,
   MetaTokenRecord,
   MetaTokenStatus,
+  MetaLeadDetails,
+  JsonObject,
 } from "../types";
 
 const GRAPH_BASE = "https://graph.facebook.com";
@@ -57,6 +59,13 @@ const BUSINESS_ID_KEYS = [
   "META_BUSINESSES",
   "FB_BUSINESSES",
   "BUSINESS_IDS",
+] as const;
+const WEBHOOK_VERIFY_TOKEN_KEYS = [
+  "META_WEBHOOK_VERIFY_TOKEN",
+  "META_VERIFY_TOKEN",
+  "FACEBOOK_WEBHOOK_VERIFY_TOKEN",
+  "FB_WEBHOOK_VERIFY_TOKEN",
+  "FB_VERIFY_TOKEN",
 ] as const;
 
 const encodeBase64 = (value: string): string => {
@@ -171,6 +180,12 @@ const META_TOKEN_EXPIRES_SETTING_KEYS = [
   "meta.oauth.longExpires",
   "system.meta.tokenExpires",
 ] as const;
+const META_WEBHOOK_VERIFY_SETTING_KEYS = [
+  "meta.webhook.verifyToken",
+  "meta.webhook.token",
+  "meta.verifyToken",
+  "system.meta.verifyToken",
+] as const;
 
 const ACCOUNT_STATUS_MAP: Record<number, { label: string; severity: "success" | "warning" | "error" }> = {
   1: { label: "Активен", severity: "success" },
@@ -260,6 +275,10 @@ export const resolveMetaAppSecret = (env: Record<string, unknown>): string | und
   return resolveEnvString(env, APP_SECRET_KEYS);
 };
 
+export const resolveMetaWebhookVerifyToken = (env: Record<string, unknown>): string | undefined => {
+  return resolveEnvString(env, WEBHOOK_VERIFY_TOKEN_KEYS);
+};
+
 const extractSettingString = (
   value: unknown,
   nestedKeys: readonly string[] = ["value", "id", "appId", "secret", "url"],
@@ -338,6 +357,17 @@ export const withMetaSettings = async (
         if (expiresAt) {
           overrides.META_ACCESS_TOKEN_EXPIRES = expiresAt;
         }
+      }
+    }
+
+    if (!resolveMetaWebhookVerifyToken(env)) {
+      const verifyToken = findSettingOverride(
+        settings,
+        META_WEBHOOK_VERIFY_SETTING_KEYS,
+        ["verifyToken", "token", "value"],
+      );
+      if (verifyToken) {
+        overrides.META_WEBHOOK_VERIFY_TOKEN = verifyToken;
       }
     }
 
@@ -612,6 +642,18 @@ interface CampaignInsightsResponse {
     account_currency?: string;
     date_start?: string;
     date_stop?: string;
+  }>;
+}
+
+interface LeadDetailsResponse {
+  id?: string;
+  created_time?: string;
+  ad_id?: string;
+  form_id?: string;
+  campaign_id?: string;
+  field_data?: Array<{
+    name?: string;
+    values?: Array<string | number | boolean | null>;
   }>;
 }
 
@@ -949,6 +991,101 @@ export const fetchCampaigns = async (
   });
 
   return campaigns;
+};
+
+export const fetchLeadDetails = async (
+  env: EnvBindings & Record<string, unknown>,
+  record: MetaTokenRecord | null,
+  leadId: string,
+): Promise<MetaLeadDetails | null> => {
+  const tokenRecord = effectiveToken(env, record);
+  const status = ensureTokenFreshness(tokenRecord);
+  if (status === "missing" || !tokenRecord?.accessToken) {
+    return null;
+  }
+
+  const response = await safeGraphCall<LeadDetailsResponse>(env, leadId, {
+    access_token: tokenRecord.accessToken,
+    fields: "id,created_time,ad_id,form_id,campaign_id,field_data",
+  });
+
+  if (!response?.id) {
+    return null;
+  }
+
+  const answersRaw: Record<string, unknown> = {};
+  const normalizedMap = new Map<string, string[]>();
+
+  if (Array.isArray(response.field_data)) {
+    for (const field of response.field_data) {
+      if (!field || typeof field !== "object") {
+        continue;
+      }
+      const name = typeof field.name === "string" ? field.name.trim() : field.name !== undefined ? String(field.name).trim() : "";
+      if (!name) {
+        continue;
+      }
+      const values = Array.isArray(field.values)
+        ? field.values
+            .map((value) => {
+              if (value === null || value === undefined) {
+                return undefined;
+              }
+              if (typeof value === "string") {
+                const trimmed = value.trim();
+                return trimmed || undefined;
+              }
+              if (typeof value === "number" || typeof value === "boolean") {
+                return String(value);
+              }
+              return undefined;
+            })
+            .filter((item): item is string => Boolean(item && item.trim()))
+            .map((item) => item.trim())
+        : [];
+      if (!values.length) {
+        continue;
+      }
+      answersRaw[name] = values;
+      normalizedMap.set(name.toLowerCase(), values);
+    }
+  }
+
+  const takeValue = (...keys: string[]): string | undefined => {
+    for (const key of keys) {
+      const values = normalizedMap.get(key.toLowerCase());
+      if (values && values.length > 0) {
+        return values[0];
+      }
+    }
+    return undefined;
+  };
+
+  let fullName = takeValue("full_name", "name");
+  const firstName = takeValue("first_name", "firstname");
+  const lastName = takeValue("last_name", "lastname");
+  if (!fullName && (firstName || lastName)) {
+    fullName = [firstName, lastName].filter(Boolean).join(" ").trim() || undefined;
+  }
+
+  const phone = takeValue("phone_number", "phone", "phone number");
+  const email = takeValue("email", "email_address");
+
+  const createdAt = toIsoDate(response.created_time) ?? new Date().toISOString();
+
+  const details: MetaLeadDetails = {
+    id: response.id,
+    createdAt,
+    fullName: fullName || undefined,
+    phone,
+    email,
+    formId: response.form_id ? String(response.form_id) : undefined,
+    adId: response.ad_id ? String(response.ad_id) : undefined,
+    campaignId: response.campaign_id ? String(response.campaign_id) : undefined,
+    answers: answersRaw as JsonObject,
+  };
+
+  return details;
 };
 
 export const exchangeToken = async (

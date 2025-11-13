@@ -67,6 +67,7 @@ import { fetchAdAccounts, resolveMetaStatus } from "./utils/meta";
 import { projectBilling, summarizeProjects, sortProjectSummaries } from "./utils/projects";
 import { ProjectSummary } from "./types";
 import { handleTelegramUpdate } from "./bot/router";
+import { handleMetaWebhook } from "./api/meta-webhook";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -98,6 +99,10 @@ export default {
     try {
       if (pathname === "/bot/webhook" && method === "POST") {
         return await handleTelegramUpdate(request, env);
+      }
+
+      if (pathname === "/meta/webhook" && (method === "GET" || method === "POST")) {
+        return await handleMetaWebhook(request, env);
       }
 
       if (pathname === "/") {

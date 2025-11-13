@@ -6,6 +6,8 @@ import {
   MetaProjectLinkRecord,
   MetaTokenRecord,
   MetaTokenStatus,
+  MetaWebhookEventRecord,
+  JsonObject,
   PaymentRecord,
   ProjectBillingState,
   ProjectRecord,
@@ -30,6 +32,7 @@ const CHAT_REGISTRY_KEY = "chats/index.json";
 const META_ACCOUNTS_KEY = "meta/accounts.json";
 const TELEGRAM_GROUPS_KEY = "telegram/groups.json";
 const META_PROJECTS_KEY = "meta/projects.json";
+const META_WEBHOOK_INDEX_KEY = "meta/webhook/events.json";
 const META_PENDING_PREFIX = "meta/link/pending/";
 const USER_PENDING_PREFIX = "users/pending/";
 const BILLING_PENDING_PREFIX = "billing/pending/";
@@ -41,11 +44,13 @@ const USER_KV_INDEX_KEY = "users:index";
 const PROJECT_KV_INDEX_KEY = "projects:index";
 const META_KV_INDEX_KEY = "meta:index";
 const LEAD_KV_INDEX_PREFIX = "leads:index:";
+const META_WEBHOOK_KV_INDEX_KEY = "meta:webhook:index";
 
 const USER_KV_PREFIX = "users:";
 const PROJECT_KV_PREFIX = "project:";
 const META_KV_PREFIX = "meta:";
 const LEAD_KV_PREFIX = "leads:";
+const META_WEBHOOK_KV_PREFIX = "meta:webhook:event:";
 
 export interface ReportSessionRecord {
   id: string;
@@ -624,6 +629,119 @@ export const saveMetaProjectLinks = async (
   records: MetaProjectLinkRecord[],
 ): Promise<void> => {
   await writeJsonToR2(env, META_PROJECTS_KEY, records);
+};
+
+const normalizeMetaWebhookEvent = (
+  input: MetaWebhookEventRecord | Record<string, unknown>,
+): MetaWebhookEventRecord => {
+  const data = input as Record<string, unknown>;
+  const nowIso = new Date().toISOString();
+  const idSource = data.id ?? data.eventId ?? data.event_id;
+  const id = typeof idSource === "string" && idSource.trim() ? idSource.trim() : `mwh_${createId(10)}`;
+  const objectSource = data.object ?? data.source ?? "";
+  const object = typeof objectSource === "string" ? objectSource : String(objectSource ?? "");
+  const fieldSource = data.field ?? data.event ?? data.type;
+  const field = typeof fieldSource === "string" ? fieldSource : String(fieldSource ?? "");
+  const createdSource = data.createdAt ?? data.created_at ?? data.time ?? data.timestamp;
+  const createdAt = typeof createdSource === "string" && createdSource.trim()
+    ? new Date(createdSource).toISOString()
+    : typeof createdSource === "number" && Number.isFinite(createdSource)
+      ? new Date(createdSource * (createdSource > 1_000_000_000 ? 1 : 1000)).toISOString()
+      : nowIso;
+  const updatedSource = data.updatedAt ?? data.updated_at ?? createdAt;
+  const updatedAt = typeof updatedSource === "string" && updatedSource.trim()
+    ? new Date(updatedSource).toISOString()
+    : createdAt;
+  const leadIdSource = data.leadId ?? data.lead_id ?? data.leadId ?? data.leadgen_id;
+  const leadId = typeof leadIdSource === "string" && leadIdSource.trim() ? leadIdSource.trim() : undefined;
+  const adAccountSource =
+    data.adAccountId ?? data.ad_account_id ?? data.account_id ?? data.adAccount ?? data.ad_account;
+  const adAccountId = typeof adAccountSource === "string" && adAccountSource.trim()
+    ? adAccountSource.trim()
+    : adAccountSource !== undefined
+      ? String(adAccountSource)
+      : undefined;
+  const projectIdSource = data.projectId ?? data.project_id;
+  const projectId = typeof projectIdSource === "string" && projectIdSource.trim()
+    ? projectIdSource.trim()
+    : undefined;
+  const projectNameSource = data.projectName ?? data.project_name;
+  const projectName = typeof projectNameSource === "string" && projectNameSource.trim()
+    ? projectNameSource.trim()
+    : undefined;
+  const processed = data.processed === undefined ? false : Boolean(data.processed);
+  const typeSource = data.type ?? data.changeType ?? data.eventType;
+  const type = typeof typeSource === "string" && typeSource.trim() ? typeSource.trim() : undefined;
+  const payloadSource = data.payload;
+  let payload: JsonObject = {};
+  if (payloadSource && typeof payloadSource === "object") {
+    try {
+      payload = JSON.parse(JSON.stringify(payloadSource)) as JsonObject;
+    } catch (error) {
+      console.warn("Failed to normalize webhook payload", error);
+      payload = {};
+    }
+  }
+
+  return {
+    id,
+    object,
+    field,
+    type,
+    leadId,
+    adAccountId,
+    projectId,
+    projectName,
+    processed,
+    createdAt,
+    updatedAt,
+    payload,
+  };
+};
+
+export const listMetaWebhookEvents = async (
+  env: EnvBindings,
+): Promise<MetaWebhookEventRecord[]> => {
+  const stored = await readJsonFromR2<MetaWebhookEventRecord[] | Record<string, unknown>[]>(
+    env,
+    META_WEBHOOK_INDEX_KEY,
+    [],
+  );
+  return stored.map((record) => normalizeMetaWebhookEvent(record));
+};
+
+export const appendMetaWebhookEvent = async (
+  env: EnvBindings,
+  event: MetaWebhookEventRecord,
+  limit = 200,
+): Promise<void> => {
+  const normalized = normalizeMetaWebhookEvent(event);
+  const existing = await listMetaWebhookEvents(env);
+  const filtered = existing.filter((item) => item.id !== normalized.id);
+  const next = [normalized, ...filtered]
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+    .slice(0, Math.max(1, limit));
+  await writeJsonToR2(env, META_WEBHOOK_INDEX_KEY, next);
+  await syncKvRecords({
+    env,
+    indexKey: META_WEBHOOK_KV_INDEX_KEY,
+    prefix: META_WEBHOOK_KV_PREFIX,
+    items: next,
+    getId: (item) => item.id,
+    serialize: (item) => ({
+      id: item.id,
+      object: item.object,
+      field: item.field,
+      type: item.type ?? null,
+      lead_id: item.leadId ?? null,
+      ad_account_id: item.adAccountId ?? null,
+      project_id: item.projectId ?? null,
+      project_name: item.projectName ?? null,
+      processed: item.processed,
+      created_at: item.createdAt,
+      updated_at: item.updatedAt,
+    }),
+  });
 };
 
 export const loadMetaProjectLink = async (

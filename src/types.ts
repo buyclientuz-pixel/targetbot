@@ -80,6 +80,33 @@ export interface MetaAccountLinkRecord {
   updatedAt?: string;
 }
 
+export interface MetaLeadDetails {
+  id: string;
+  createdAt?: string;
+  fullName?: string;
+  phone?: string;
+  email?: string;
+  formId?: string;
+  adId?: string;
+  campaignId?: string;
+  answers: JsonObject;
+}
+
+export interface MetaWebhookEventRecord {
+  id: string;
+  object: string;
+  field: string;
+  type?: string;
+  leadId?: string;
+  adAccountId?: string;
+  projectId?: string;
+  projectName?: string;
+  processed: boolean;
+  createdAt: string;
+  updatedAt: string;
+  payload: JsonObject;
+}
+
 export interface TelegramGroupLinkRecord {
   chatId: string;
   title?: string | null;
