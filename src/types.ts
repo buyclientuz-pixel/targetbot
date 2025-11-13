@@ -385,6 +385,40 @@ export interface ReportDeliveryRecord {
   details?: JsonValue;
 }
 
+export type QaIssueType = "project" | "schedule" | "lead-reminder" | "payment-reminder";
+
+export interface QaIssueRecord {
+  type: QaIssueType;
+  referenceId?: string;
+  projectId?: string;
+  message: string;
+  details?: JsonValue;
+}
+
+export interface QaCheckSummary {
+  total: number;
+  invalid: number;
+}
+
+export interface QaScheduleCheckSummary extends QaCheckSummary {
+  rescheduled: number;
+}
+
+export interface QaRunChecks {
+  projects: QaCheckSummary;
+  reportSchedules: QaScheduleCheckSummary;
+  leadReminders: QaCheckSummary;
+  paymentReminders: QaCheckSummary;
+}
+
+export interface QaRunRecord {
+  id: string;
+  createdAt: string;
+  durationMs: number;
+  checks: QaRunChecks;
+  issues: QaIssueRecord[];
+}
+
 export type SettingScope = "bot" | "portal" | "reports" | "billing" | "system";
 
 export interface SettingRecord {

@@ -26,6 +26,7 @@ import {
   SettingRecord,
   TelegramGroupLinkRecord,
   UserRecord,
+  QaRunRecord,
 } from "../types";
 import { createId } from "./ids";
 
@@ -52,6 +53,7 @@ const META_PENDING_PREFIX = "meta/link/pending/";
 const USER_PENDING_PREFIX = "users/pending/";
 const BILLING_PENDING_PREFIX = "billing/pending/";
 const PROJECT_PENDING_PREFIX = "projects/pending/";
+const QA_RUNS_KEY = "qa/runs.json";
 
 const TELEGRAM_GROUP_KV_INDEX_KEY = "telegram:groups:index";
 const TELEGRAM_GROUP_KV_PREFIX = "telegram:group:";
@@ -65,6 +67,7 @@ const LEAD_REMINDER_KV_INDEX_KEY = "reminders:lead:index";
 const PAYMENT_REMINDER_KV_INDEX_KEY = "reminders:payment:index";
 const REPORT_SCHEDULE_KV_INDEX_KEY = "reports:schedule:index";
 const REPORT_DELIVERY_KV_INDEX_KEY = "reports:delivery:index";
+const QA_RUN_KV_INDEX_KEY = "qa:runs:index";
 
 const USER_KV_PREFIX = "users:";
 const PROJECT_KV_PREFIX = "project:";
@@ -75,6 +78,7 @@ const LEAD_REMINDER_KV_PREFIX = "reminders:lead:";
 const PAYMENT_REMINDER_KV_PREFIX = "reminders:payment:";
 const REPORT_SCHEDULE_KV_PREFIX = "reports:schedule:";
 const REPORT_DELIVERY_KV_PREFIX = "reports:delivery:";
+const QA_RUN_KV_PREFIX = "qa:run:";
 const PORTAL_INDEX_KEY = "portals/index.json";
 const PORTAL_KV_INDEX_KEY = "portals:index";
 const PORTAL_KV_PREFIX = "portal:";
@@ -124,6 +128,8 @@ export interface EnvBindings {
   DB: KVNamespace;
   R2: R2Bucket;
 }
+
+export const QA_RUN_HISTORY_LIMIT = 50;
 
 const readKvIndex = async (env: EnvBindings, key: string): Promise<string[]> => {
   const stored = await env.DB.get(key);
@@ -1273,6 +1279,37 @@ export const saveReportDeliveries = async (
       status: item.status,
       delivered_at: item.deliveredAt,
       error: item.error ?? null,
+    }),
+  });
+};
+
+export const listQaRuns = async (env: EnvBindings): Promise<QaRunRecord[]> => {
+  return readJsonFromR2<QaRunRecord[]>(env, QA_RUNS_KEY, []);
+};
+
+export const saveQaRuns = async (env: EnvBindings, runs: QaRunRecord[]): Promise<void> => {
+  const limited = runs.slice(0, QA_RUN_HISTORY_LIMIT);
+  await writeJsonToR2(env, QA_RUNS_KEY, limited);
+  await syncKvRecords({
+    env,
+    indexKey: QA_RUN_KV_INDEX_KEY,
+    prefix: QA_RUN_KV_PREFIX,
+    items: limited,
+    getId: (item) => item.id,
+    serialize: (item) => ({
+      id: item.id,
+      created_at: item.createdAt,
+      duration_ms: item.durationMs,
+      projects_total: item.checks.projects.total,
+      projects_invalid: item.checks.projects.invalid,
+      schedules_total: item.checks.reportSchedules.total,
+      schedules_invalid: item.checks.reportSchedules.invalid,
+      schedules_rescheduled: item.checks.reportSchedules.rescheduled,
+      lead_reminders_total: item.checks.leadReminders.total,
+      lead_reminders_invalid: item.checks.leadReminders.invalid,
+      payment_reminders_total: item.checks.paymentReminders.total,
+      payment_reminders_invalid: item.checks.paymentReminders.invalid,
+      issue_count: item.issues.length,
     }),
   });
 };

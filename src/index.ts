@@ -80,6 +80,7 @@ import { handleMetaWebhook } from "./api/meta-webhook";
 import { runReminderSweep } from "./utils/reminders";
 import { runReportSchedules } from "./utils/report-scheduler";
 import { TelegramEnv } from "./utils/telegram";
+import { runRegressionChecks } from "./utils/qa";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -554,11 +555,15 @@ export default {
         runReminderSweep(extended),
         runReportSchedules(extended),
       ]);
+      const qa = await runRegressionChecks(bindings);
       if (reminders.leadRemindersSent || reminders.paymentRemindersSent) {
         console.log("reminders:sent", reminders);
       }
       if (reports.triggered || reports.errors) {
         console.log("reports:schedules", reports);
+      }
+      if (qa.issues.length) {
+        console.warn("qa:issues", { id: qa.id, issues: qa.issues.length });
       }
     } catch (error) {
       console.error("reminders:error", error);
