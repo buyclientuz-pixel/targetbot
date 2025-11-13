@@ -15,6 +15,7 @@ import {
   loadMetaToken,
   saveReportAsset,
   listCampaignObjectivesForProject,
+  listPortals,
 } from "./storage";
 import { summarizeProjects, sortProjectSummaries, extractProjectReportPreferences } from "./projects";
 import { createId } from "./ids";
@@ -23,6 +24,58 @@ import { syncCampaignObjectives, getCampaignKPIs } from "./kpi";
 import { escapeHtml } from "./html";
 
 const GLOBAL_PROJECT_ID = "__multi__";
+const PORTAL_BASE_KEYS = [
+  "PORTAL_BASE_URL",
+  "PUBLIC_WEB_URL",
+  "PUBLIC_BASE_URL",
+  "WORKER_BASE_URL",
+  "ADMIN_BASE_URL",
+];
+const DEFAULT_PORTAL_BASE = "https://th-reports.buyclientuz.workers.dev";
+
+type PortalLinkEntry = { portalId: string | null; portalUrl: string | null };
+
+const takeEnvString = (env: Record<string, unknown>, key: string): string | null => {
+  const raw = env[key];
+  if (typeof raw === "string" && raw.trim()) {
+    return raw.trim();
+  }
+  return null;
+};
+
+const buildPortalUrl = (base: string | null, slug: string): string | null => {
+  if (!base) {
+    return null;
+  }
+  try {
+    const normalized = base.includes("://") ? base : `https://${base}`;
+    const url = new URL(normalized);
+    url.pathname = `/portal/${encodeURIComponent(slug)}`;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch (error) {
+    console.warn("Failed to build portal url", base, slug, error);
+    return null;
+  }
+};
+
+const resolvePortalLink = (
+  env: EnvBindings & Record<string, unknown>,
+  projectId: string,
+  portalId?: string | null,
+): PortalLinkEntry => {
+  const slug = portalId && portalId.trim() ? portalId.trim() : projectId;
+  const candidates: (string | null)[] = PORTAL_BASE_KEYS.map((key) => takeEnvString(env, key));
+  candidates.push(DEFAULT_PORTAL_BASE);
+  for (const candidate of candidates) {
+    const url = buildPortalUrl(candidate, slug);
+    if (url) {
+      return { portalId: portalId ?? null, portalUrl: url };
+    }
+  }
+  return { portalId: portalId ?? null, portalUrl: null };
+};
 
 export interface GenerateReportOptions {
   type?: ReportType;
@@ -42,6 +95,7 @@ export interface GenerateReportResult {
   record: ReportRecord;
   text: string;
   html: string;
+  dataset: AutoReportDataset;
 }
 
 const resolveFilters = (options: GenerateReportOptions) => {
@@ -273,6 +327,7 @@ const buildAutoReportDataset = (
   accounts: Map<string, MetaAdAccount>,
   overrides: Map<string, CampaignSpendOverride>,
   objectiveMetrics: Map<string, PortalMetricKey[]>,
+  portals: Map<string, PortalLinkEntry>,
   periodLabel: string,
   generatedAt: string,
   filters: { datePreset?: string; since?: string; until?: string },
@@ -281,6 +336,7 @@ const buildAutoReportDataset = (
     const account = summary.adAccountId ? accounts.get(summary.adAccountId) : undefined;
     const override = overrides.get(summary.id);
     const metrics = objectiveMetrics.get(summary.id) ?? getCampaignKPIs(null);
+    const portal = portals.get(summary.id);
     const spendAmount =
       override?.spend ??
       (typeof account?.spend === "number" && Number.isFinite(account.spend) ? account.spend : null);
@@ -294,6 +350,8 @@ const buildAutoReportDataset = (
       chatId: summary.chatId,
       chatTitle: summary.telegramTitle ?? null,
       chatLink: summary.telegramLink ?? null,
+      portalId: portal?.portalId ?? null,
+      portalUrl: portal?.portalUrl ?? null,
       metaAccountId: summary.metaAccountId,
       metaAccountName: summary.metaAccountName,
       adAccountId: summary.adAccountId ?? null,
@@ -410,6 +468,16 @@ export const generateReport = async (
   const accounts = await accountSpendMap(env, options.includeMeta !== false, filters);
   const overrides = await collectPreferredCampaignSpend(env, summaries, filters);
   const objectiveMetrics = await collectProjectObjectiveMetrics(env, summaries);
+  const portalRecords = await listPortals(env);
+  const portalLookup = new Map<string, PortalLinkEntry>();
+  for (const record of portalRecords) {
+    portalLookup.set(record.projectId, resolvePortalLink(env, record.projectId, record.portalId));
+  }
+  for (const summary of summaries) {
+    if (!portalLookup.has(summary.id)) {
+      portalLookup.set(summary.id, resolvePortalLink(env, summary.id));
+    }
+  }
   const generatedAt = new Date();
   const generatedAtIso = generatedAt.toISOString();
   const periodLabel = describePeriod(filters);
@@ -418,6 +486,7 @@ export const generateReport = async (
     accounts,
     overrides,
     objectiveMetrics,
+    portalLookup,
     periodLabel,
     generatedAtIso,
     filters,
@@ -474,6 +543,6 @@ export const generateReport = async (
   const contentType = format === "html" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
   await saveReportAsset(env, record.id, assetContent, contentType);
 
-  return { record, text: plain, html };
+  return { record, text: plain, html, dataset };
 };
 

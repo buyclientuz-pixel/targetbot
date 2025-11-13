@@ -441,6 +441,8 @@ export interface AutoReportProjectEntry {
   chatId: string;
   chatTitle: string | null;
   chatLink: string | null;
+  portalId: string | null;
+  portalUrl: string | null;
   metaAccountId: string;
   metaAccountName: string;
   adAccountId: string | null;
