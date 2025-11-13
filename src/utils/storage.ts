@@ -722,9 +722,10 @@ export const deleteMetaToken = async (env: EnvBindings): Promise<void> => {
 };
 
 export const listProjects = async (env: EnvBindings): Promise<ProjectRecord[]> => {
-  const [r2Records, kvRecords] = await Promise.all([
+  const [r2Records, kvRecords, metaLinkRecords] = await Promise.all([
     readJsonFromR2<ProjectRecord[] | Record<string, unknown>[]>(env, PROJECT_INDEX_KEY, []).catch(() => []),
     readProjectsFromKv(env).catch(() => [] as ProjectRecord[]),
+    listMetaProjectLinks(env).catch(() => [] as MetaProjectLinkRecord[]),
   ]);
   const map = new Map<string, ProjectRecord>();
   kvRecords.forEach((record) => {
@@ -732,6 +733,29 @@ export const listProjects = async (env: EnvBindings): Promise<ProjectRecord[]> =
   });
   r2Records
     .map((record) => normalizeProjectRecord(record))
+    .forEach((record) => {
+      const existing = map.get(record.id);
+      map.set(record.id, existing ? mergeProjectRecords(existing, record) : record);
+    });
+  metaLinkRecords
+    .map((link) =>
+      normalizeProjectRecord({
+        id: link.projectId,
+        projectId: link.projectId,
+        projectName: link.projectName,
+        accountId: link.accountId,
+        meta_account_name: link.projectName,
+        chatId: link.chatId,
+        chat_id: link.chatId,
+        telegramChatId: link.chatId,
+        telegramTitle: link.chatTitle ?? undefined,
+        billingStatus: link.billingStatus,
+        nextPaymentDate: link.nextPaymentDate ?? null,
+        settings: link.settings ?? {},
+        createdAt: link.createdAt,
+        updatedAt: link.createdAt,
+      }),
+    )
     .forEach((record) => {
       const existing = map.get(record.id);
       map.set(record.id, existing ? mergeProjectRecords(existing, record) : record);
