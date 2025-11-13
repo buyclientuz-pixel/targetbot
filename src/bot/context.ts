@@ -100,6 +100,7 @@ export const createContext = (
     chatType: toChatType(message),
     chatTitle: toChatTitle(message),
     threadId: toThreadId(message),
+    messageId: message?.message_id,
     userId: toUserId(message, update),
     username: toUsername(message, update),
     text: toText(update, message),

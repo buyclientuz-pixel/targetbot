@@ -9,13 +9,14 @@ import {
   listLeads,
   listPayments,
   listProjects,
+  listSettings,
   listUsers,
   loadMetaToken,
   saveChatRegistrations,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
-import { sendTelegramMessage, answerCallbackQuery } from "../utils/telegram";
-import { fetchAdAccounts, resolveMetaStatus } from "../utils/meta";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
+import { encodeMetaOAuthState, fetchAdAccounts, resolveMetaStatus } from "../utils/meta";
 import { ChatRegistrationRecord, LeadRecord, MetaAdAccount, ProjectRecord, ProjectSummary } from "../types";
 
 const AUTH_URL_FALLBACK = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
@@ -31,6 +32,200 @@ const resolveAuthUrl = (env: BotContext["env"]): string => {
   ];
   const resolved = candidates.find((value): value is string => typeof value === "string" && value.trim().length > 0);
   return resolved ? resolved : AUTH_URL_FALLBACK;
+};
+
+const BOT_USERNAME_ENV_KEYS = [
+  "BOT_USERNAME",
+  "BOT_HANDLE",
+  "BOT_USER",
+  "TELEGRAM_BOT_USERNAME",
+  "TELEGRAM_BOT_HANDLE",
+];
+
+const BOT_DEEPLINK_ENV_KEYS = [
+  "BOT_DEEPLINK",
+  "BOT_URL",
+  "BOT_LINK",
+  "TELEGRAM_BOT_URL",
+  "TELEGRAM_BOT_LINK",
+  "TELEGRAM_DEEPLINK",
+];
+
+const BOT_USERNAME_SETTING_KEYS = [
+  "bot.username",
+  "bot.telegram.username",
+  "bot.telegram.handle",
+];
+
+const BOT_DEEPLINK_SETTING_KEYS = [
+  "bot.link",
+  "bot.telegram.link",
+  "bot.telegram.url",
+  "bot.telegram.deeplink",
+];
+
+const takeEnvString = (env: BotContext["env"], keys: string[]): string | null => {
+  const record = env as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+};
+
+const normalizeUsername = (raw?: string | null): string | undefined => {
+  if (!raw) {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
+};
+
+const ensureHttpLink = (value?: string | null): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (/^(https?:\/\/|tg:\/\/)/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/^t\.me\//i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+  if (trimmed.startsWith("@")) {
+    return `https://t.me/${trimmed.slice(1)}`;
+  }
+  return `https://${trimmed}`;
+};
+
+const deriveUsernameFromLink = (link?: string | null): string | undefined => {
+  if (!link) {
+    return undefined;
+  }
+  const trimmed = link.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const domainMatch = trimmed.match(/domain=([^&]+)/i);
+  if (domainMatch && domainMatch[1]) {
+    return normalizeUsername(domainMatch[1]);
+  }
+  const tmeMatch = trimmed.match(/t\.me\/(?:joinchat\/)?([^/?]+)/i);
+  if (tmeMatch && tmeMatch[1]) {
+    return normalizeUsername(tmeMatch[1]);
+  }
+  if (trimmed.startsWith("@")) {
+    return normalizeUsername(trimmed);
+  }
+  try {
+    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    const segment = url.pathname.replace(/^\/+/, "").split("/")[0];
+    return normalizeUsername(segment || undefined);
+  } catch (error) {
+    console.warn("Failed to derive username from link", link, error);
+  }
+  return undefined;
+};
+
+const extractSettingString = (value: unknown): string | undefined => {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (value && typeof value === "object" && "value" in (value as Record<string, unknown>)) {
+    const nested = (value as Record<string, unknown>).value;
+    if (typeof nested === "string" && nested.trim()) {
+      return nested.trim();
+    }
+  }
+  return undefined;
+};
+
+const pickSettingString = (settings: Awaited<ReturnType<typeof listSettings>>, keys: string[]): string | undefined => {
+  for (const key of keys) {
+    const entry = settings.find((item) => item.key === key);
+    if (entry) {
+      const value = extractSettingString(entry.value);
+      if (value) {
+        return value;
+      }
+    }
+  }
+  return undefined;
+};
+
+const resolveBotIdentity = async (
+  context: BotContext,
+): Promise<{ username?: string; link?: string }> => {
+  let username = normalizeUsername(takeEnvString(context.env, BOT_USERNAME_ENV_KEYS));
+  let link = ensureHttpLink(takeEnvString(context.env, BOT_DEEPLINK_ENV_KEYS));
+
+  if (!username) {
+    username = deriveUsernameFromLink(link);
+  }
+  if (!link && username) {
+    link = `https://t.me/${username}`;
+  }
+
+  if (!username || !link) {
+    try {
+      const settings = await listSettings(context.env);
+      if (!username) {
+        username = normalizeUsername(pickSettingString(settings, BOT_USERNAME_SETTING_KEYS)) || username;
+      }
+      if (!link) {
+        const rawLink = pickSettingString(settings, BOT_DEEPLINK_SETTING_KEYS);
+        link = ensureHttpLink(rawLink) ?? link;
+      }
+      if (!username) {
+        username = deriveUsernameFromLink(link);
+      }
+      if (!link && username) {
+        link = `https://t.me/${username}`;
+      }
+    } catch (error) {
+      console.warn("Failed to resolve bot identity from settings", error);
+    }
+  }
+
+  return { username, link };
+};
+
+const appendQueryParameter = (base: string, key: string, value: string): string => {
+  if (!value) {
+    return base;
+  }
+  try {
+    const url = new URL(base);
+    url.searchParams.set(key, value);
+    return url.toString();
+  } catch (error) {
+    const separator = base.includes("?") ? "&" : "?";
+    return `${base}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+  }
+};
+
+const buildAuthState = async (context: BotContext): Promise<string | null> => {
+  const origin = context.chatId ? "telegram" : "external";
+  const identity = await resolveBotIdentity(context);
+  const payload = {
+    origin,
+    chatId: context.chatId,
+    messageId: typeof context.messageId === "number" ? context.messageId : undefined,
+    userId: context.userId,
+    botUsername: identity.username,
+    botDeeplink: identity.link,
+    timestamp: Date.now(),
+  } as const;
+  const encoded = encodeMetaOAuthState(payload);
+  return encoded || null;
 };
 
 const buildManageWebhookUrl = (value: string): string | null => {
@@ -233,11 +428,21 @@ const sendMessage = async (
   if (!chatId) {
     return;
   }
+  const replyMarkup = options.replyMarkup ?? HOME_MARKUP;
+  if (context.update.callback_query?.message && typeof context.messageId === "number") {
+    await editTelegramMessage(context.env, {
+      chatId,
+      messageId: context.messageId,
+      text,
+      replyMarkup,
+    });
+    return;
+  }
   await sendTelegramMessage(context.env, {
     chatId,
     threadId: context.threadId,
     text,
-    replyMarkup: options.replyMarkup ?? HOME_MARKUP,
+    replyMarkup,
   });
 };
 
@@ -347,7 +552,12 @@ const handleAuth = async (context: BotContext): Promise<void> => {
         : "❌ Токен не подключён";
 
   const expires = statusInfo.expiresAt ? formatDateTime(statusInfo.expiresAt) : "—";
-  const authUrl = resolveAuthUrl(context.env);
+  let authUrl = resolveAuthUrl(context.env);
+  const state = await buildAuthState(context);
+  if (state) {
+    authUrl = appendQueryParameter(authUrl, "state", state);
+  }
+  const canAutoUpdate = Boolean(context.update.callback_query?.message && typeof context.messageId === "number");
   const lines = [
     "<b>🔐 Авторизация Facebook</b>",
     "",
@@ -358,7 +568,9 @@ const handleAuth = async (context: BotContext): Promise<void> => {
     "Для подключения или обновления токена откройте веб-страницу авторизации.",
     `🌍 <a href="${escapeAttribute(authUrl)}">Открыть форму авторизации</a>`,
     "",
-    "После успешного входа данные синхронизируются с веб-панелью и ботом.",
+    canAutoUpdate
+      ? "После успешного входа вернитесь в Telegram — сообщение обновится автоматически."
+      : "После успешного входа вернитесь в бота, чтобы увидеть обновлённый статус.",
   ].filter(Boolean);
 
   if (status === "valid") {

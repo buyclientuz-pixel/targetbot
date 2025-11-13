@@ -49,6 +49,7 @@ export interface BotContext {
   chatType?: string;
   chatTitle?: string;
   threadId?: number;
+  messageId?: number;
   userId?: string;
   username?: string;
   text?: string;

@@ -59,6 +59,17 @@ export interface MetaCampaign {
   updatedTime?: string;
 }
 
+export interface MetaOAuthStatePayload {
+  origin?: "telegram" | "admin" | "external";
+  chatId?: string;
+  messageId?: number;
+  userId?: string;
+  botUsername?: string;
+  botDeeplink?: string;
+  returnTo?: string;
+  timestamp?: number;
+}
+
 export interface ProjectRecord {
   id: string;
   name: string;

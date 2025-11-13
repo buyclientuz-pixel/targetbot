@@ -2,6 +2,7 @@ import { EnvBindings, listSettings } from "./storage";
 import {
   MetaAdAccount,
   MetaCampaign,
+  MetaOAuthStatePayload,
   MetaStatusResponse,
   MetaTokenRecord,
   MetaTokenStatus,
@@ -57,6 +58,82 @@ const BUSINESS_ID_KEYS = [
   "FB_BUSINESSES",
   "BUSINESS_IDS",
 ] as const;
+
+const encodeBase64 = (value: string): string => {
+  if (typeof btoa === "function") {
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(value);
+    let binary = "";
+    bytes.forEach((byte) => {
+      binary += String.fromCharCode(byte);
+    });
+    return btoa(binary);
+  }
+  const bufferCtor = (globalThis as { Buffer?: { from: (input: string, encoding: string) => { toString: (encoding: string) => string } } }).Buffer;
+  if (bufferCtor) {
+    return bufferCtor.from(value, "utf-8").toString("base64");
+  }
+  throw new Error("No base64 encoder available");
+};
+
+const decodeBase64 = (value: string): string => {
+  if (typeof atob === "function") {
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const decoder = new TextDecoder();
+    return decoder.decode(bytes);
+  }
+  const bufferCtor = (globalThis as { Buffer?: { from: (input: string, encoding: string) => { toString: (encoding: string) => string } } }).Buffer;
+  if (bufferCtor) {
+    return bufferCtor.from(value, "base64").toString("utf-8");
+  }
+  throw new Error("No base64 decoder available");
+};
+
+const toBase64Url = (value: string): string => value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
+
+const fromBase64Url = (value: string): string => {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = normalized.length % 4;
+  if (padding === 0) {
+    return normalized;
+  }
+  return normalized.padEnd(normalized.length + (4 - padding), "=");
+};
+
+export const encodeMetaOAuthState = (payload: MetaOAuthStatePayload | null | undefined): string => {
+  if (!payload) {
+    return "";
+  }
+  try {
+    const json = JSON.stringify(payload);
+    return toBase64Url(encodeBase64(json));
+  } catch (error) {
+    console.warn("Failed to encode Meta OAuth state", error);
+    return "";
+  }
+};
+
+export const decodeMetaOAuthState = (value: string | null | undefined): MetaOAuthStatePayload | null => {
+  if (!value) {
+    return null;
+  }
+  try {
+    const json = decodeBase64(fromBase64Url(value));
+    const parsed = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+    const state = parsed as MetaOAuthStatePayload;
+    if (state.botUsername && state.botUsername.startsWith("@")) {
+      state.botUsername = state.botUsername.slice(1);
+    }
+    return state;
+  } catch (error) {
+    console.warn("Failed to decode Meta OAuth state", error);
+    return null;
+  }
+};
 
 const META_APP_SETTING_KEYS = [
   "meta.appId",
