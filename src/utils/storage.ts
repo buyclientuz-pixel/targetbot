@@ -15,6 +15,8 @@ import {
   ProjectRecord,
   ReportFilters,
   ReportRecord,
+  ReportScheduleRecord,
+  ReportDeliveryRecord,
   SettingRecord,
   TelegramGroupLinkRecord,
   UserRecord,
@@ -27,9 +29,12 @@ const LEAD_INDEX_PREFIX = "leads/";
 const USER_INDEX_KEY = "users/index.json";
 const PAYMENT_INDEX_KEY = "payments/index.json";
 const REPORT_INDEX_KEY = "reports/index.json";
+const REPORT_SCHEDULE_KEY = "reports/schedules.json";
+const REPORT_DELIVERY_KEY = "reports/deliveries.json";
 const SETTINGS_KEY = "settings/index.json";
 const COMMAND_LOG_KEY = "logs/commands.json";
 const REPORT_SESSION_PREFIX = "reports/session/";
+const REPORT_ASSET_PREFIX = "reports/assets/";
 const LEAD_REMINDER_INDEX_KEY = "reminders/leads.json";
 const PAYMENT_REMINDER_INDEX_KEY = "reminders/payments.json";
 const CHAT_REGISTRY_KEY = "chats/index.json";
@@ -51,6 +56,8 @@ const LEAD_KV_INDEX_PREFIX = "leads:index:";
 const META_WEBHOOK_KV_INDEX_KEY = "meta:webhook:index";
 const LEAD_REMINDER_KV_INDEX_KEY = "reminders:lead:index";
 const PAYMENT_REMINDER_KV_INDEX_KEY = "reminders:payment:index";
+const REPORT_SCHEDULE_KV_INDEX_KEY = "reports:schedule:index";
+const REPORT_DELIVERY_KV_INDEX_KEY = "reports:delivery:index";
 
 const USER_KV_PREFIX = "users:";
 const PROJECT_KV_PREFIX = "project:";
@@ -59,14 +66,19 @@ const LEAD_KV_PREFIX = "leads:";
 const META_WEBHOOK_KV_PREFIX = "meta:webhook:event:";
 const LEAD_REMINDER_KV_PREFIX = "reminders:lead:";
 const PAYMENT_REMINDER_KV_PREFIX = "reminders:payment:";
+const REPORT_SCHEDULE_KV_PREFIX = "reports:schedule:";
+const REPORT_DELIVERY_KV_PREFIX = "reports:delivery:";
+
+const MAX_REPORT_RECORDS = 200;
+const MAX_REPORT_DELIVERIES = 200;
 
 export interface ReportSessionRecord {
   id: string;
   chatId: string;
   userId?: string;
   username?: string;
-  type: "auto" | "summary" | "custom";
-  command: "auto_report" | "summary" | "custom";
+  type: "auto" | "summary" | "finance" | "custom";
+  command: "auto_report" | "summary" | "finance" | "custom";
   projectIds: string[];
   projects: { id: string; name: string }[];
   filters?: ReportFilters;
@@ -782,6 +794,125 @@ export const listReports = async (env: EnvBindings): Promise<ReportRecord[]> => 
 
 export const saveReports = async (env: EnvBindings, reports: ReportRecord[]): Promise<void> => {
   await writeJsonToR2(env, REPORT_INDEX_KEY, reports);
+};
+
+export const appendReportRecord = async (
+  env: EnvBindings,
+  record: ReportRecord,
+  options: { max?: number } = {},
+): Promise<ReportRecord[]> => {
+  const reports = await listReports(env);
+  const nextReports = [record, ...reports];
+  const limit = options.max ?? MAX_REPORT_RECORDS;
+  if (nextReports.length > limit) {
+    nextReports.length = limit;
+  }
+  await saveReports(env, nextReports);
+  return nextReports;
+};
+
+export const saveReportAsset = async (
+  env: EnvBindings,
+  reportId: string,
+  content: string | ArrayBuffer | Uint8Array,
+  contentType: string,
+): Promise<void> => {
+  let payload: string | ArrayBuffer;
+  if (typeof content === "string") {
+    payload = content;
+  } else if (content instanceof ArrayBuffer) {
+    payload = content;
+  } else {
+    const copy = new Uint8Array(content.byteLength);
+    copy.set(content);
+    payload = copy.buffer;
+  }
+  await env.R2.put(`${REPORT_ASSET_PREFIX}${reportId}`, payload, {
+    httpMetadata: { contentType },
+  });
+};
+
+export const getReportAsset = async (
+  env: EnvBindings,
+  reportId: string,
+): Promise<{ body: ArrayBuffer; contentType?: string } | null> => {
+  const object = await env.R2.get(`${REPORT_ASSET_PREFIX}${reportId}`);
+  if (!object) {
+    return null;
+  }
+  const stream = (object as { body?: ReadableStream<Uint8Array> }).body;
+  const body = stream ? await new Response(stream).arrayBuffer() : new ArrayBuffer(0);
+  const meta = (object as { httpMetadata?: { contentType?: string } }).httpMetadata;
+  return {
+    body,
+    contentType: meta?.contentType,
+  };
+};
+
+export const deleteReportAsset = async (env: EnvBindings, reportId: string): Promise<void> => {
+  await env.R2.delete(`${REPORT_ASSET_PREFIX}${reportId}`);
+};
+
+export const listReportSchedules = async (env: EnvBindings): Promise<ReportScheduleRecord[]> => {
+  return readJsonFromR2<ReportScheduleRecord[]>(env, REPORT_SCHEDULE_KEY, []);
+};
+
+export const saveReportSchedules = async (
+  env: EnvBindings,
+  schedules: ReportScheduleRecord[],
+): Promise<void> => {
+  await writeJsonToR2(env, REPORT_SCHEDULE_KEY, schedules);
+  await syncKvRecords({
+    env,
+    indexKey: REPORT_SCHEDULE_KV_INDEX_KEY,
+    prefix: REPORT_SCHEDULE_KV_PREFIX,
+    items: schedules,
+    getId: (item) => item.id,
+    serialize: (item) => ({
+      id: item.id,
+      title: item.title,
+      type: item.type,
+      frequency: item.frequency,
+      time: item.time,
+      timezone: item.timezone ?? null,
+      weekdays: item.weekdays ?? null,
+      project_ids: item.projectIds,
+      chat_id: item.chatId,
+      enabled: item.enabled,
+      next_run_at: item.nextRunAt ?? null,
+      last_run_at: item.lastRunAt ?? null,
+      last_status: item.lastStatus ?? null,
+    }),
+  });
+};
+
+export const listReportDeliveries = async (env: EnvBindings): Promise<ReportDeliveryRecord[]> => {
+  return readJsonFromR2<ReportDeliveryRecord[]>(env, REPORT_DELIVERY_KEY, []);
+};
+
+export const saveReportDeliveries = async (
+  env: EnvBindings,
+  deliveries: ReportDeliveryRecord[],
+): Promise<void> => {
+  const limited = deliveries.slice(0, MAX_REPORT_DELIVERIES);
+  await writeJsonToR2(env, REPORT_DELIVERY_KEY, limited);
+  await syncKvRecords({
+    env,
+    indexKey: REPORT_DELIVERY_KV_INDEX_KEY,
+    prefix: REPORT_DELIVERY_KV_PREFIX,
+    items: limited,
+    getId: (item) => item.id,
+    serialize: (item) => ({
+      id: item.id,
+      schedule_id: item.scheduleId,
+      report_id: item.reportId ?? null,
+      type: item.type,
+      channel: item.channel,
+      status: item.status,
+      delivered_at: item.deliveredAt,
+      error: item.error ?? null,
+    }),
+  });
 };
 
 export const listSettings = async (env: EnvBindings): Promise<SettingRecord[]> => {

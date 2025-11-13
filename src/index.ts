@@ -31,12 +31,19 @@ import {
   handleUsersList,
 } from "./api/users";
 import {
+  handleReportContent,
   handleReportDelete,
   handleReportGet,
   handleReportsCreate,
   handleReportsGenerate,
   handleReportsList,
 } from "./api/reports";
+import {
+  handleReportSchedulesCreate,
+  handleReportSchedulesDelete,
+  handleReportSchedulesList,
+  handleReportSchedulesUpdate,
+} from "./api/report-schedules";
 import {
   handleSettingGet,
   handleSettingsList,
@@ -69,6 +76,8 @@ import { ProjectSummary } from "./types";
 import { handleTelegramUpdate } from "./bot/router";
 import { handleMetaWebhook } from "./api/meta-webhook";
 import { runReminderSweep } from "./utils/reminders";
+import { runReportSchedules } from "./utils/report-scheduler";
+import { TelegramEnv } from "./utils/telegram";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -214,6 +223,11 @@ export default {
       if (pathname === "/api/reports/generate" && method === "POST") {
         return withCors(await handleReportsGenerate(request, env));
       }
+      const reportContentMatch = pathname.match(/^\/api\/reports\/([^/]+)\/content$/);
+      if (reportContentMatch && method === "GET") {
+        const reportId = decodeURIComponent(reportContentMatch[1]);
+        return withCors(await handleReportContent(request, env, reportId));
+      }
       const reportMatch = pathname.match(/^\/api\/reports\/([^/]+)$/);
       if (reportMatch) {
         const reportId = decodeURIComponent(reportMatch[1]);
@@ -222,6 +236,23 @@ export default {
         }
         if (method === "DELETE") {
           return withCors(await handleReportDelete(request, env, reportId));
+        }
+      }
+
+      if (pathname === "/api/report-schedules" && method === "GET") {
+        return withCors(await handleReportSchedulesList(request, env));
+      }
+      if (pathname === "/api/report-schedules" && method === "POST") {
+        return withCors(await handleReportSchedulesCreate(request, env));
+      }
+      const scheduleMatch = pathname.match(/^\/api\/report-schedules\/([^/]+)$/);
+      if (scheduleMatch) {
+        const scheduleId = decodeURIComponent(scheduleMatch[1]);
+        if (method === "PATCH") {
+          return withCors(await handleReportSchedulesUpdate(request, env, scheduleId));
+        }
+        if (method === "DELETE") {
+          return withCors(await handleReportSchedulesDelete(request, env, scheduleId));
         }
       }
 
@@ -412,9 +443,16 @@ export default {
   async scheduled(_event: unknown, env: unknown): Promise<void> {
     try {
       const bindings = ensureEnv(env);
-      const result = await runReminderSweep(bindings);
-      if (result.leadRemindersSent || result.paymentRemindersSent) {
-        console.log("reminders:sent", result);
+      const extended = bindings as typeof bindings & TelegramEnv & Record<string, unknown>;
+      const [reminders, reports] = await Promise.all([
+        runReminderSweep(extended),
+        runReportSchedules(extended),
+      ]);
+      if (reminders.leadRemindersSent || reminders.paymentRemindersSent) {
+        console.log("reminders:sent", reminders);
+      }
+      if (reports.triggered || reports.errors) {
+        console.log("reports:schedules", reports);
       }
     } catch (error) {
       console.error("reminders:error", error);

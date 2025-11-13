@@ -244,6 +244,10 @@ export type ReportType = "summary" | "detailed" | "finance" | "custom";
 
 export type ReportChannel = "telegram" | "web" | "api";
 
+export type ReportScheduleType = "summary" | "detailed" | "finance" | "sla";
+
+export type ReportScheduleFrequency = "daily" | "weekly";
+
 export interface ReportFilters {
   datePreset?: string;
   since?: string;
@@ -274,6 +278,39 @@ export interface ReportRecord {
   channel?: ReportChannel;
   generatedBy?: string;
   metadata?: JsonValue;
+}
+
+export interface ReportScheduleRecord {
+  id: string;
+  title: string;
+  type: ReportScheduleType;
+  frequency: ReportScheduleFrequency;
+  time: string;
+  timezone?: string;
+  weekdays?: number[];
+  projectIds: string[];
+  chatId: string;
+  format?: "html" | "pdf" | "xlsx" | "csv";
+  enabled: boolean;
+  lastRunAt?: string | null;
+  nextRunAt?: string | null;
+  lastStatus?: "success" | "error";
+  lastError?: string | null;
+  metadata?: JsonValue;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReportDeliveryRecord {
+  id: string;
+  scheduleId: string;
+  reportId?: string;
+  type: ReportScheduleType;
+  channel: ReportChannel;
+  status: "success" | "error";
+  deliveredAt: string;
+  error?: string | null;
+  details?: JsonValue;
 }
 
 export type SettingScope = "bot" | "portal" | "reports" | "billing" | "system";

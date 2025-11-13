@@ -22,7 +22,16 @@ const ensureChatId = (context: BotContext): string | null => {
 };
 
 const buildSelectionMessage = (session: ReportSessionRecord) => {
-  const header = session.type === "auto" ? "📥 Автоотчёт" : "📝 Краткий отчёт";
+  let header = "📝 Отчёт";
+  if (session.type === "auto") {
+    header = "📥 Автоотчёт";
+  } else if (session.type === "finance") {
+    header = "💰 Финансовый отчёт";
+  } else if (session.type === "summary") {
+    header = "📝 Краткий отчёт";
+  } else if (session.title) {
+    header = session.title;
+  }
   const period = session.filters?.datePreset
     ? session.filters.datePreset
     : session.filters?.since || session.filters?.until || "today";
@@ -84,7 +93,7 @@ interface ReportWorkflowOptions {
 
 const createSession = async (
   context: BotContext,
-  mode: "auto" | "summary",
+  mode: "auto" | "summary" | "finance" | "custom",
   options: ReportWorkflowOptions = {},
 ): Promise<ReportSessionRecord | null> => {
   const chatId = ensureChatId(context);
@@ -112,12 +121,28 @@ const createSession = async (
     userId: context.userId,
     username: context.username,
     type: mode,
-    command: mode === "auto" ? "auto_report" : "summary",
+    command:
+      mode === "auto"
+        ? "auto_report"
+        : mode === "finance"
+          ? "finance"
+          : mode === "custom"
+            ? "custom"
+            : "summary",
     projectIds: selectedProjectId ? [selectedProjectId] : summaries.map((summary) => summary.id),
     projects: summaries.map((summary) => ({ id: summary.id, name: summary.name })),
     filters: { datePreset: "today" },
-    title: mode === "auto" ? "Автоотчёт по проектам" : "Сводка по проектам",
-    format: mode === "auto" ? "pdf" : "html",
+    title:
+      mode === "auto"
+        ? "Автоотчёт по проектам"
+        : mode === "finance"
+          ? "Финансовый отчёт"
+          : mode === "summary"
+            ? "Сводка по проектам"
+            : options.projectId
+              ? "Кастомный отчёт"
+              : "Отчёт по проектам",
+    format: mode === "auto" ? "pdf" : mode === "finance" ? "html" : "html",
     createdAt: new Date(now).toISOString(),
     updatedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + REPORT_SESSION_TTL_MS).toISOString(),
@@ -128,7 +153,7 @@ const createSession = async (
 
 export const startReportWorkflow = async (
   context: BotContext,
-  mode: "auto" | "summary",
+  mode: "auto" | "summary" | "finance" | "custom",
   options: ReportWorkflowOptions = {},
 ): Promise<void> => {
   const session = await createSession(context, mode, options);
@@ -303,9 +328,16 @@ export const handleReportCallback = async (context: BotContext, data: string): P
     }
     try {
       const result = await generateReport(context.env, {
-        type: session.type === "auto" ? "detailed" : "summary",
+        type:
+          session.type === "auto"
+            ? "detailed"
+            : session.type === "finance"
+              ? "finance"
+              : session.type === "custom"
+                ? "custom"
+                : "summary",
         projectIds: session.projectIds,
-        format: session.format === "pdf" ? "pdf" : "html",
+        format: session.format === "csv" ? "csv" : session.format === "pdf" ? "pdf" : "html",
         channel: "telegram",
         triggeredBy: context.userId,
         command: session.command,

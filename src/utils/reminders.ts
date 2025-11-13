@@ -105,13 +105,13 @@ const takeNumberFromSettings = (settings: SettingRecord[], keys: string[]): numb
   return null;
 };
 
-interface ReminderSettings {
+export interface ReminderSettings {
   leadThresholdMinutes: number;
   paymentDaysBefore: number;
   paymentOverdueHours: number;
 }
 
-const loadReminderSettings = async (
+export const loadReminderSettings = async (
   env: EnvBindings & Record<string, unknown>,
 ): Promise<{ settings: SettingRecord[]; values: ReminderSettings }> => {
   const settings = await listSettings(env).catch(() => [] as SettingRecord[]);
@@ -157,7 +157,7 @@ const formatDate = (value: string): string => {
   }
 };
 
-const formatDurationMinutes = (minutesTotal: number): string => {
+export const formatDurationMinutes = (minutesTotal: number): string => {
   const minutes = Math.max(1, Math.round(minutesTotal));
   if (minutes >= 1440) {
     const days = Math.floor(minutes / 1440);

@@ -1,12 +1,11 @@
 import { MetaAdAccount, ProjectSummary, ReportRecord, ReportType } from "../types";
-import { EnvBindings, listReports, saveReports, loadMetaToken } from "./storage";
+import { EnvBindings, appendReportRecord, loadMetaToken, saveReportAsset } from "./storage";
 import { summarizeProjects, sortProjectSummaries } from "./projects";
 import { createId } from "./ids";
 import { fetchAdAccounts } from "./meta";
 import { escapeHtml } from "./html";
 
 const GLOBAL_PROJECT_ID = "__multi__";
-const MAX_REPORTS = 200;
 
 export interface GenerateReportOptions {
   type?: ReportType;
@@ -248,12 +247,14 @@ export const generateReport = async (
 
   const now = new Date().toISOString();
   const projectIds = summaries.map((summary) => summary.id);
+  const id = createId();
   const record: ReportRecord = {
-    id: createId(),
+    id,
     projectId: projectIds.length === 1 ? projectIds[0] : GLOBAL_PROJECT_ID,
     type: options.type || "summary",
     title,
     format,
+    url: `/api/reports/${id}/content`,
     generatedAt: now,
     createdAt: now,
     updatedAt: now,
@@ -270,12 +271,11 @@ export const generateReport = async (
     },
   };
 
-  const reports = await listReports(env);
-  const nextReports = [record, ...reports];
-  if (nextReports.length > MAX_REPORTS) {
-    nextReports.length = MAX_REPORTS;
-  }
-  await saveReports(env, nextReports);
+  await appendReportRecord(env, record);
+
+  const assetContent = format === "html" ? html : plain;
+  const contentType = format === "html" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
+  await saveReportAsset(env, record.id, assetContent, contentType);
 
   return { record, text: plain, html };
 };

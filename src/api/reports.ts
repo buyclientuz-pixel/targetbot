@@ -1,6 +1,6 @@
 import { jsonResponse } from "../utils/http";
 import { createId } from "../utils/ids";
-import { EnvBindings, listReports, saveReports } from "../utils/storage";
+import { EnvBindings, listReports, saveReports, getReportAsset, deleteReportAsset } from "../utils/storage";
 import { generateReport } from "../utils/reports";
 import { ApiError, ApiSuccess, JsonObject, ReportRecord, ReportType } from "../types";
 
@@ -133,13 +133,18 @@ export const handleReportsCreate = async (request: Request, env: unknown): Promi
     const now = new Date().toISOString();
     const projectId = ensureProjectId(body.projectId);
     const projectIds = parseStringArray(body.projectIds);
+    const reportId = typeof body.id === "string" && body.id.trim() ? body.id.trim() : createId();
+    const defaultUrl =
+      typeof body.url === "string" && body.url.trim()
+        ? body.url.trim()
+        : `/api/reports/${reportId}/content`;
     const report: ReportRecord = {
-      id: typeof body.id === "string" && body.id.trim() ? body.id.trim() : createId(),
+      id: reportId,
       projectId,
       type: parseReportType(body.type),
       title: ensureTitle(body.title, `Report ${now.slice(0, 10)}`),
       format: parseFormat(body.format),
-      url: typeof body.url === "string" && body.url.trim() ? body.url.trim() : undefined,
+      url: defaultUrl,
       generatedAt: ensureIsoDate(body.generatedAt, now),
       createdAt: now,
       updatedAt: now,
@@ -233,6 +238,27 @@ export const handleReportGet = async (
   }
 };
 
+export const handleReportContent = async (
+  _request: Request,
+  env: unknown,
+  reportId: string,
+): Promise<Response> => {
+  try {
+    const bindings = ensureEnv(env);
+    const asset = await getReportAsset(bindings, reportId);
+    if (!asset) {
+      return new Response("Report content not found", { status: 404 });
+    }
+    const headers = new Headers();
+    if (asset.contentType) {
+      headers.set("content-type", asset.contentType);
+    }
+    return new Response(asset.body, { status: 200, headers });
+  } catch (error) {
+    return new Response((error as Error).message, { status: 500 });
+  }
+};
+
 export const handleReportDelete = async (
   _request: Request,
   env: unknown,
@@ -246,6 +272,7 @@ export const handleReportDelete = async (
       return jsonResponse({ ok: false, error: "Report not found" }, { status: 404 });
     }
     await saveReports(bindings, filtered);
+    await deleteReportAsset(bindings, reportId).catch(() => undefined);
     const payload: ApiSuccess<{ id: string }> = { ok: true, data: { id: reportId } };
     return jsonResponse(payload);
   } catch (error) {

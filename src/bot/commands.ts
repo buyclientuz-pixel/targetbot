@@ -53,6 +53,7 @@ import {
   UserRole,
 } from "../types";
 import { calculateLeadAnalytics } from "../utils/analytics";
+import { createSlaReport } from "../utils/sla";
 
 const AUTH_URL_FALLBACK = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
 
@@ -67,6 +68,16 @@ const resolveAuthUrl = (env: BotContext["env"]): string => {
   ];
   const resolved = candidates.find((value): value is string => typeof value === "string" && value.trim().length > 0);
   return resolved ? resolved : AUTH_URL_FALLBACK;
+};
+
+const resolveReportLink = (env: BotContext["env"], reportId: string): string => {
+  const candidates = [env.PUBLIC_WEB_URL, env.PUBLIC_BASE_URL, env.WORKER_BASE_URL, env.ADMIN_BASE_URL];
+  const resolved = candidates.find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  if (resolved) {
+    const normalized = resolved.endsWith("/") ? resolved.slice(0, -1) : resolved;
+    return `${normalized}/api/reports/${reportId}/content`;
+  }
+  return `/api/reports/${reportId}/content`;
 };
 
 const BOT_USERNAME_ENV_KEYS = [
@@ -2604,7 +2615,7 @@ const handleAnalytics = async (context: BotContext): Promise<void> => {
   }
   lines.push(
     "",
-    "Нажмите «📈 По проектам», чтобы увидеть разбивку по каждому проекту, или «📥 Экспорт», чтобы собрать отчёт.",
+    "Нажмите «📈 По проектам», чтобы увидеть разбивку по каждому проекту, или «📥 Экспорт», чтобы выбрать тип отчёта (сводка, авто, финансы или SLA).",
   );
   await sendMessage(context, lines.join("\n"), { replyMarkup: buildAnalyticsMarkup() });
 };
@@ -2635,8 +2646,57 @@ const handleAnalyticsProjects = async (context: BotContext): Promise<void> => {
   await sendMessage(context, lines.join("\n"), { replyMarkup });
 };
 
+const buildAnalyticsExportMarkup = () => ({
+  inline_keyboard: [
+    [
+      { text: "📝 Сводка", callback_data: "analytics:export:summary" },
+      { text: "📥 Автоотчёт", callback_data: "analytics:export:auto" },
+    ],
+    [
+      { text: "💰 Финансы", callback_data: "analytics:export:finance" },
+      { text: "⏱ SLA-экспорт", callback_data: "analytics:export:sla" },
+    ],
+    [{ text: "⬅ К аналитике", callback_data: "cmd:analytics" }],
+    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+  ],
+});
+
+const sendAnalyticsExportMenu = async (context: BotContext): Promise<void> => {
+  const lines = [
+    "📥 Экспорт аналитики",
+    "",
+    "Выберите нужный тип отчёта:",
+    "• <b>Сводка</b> — короткий HTML по всем проектам.",
+    "• <b>Автоотчёт</b> — расширенный отчёт с детализацией.",
+    "• <b>Финансы</b> — состояние оплат и тарифов.",
+    "• <b>SLA-экспорт</b> — CSV со всеми просроченными лидами.",
+  ];
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildAnalyticsExportMarkup() });
+};
+
+const handleAnalyticsExportSla = async (context: BotContext): Promise<void> => {
+  const result = await createSlaReport(context.env, {
+    triggeredBy: context.userId,
+    channel: "telegram",
+  });
+  const link = resolveReportLink(context.env, result.record.id);
+  const lines = [
+    result.text,
+    "",
+    `Скачать CSV: <a href="${escapeAttribute(link)}">${escapeHtml(link)}</a>`,
+    `ID отчёта: <code>${escapeHtml(result.record.id)}</code>`,
+  ];
+  const replyMarkup = {
+    inline_keyboard: [
+      [{ text: "⬅ К аналитике", callback_data: "cmd:analytics" }],
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+    ],
+  };
+  await sendMessage(context, lines.join("\n"), { replyMarkup });
+};
+
 const handleAnalyticsExport = async (context: BotContext): Promise<void> => {
-  await startReportWorkflow(context, "summary");
+  await sendAnalyticsExportMenu(context);
 };
 
 const handleFinance = async (context: BotContext): Promise<void> => {
@@ -2885,14 +2945,35 @@ export const handleAnalyticsCallback = async (context: BotContext, data: string)
     return false;
   }
   await ensureAdminUser(context);
-  const [, action] = data.split(":");
+  const parts = data.split(":");
+  const action = parts[1];
+  const subaction = parts[2];
   switch (action) {
     case "projects":
       await handleAnalyticsProjects(context);
       return true;
     case "export":
-      await handleAnalyticsExport(context);
-      return true;
+      if (!subaction) {
+        await handleAnalyticsExport(context);
+        return true;
+      }
+      if (subaction === "summary") {
+        await startReportWorkflow(context, "summary");
+        return true;
+      }
+      if (subaction === "auto") {
+        await startReportWorkflow(context, "auto");
+        return true;
+      }
+      if (subaction === "finance") {
+        await startReportWorkflow(context, "finance");
+        return true;
+      }
+      if (subaction === "sla") {
+        await handleAnalyticsExportSla(context);
+        return true;
+      }
+      return false;
     default:
       return false;
   }
