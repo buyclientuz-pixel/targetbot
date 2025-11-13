@@ -8,52 +8,31 @@ import {
   saveProjectCampaignKpis,
 } from "./storage";
 
-const KPI_LEAD_GENERATION: PortalMetricKey[] = [
-  "leads",
-  "cpl",
-  "spend",
-  "impressions",
-  "reach",
-];
+export const OBJECTIVE_KPI_MAP: Record<string, PortalMetricKey[]> = {
+  LEAD_GENERATION: ["leads", "cpl", "spend"],
+  MESSAGES: ["conversations", "cpc", "cpm"],
+  TRAFFIC: ["clicks", "cpc", "ctr", "spend"],
+  AWARENESS: ["reach", "impressions", "cpm"],
+  ENGAGEMENT: ["engagements", "cpe"],
+  APP_INSTALLS: ["installs", "cpi"],
+  CONVERSIONS: ["conversions", "cpa", "spend"],
+  SALES: ["purchases", "roas", "spend"],
+};
 
-const KPI_MESSAGES: PortalMetricKey[] = ["messages", "cpm", "cpc", "spend"];
-
-const KPI_TRAFFIC: PortalMetricKey[] = ["clicks", "cpc", "ctr", "spend", "impressions"];
-
-const KPI_CONVERSIONS: PortalMetricKey[] = ["purchases", "roas", "spend", "cpa", "cpurchase"];
-
-const KPI_ENGAGEMENT: PortalMetricKey[] = ["engagements", "cpe", "impressions", "spend"];
-
-const KPI_VIDEO_VIEWS: PortalMetricKey[] = ["thruplays", "cpv", "impressions", "spend"];
-
-const KPI_APP_INSTALLS: PortalMetricKey[] = ["installs", "cpi", "spend"];
-
-const KPI_AWARENESS: PortalMetricKey[] = ["reach", "impressions", "freq", "cpm"];
-
-const KPI_SALES: PortalMetricKey[] = ["purchases", "roas", "spend", "cpa", "cpurchase"];
-
-export const OBJECTIVE_DEFAULT_KPIS: Record<string, PortalMetricKey[]> = {
-  LEAD_GENERATION: KPI_LEAD_GENERATION,
-  OUTCOME_LEADS: KPI_LEAD_GENERATION,
-  LEADS: KPI_LEAD_GENERATION,
-  MESSAGES: KPI_MESSAGES,
-  OUTCOME_MESSAGES: KPI_MESSAGES,
-  TRAFFIC: KPI_TRAFFIC,
-  OUTCOME_TRAFFIC: KPI_TRAFFIC,
-  AWARENESS: KPI_AWARENESS,
-  BRAND_AWARENESS: KPI_AWARENESS,
-  OUTCOME_AWARENESS: KPI_AWARENESS,
-  ENGAGEMENT: KPI_ENGAGEMENT,
-  OUTCOME_ENGAGEMENT: KPI_ENGAGEMENT,
-  POST_ENGAGEMENT: KPI_ENGAGEMENT,
-  CONVERSIONS: KPI_CONVERSIONS,
-  OUTCOME_CONVERSIONS: KPI_CONVERSIONS,
-  SALES: KPI_SALES,
-  OUTCOME_SALES: KPI_SALES,
-  VIDEO_VIEWS: KPI_VIDEO_VIEWS,
-  OUTCOME_VIDEO_VIEWS: KPI_VIDEO_VIEWS,
-  APP_INSTALLS: KPI_APP_INSTALLS,
-  OUTCOME_APP_INSTALLS: KPI_APP_INSTALLS,
+const OBJECTIVE_KPI_ALIASES: Record<string, keyof typeof OBJECTIVE_KPI_MAP> = {
+  OUTCOME_LEADS: "LEAD_GENERATION",
+  LEADS: "LEAD_GENERATION",
+  OUTCOME_MESSAGES: "MESSAGES",
+  OUTCOME_TRAFFIC: "TRAFFIC",
+  OUTCOME_AWARENESS: "AWARENESS",
+  BRAND_AWARENESS: "AWARENESS",
+  OUTCOME_ENGAGEMENT: "ENGAGEMENT",
+  POST_ENGAGEMENT: "ENGAGEMENT",
+  VIDEO_VIEWS: "ENGAGEMENT",
+  OUTCOME_VIDEO_VIEWS: "ENGAGEMENT",
+  OUTCOME_CONVERSIONS: "CONVERSIONS",
+  OUTCOME_SALES: "SALES",
+  OUTCOME_APP_INSTALLS: "APP_INSTALLS",
 };
 
 export const KPI_LABELS: Record<PortalMetricKey, string> = {
@@ -85,7 +64,49 @@ export const KPI_LABELS: Record<PortalMetricKey, string> = {
   cpurchase: "Цена за покупку",
 };
 
-const FALLBACK_KPIS: PortalMetricKey[] = ["leads", "cpl", "spend", "ctr", "cpc", "reach"];
+const sanitizeSelection = (input: PortalMetricKey[] | null | undefined): PortalMetricKey[] => {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  const seen = new Set<PortalMetricKey>();
+  const result: PortalMetricKey[] = [];
+  input.forEach((value) => {
+    const key = String(value).trim() as PortalMetricKey;
+    if (Object.prototype.hasOwnProperty.call(KPI_LABELS, key) && !seen.has(key)) {
+      seen.add(key);
+      result.push(key);
+    }
+  });
+  return result;
+};
+
+export interface ApplyKpiSelectionOptions {
+  objective?: string | null;
+  projectManual?: PortalMetricKey[] | null | undefined;
+  campaignManual?: PortalMetricKey[] | null | undefined;
+  override?: PortalMetricKey[] | null | undefined;
+}
+
+export const applyKpiSelection = ({
+  objective,
+  projectManual,
+  campaignManual,
+  override,
+}: ApplyKpiSelectionOptions): PortalMetricKey[] => {
+  const overrideMetrics = sanitizeSelection(override ?? undefined);
+  if (overrideMetrics.length) {
+    return overrideMetrics;
+  }
+  const campaignMetrics = sanitizeSelection(campaignManual ?? undefined);
+  if (campaignMetrics.length) {
+    return campaignMetrics;
+  }
+  const projectMetrics = sanitizeSelection(projectManual ?? undefined);
+  if (projectMetrics.length) {
+    return projectMetrics;
+  }
+  return getCampaignKPIs(objective ?? null);
+};
 
 const normalizeObjectiveKey = (objective: string): string => {
   return objective
@@ -98,14 +119,18 @@ const normalizeObjectiveKey = (objective: string): string => {
 
 export const getCampaignKPIs = (objective: string | null | undefined): PortalMetricKey[] => {
   if (!objective) {
-    return [...FALLBACK_KPIS];
+    return [];
   }
   const key = normalizeObjectiveKey(objective);
-  const preset = OBJECTIVE_DEFAULT_KPIS[key];
+  const preset = OBJECTIVE_KPI_MAP[key];
   if (preset) {
     return [...preset];
   }
-  return [...FALLBACK_KPIS];
+  const alias = OBJECTIVE_KPI_ALIASES[key];
+  if (alias) {
+    return [...OBJECTIVE_KPI_MAP[alias]];
+  }
+  return [];
 };
 
 export const resolveObjectiveKpis = (objective: string | null | undefined): PortalMetricKey[] => {
@@ -143,18 +168,16 @@ export const resolveCampaignKpis = async (
   projectId: string,
   campaignId: string,
   objectiveHint?: string | null,
+  projectManual?: PortalMetricKey[] | null,
 ): Promise<PortalMetricKey[]> => {
   const map = await listProjectCampaignKpis(env, projectId).catch((error) => {
     console.warn("Failed to load stored campaign KPIs", projectId, error);
     return {} as Record<string, PortalMetricKey[]>;
   });
-  const stored = map[campaignId];
-  if (stored && stored.length) {
-    return [...stored];
-  }
+  const campaignManual = map[campaignId];
   const objective =
     objectiveHint ?? (await getCampaignObjective(env, projectId, campaignId).catch(() => null));
-  return getCampaignKPIs(objective);
+  return applyKpiSelection({ objective, projectManual, campaignManual });
 };
 
 export const persistCampaignKpis = async (

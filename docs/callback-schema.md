@@ -58,6 +58,19 @@
 | `proj:billing-reminder-transfer-done:{projectId}` | Клиент подтверждает перевод средств. |
 | `proj:billing-reminder-confirm:{projectId}` | Администратор подтверждает поступление оплаты. |
 | `proj:billing-reminder-error:{projectId}` | Администратор отмечает ошибку и сбрасывает напоминание. |
+
+## KPI (`PROJECT_KPI_*`, `CAMPAIGN_KPI_*`, `KPI_*`)
+
+| Callback шаблон | Описание |
+| --- | --- |
+| `PROJECT_KPI_EDIT:{projectId}` | Открыть редактор KPI проекта. |
+| `CAMPAIGN_KPI_EDIT:{projectId}:{campaignId}` | Открыть редактор KPI выбранной кампании. |
+| `KPI_TOGGLE_{metric}:{projectId}` | Переключить KPI проекта (первая часть — ключ метрики). |
+| `KPI_TOGGLE_{metric}:{projectId}:{campaignId}` | Переключить KPI кампании. |
+| `KPI_SAVE_DEFAULT:{projectId}` | Сохранить выбранные KPI проекта как дефолтные. |
+| `KPI_SAVE_DEFAULT:{projectId}:{campaignId}` | Сохранить выбранные KPI кампании как дефолтные (используются во всех отчётах). |
+| `KPI_SAVE_ONCE:{projectId}` | Использовать выбранные KPI проекта один раз (без сохранения). |
+| `KPI_SAVE_ONCE:{projectId}:{campaignId}` | Использовать выбранные KPI кампании один раз для текущего отчёта. |
 | `proj:billing-reminder-wait:{projectId}` | Администратор откладывает подтверждение (следующий follow-up через час). |
 | `proj:edit:{projectId}` | Управление основными данными проекта (переименование, быстрые ссылки). |
 | `proj:edit-name:{projectId}` | Запустить ввод нового названия проекта. |

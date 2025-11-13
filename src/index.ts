@@ -71,6 +71,7 @@ import {
   listLeads,
   loadPortalById,
   loadPortalByProjectId,
+  listProjectCampaignKpis,
 } from "./utils/storage";
 import { fetchAdAccounts, fetchCampaigns, resolveMetaStatus, withMetaSettings } from "./utils/meta";
 import { projectBilling, summarizeProjects, sortProjectSummaries } from "./utils/projects";
@@ -82,7 +83,7 @@ import { runReportSchedules } from "./utils/report-scheduler";
 import { runAutoReportEngine } from "./utils/auto-report-engine";
 import { TelegramEnv } from "./utils/telegram";
 import { runRegressionChecks } from "./utils/qa";
-import { KPI_LABELS, syncCampaignObjectives } from "./utils/kpi";
+import { KPI_LABELS, syncCampaignObjectives, applyKpiSelection, getCampaignKPIs } from "./utils/kpi";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -458,6 +459,15 @@ export default {
               datePreset: "today",
             });
             await syncCampaignObjectives(bindings, project.id, campaigns);
+            try {
+              const storedKpis = await listProjectCampaignKpis(bindings, project.id);
+              campaigns.forEach((campaign) => {
+                const metrics = storedKpis[campaign.id];
+                campaign.manualKpi = metrics && metrics.length ? metrics : undefined;
+              });
+            } catch (error) {
+              console.warn("Failed to load portal campaign KPIs", project.id, error);
+            }
           }
         } catch (error) {
           console.warn("Failed to load portal campaigns", project.id, (error as Error).message);
@@ -596,9 +606,28 @@ export default {
               : "—",
         } as Record<PortalMetricKey, string>;
 
-        const preferredMetrics = portalRecord.metrics.length
-          ? portalRecord.metrics
-          : (["leads_total", "leads_new", "leads_done", "spend"] as PortalMetricKey[]);
+        const portalOverride = portalRecord.metrics.length ? portalRecord.metrics : undefined;
+        const manualProject = Array.isArray(project.manualKpi) ? project.manualKpi : undefined;
+        const metricSet = new Set<PortalMetricKey>();
+        selectedCampaigns.forEach((campaign) => {
+          const selection = applyKpiSelection({
+            objective: campaign.objective ?? null,
+            projectManual: manualProject,
+            campaignManual: campaign.manualKpi,
+            override: portalOverride,
+          });
+          selection.forEach((metric) => metricSet.add(metric));
+        });
+        if (!metricSet.size && portalOverride?.length) {
+          portalOverride.forEach((metric) => metricSet.add(metric));
+        }
+        if (!metricSet.size && manualProject?.length) {
+          manualProject.forEach((metric) => metricSet.add(metric));
+        }
+        if (!metricSet.size) {
+          getCampaignKPIs("LEAD_GENERATION").forEach((metric) => metricSet.add(metric));
+        }
+        const preferredMetrics = Array.from(metricSet);
 
         const metrics = preferredMetrics
           .map((key) => ({ key, label: metricLabels[key], value: metricValues[key] }))

@@ -12,7 +12,7 @@ import {
   handleUserCallback,
   handleAnalyticsCallback,
 } from "./commands";
-import { handleReportCallback, isReportCallbackData } from "./reports";
+import { handleReportCallback, isReportCallbackData, handleSpecKpiCallback, isSpecKpiCallback } from "./reports";
 import { BotContext, TelegramUpdate } from "./types";
 import { jsonResponse } from "../utils/http";
 import { EnvBindings, listProjects, listSettings } from "../utils/storage";
@@ -194,6 +194,12 @@ const handleUpdate = async (context: BotContext): Promise<void> => {
   }
 
   const callbackData = context.update.callback_query?.data;
+  if (isSpecKpiCallback(callbackData)) {
+    const handled = await handleSpecKpiCallback(context, callbackData!);
+    if (handled) {
+      return;
+    }
+  }
   if (isReportCallbackData(callbackData)) {
     const handled = await handleReportCallback(context, callbackData!);
     if (handled) {

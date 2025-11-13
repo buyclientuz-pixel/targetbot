@@ -1121,7 +1121,11 @@ const updateProjectReportPreferences = async (
     return;
   }
   const updatedSettings = applyProjectReportPreferencesPatch(summary.settings ?? {}, patch);
-  await updateProjectRecord(context.env, projectId, { settings: updatedSettings });
+  const recordPatch: Partial<ProjectRecord> = { settings: updatedSettings };
+  if (patch.metrics) {
+    recordPatch.manualKpi = patch.metrics;
+  }
+  await updateProjectRecord(context.env, projectId, recordPatch);
 };
 
 const truncateLabel = (label: string, max = 40): string => {
@@ -1338,7 +1342,7 @@ const buildProjectActionsMarkup = (summary: ProjectSummary) => {
       ],
       [
         { text: "⏰ Авто-отчёты", callback_data: `auto_menu:${summary.id}` },
-        { text: "🎛 KPI кампаний", callback_data: `report:kpi_open:${summary.id}` },
+        { text: "⚙ Изменить KPI проекта", callback_data: `PROJECT_KPI_EDIT:${summary.id}` },
       ],
       [
         { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },

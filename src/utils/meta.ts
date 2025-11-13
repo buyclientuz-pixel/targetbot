@@ -927,13 +927,16 @@ export const fetchCampaigns = async (
     }
     const dailyBudgetRaw = parseNumber(item.daily_budget ?? undefined);
     const dailyBudget = dailyBudgetRaw !== undefined ? dailyBudgetRaw / 100 : undefined;
+    const objectiveRaw = typeof item.objective === "string" ? item.objective.trim() : "";
+    const objectiveNormalized =
+      objectiveRaw && !/^mixed$/i.test(objectiveRaw) && !/^none$/i.test(objectiveRaw) ? objectiveRaw : null;
     const campaign: MetaCampaign = {
       id: item.id,
       accountId: normalizedAccount,
       name: item.name,
       status: item.status || undefined,
       effectiveStatus: item.effective_status || undefined,
-      objective: item.objective || undefined,
+      objective: objectiveNormalized,
       updatedTime: item.updated_time || undefined,
       dailyBudget,
     };

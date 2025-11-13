@@ -48,7 +48,8 @@ export interface MetaCampaign {
   name: string;
   status?: string;
   effectiveStatus?: string;
-  objective?: string;
+  objective?: string | null;
+  manualKpi?: PortalMetricKey[];
   dailyBudget?: number;
   spend?: number;
   spendCurrency?: string;
@@ -246,6 +247,7 @@ export interface ProjectRecord {
   createdAt: string;
   updatedAt: string;
   settings: JsonObject;
+  manualKpi?: PortalMetricKey[];
   userId?: string;
   telegramChatId?: string;
   telegramThreadId?: number;
@@ -343,7 +345,7 @@ export interface PendingCampaignSelectionRecord {
 
 export interface PendingKpiSelectionRecord {
   projectId: string;
-  campaignId: string;
+  campaignId: string | null;
   metrics: PortalMetricKey[];
   updatedAt: string;
 }

@@ -135,6 +135,22 @@ const sanitizePortalMetrics = (values: unknown): PortalMetricKey[] => {
   return normalized.length > 0 ? normalized : [...PORTAL_ALLOWED_METRICS];
 };
 
+const sanitizeManualKpis = (values: unknown): PortalMetricKey[] | null => {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+  const seen = new Set<PortalMetricKey>();
+  const result: PortalMetricKey[] = [];
+  values.forEach((value) => {
+    const key = String(value).trim() as PortalMetricKey;
+    if (PORTAL_ALLOWED_METRICS.includes(key) && !seen.has(key)) {
+      seen.add(key);
+      result.push(key);
+    }
+  });
+  return result;
+};
+
 const campaignObjectivesKey = (projectId: string): string => `${CAMPAIGN_OBJECTIVES_DIR}${projectId}.json`;
 const campaignKpisKey = (projectId: string): string => `${CAMPAIGN_KPIS_DIR}${projectId}.json`;
 
@@ -555,6 +571,31 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       ? (settingsValue as ProjectRecord["settings"])
       : ({} as ProjectRecord["settings"]);
 
+  const manualDirect = sanitizeManualKpis((data as Record<string, unknown>).manualKpi ?? (data as Record<string, unknown>).manual_kpi);
+  let manualKpi: PortalMetricKey[] | undefined;
+  if (manualDirect !== null) {
+    manualKpi = manualDirect;
+  } else {
+    const settingsObject = settings as Record<string, unknown>;
+    const reportsRaw = settingsObject?.["reports"];
+    if (reportsRaw && typeof reportsRaw === "object") {
+      const reports = reportsRaw as Record<string, unknown>;
+      const metricsCandidate = sanitizeManualKpis(reports["metrics"]);
+      if (metricsCandidate !== null) {
+        manualKpi = metricsCandidate;
+      } else {
+        const preferencesRaw = reports["preferences"];
+        if (preferencesRaw && typeof preferencesRaw === "object") {
+          const preferences = preferencesRaw as Record<string, unknown>;
+          const prefMetrics = sanitizeManualKpis(preferences["metrics"]);
+          if (prefMetrics !== null) {
+            manualKpi = prefMetrics;
+          }
+        }
+      }
+    }
+  }
+
   const userId = typeof data.userId === "string" ? data.userId : undefined;
   const telegramChatId =
     typeof data.telegramChatId === "string" && data.telegramChatId.trim()
@@ -583,6 +624,7 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     createdAt,
     updatedAt,
     settings,
+    manualKpi,
     userId,
     telegramChatId,
     telegramThreadId,
@@ -771,6 +813,12 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
     nextPaymentDate: coalesce(base.nextPaymentDate, extra.nextPaymentDate, null) ?? null,
     tariff,
     settings: { ...extra.settings, ...base.settings },
+    manualKpi:
+      base.manualKpi && base.manualKpi.length
+        ? base.manualKpi
+        : extra.manualKpi && extra.manualKpi.length
+          ? extra.manualKpi
+          : base.manualKpi ?? extra.manualKpi,
     userId: base.userId ?? extra.userId,
     telegramChatId: base.telegramChatId ?? extra.telegramChatId,
     telegramThreadId: base.telegramThreadId ?? extra.telegramThreadId,
@@ -1104,6 +1152,7 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
         next_payment_date: project.nextPaymentDate ?? null,
         tariff: project.tariff ?? 0,
         created_at: project.createdAt,
+        manual_kpi: Array.isArray(project.manualKpi) ? project.manualKpi : [],
       };
     },
   });
@@ -1162,11 +1211,17 @@ export const updateProjectRecord = async (
     return null;
   }
   const current = projects[index];
+  let manualPatch: PortalMetricKey[] | undefined = patch.manualKpi;
+  if (manualPatch !== undefined) {
+    const sanitized = sanitizeManualKpis(manualPatch);
+    manualPatch = sanitized !== null ? sanitized : current.manualKpi;
+  }
   const updated: ProjectRecord = {
     ...current,
     ...patch,
     id: current.id,
     updatedAt: new Date().toISOString(),
+    manualKpi: manualPatch ?? current.manualKpi,
   };
   projects[index] = updated;
   await saveProjects(env, projects);

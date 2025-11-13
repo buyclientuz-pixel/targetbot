@@ -15,12 +15,13 @@ import {
   loadMetaToken,
   saveReportAsset,
   listCampaignObjectivesForProject,
+  listProjectCampaignKpis,
   listPortals,
 } from "./storage";
 import { summarizeProjects, sortProjectSummaries, extractProjectReportPreferences } from "./projects";
 import { createId } from "./ids";
 import { fetchAdAccounts, fetchCampaigns, withMetaSettings } from "./meta";
-import { syncCampaignObjectives, getCampaignKPIs } from "./kpi";
+import { syncCampaignObjectives, getCampaignKPIs, applyKpiSelection } from "./kpi";
 
 const GLOBAL_PROJECT_ID = "__multi__";
 const PORTAL_BASE_KEYS = [
@@ -269,20 +270,29 @@ const collectProjectObjectiveMetrics = async (
   const entries = await Promise.all(
     summaries.map(async (summary) => {
       try {
-        const objectives = await listCampaignObjectivesForProject(env, summary.id);
+        const [objectives, campaignKpis] = await Promise.all([
+          listCampaignObjectivesForProject(env, summary.id),
+          listProjectCampaignKpis(env, summary.id).catch(() => ({} as Record<string, PortalMetricKey[]>)),
+        ]);
         const metrics = new Set<PortalMetricKey>();
-        Object.values(objectives).forEach((objective) => {
-          if (typeof objective === "string" && objective.trim()) {
-            getCampaignKPIs(objective).forEach((metric) => metrics.add(metric));
-          }
+        Object.entries(objectives).forEach(([campaignId, objective]) => {
+          const normalized = typeof objective === "string" && objective.trim() ? objective : null;
+          const selection = applyKpiSelection({
+            objective: normalized,
+            projectManual: summary.manualKpi,
+            campaignManual: campaignKpis[campaignId],
+          });
+          selection.forEach((metric) => metrics.add(metric));
         });
         if (!metrics.size) {
-          return [summary.id, getCampaignKPIs(null)] as const;
+          const fallback = applyKpiSelection({ objective: null, projectManual: summary.manualKpi });
+          fallback.forEach((metric) => metrics.add(metric));
         }
         return [summary.id, Array.from(metrics)] as const;
       } catch (error) {
         console.warn("Failed to resolve campaign objectives for report", summary.id, error);
-        return [summary.id, getCampaignKPIs(null)] as const;
+        const fallback = applyKpiSelection({ objective: null, projectManual: summary.manualKpi });
+        return [summary.id, fallback] as const;
       }
     }),
   );
@@ -333,7 +343,11 @@ export const buildAutoReportDataset = (
   const projects: AutoReportProjectEntry[] = summaries.map((summary) => {
     const account = summary.adAccountId ? accounts.get(summary.adAccountId) : undefined;
     const override = overrides.get(summary.id);
-    const metrics = objectiveMetrics.get(summary.id) ?? getCampaignKPIs(null);
+    const storedMetrics = objectiveMetrics.get(summary.id) ?? [];
+    const derivedMetrics = storedMetrics.length
+      ? storedMetrics
+      : applyKpiSelection({ objective: null, projectManual: summary.manualKpi });
+    const metrics = derivedMetrics.length ? derivedMetrics : getCampaignKPIs("LEAD_GENERATION");
     const portal = portals.get(summary.id);
     const spendAmount =
       override?.spend ??

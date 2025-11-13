@@ -12,6 +12,7 @@ import {
   updateProjectRecord,
   loadPortalByProjectId,
   savePortalRecord,
+  listProjectCampaignKpis,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "../utils/telegram";
@@ -24,6 +25,7 @@ import {
   syncCampaignObjectives,
   KPI_LABELS,
   getCampaignKPIs,
+  applyKpiSelection,
 } from "../utils/kpi";
 import { PortalMetricKey, ProjectSummary, MetaCampaign } from "../types";
 
@@ -89,6 +91,15 @@ const loadProjectCampaigns = async (
       datePreset: "last_7d",
     });
     await syncCampaignObjectives(context.env, summary.id, campaigns);
+    try {
+      const stored = await listProjectCampaignKpis(context.env, summary.id);
+      campaigns.forEach((campaign) => {
+        const metrics = stored[campaign.id];
+        campaign.manualKpi = metrics && metrics.length ? [...metrics] : undefined;
+      });
+    } catch (error) {
+      console.warn("Failed to load campaign KPI overrides", summary.id, error);
+    }
     return campaigns;
   } catch (error) {
     console.warn("Failed to load campaigns for KPI", summary.id, error);
@@ -99,7 +110,7 @@ const loadProjectCampaigns = async (
 const ensurePendingKpiSelection = async (
   context: BotContext,
   projectId: string,
-  campaignId: string,
+  campaignId: string | null,
   metrics: PortalMetricKey[],
 ): Promise<PortalMetricKey[]> => {
   if (!context.userId) {
@@ -124,7 +135,7 @@ const applyProjectMetrics = async (
   metrics: PortalMetricKey[],
 ): Promise<void> => {
   const settings = applyProjectReportPreferencesPatch(summary.settings ?? {}, { metrics });
-  await updateProjectRecord(context.env, summary.id, { settings });
+  await updateProjectRecord(context.env, summary.id, { settings, manualKpi: metrics });
   try {
     const portalRecord = await loadPortalByProjectId(context.env, summary.id);
     if (portalRecord) {
@@ -190,83 +201,71 @@ const renderKpiProject = async (context: BotContext, projectId: string): Promise
     });
     return;
   }
-  if (!summary.adAccountId) {
-    await sendOrEditMessage(
-      context,
-      [
-        `🎛 KPI кампаний — <b>${escapeHtml(summary.name)}</b>`,
-        "",
-        "Рекламный кабинет не подключён. Привяжите Meta-аккаунт, чтобы настроить KPI кампаний.",
-      ].join("\n"),
-      {
-        inline_keyboard: [
-          [
-            { text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" },
-            { text: "🏗 Проект", callback_data: `proj:view:${projectId}` },
-          ],
-          [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
-        ],
-      },
-    );
-    return;
-  }
 
   const campaigns = await loadProjectCampaigns(context, summary);
-  if (!campaigns.length) {
-    await sendOrEditMessage(
-      context,
-      [
-        `🎛 KPI кампаний — <b>${escapeHtml(summary.name)}</b>`,
-        "",
-        "Кампании не найдены. Обновите данные в Meta или выберите другой период.",
-      ].join("\n"),
-      {
-        inline_keyboard: [
-          [{ text: "🔄 Обновить", callback_data: `report:kpi_open:${projectId}` }],
-          [{ text: "🏗 Проект", callback_data: `proj:view:${projectId}` }],
-          [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
-        ],
-      },
-    );
-    return;
-  }
 
-  if (context.userId) {
-    await clearPendingKpiSelection(context.env, context.userId).catch((error) =>
-      console.warn("Failed to clear KPI selection", error),
-    );
-  }
+  const baseMetrics = resolveProjectMetricBase(summary);
+  const selection = await ensurePendingKpiSelection(context, projectId, null, baseMetrics);
+  const currentSet = new Set(selection);
 
-  const enriched = await Promise.all(
-    campaigns.map(async (campaign) => {
-      const metrics = await resolveCampaignKpis(context.env, projectId, campaign.id, campaign.objective);
-      return { campaign, metrics };
-    }),
-  );
-
-  const rows = enriched.map(({ campaign, metrics }) => {
-    const objective = campaign.objective ? campaign.objective : "—";
-    const label = `${campaign.objective ? "🎯" : "⚙️"} ${escapeHtml(truncateLabel(campaign.name))} · ${metrics.length}`;
-    return [
-      {
-        text: label,
-        callback_data: `report:kpi_campaign:${projectId}:${campaign.id}`,
-      },
-    ];
-  });
-
-  const lines = [
-    `🎛 KPI кампаний — <b>${escapeHtml(summary.name)}</b>`,
+  const lines: string[] = [
+    `🎛 KPI проекта — <b>${escapeHtml(summary.name)}</b>`,
     "",
-    "Выберите кампанию, чтобы настроить список KPI для отчётов и портала.",
+    selection.length ? "Текущие KPI:" : "Текущие KPI: не выбрано",
   ];
+  if (selection.length) {
+    selection.forEach((metric) => {
+      lines.push(`• ${escapeHtml(KPI_LABELS[metric] ?? metric)}`);
+    });
+  }
+  if (!summary.adAccountId) {
+    lines.push(
+      "",
+      "Рекламный кабинет не подключён. Подключите Meta, чтобы автоматически определять цели кампаний.",
+    );
+  }
+  if (!campaigns.length) {
+    lines.push("", "Кампании не найдены. Обновите данные в Meta, чтобы настроить KPI по кампаниям.");
+  } else {
+    lines.push("", "Выберите показатели или откройте кампанию для индивидуальной настройки.");
+  }
 
-  rows.push([
-    { text: "🏗 Проект", callback_data: `proj:view:${projectId}` },
+  const metricKeys = buildKpiMetricOrder(null);
+  const metricButtons = metricKeys.map((metric) => ({
+    text: `${currentSet.has(metric) ? "✅" : "☑️"} ${KPI_LABELS[metric] ?? metric}`,
+    callback_data: `KPI_TOGGLE_${metric}:${projectId}`,
+  }));
+
+  const keyboard: { text: string; callback_data?: string }[][] = [];
+  for (let i = 0; i < metricButtons.length; i += 2) {
+    keyboard.push(metricButtons.slice(i, i + 2));
+  }
+
+  keyboard.push([
+    { text: "💾 Сохранить дефолтно", callback_data: `KPI_SAVE_DEFAULT:${projectId}` },
+    { text: "📄 Сохранить единоразово", callback_data: `KPI_SAVE_ONCE:${projectId}` },
+  ]);
+
+  if (campaigns.length) {
+    campaigns
+      .slice(0, 30)
+      .forEach((campaign) => {
+        const icon = campaign.manualKpi && campaign.manualKpi.length ? "⭐️" : campaign.objective ? "🎯" : "⚙️";
+        keyboard.push([
+          {
+            text: `${icon} ${truncateLabel(campaign.name)}`,
+            callback_data: `CAMPAIGN_KPI_EDIT:${projectId}:${campaign.id}`,
+          },
+        ]);
+      });
+  }
+
+  keyboard.push([
+    { text: "⬅ Проект", callback_data: `proj:view:${projectId}` },
     { text: "🏠 Меню", callback_data: "cmd:menu" },
   ]);
 
-  await sendOrEditMessage(context, lines.join("\n"), { inline_keyboard: rows });
+  await sendOrEditMessage(context, lines.join("\n"), { inline_keyboard: keyboard });
 };
 
 const renderKpiCampaign = async (
@@ -289,7 +288,7 @@ const renderKpiCampaign = async (
       "Кампания не найдена. Обновите список кампаний и попробуйте снова.",
       {
         inline_keyboard: [
-          [{ text: "🔁 Обновить", callback_data: `report:kpi_open:${projectId}` }],
+          [{ text: "🔁 Обновить", callback_data: `PROJECT_KPI_EDIT:${projectId}` }],
           [{ text: "🏗 Проект", callback_data: `proj:view:${projectId}` }],
           [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
         ],
@@ -298,7 +297,13 @@ const renderKpiCampaign = async (
     return;
   }
 
-  const baseMetrics = await resolveCampaignKpis(context.env, projectId, campaignId, campaign.objective);
+  const baseMetrics = await resolveCampaignKpis(
+    context.env,
+    projectId,
+    campaignId,
+    campaign.objective,
+    summary.manualKpi,
+  );
   const selection = await ensurePendingKpiSelection(context, projectId, campaignId, baseMetrics);
   const currentSet = new Set(selection);
   const metricKeys = buildKpiMetricOrder(campaign.objective);
@@ -310,27 +315,33 @@ const renderKpiCampaign = async (
     `Кампания: <b>${escapeHtml(campaign.name)}</b>`,
     `Цель: <b>${escapeHtml(campaign.objective ?? "—")}</b>`,
     "",
-    "Текущие KPI:",
+    selection.length ? "Текущие KPI:" : "Текущие KPI: не выбрано",
   ];
-  selection.forEach((metric) => {
-    lines.push(`• ${escapeHtml(KPI_LABELS[metric] ?? metric)}`);
-  });
+  if (selection.length) {
+    selection.forEach((metric) => {
+      lines.push(`• ${escapeHtml(KPI_LABELS[metric] ?? metric)}`);
+    });
+  }
 
-  const keyboard: { text: string; callback_data: string }[][] = metricKeys.map((metric) => [
-    {
-      text: `${currentSet.has(metric) ? "✅" : "☑️"} ${KPI_LABELS[metric] ?? metric}`,
-      callback_data: `report:kpi_toggle:${projectId}:${campaignId}:${metric}`,
-    },
-  ]);
+  const metricButtons = metricKeys.map((metric) => ({
+    text: `${currentSet.has(metric) ? "✅" : "☑️"} ${KPI_LABELS[metric] ?? metric}`,
+    callback_data: `KPI_TOGGLE_${metric}:${projectId}:${campaignId}`,
+  }));
+
+  const keyboard: { text: string; callback_data?: string }[][] = [];
+  for (let i = 0; i < metricButtons.length; i += 2) {
+    keyboard.push(metricButtons.slice(i, i + 2));
+  }
 
   keyboard.push([
-    { text: "💾 Сохранить дефолтно", callback_data: `report:kpi_save_default:${projectId}:${campaignId}` },
-    { text: "📄 Сохранить разово", callback_data: `report:kpi_save_once:${projectId}:${campaignId}` },
+    { text: "💾 Сохранить дефолтно", callback_data: `KPI_SAVE_DEFAULT:${projectId}:${campaignId}` },
+    { text: "📄 Сохранить единоразово", callback_data: `KPI_SAVE_ONCE:${projectId}:${campaignId}` },
   ]);
   keyboard.push([
-    { text: "⬅ Кампании", callback_data: `report:kpi_open:${projectId}` },
+    { text: "⬅ KPI проекта", callback_data: `PROJECT_KPI_EDIT:${projectId}` },
     { text: "🏗 Проект", callback_data: `proj:view:${projectId}` },
   ]);
+  keyboard.push([{ text: "🏠 Меню", callback_data: "cmd:menu" }]);
 
   await sendOrEditMessage(context, lines.join("\n"), { inline_keyboard: keyboard });
 };
@@ -401,20 +412,31 @@ const truncateLabel = (label: string, max = 24): string => {
   return `${label.slice(0, max - 1)}…`;
 };
 
+const resolveProjectMetricBase = (summary: ProjectSummary): PortalMetricKey[] => {
+  const manual = Array.isArray(summary.manualKpi) ? summary.manualKpi : undefined;
+  const selection = applyKpiSelection({ objective: null, projectManual: manual });
+  if (selection.length) {
+    return selection;
+  }
+  return getCampaignKPIs("LEAD_GENERATION");
+};
+
 const loadKpiSelection = async (
   context: BotContext,
   projectId: string,
   campaignId: string,
   objective: string | null | undefined,
 ): Promise<PortalMetricKey[]> => {
-  const base = await resolveCampaignKpis(context.env, projectId, campaignId, objective);
+  const summary = await loadProjectSummaryById(context, projectId);
+  const manual = summary?.manualKpi;
+  const base = await resolveCampaignKpis(context.env, projectId, campaignId, objective, manual);
   return ensurePendingKpiSelection(context, projectId, campaignId, base);
 };
 
 const handleKpiToggle = async (
   context: BotContext,
   projectId: string,
-  campaignId: string,
+  campaignId: string | null,
   metric: PortalMetricKey,
 ): Promise<void> => {
   if (!context.userId) {
@@ -430,6 +452,24 @@ const handleKpiToggle = async (
     });
     return;
   }
+  if (!campaignId) {
+    const base = resolveProjectMetricBase(summary);
+    const selection = await ensurePendingKpiSelection(context, projectId, null, base);
+    const exists = selection.includes(metric);
+    const next = exists ? selection.filter((value) => value !== metric) : [...selection, metric];
+    await savePendingKpiSelection(context.env, context.userId, {
+      projectId,
+      campaignId: null,
+      metrics: next,
+      updatedAt: new Date().toISOString(),
+    });
+    if (context.update.callback_query?.id) {
+      await answerCallbackQuery(context.env, context.update.callback_query.id, exists ? "Удалено" : "Добавлено");
+    }
+    await renderKpiProject(context, projectId);
+    return;
+  }
+
   const campaigns = await loadProjectCampaigns(context, summary);
   const campaign = campaigns.find((entry) => entry.id === campaignId);
   if (!campaign) {
@@ -454,7 +494,7 @@ const handleKpiToggle = async (
 const handleKpiSave = async (
   context: BotContext,
   projectId: string,
-  campaignId: string,
+  campaignId: string | null,
   options: { persist: boolean },
 ): Promise<void> => {
   const summary = await loadProjectSummaryById(context, projectId);
@@ -462,6 +502,27 @@ const handleKpiSave = async (
     await sendOrEditMessage(context, "Проект не найден. Обновите список проектов.", {
       inline_keyboard: [[{ text: "📊 Проекты", callback_data: "cmd:projects" }]],
     });
+    return;
+  }
+  if (!campaignId) {
+    const base = resolveProjectMetricBase(summary);
+    const selection = await ensurePendingKpiSelection(context, projectId, null, base);
+    if (options.persist) {
+      await applyProjectMetrics(context, summary, selection);
+      if (context.userId) {
+        await clearPendingKpiSelection(context.env, context.userId).catch((error) =>
+          console.warn("Failed to clear KPI selection", error),
+        );
+      }
+    }
+    if (context.update.callback_query?.id) {
+      await answerCallbackQuery(
+        context.env,
+        context.update.callback_query.id,
+        options.persist ? "Сохранено" : "Используйте для текущего отчёта",
+      );
+    }
+    await renderKpiProject(context, projectId);
     return;
   }
   const campaigns = await loadProjectCampaigns(context, summary);
@@ -485,6 +546,69 @@ const handleKpiSave = async (
     await answerCallbackQuery(context.env, context.update.callback_query.id, "Сохранено");
   }
   await renderKpiCampaign(context, projectId, campaignId);
+};
+
+export const isSpecKpiCallback = (data: string | undefined): boolean => {
+  if (!data) {
+    return false;
+  }
+  return (
+    data.startsWith("PROJECT_KPI_EDIT") ||
+    data.startsWith("CAMPAIGN_KPI_EDIT") ||
+    data.startsWith("KPI_TOGGLE_") ||
+    data.startsWith("KPI_SAVE_DEFAULT") ||
+    data.startsWith("KPI_SAVE_ONCE")
+  );
+};
+
+export const handleSpecKpiCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (data.startsWith("PROJECT_KPI_EDIT")) {
+    const [, projectId] = data.split(":");
+    if (!projectId) {
+      return false;
+    }
+    await renderKpiProject(context, projectId);
+    return true;
+  }
+  if (data.startsWith("CAMPAIGN_KPI_EDIT")) {
+    const [, projectId, campaignId] = data.split(":");
+    if (!projectId || !campaignId) {
+      return false;
+    }
+    await renderKpiCampaign(context, projectId, campaignId);
+    return true;
+  }
+  if (data.startsWith("KPI_TOGGLE_")) {
+    const parts = data.split(":");
+    const metricKey = parts[0].slice("KPI_TOGGLE_".length);
+    const projectId = parts[1];
+    const campaignId = parts[2] ?? null;
+    if (!projectId || !metricKey || !Object.prototype.hasOwnProperty.call(KPI_LABELS, metricKey)) {
+      if (context.update.callback_query?.id) {
+        await answerCallbackQuery(context.env, context.update.callback_query.id, "Выберите KPI из списка");
+      }
+      return true;
+    }
+    await handleKpiToggle(context, projectId, campaignId, metricKey as PortalMetricKey);
+    return true;
+  }
+  if (data.startsWith("KPI_SAVE_DEFAULT")) {
+    const [, projectId, campaignId] = data.split(":");
+    if (!projectId) {
+      return false;
+    }
+    await handleKpiSave(context, projectId, campaignId ?? null, { persist: true });
+    return true;
+  }
+  if (data.startsWith("KPI_SAVE_ONCE")) {
+    const [, projectId, campaignId] = data.split(":");
+    if (!projectId) {
+      return false;
+    }
+    await handleKpiSave(context, projectId, campaignId ?? null, { persist: false });
+    return true;
+  }
+  return false;
 };
 
 interface ReportWorkflowOptions {

@@ -41,6 +41,7 @@ import {
   evaluateAutoReportTrigger,
 } from "../src/utils/auto-report-engine";
 import { buildAutoReportDataset } from "../src/utils/reports";
+import { applyKpiSelection } from "../src/utils/kpi";
 import { ensureTelegramUrl, ensureTelegramUrlFromId, resolveChatLink } from "../src/utils/chat-links";
 import { evaluateQaDataset } from "../src/utils/qa";
 import {
@@ -194,6 +195,35 @@ test("evaluateQaDataset flags missing references and reschedules schedules", () 
   const nextRun = evaluation.schedules[0].nextRunAt;
   expect.ok(nextRun);
   expect.ok(Date.parse(nextRun!) > Date.parse("2025-02-22T12:00:00Z"));
+});
+
+test("applyKpiSelection prioritises override, campaign, project, then auto objective", () => {
+  const override = applyKpiSelection({
+    objective: "LEAD_GENERATION",
+    override: ["spend", "leads", "cpl"],
+    campaignManual: ["reach"],
+    projectManual: ["impressions"],
+  });
+  expect.deepEqual(override, ["spend", "leads", "cpl"]);
+
+  const campaign = applyKpiSelection({
+    objective: "LEAD_GENERATION",
+    campaignManual: ["reach", "leads"],
+    projectManual: ["impressions"],
+  });
+  expect.deepEqual(campaign, ["reach", "leads"]);
+
+  const project = applyKpiSelection({
+    objective: "LEAD_GENERATION",
+    projectManual: ["ctr", "cpc"],
+  });
+  expect.deepEqual(project, ["ctr", "cpc"]);
+
+  const auto = applyKpiSelection({ objective: "LEAD_GENERATION" });
+  expect.deepEqual(auto, ["leads", "cpl", "spend"]);
+
+  const unknown = applyKpiSelection({ objective: "UNKNOWN_OBJECTIVE" });
+  expect.deepEqual(unknown, []);
 });
 
 test("evaluateAutoReportTrigger detects daily window", () => {
