@@ -421,6 +421,42 @@ export interface ReportTotals {
   leadsDone: number;
 }
 
+export interface AutoReportProjectBilling {
+  status: ProjectBillingSummary["status"];
+  label: string;
+  nextPaymentDate: string | null;
+  tariff: number | null;
+}
+
+export interface AutoReportProjectSpend {
+  label: string;
+  amount: number | null;
+  currency: string | null;
+  period: string | null;
+}
+
+export interface AutoReportProjectEntry {
+  projectId: string;
+  projectName: string;
+  chatId: string;
+  chatTitle: string | null;
+  chatLink: string | null;
+  metaAccountId: string;
+  metaAccountName: string;
+  adAccountId: string | null;
+  leads: ProjectLeadStats;
+  billing: AutoReportProjectBilling;
+  spend: AutoReportProjectSpend;
+  metrics: PortalMetricKey[];
+}
+
+export interface AutoReportDataset {
+  periodLabel: string;
+  generatedAt: string;
+  totals: ReportTotals;
+  projects: AutoReportProjectEntry[];
+}
+
 export interface ReportRecord {
   id: string;
   projectId: string;

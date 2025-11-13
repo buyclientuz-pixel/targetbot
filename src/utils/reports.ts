@@ -1,4 +1,14 @@
-import { MetaAdAccount, PortalMetricKey, ProjectSummary, ReportRecord, ReportType } from "../types";
+import {
+  AutoReportDataset,
+  AutoReportProjectEntry,
+  JsonValue,
+  MetaAdAccount,
+  PortalMetricKey,
+  ProjectSummary,
+  ReportRecord,
+  ReportType,
+  ReportTotals,
+} from "../types";
 import {
   EnvBindings,
   appendReportRecord,
@@ -258,6 +268,71 @@ const billingLabel = (summary: ProjectSummary): string => {
   return pieces.join(" · ");
 };
 
+const buildAutoReportDataset = (
+  summaries: ProjectSummary[],
+  accounts: Map<string, MetaAdAccount>,
+  overrides: Map<string, CampaignSpendOverride>,
+  objectiveMetrics: Map<string, PortalMetricKey[]>,
+  periodLabel: string,
+  generatedAt: string,
+  filters: { datePreset?: string; since?: string; until?: string },
+): AutoReportDataset => {
+  const projects: AutoReportProjectEntry[] = summaries.map((summary) => {
+    const account = summary.adAccountId ? accounts.get(summary.adAccountId) : undefined;
+    const override = overrides.get(summary.id);
+    const metrics = objectiveMetrics.get(summary.id) ?? getCampaignKPIs(null);
+    const spendAmount =
+      override?.spend ??
+      (typeof account?.spend === "number" && Number.isFinite(account.spend) ? account.spend : null);
+    const spendCurrency = override?.currency ?? account?.spendCurrency ?? account?.currency ?? null;
+    const spendPeriod = override?.period ?? account?.spendPeriod ?? filters.datePreset ?? null;
+    const spendLabel = override?.label ?? formatSpend(account) ?? "—";
+
+    return {
+      projectId: summary.id,
+      projectName: summary.name,
+      chatId: summary.chatId,
+      chatTitle: summary.telegramTitle ?? null,
+      chatLink: summary.telegramLink ?? null,
+      metaAccountId: summary.metaAccountId,
+      metaAccountName: summary.metaAccountName,
+      adAccountId: summary.adAccountId ?? null,
+      leads: summary.leadStats,
+      billing: {
+        status: summary.billing?.status ?? "missing",
+        label: billingLabel(summary),
+        nextPaymentDate: summary.nextPaymentDate ?? null,
+        tariff: Number.isFinite(summary.tariff) ? summary.tariff : null,
+      },
+      spend: {
+        label: spendLabel,
+        amount: spendAmount,
+        currency: spendCurrency,
+        period: spendPeriod,
+      },
+      metrics,
+    };
+  });
+
+  const totals: ReportTotals = projects.reduce<ReportTotals>(
+    (acc, project) => {
+      acc.projects += 1;
+      acc.leadsTotal += project.leads.total;
+      acc.leadsNew += project.leads.new;
+      acc.leadsDone += project.leads.done;
+      return acc;
+    },
+    { projects: 0, leadsTotal: 0, leadsNew: 0, leadsDone: 0 },
+  );
+
+  return {
+    periodLabel,
+    generatedAt,
+    totals,
+    projects,
+  };
+};
+
 const buildPlainText = (
   title: string,
   period: string,
@@ -335,49 +410,37 @@ export const generateReport = async (
   const accounts = await accountSpendMap(env, options.includeMeta !== false, filters);
   const overrides = await collectPreferredCampaignSpend(env, summaries, filters);
   const objectiveMetrics = await collectProjectObjectiveMetrics(env, summaries);
-  const objectiveKpiRecord = Object.fromEntries(objectiveMetrics) as Record<string, PortalMetricKey[]>;
-
-  const rows = summaries.map((summary) => {
-    const account = summary.adAccountId ? accounts.get(summary.adAccountId) : undefined;
-    const override = overrides.get(summary.id);
-    return {
-      id: summary.id,
-      name: summary.name,
-      leads: summary.leadStats,
-      billing: billingLabel(summary),
-      spend: override?.label ?? formatSpend(account),
-    };
-  });
-
-  const totals = rows.reduce(
-    (acc, row) => {
-      acc.projects += 1;
-      acc.leadsTotal += row.leads.total;
-      acc.leadsNew += row.leads.new;
-      acc.leadsDone += row.leads.done;
-      return acc;
-    },
-    { projects: 0, leadsTotal: 0, leadsNew: 0, leadsDone: 0 },
-  );
-
+  const generatedAt = new Date();
+  const generatedAtIso = generatedAt.toISOString();
   const periodLabel = describePeriod(filters);
+  const dataset = buildAutoReportDataset(
+    summaries,
+    accounts,
+    overrides,
+    objectiveMetrics,
+    periodLabel,
+    generatedAtIso,
+    filters,
+  );
+  const objectiveKpiRecord = Object.fromEntries(
+    dataset.projects.map((project) => [project.projectId, project.metrics]),
+  ) as Record<string, PortalMetricKey[]>;
+
+  const displayRows = dataset.projects.map((project) => ({
+    name: project.projectName,
+    leads: project.leads,
+    billing: project.billing.label,
+    spend: project.spend.label === "—" ? undefined : project.spend.label,
+  }));
+
+  const totals = dataset.totals;
+
   const defaultTitle = options.type === "detailed" ? "Автоотчёт по проектам" : "Сводка по проектам";
   const title = options.title || `${defaultTitle} (${periodLabel})`;
   const format = options.format || "html";
-  const plain = buildPlainText(
-    title,
-    periodLabel,
-    rows.map((row) => ({ name: row.name, leads: row.leads, billing: row.billing, spend: row.spend })),
-    totals,
-  );
-  const html = buildHtml(
-    title,
-    periodLabel,
-    rows.map((row) => ({ name: row.name, leads: row.leads, billing: row.billing, spend: row.spend })),
-    totals,
-  );
+  const plain = buildPlainText(title, periodLabel, displayRows, totals);
+  const html = buildHtml(title, periodLabel, displayRows, totals);
 
-  const now = new Date().toISOString();
   const projectIds = summaries.map((summary) => summary.id);
   const id = createId();
   const record: ReportRecord = {
@@ -387,9 +450,9 @@ export const generateReport = async (
     title,
     format,
     url: `/api/reports/${id}/content`,
-    generatedAt: now,
-    createdAt: now,
-    updatedAt: now,
+    generatedAt: generatedAtIso,
+    createdAt: generatedAtIso,
+    updatedAt: generatedAtIso,
     projectIds,
     filters,
     summary: plain,
@@ -401,6 +464,7 @@ export const generateReport = async (
       command: options.command,
       includeMeta: options.includeMeta !== false,
       objectiveKpis: objectiveKpiRecord,
+      autoReport: dataset as unknown as JsonValue,
     },
   };
 
