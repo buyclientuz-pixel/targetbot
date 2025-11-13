@@ -641,34 +641,52 @@ const buildProjectListMarkup = (
   return { inline_keyboard: keyboard };
 };
 
-const buildProjectActionsMarkup = (summary: ProjectSummary) => ({
-  inline_keyboard: [
-    [
-      { text: "✏️ Изменить данные", callback_data: `proj:edit:${summary.id}` },
-      summary.telegramLink
-        ? { text: "📲 Чат-группа", url: summary.telegramLink }
-        : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
+const resolveProjectChatUrl = (summary: ProjectSummary): string | undefined => {
+  if (summary.telegramLink && summary.telegramLink.trim()) {
+    return summary.telegramLink.trim();
+  }
+  const chatCandidate = summary.telegramChatId ?? summary.chatId;
+  if (!chatCandidate) {
+    return undefined;
+  }
+  const chatId = String(chatCandidate).trim();
+  if (!chatId) {
+    return undefined;
+  }
+  return `tg://openmessage?chat_id=${encodeURIComponent(chatId)}`;
+};
+
+const buildProjectActionsMarkup = (summary: ProjectSummary) => {
+  const chatUrl = resolveProjectChatUrl(summary);
+  return {
+    inline_keyboard: [
+      [
+        { text: "✏️ Изменить данные", callback_data: `proj:edit:${summary.id}` },
+        chatUrl
+          ? { text: "📲 Чат-группа", url: chatUrl }
+          : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
+      ],
+      [
+        { text: "💬 Лиды", callback_data: `proj:leads:${summary.id}` },
+        { text: "📈 Отчёт по рекламе", callback_data: `proj:report:${summary.id}` },
+      ],
+      [
+        { text: "👀 Рекламные кампании", callback_data: `proj:campaigns:${summary.id}` },
+        { text: "📤 Экспорт данных", callback_data: `proj:export:${summary.id}` },
+      ],
+      [
+        { text: "🧩 Портал", callback_data: `proj:portal:${summary.id}` },
+        { text: "💳 Оплата", callback_data: `proj:billing:${summary.id}` },
+      ],
+      [
+        { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
+        { text: "❌ Удалить", callback_data: `proj:delete:${summary.id}` },
+      ],
+      [{ text: "⬅ К списку", callback_data: "cmd:projects" }],
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
     ],
-    [
-      { text: "💬 Лиды", callback_data: `proj:leads:${summary.id}` },
-      { text: "📈 Отчёт по рекламе", callback_data: `proj:report:${summary.id}` },
-    ],
-    [
-      { text: "👀 Рекламные кампании", callback_data: `proj:campaigns:${summary.id}` },
-      { text: "📤 Экспорт данных", callback_data: `proj:export:${summary.id}` },
-    ],
-    [
-      { text: "🧩 Портал", callback_data: `proj:portal:${summary.id}` },
-      { text: "💳 Оплата", callback_data: `proj:billing:${summary.id}` },
-    ],
-    [
-      { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
-      { text: "❌ Удалить", callback_data: `proj:delete:${summary.id}` },
-    ],
-    [{ text: "⬅ К списку", callback_data: "cmd:projects" }],
-    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
-  ],
-});
+  };
+};
 
 const buildProjectBackMarkup = (projectId: string) => ({
   inline_keyboard: [
@@ -1142,13 +1160,14 @@ const handleProjectChat = async (context: BotContext, projectId: string): Promis
   if (!summary) {
     return;
   }
+  const chatUrl = resolveProjectChatUrl(summary);
   const chatTitle = summary.telegramTitle ?? summary.name;
   const lines = [`📲 Чат-группа — <b>${escapeHtml(chatTitle)}</b>`, ""];
   if (chatTitle !== summary.name) {
     lines.push(`Проект: <b>${escapeHtml(summary.name)}</b>`);
   }
-  if (summary.telegramLink) {
-    lines.push(`Ссылка: <a href="${escapeAttribute(summary.telegramLink)}">перейти в чат</a>.`);
+  if (chatUrl) {
+    lines.push(`Ссылка: <a href="${escapeAttribute(chatUrl)}">перейти в чат</a>.`);
   }
   if (summary.telegramChatId) {
     lines.push(`ID: <code>${escapeHtml(summary.telegramChatId)}</code>`);
@@ -1163,7 +1182,17 @@ const handleProjectChat = async (context: BotContext, projectId: string): Promis
     "",
     "После изменения чата повторно выполните /reg в нужной группе и подтвердите обновление через кнопку «📲 Чат-группа».",
   );
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+  const replyMarkup = {
+    inline_keyboard: [
+      ...(chatUrl ? [[{ text: "➡️ Перейти в чат", url: chatUrl }]] : []),
+      [
+        { text: "⬅ К карточке", callback_data: `proj:view:${projectId}` },
+        { text: "📊 Все проекты", callback_data: "cmd:projects" },
+      ],
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+    ],
+  };
+  await sendMessage(context, lines.join("\n"), { replyMarkup });
 };
 
 const formatLeadPreview = (lead: LeadRecord): string => {
@@ -2388,22 +2417,25 @@ export const handlePendingProjectEditInput = async (context: BotContext): Promis
   return false;
 };
 
-const buildProjectEditMarkup = (summary: ProjectSummary) => ({
-  inline_keyboard: [
-    [{ text: "✏️ Переименовать", callback_data: `proj:edit-name:${summary.id}` }],
-    [
-      summary.telegramLink
-        ? { text: "📲 Открыть чат", url: summary.telegramLink }
-        : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
-      { text: "📈 Отчёты", callback_data: `proj:report:${summary.id}` },
+const buildProjectEditMarkup = (summary: ProjectSummary) => {
+  const chatUrl = resolveProjectChatUrl(summary);
+  return {
+    inline_keyboard: [
+      [{ text: "✏️ Переименовать", callback_data: `proj:edit-name:${summary.id}` }],
+      [
+        chatUrl
+          ? { text: "📲 Открыть чат", url: chatUrl }
+          : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
+        { text: "📈 Отчёты", callback_data: `proj:report:${summary.id}` },
+      ],
+      [
+        { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
+        { text: "⬅ К проекту", callback_data: `proj:view:${summary.id}` },
+      ],
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
     ],
-    [
-      { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
-      { text: "⬅ К проекту", callback_data: `proj:view:${summary.id}` },
-    ],
-    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
-  ],
-});
+  };
+};
 
 const handleProjectEdit = async (context: BotContext, projectId: string): Promise<void> => {
   const summary = await ensureProjectSummary(context, projectId);
