@@ -123,6 +123,59 @@ flowchart LR
     AUTH --> MENU
 ```
 
+## Iteration Progress
+
+- Выполнено: авто-подвязка Meta-аккаунта к Telegram-чату с созданием проекта и синхронизацией KV, автосоздание учётных записей админов, нормализация хранилища пользователей/проектов/лидов.
+- Осталось: внедрить CRM-автоматизации (лиды и статусы), финансовые сценарии оплаты, расширенные отчёты и экспорт, полноценные настройки проекта и интеграцию вебхуков Meta.
+- Итераций до полного покрытия ТЗ: ≈4 крупные итерации (CRM, финансы, отчётность, настройки/автоматизация).
+
+## Data Model (ER Diagram)
+
+```mermaid
+erDiagram
+    USERS ||--o{ PROJECTS : owns
+    PROJECTS ||--o{ LEADS : collects
+    META_ACCOUNTS ||--|| PROJECTS : links
+    PROJECTS ||--o{ TELEGRAM_GROUPS : notifies
+
+    USERS {
+        string id
+        string username
+        string role
+        string registered_at
+    }
+    META_ACCOUNTS {
+        string id
+        string name
+        number spent_today
+        boolean is_linked
+    }
+    PROJECTS {
+        string id
+        string name
+        string meta_account_id
+        string chat_id
+        string billing_status
+        string created_at
+    }
+    LEADS {
+        string id
+        string project_id
+        string name
+        string phone
+        string status
+    }
+```
+
+## Callback schema
+
+Подробная расшифровка доступна в [docs/callback-schema.md](docs/callback-schema.md). Ключевые пространства данных:
+
+- `cmd:*` — навигационные команды главного меню и разделов.
+- `proj:*` — действия над проектами (карточка, чат, лиды, отчёты, настройки, удаление).
+- `meta:*` — мастер подключения Meta-аккаунтов и переходы в связанные проекты.
+- `report:*` — сценарии формирования отчётов `/summary` и `/auto_report`.
+
 ## Unified API (перечень конечных точек)
 
 | Модуль | Конечные точки | Описание |

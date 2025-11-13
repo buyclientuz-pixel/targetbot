@@ -5,24 +5,24 @@ import { escapeAttribute, escapeHtml } from "../utils/html";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
 import {
   appendCommandLog,
+  clearPendingMetaLink,
   listChatRegistrations,
   listMetaAccountLinks,
-  listMetaProjectLinks,
   listLeads,
   listPayments,
   listProjects,
   listSettings,
   listTelegramGroupLinks,
-  loadMetaProjectLink,
   listUsers,
   loadMetaToken,
   loadPendingMetaLink,
   saveChatRegistrations,
   saveMetaAccountLinks,
-  saveMetaProjectLinks,
   savePendingMetaLink,
+  saveProjects,
   saveTelegramGroupLinks,
-  clearPendingMetaLink,
+  saveUsers,
+  loadProject,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
@@ -32,10 +32,10 @@ import {
   LeadRecord,
   MetaAccountLinkRecord,
   MetaAdAccount,
-  MetaProjectLinkRecord,
   ProjectRecord,
   ProjectSummary,
   TelegramGroupLinkRecord,
+  UserRecord,
 } from "../types";
 
 const AUTH_URL_FALLBACK = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
@@ -477,6 +477,43 @@ const sendPlainMessage = async (context: BotContext, text: string): Promise<void
   });
 };
 
+const ensureAdminUser = async (context: BotContext): Promise<void> => {
+  const userId = context.userId;
+  if (!userId) {
+    return;
+  }
+  let users: UserRecord[] = [];
+  try {
+    users = await listUsers(context.env);
+  } catch (error) {
+    console.warn("Failed to list users while ensuring admin record", error);
+  }
+  const existingIndex = users.findIndex((user) => user.id === userId);
+  if (existingIndex >= 0) {
+    const existing = users[existingIndex];
+    if (!existing.registeredAt) {
+      const updated: UserRecord = {
+        ...existing,
+        registeredAt: existing.createdAt,
+      };
+      users[existingIndex] = updated;
+      await saveUsers(context.env, users);
+    }
+    return;
+  }
+  const now = new Date().toISOString();
+  const record: UserRecord = {
+    id: userId,
+    name: context.username,
+    username: context.username,
+    role: "owner",
+    createdAt: now,
+    registeredAt: now,
+  };
+  users.push(record);
+  await saveUsers(context.env, users);
+};
+
 const handleRegisterChat = async (context: BotContext): Promise<void> => {
   const chatId = ensureChatId(context);
   if (!chatId) {
@@ -826,13 +863,6 @@ const META_CONFIRM_MARKUP = {
     [{ text: "⬅ Meta-аккаунты", callback_data: "cmd:meta" }],
   ],
 };
-
-const buildMetaProjectMarkup = () => ({
-  inline_keyboard: [
-    [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
-    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
-  ],
-});
 
 const ensureTelegramGroupIndex = async (context: BotContext): Promise<TelegramGroupLinkRecord[]> => {
   let groups: TelegramGroupLinkRecord[] = [];
@@ -1376,7 +1406,7 @@ const handleUsers = async (context: BotContext): Promise<void> => {
     total
       ? `Всего пользователей: <b>${total}</b>`
       : "Пока нет зарегистрированных пользователей.",
-    total ? `Администраторы: ${roles.admin ?? 0}` : "",
+    total ? `Владельцы: ${roles.owner ?? 0}` : "",
     total ? `Менеджеры: ${roles.manager ?? 0}` : "",
     total ? `Клиенты: ${roles.client ?? 0}` : "",
     "",
@@ -1609,7 +1639,7 @@ const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
   const [accounts, groups, projects] = await Promise.all([
     listMetaAccountLinks(context.env),
     ensureTelegramGroupIndex(context),
-    listMetaProjectLinks(context.env),
+    listProjects(context.env),
   ]);
 
   const account = accounts.find((entry) => entry.accountId === pending.metaAccountId);
@@ -1634,18 +1664,23 @@ const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
   }
 
   const now = new Date().toISOString();
-  const projectId = createId();
-  const projectName = `${account.accountName} · ${group.title ?? group.chatId}`;
-  const projectRecord: MetaProjectLinkRecord = {
-    projectId,
-    projectName,
-    accountId: account.accountId,
+  const projectId = `p_${createId(10)}`;
+  const projectRecord: ProjectRecord = {
+    id: projectId,
+    name: account.accountName,
+    metaAccountId: account.accountId,
+    metaAccountName: account.accountName,
     chatId: group.chatId,
-    chatTitle: group.title ?? null,
-    createdAt: now,
     billingStatus: "pending",
     nextPaymentDate: null,
+    tariff: 0,
+    createdAt: now,
+    updatedAt: now,
     settings: {},
+    userId,
+    telegramChatId: group.chatId,
+    telegramLink: group.title ?? undefined,
+    adAccountId: account.accountId,
   };
 
   const nextProjects = [...projects, projectRecord];
@@ -1661,7 +1696,7 @@ const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
   );
 
   await Promise.all([
-    saveMetaProjectLinks(context.env, nextProjects),
+    saveProjects(context.env, nextProjects),
     saveMetaAccountLinks(context.env, nextAccounts),
     saveTelegramGroupLinks(context.env, nextGroups),
   ]);
@@ -1682,7 +1717,7 @@ const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
   await sendMessage(context, lines.join("\n"), {
     replyMarkup: {
       inline_keyboard: [
-        [{ text: "Перейти в проект", callback_data: `meta:project:${projectId}` }],
+        [{ text: "Перейти в проект", callback_data: `proj:view:${projectId}` }],
         [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
         [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
       ],
@@ -1691,70 +1726,12 @@ const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
 };
 
 const handleMetaProjectView = async (context: BotContext, projectId: string): Promise<void> => {
-  const project = await loadMetaProjectLink(context.env, projectId);
+  const project = await loadProject(context.env, projectId);
   if (!project) {
     await sendMessage(context, "❌ Проект не найден. Обновите список Meta-аккаунтов.");
     return;
   }
-
-  const [accounts, groups] = await Promise.all([
-    listMetaAccountLinks(context.env),
-    ensureTelegramGroupIndex(context),
-  ]);
-
-  const account = accounts.find((entry) => entry.accountId === project.accountId) ?? null;
-  const group = groups.find((entry) => entry.chatId === project.chatId) ?? null;
-
-  const billingStatusMap: Record<string, string> = {
-    active: "активен",
-    pending: "ожидает оплаты",
-    overdue: "просрочен",
-    cancelled: "отменён",
-  };
-  const billingLabel = billingStatusMap[project.billingStatus] ?? project.billingStatus;
-  const paymentLabel = formatShortDate(project.nextPaymentDate) ?? "—";
-
-  let cpaLabel = "—";
-  const settings = project.settings;
-  if (settings && typeof settings === "object") {
-    const data = settings as Record<string, unknown>;
-    const candidate =
-      data.cpaToday ??
-      data.cpa_today ??
-      data.cpa ??
-      (typeof data.metrics === "object" && data.metrics !== null
-        ? (data.metrics as Record<string, unknown>).cpaToday ?? (data.metrics as Record<string, unknown>).cpa_today
-        : undefined);
-    if (typeof candidate === "number") {
-      cpaLabel =
-        formatCurrencyValue(candidate, account?.currency ?? undefined) ?? `${candidate.toFixed(2)} ${account?.currency ?? "USD"}`;
-    } else if (typeof candidate === "string" && candidate.trim()) {
-      cpaLabel = candidate.trim();
-    }
-  }
-
-  const lines = [
-    `🏗 Проект: <b>${escapeHtml(project.projectName)}</b>`,
-    account
-      ? `🧩 Meta: подключено — ${escapeHtml(account.accountName)} (<code>${escapeHtml(account.accountId)}</code>)`
-      : `🧩 Meta: подключено — <code>${escapeHtml(project.accountId)}</code>`,
-    `📈 CPA (сегодня): ${escapeHtml(cpaLabel)}`,
-    `💳 Биллинг: ${escapeHtml(billingLabel)}`,
-    `📅 Оплата: ${escapeHtml(paymentLabel)}`,
-    "",
-    "Действия:",
-    "✏️ Изменить данные",
-    group ? `📲 Чат-группа: ${escapeHtml(group.title ?? group.chatId)}` : "📲 Чат-группа",
-    "💬 Посмотреть лиды",
-    "📈 Отчёт по рекламе",
-    "👀 Рекламные кампании",
-    "📤 Экспорт данных",
-    "💰 Оплата",
-    "⚙️ Настройки",
-    "❌ Удалить проект",
-  ];
-
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildMetaProjectMarkup() });
+  await handleProjectView(context, projectId);
 };
 
 const handleAnalytics = async (context: BotContext): Promise<void> => {
@@ -1990,6 +1967,7 @@ export const runCommand = async (command: string, context: BotContext): Promise<
   if (!handler) {
     return false;
   }
+  await ensureAdminUser(context);
   await handler(context);
   await logCommand(context, command, context.text);
   if (context.update.callback_query?.id) {
@@ -2002,6 +1980,7 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
   if (!data.startsWith("proj:")) {
     return false;
   }
+  await ensureAdminUser(context);
   const [, action, ...rest] = data.split(":");
   if (!action) {
     return false;
@@ -2098,6 +2077,7 @@ export const handleMetaCallback = async (context: BotContext, data: string): Pro
   if (!data.startsWith("meta:")) {
     return false;
   }
+  await ensureAdminUser(context);
   const [, action, ...rest] = data.split(":");
   switch (action) {
     case "account": {

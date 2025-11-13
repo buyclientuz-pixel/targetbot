@@ -101,16 +101,25 @@ export interface MetaProjectLinkRecord {
   settings: JsonObject;
 }
 
+export type ProjectBillingState = "active" | "overdue" | "blocked" | "pending";
+
 export interface ProjectRecord {
   id: string;
   name: string;
-  userId: string;
+  metaAccountId: string;
+  metaAccountName: string;
+  chatId: string;
+  billingStatus: ProjectBillingState;
+  nextPaymentDate: string | null;
+  tariff: number;
+  createdAt: string;
+  updatedAt: string;
+  settings: JsonObject;
+  userId?: string;
   telegramChatId?: string;
   telegramThreadId?: number;
   telegramLink?: string;
   adAccountId?: string;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface ChatRegistrationRecord {
@@ -232,14 +241,15 @@ export interface CommandLogRecord {
   createdAt: string;
 }
 
-export type UserRole = "client" | "manager" | "admin";
+export type UserRole = "owner" | "manager" | "client";
 
 export interface UserRecord {
   id: string;
-  name: string;
+  name?: string;
   username?: string;
   role: UserRole;
   createdAt: string;
+  registeredAt: string;
 }
 
 export interface ApiSuccess<T> {

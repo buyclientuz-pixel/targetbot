@@ -7,6 +7,7 @@ import {
   MetaTokenRecord,
   MetaTokenStatus,
   PaymentRecord,
+  ProjectBillingState,
   ProjectRecord,
   ReportFilters,
   ReportRecord,
@@ -14,6 +15,7 @@ import {
   TelegramGroupLinkRecord,
   UserRecord,
 } from "../types";
+import { createId } from "./ids";
 
 const META_TOKEN_KEY = "meta:token";
 const PROJECT_INDEX_KEY = "projects/index.json";
@@ -29,6 +31,16 @@ const META_ACCOUNTS_KEY = "meta/accounts.json";
 const TELEGRAM_GROUPS_KEY = "telegram/groups.json";
 const META_PROJECTS_KEY = "meta/projects.json";
 const META_PENDING_PREFIX = "meta/link/pending/";
+
+const USER_KV_INDEX_KEY = "users:index";
+const PROJECT_KV_INDEX_KEY = "projects:index";
+const META_KV_INDEX_KEY = "meta:index";
+const LEAD_KV_INDEX_PREFIX = "leads:index:";
+
+const USER_KV_PREFIX = "users:";
+const PROJECT_KV_PREFIX = "project:";
+const META_KV_PREFIX = "meta:";
+const LEAD_KV_PREFIX = "leads:";
 
 export interface ReportSessionRecord {
   id: string;
@@ -51,6 +63,212 @@ export interface EnvBindings {
   DB: KVNamespace;
   R2: R2Bucket;
 }
+
+const readKvIndex = async (env: EnvBindings, key: string): Promise<string[]> => {
+  const stored = await env.DB.get(key);
+  if (!stored) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(stored);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((value): value is string => typeof value === "string" && value.length > 0);
+    }
+  } catch (error) {
+    console.warn("Failed to parse KV index", key, error);
+  }
+  return [];
+};
+
+const writeKvIndex = async (env: EnvBindings, key: string, values: string[]): Promise<void> => {
+  await env.DB.put(key, JSON.stringify(values));
+};
+
+interface KvSyncOptions<T> {
+  env: EnvBindings;
+  indexKey: string;
+  prefix: string;
+  items: T[];
+  getId: (item: T) => string;
+  serialize: (item: T) => Record<string, unknown>;
+}
+
+const syncKvRecords = async <T>({
+  env,
+  indexKey,
+  prefix,
+  items,
+  getId,
+  serialize,
+}: KvSyncOptions<T>): Promise<void> => {
+  const previous = await readKvIndex(env, indexKey);
+  const currentIds = items.map(getId).filter((id) => id);
+  const currentSet = new Set(currentIds);
+
+  const toDelete = previous.filter((id) => !currentSet.has(id));
+  await Promise.all(toDelete.map((id) => env.DB.delete(`${prefix}${id}`)));
+
+  await Promise.all(
+    items.map((item) => {
+      const id = getId(item);
+      if (!id) {
+        return Promise.resolve();
+      }
+      return env.DB.put(`${prefix}${id}`, JSON.stringify(serialize(item)));
+    }),
+  );
+
+  const sorted = Array.from(currentSet).sort((a, b) => a.localeCompare(b, "en"));
+  await writeKvIndex(env, indexKey, sorted);
+};
+
+const syncLeadKvRecords = async (
+  env: EnvBindings,
+  projectId: string,
+  leads: LeadRecord[],
+): Promise<void> => {
+  const indexKey = `${LEAD_KV_INDEX_PREFIX}${projectId}`;
+  const previous = await readKvIndex(env, indexKey);
+  const currentIds = leads.map((lead) => lead.id);
+  const currentSet = new Set(currentIds);
+
+  const toDelete = previous.filter((id) => !currentSet.has(id));
+  await Promise.all(toDelete.map((id) => env.DB.delete(`${LEAD_KV_PREFIX}${projectId}:${id}`)));
+
+  await Promise.all(
+    leads.map((lead) =>
+      env.DB.put(
+        `${LEAD_KV_PREFIX}${projectId}:${lead.id}`,
+        JSON.stringify({
+          id: lead.id,
+          project_id: lead.projectId,
+          name: lead.name,
+          phone: lead.phone ?? null,
+          source: lead.source,
+          created_at: lead.createdAt,
+          status: lead.status === "done" ? "processed" : "new",
+        }),
+      ),
+    ),
+  );
+
+  const sorted = Array.from(currentSet).sort((a, b) => a.localeCompare(b, "en"));
+  await writeKvIndex(env, indexKey, sorted);
+};
+
+const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>): ProjectRecord => {
+  const data = input as Record<string, unknown>;
+  const now = new Date().toISOString();
+  const idSource = data.id ?? data.projectId ?? data.project_id;
+  const id = typeof idSource === "string" && idSource.trim() ? idSource.trim() : `p_${createId(10)}`;
+  const nameSource = data.name ?? data.projectName ?? data.project_name ?? id;
+  const name = typeof nameSource === "string" && nameSource.trim() ? nameSource.trim() : id;
+
+  const metaAccountCandidate =
+    data.metaAccountId ?? data.accountId ?? data.adAccountId ?? data.meta_account_id ?? data.account_id ?? data.ad_account_id;
+  const metaAccountId =
+    typeof metaAccountCandidate === "string" && metaAccountCandidate.trim()
+      ? metaAccountCandidate.trim()
+      : metaAccountCandidate !== undefined
+        ? String(metaAccountCandidate)
+        : "";
+  const metaAccountNameCandidate = data.metaAccountName ?? data.accountName ?? data.meta_account_name ?? name;
+  const metaAccountName =
+    typeof metaAccountNameCandidate === "string" && metaAccountNameCandidate.trim()
+      ? metaAccountNameCandidate.trim()
+      : name;
+
+  const chatCandidate = data.chatId ?? data.chat_id ?? data.telegramChatId ?? data.chatID;
+  const chatId =
+    typeof chatCandidate === "string" && chatCandidate.trim()
+      ? chatCandidate.trim()
+      : typeof chatCandidate === "number"
+        ? chatCandidate.toString()
+        : "";
+
+  const billingCandidate = (data.billingStatus ?? data.billing_status) as string | undefined;
+  const allowedBilling: ProjectBillingState[] = ["active", "overdue", "blocked", "pending"];
+  const billingStatus = allowedBilling.includes(billingCandidate as ProjectBillingState)
+    ? (billingCandidate as ProjectBillingState)
+    : "pending";
+
+  const nextPaymentCandidate = data.nextPaymentDate ?? data.next_payment_date;
+  const nextPaymentDate =
+    typeof nextPaymentCandidate === "string" && nextPaymentCandidate.trim() ? nextPaymentCandidate : null;
+
+  const tariffCandidate = data.tariff;
+  const tariff =
+    typeof tariffCandidate === "number" && Number.isFinite(tariffCandidate)
+      ? tariffCandidate
+      : typeof tariffCandidate === "string" && tariffCandidate.trim() && !Number.isNaN(Number(tariffCandidate))
+        ? Number(tariffCandidate)
+        : 0;
+
+  const createdCandidate = data.createdAt ?? data.created_at;
+  const createdAt =
+    typeof createdCandidate === "string" && createdCandidate.trim() ? createdCandidate : now;
+  const updatedCandidate = data.updatedAt ?? data.updated_at;
+  const updatedAt =
+    typeof updatedCandidate === "string" && updatedCandidate.trim() ? updatedCandidate : createdAt;
+
+  const settingsValue = data.settings;
+  const settings =
+    settingsValue && typeof settingsValue === "object" && !Array.isArray(settingsValue)
+      ? (settingsValue as ProjectRecord["settings"])
+      : ({} as ProjectRecord["settings"]);
+
+  const userId = typeof data.userId === "string" ? data.userId : undefined;
+  const telegramChatId = typeof data.telegramChatId === "string" ? data.telegramChatId : chatId || undefined;
+  const telegramThreadId = typeof data.telegramThreadId === "number" ? data.telegramThreadId : undefined;
+  const telegramLink = typeof data.telegramLink === "string" ? data.telegramLink : undefined;
+  const adAccountId = typeof data.adAccountId === "string" ? data.adAccountId : metaAccountId;
+
+  return {
+    id,
+    name,
+    metaAccountId,
+    metaAccountName,
+    chatId,
+    billingStatus,
+    nextPaymentDate,
+    tariff,
+    createdAt,
+    updatedAt,
+    settings,
+    userId,
+    telegramChatId,
+    telegramThreadId,
+    telegramLink,
+    adAccountId,
+  };
+};
+
+const normalizeUserRecord = (input: UserRecord | Record<string, unknown>): UserRecord => {
+  const data = input as Record<string, unknown>;
+  const idCandidate = data.id;
+  const id = typeof idCandidate === "string" && idCandidate.trim() ? idCandidate.trim() : createId();
+  const name = typeof data.name === "string" && data.name.trim() ? data.name.trim() : undefined;
+  const username = typeof data.username === "string" && data.username.trim() ? data.username.trim() : undefined;
+  const roleCandidate = data.role;
+  const validRoles: UserRecord["role"][] = ["owner", "manager", "client"];
+  const role = validRoles.includes(roleCandidate as UserRecord["role"])
+    ? (roleCandidate as UserRecord["role"])
+    : "client";
+  const createdCandidate = data.createdAt ?? data.created_at;
+  const createdAt =
+    typeof createdCandidate === "string" && createdCandidate.trim() ? createdCandidate : new Date().toISOString();
+  const registeredCandidate = data.registeredAt ?? data.registered_at;
+  const registeredAt =
+    typeof registeredCandidate === "string" && registeredCandidate.trim() ? registeredCandidate : createdAt;
+  return {
+    id,
+    name,
+    username,
+    role,
+    createdAt,
+    registeredAt,
+  };
+};
 
 const normalizeTimestamp = (value: unknown): string | undefined => {
   if (!value) {
@@ -176,11 +394,44 @@ export const deleteMetaToken = async (env: EnvBindings): Promise<void> => {
 };
 
 export const listProjects = async (env: EnvBindings): Promise<ProjectRecord[]> => {
-  return readJsonFromR2<ProjectRecord[]>(env, PROJECT_INDEX_KEY, []);
+  const stored = await readJsonFromR2<ProjectRecord[] | Record<string, unknown>[]>(
+    env,
+    PROJECT_INDEX_KEY,
+    [],
+  );
+  return stored.map((record) => normalizeProjectRecord(record));
 };
 
 export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]): Promise<void> => {
-  await writeJsonToR2(env, PROJECT_INDEX_KEY, projects);
+  const normalized = projects.map((project) => normalizeProjectRecord(project));
+  await writeJsonToR2(env, PROJECT_INDEX_KEY, normalized);
+  await syncKvRecords({
+    env,
+    indexKey: PROJECT_KV_INDEX_KEY,
+    prefix: PROJECT_KV_PREFIX,
+    items: normalized,
+    getId: (project) => project.id,
+    serialize: (project) => {
+      const metaAccountId = project.metaAccountId || project.adAccountId || "";
+      const chatRaw = project.chatId || project.telegramChatId || "";
+      const chatNumeric = typeof chatRaw === "number" ? chatRaw : Number(chatRaw);
+      const chatIdValue =
+        typeof chatNumeric === "number" && Number.isFinite(chatNumeric) && !Number.isNaN(chatNumeric)
+          ? chatNumeric
+          : chatRaw || null;
+      return {
+        id: project.id,
+        name: project.name,
+        meta_account_id: metaAccountId,
+        meta_account_name: project.metaAccountName || project.name,
+        chat_id: chatIdValue,
+        billing_status: project.billingStatus ?? "pending",
+        next_payment_date: project.nextPaymentDate ?? null,
+        tariff: project.tariff ?? 0,
+        created_at: project.createdAt,
+      };
+    },
+  });
 };
 
 export const loadProject = async (env: EnvBindings, projectId: string): Promise<ProjectRecord | null> => {
@@ -198,18 +449,43 @@ export const saveLeads = async (
   leads: LeadRecord[],
 ): Promise<void> => {
   await writeJsonToR2(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, leads);
+  await syncLeadKvRecords(env, projectId, leads);
 };
 
 export const deleteLeads = async (env: EnvBindings, projectId: string): Promise<void> => {
   await env.R2.delete(`${LEAD_INDEX_PREFIX}${projectId}.json`);
+  const indexKey = `${LEAD_KV_INDEX_PREFIX}${projectId}`;
+  const existing = await readKvIndex(env, indexKey);
+  await Promise.all(existing.map((id) => env.DB.delete(`${LEAD_KV_PREFIX}${projectId}:${id}`)));
+  await writeKvIndex(env, indexKey, []);
 };
 
 export const listUsers = async (env: EnvBindings): Promise<UserRecord[]> => {
-  return readJsonFromR2<UserRecord[]>(env, USER_INDEX_KEY, []);
+  const stored = await readJsonFromR2<UserRecord[] | Record<string, unknown>[]>(
+    env,
+    USER_INDEX_KEY,
+    [],
+  );
+  return stored.map((record) => normalizeUserRecord(record));
 };
 
 export const saveUsers = async (env: EnvBindings, users: UserRecord[]): Promise<void> => {
-  await writeJsonToR2(env, USER_INDEX_KEY, users);
+  const normalized = users.map((user) => normalizeUserRecord(user));
+  await writeJsonToR2(env, USER_INDEX_KEY, normalized);
+  await syncKvRecords({
+    env,
+    indexKey: USER_KV_INDEX_KEY,
+    prefix: USER_KV_PREFIX,
+    items: normalized,
+    getId: (user) => user.id,
+    serialize: (user) => ({
+      id: user.id,
+      username: user.username ?? user.name ?? null,
+      name: user.name ?? null,
+      role: user.role,
+      registered_at: user.registeredAt ?? user.createdAt,
+    }),
+  });
 };
 
 export const listPayments = async (env: EnvBindings): Promise<PaymentRecord[]> => {
@@ -266,6 +542,21 @@ export const saveMetaAccountLinks = async (
   records: MetaAccountLinkRecord[],
 ): Promise<void> => {
   await writeJsonToR2(env, META_ACCOUNTS_KEY, records);
+  await syncKvRecords({
+    env,
+    indexKey: META_KV_INDEX_KEY,
+    prefix: META_KV_PREFIX,
+    items: records,
+    getId: (record) => record.accountId,
+    serialize: (record) => ({
+      id: record.accountId,
+      name: record.accountName,
+      currency: record.currency ?? null,
+      spent_today: record.spentToday ?? 0,
+      is_linked: record.isLinked,
+      linked_project_id: record.linkedProjectId ?? null,
+    }),
+  });
 };
 
 export const listTelegramGroupLinks = async (

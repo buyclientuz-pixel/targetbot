@@ -13,8 +13,11 @@ const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
 const nowIso = () => new Date().toISOString();
 
 const ensureRole = (role: string | undefined): UserRole => {
-  if (role === "client" || role === "manager" || role === "admin") {
+  if (role === "owner" || role === "manager" || role === "client") {
     return role;
+  }
+  if (role === "admin") {
+    return "owner";
   }
   throw new Error("Invalid user role");
 };
@@ -43,12 +46,14 @@ export const handleUsersCreate = async (request: Request, env: unknown): Promise
     }
     const role = ensureRole(body.role);
     const users = await listUsers(bindings);
+    const timestamp = nowIso();
     const record: UserRecord = {
       id: body.id || createId(),
       name: body.name,
       username: body.username,
       role,
-      createdAt: nowIso(),
+      createdAt: timestamp,
+      registeredAt: timestamp,
     };
     users.push(record);
     await saveUsers(bindings, users);

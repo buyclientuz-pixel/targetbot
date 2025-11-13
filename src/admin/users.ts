@@ -8,15 +8,15 @@ export const renderUsersPage = (users: UserRecord[]): string => {
       (user) => `
         <tr data-id="${escapeAttribute(user.id)}">
           <td>${escapeHtml(user.id)}</td>
-          <td>${escapeHtml(user.name)}</td>
+          <td>${escapeHtml(user.name || "—")}</td>
           <td>${escapeHtml(user.username || "—")}</td>
           <td>${escapeHtml(user.role)}</td>
-          <td>${new Date(user.createdAt).toLocaleString("ru-RU")}</td>
+          <td>${new Date(user.registeredAt || user.createdAt).toLocaleString("ru-RU")}</td>
           <td>
             <select class="role-select">
               <option value="client" ${user.role === "client" ? "selected" : ""}>client</option>
               <option value="manager" ${user.role === "manager" ? "selected" : ""}>manager</option>
-              <option value="admin" ${user.role === "admin" ? "selected" : ""}>admin</option>
+              <option value="owner" ${user.role === "owner" ? "selected" : ""}>owner</option>
             </select>
             <button class="btn btn-danger delete-user" type="button">Удалить</button>
           </td>

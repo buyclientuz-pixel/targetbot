@@ -52,18 +52,47 @@ export const handleProjectsCreate = async (request: Request, env: unknown): Prom
     if (!body.userId) {
       throw new Error("userId is required");
     }
+    const metaAccountId = body.metaAccountId ?? body.adAccountId;
+    if (!metaAccountId) {
+      throw new Error("metaAccountId is required");
+    }
+    const chatIdentifier = body.chatId ?? body.telegramChatId;
+    if (!chatIdentifier) {
+      throw new Error("chatId is required");
+    }
     const projects = await listProjects(bindings);
-    const id = createId();
+    const id = `p_${createId(10)}`;
+    const now = nowIso();
+    const tariffSource = (body as Record<string, unknown>).tariff ?? body.tariff;
+    const tariff =
+      typeof tariffSource === "number" && Number.isFinite(tariffSource)
+        ? tariffSource
+        : typeof tariffSource === "string" && tariffSource.trim() && !Number.isNaN(Number(tariffSource))
+          ? Number(tariffSource)
+          : 0;
     const record: ProjectRecord = {
       id,
       name: String(body.name),
+      metaAccountId: String(metaAccountId),
+      metaAccountName: body.metaAccountName ? String(body.metaAccountName) : String(body.name),
+      chatId: String(chatIdentifier),
+      billingStatus:
+        body.billingStatus === "active" || body.billingStatus === "overdue" || body.billingStatus === "blocked"
+          ? body.billingStatus
+          : "pending",
+      nextPaymentDate: body.nextPaymentDate ?? null,
+      tariff,
+      createdAt: now,
+      updatedAt: now,
+      settings:
+        body.settings && typeof body.settings === "object" && !Array.isArray(body.settings)
+          ? (body.settings as ProjectRecord["settings"])
+          : {},
       userId: String(body.userId),
-      telegramChatId: body.telegramChatId,
+      telegramChatId: body.telegramChatId ? String(body.telegramChatId) : String(chatIdentifier),
       telegramThreadId: body.telegramThreadId,
       telegramLink: body.telegramLink,
-      adAccountId: body.adAccountId,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+      adAccountId: body.adAccountId ? String(body.adAccountId) : String(metaAccountId),
     };
     projects.push(record);
     await saveProjects(bindings, projects);
