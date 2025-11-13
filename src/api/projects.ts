@@ -1,12 +1,11 @@
 import { jsonResponse, parseJsonRequest } from "../utils/http";
 import {
   EnvBindings,
-  deleteLeads,
+  clearPaymentReminder,
+  deleteProjectCascade,
   listProjects,
   loadProject,
   saveProjects,
-  clearLeadRemindersByProject,
-  clearPaymentReminder,
 } from "../utils/storage";
 import { ApiSuccess, ProjectRecord, ProjectSummary } from "../types";
 import { createId } from "../utils/ids";
@@ -162,24 +161,11 @@ export const handleProjectDelete = async (
 ): Promise<Response> => {
   try {
     const bindings = ensureEnv(env);
-    const projects = await listProjects(bindings);
-    const filtered = projects.filter((project) => project.id !== projectId);
-    if (filtered.length === projects.length) {
+    const result = await deleteProjectCascade(bindings, projectId);
+    if (!result) {
       return jsonResponse({ ok: false, error: "Project not found" }, { status: 404 });
     }
-    await saveProjects(bindings, filtered);
-    await deleteLeads(bindings, projectId).catch((error) => {
-      console.warn("Failed to delete project leads", projectId, error);
-    });
-    await Promise.all([
-      clearLeadRemindersByProject(bindings, projectId).catch((error) => {
-        console.warn("Failed to purge lead reminders", projectId, error);
-      }),
-      clearPaymentReminder(bindings, projectId).catch((error) => {
-        console.warn("Failed to purge payment reminders", projectId, error);
-      }),
-    ]);
-    return jsonResponse({ ok: true, data: { id: projectId } });
+    return jsonResponse({ ok: true, data: result });
   } catch (error) {
     return jsonResponse({ ok: false, error: (error as Error).message }, { status: 500 });
   }

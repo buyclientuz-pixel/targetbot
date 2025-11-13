@@ -12,6 +12,7 @@ import {
   PaymentReminderRecord,
   PaymentRecord,
   ProjectBillingState,
+  ProjectDeletionSummary,
   ProjectRecord,
   ReportFilters,
   ReportRecord,
@@ -1329,6 +1330,167 @@ export const saveTelegramGroupLinks = async (
       linked_project_id: record.linkedProjectId ?? null,
     }),
   });
+};
+
+export const deleteProjectCascade = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<ProjectDeletionSummary | null> => {
+  const projects = await listProjects(env);
+  const index = projects.findIndex((project) => project.id === projectId);
+  if (index === -1) {
+    return null;
+  }
+
+  const project = projects[index];
+  const now = new Date().toISOString();
+  const projectChatId = project.telegramChatId || project.chatId;
+
+  const [
+    metaAccounts,
+    telegramGroups,
+    leads,
+    payments,
+    leadReminders,
+    paymentReminders,
+    schedules,
+    reports,
+  ] = await Promise.all([
+    listMetaAccountLinks(env).catch(() => [] as MetaAccountLinkRecord[]),
+    listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]),
+    listLeads(env, projectId).catch(() => [] as LeadRecord[]),
+    listPayments(env).catch(() => [] as PaymentRecord[]),
+    listLeadReminders(env).catch(() => [] as LeadReminderRecord[]),
+    listPaymentReminders(env).catch(() => [] as PaymentReminderRecord[]),
+    listReportSchedules(env).catch(() => [] as ReportScheduleRecord[]),
+    listReports(env).catch(() => [] as ReportRecord[]),
+  ]);
+
+  const account = metaAccounts.find(
+    (entry) => entry.linkedProjectId === projectId || entry.accountId === project.metaAccountId,
+  );
+  const group = telegramGroups.find(
+    (entry) => entry.linkedProjectId === projectId || entry.chatId === projectChatId,
+  );
+
+  const updatedAccounts = account
+    ? metaAccounts.map((entry) =>
+        entry.accountId === account.accountId
+          ? { ...entry, isLinked: false, linkedProjectId: null, updatedAt: now }
+          : entry,
+      )
+    : metaAccounts;
+  const updatedGroups = group
+    ? telegramGroups.map((entry) =>
+        entry.chatId === group.chatId ? { ...entry, linkedProjectId: null, updatedAt: now } : entry,
+      )
+    : telegramGroups;
+
+  const paymentsRemaining = payments.filter((payment) => payment.projectId !== projectId);
+  const removedPayments = payments.length - paymentsRemaining.length;
+
+  const leadRemindersRemaining = leadReminders.filter((record) => record.projectId !== projectId);
+  const removedLeadReminders = leadReminders.length - leadRemindersRemaining.length;
+
+  const paymentRemindersRemaining = paymentReminders.filter((record) => record.projectId !== projectId);
+  const removedPaymentReminders = paymentReminders.length - paymentRemindersRemaining.length;
+
+  let updatedSchedulesCount = 0;
+  const updatedSchedules = schedules.map((schedule) => {
+    if (!schedule.projectIds?.includes(projectId)) {
+      return schedule;
+    }
+    updatedSchedulesCount += 1;
+    const remainingIds = schedule.projectIds.filter((id) => id !== projectId);
+    const nextSchedule: ReportScheduleRecord = {
+      ...schedule,
+      projectIds: remainingIds,
+      updatedAt: now,
+    };
+    if (!remainingIds.length) {
+      nextSchedule.enabled = false;
+      nextSchedule.nextRunAt = null;
+    }
+    return nextSchedule;
+  });
+
+  const reportPartition = reports.reduce<{
+    kept: ReportRecord[];
+    removed: ReportRecord[];
+  }>(
+    (acc, record) => {
+      const matchesProject =
+        record.projectId === projectId ||
+        (Array.isArray(record.projectIds) && record.projectIds.includes(projectId));
+      if (matchesProject) {
+        acc.removed.push(record);
+      } else {
+        acc.kept.push(record);
+      }
+      return acc;
+    },
+    { kept: [], removed: [] },
+  );
+
+  const nextProjects = [...projects];
+  nextProjects.splice(index, 1);
+
+  const storageUpdates: Promise<unknown>[] = [saveProjects(env, nextProjects)];
+  if (account) {
+    storageUpdates.push(saveMetaAccountLinks(env, updatedAccounts));
+  }
+  if (group) {
+    storageUpdates.push(saveTelegramGroupLinks(env, updatedGroups));
+  }
+  if (removedPayments > 0) {
+    storageUpdates.push(savePayments(env, paymentsRemaining));
+  }
+  if (removedLeadReminders > 0) {
+    storageUpdates.push(saveLeadReminders(env, leadRemindersRemaining));
+  }
+  if (removedPaymentReminders > 0) {
+    storageUpdates.push(savePaymentReminders(env, paymentRemindersRemaining));
+  }
+  if (updatedSchedulesCount > 0) {
+    storageUpdates.push(saveReportSchedules(env, updatedSchedules));
+  }
+  if (reportPartition.removed.length > 0) {
+    storageUpdates.push(saveReports(env, reportPartition.kept));
+  }
+
+  await Promise.all(storageUpdates);
+
+  const cleanupTasks: Promise<void>[] = [
+    deleteLeads(env, projectId).catch((error) => {
+      console.warn("Failed to delete project leads", projectId, error);
+    }),
+  ];
+
+  if (reportPartition.removed.length > 0) {
+    cleanupTasks.push(
+      Promise.all(
+        reportPartition.removed.map((record) =>
+          deleteReportAsset(env, record.id).catch((error) => {
+            console.warn("Failed to delete report asset", record.id, error);
+          }),
+        ),
+      ).then(() => undefined),
+    );
+  }
+
+  await Promise.all(cleanupTasks);
+
+  return {
+    project,
+    metaAccount: account ?? null,
+    telegramGroup: group ?? null,
+    removedLeads: leads.length,
+    removedPayments,
+    removedReports: reportPartition.removed.length,
+    clearedLeadReminders: removedLeadReminders,
+    clearedPaymentReminders: removedPaymentReminders,
+    updatedSchedules: updatedSchedulesCount,
+  } satisfies ProjectDeletionSummary;
 };
 
 export const listMetaProjectLinks = async (

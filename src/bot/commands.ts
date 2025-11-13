@@ -24,6 +24,7 @@ import {
   saveMetaAccountLinks,
   savePendingMetaLink,
   savePendingBillingOperation,
+  deleteProjectCascade,
   saveProjects,
   saveLeads,
   saveTelegramGroupLinks,
@@ -45,6 +46,7 @@ import {
   MetaAccountLinkRecord,
   MetaAdAccount,
   PaymentRecord,
+  ProjectDeletionSummary,
   ProjectRecord,
   ProjectSummary,
   ProjectBillingState,
@@ -1475,6 +1477,19 @@ const handleProjectSettings = async (context: BotContext, projectId: string): Pr
   await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
 };
 
+const buildProjectDeleteMarkup = (projectId: string) => ({
+  inline_keyboard: [
+    [
+      { text: "❌ Подтвердить удаление", callback_data: `proj:delete-confirm:${projectId}` },
+      { text: "↩️ Отмена", callback_data: `proj:view:${projectId}` },
+    ],
+    [
+      { text: "📊 Все проекты", callback_data: "cmd:projects" },
+      { text: "🏠 Меню", callback_data: "cmd:menu" },
+    ],
+  ],
+});
+
 const handleProjectDelete = async (context: BotContext, projectId: string): Promise<void> => {
   const summary = await ensureProjectSummary(context, projectId);
   if (!summary) {
@@ -1484,13 +1499,99 @@ const handleProjectDelete = async (context: BotContext, projectId: string): Prom
   const lines = [
     `❌ Удаление проекта — <b>${escapeHtml(summary.name)}</b>`,
     "",
-    "Перед удалением выгрузите лиды и отчёты клиенту. Подтвердите действие с учётом последствий.",
-    "Удалённые данные восстановить невозможно.",
+    "После подтверждения бот удалит лиды, отчёты, напоминания и отвяжет Meta-аккаунт с Telegram-группой.",
+    "Действие необратимо.",
   ];
   if (adminUrl) {
     lines.push("", `🔗 Браузер: <a href="${escapeAttribute(adminUrl)}">Открыть проект</a>`);
   }
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+  lines.push(
+    "",
+    "Нажмите «❌ Подтвердить удаление», чтобы завершить действие, или «↩️ Отмена», чтобы вернуться в карточку.",
+  );
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectDeleteMarkup(projectId) });
+};
+
+const formatProjectDeletionSummary = (summary: ProjectDeletionSummary): string[] => {
+  const lines: string[] = [`✅ Проект удалён — <b>${escapeHtml(summary.project.name)}</b>`, ""];
+  const accountName = summary.metaAccount?.accountName ?? summary.project.metaAccountName;
+  if (accountName) {
+    lines.push(`🧩 Meta-аккаунт освобождён: <b>${escapeHtml(accountName)}</b>.`);
+  }
+  const groupTitle = summary.telegramGroup?.title ?? summary.project.telegramTitle;
+  const groupId = summary.telegramGroup?.chatId ?? summary.project.telegramChatId ?? summary.project.chatId;
+  if (groupTitle || groupId) {
+    const label = groupTitle ? escapeHtml(groupTitle) : `ID ${escapeHtml(groupId ?? "—")}`;
+    lines.push(`👥 Группа отвязана: ${label}.`);
+  }
+  if (summary.removedLeads > 0) {
+    lines.push(`💬 Лиды очищены: ${summary.removedLeads}.`);
+  }
+  if (summary.removedPayments > 0) {
+    lines.push(`💳 Удалено платежей: ${summary.removedPayments}.`);
+  }
+  if (summary.removedReports > 0) {
+    lines.push(`📈 Архив отчётов очищен: ${summary.removedReports}.`);
+  }
+  if (summary.updatedSchedules > 0) {
+    lines.push(`⏰ Расписания обновлены: ${summary.updatedSchedules}.`);
+  }
+  if (summary.clearedLeadReminders > 0 || summary.clearedPaymentReminders > 0) {
+    const parts: string[] = [];
+    if (summary.clearedLeadReminders > 0) {
+      parts.push(`лиды — ${summary.clearedLeadReminders}`);
+    }
+    if (summary.clearedPaymentReminders > 0) {
+      parts.push(`оплаты — ${summary.clearedPaymentReminders}`);
+    }
+    lines.push(`🔔 Напоминания сняты (${parts.join(", ")}).`);
+  }
+  lines.push(
+    "",
+    "Meta-аккаунт и группа доступны для нового проекта; обновите список Meta или запустите мастер «➕ Новый проект».",
+  );
+  return lines;
+};
+
+const handleProjectDeleteConfirm = async (context: BotContext, projectId: string): Promise<void> => {
+  const result = await deleteProjectCascade(context.env, projectId);
+  if (!result) {
+    await sendMessage(context, "❌ Проект не найден. Список уже обновлён или проект был удалён ранее.", {
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: "📊 Список проектов", callback_data: "cmd:projects" }],
+          [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+        ],
+      },
+    });
+    return;
+  }
+
+  if (result.telegramGroup?.chatId) {
+    const noticeLines = [
+      `⚠️ Проект «${result.project.name}» отключён администратором.`,
+      "Meta-аккаунт и уведомления для этого чата остановлены.",
+    ];
+    await sendTelegramMessage(context.env, {
+      chatId: result.telegramGroup.chatId,
+      text: noticeLines.join("\n"),
+    }).catch((error) => {
+      console.warn("Failed to notify chat about project deletion", result.telegramGroup?.chatId, error);
+    });
+  }
+
+  const lines = formatProjectDeletionSummary(result);
+  const replyMarkup = {
+    inline_keyboard: [
+      [{ text: "📊 Список проектов", callback_data: "cmd:projects" }],
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+    ],
+  };
+  await sendMessage(context, lines.join("\n"), { replyMarkup });
+};
+
+const handleProjectDeleteCancel = async (context: BotContext, projectId: string): Promise<void> => {
+  await handleProjectView(context, projectId);
 };
 
 const handleProjectNew = async (context: BotContext): Promise<void> => {
@@ -2934,6 +3035,20 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
         return ensureId();
       }
       await handleProjectDelete(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "delete-confirm":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectDeleteConfirm(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "delete-cancel":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectDeleteCancel(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
     case "new":

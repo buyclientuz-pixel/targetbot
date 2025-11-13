@@ -150,6 +150,18 @@ export interface ProjectRecord {
   adAccountId?: string;
 }
 
+export interface ProjectDeletionSummary {
+  project: ProjectRecord;
+  metaAccount?: MetaAccountLinkRecord | null;
+  telegramGroup?: TelegramGroupLinkRecord | null;
+  removedLeads: number;
+  removedPayments: number;
+  removedReports: number;
+  clearedLeadReminders: number;
+  clearedPaymentReminders: number;
+  updatedSchedules: number;
+}
+
 export interface ChatRegistrationRecord {
   id: string;
   chatId: string;
