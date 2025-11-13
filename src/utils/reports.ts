@@ -21,7 +21,6 @@ import { summarizeProjects, sortProjectSummaries, extractProjectReportPreference
 import { createId } from "./ids";
 import { fetchAdAccounts, fetchCampaigns, withMetaSettings } from "./meta";
 import { syncCampaignObjectives, getCampaignKPIs } from "./kpi";
-import { escapeHtml } from "./html";
 
 const GLOBAL_PROJECT_ID = "__multi__";
 const PORTAL_BASE_KEYS = [
@@ -94,7 +93,6 @@ export interface GenerateReportOptions {
 export interface GenerateReportResult {
   record: ReportRecord;
   text: string;
-  html: string;
   dataset: AutoReportDataset;
 }
 
@@ -400,7 +398,6 @@ const buildPlainText = (
     billing: string;
     spend?: string;
   }[],
-  totals: { projects: number; leadsTotal: number; leadsNew: number; leadsDone: number },
 ): string => {
   const lines: string[] = [];
   lines.push(`${title}`);
@@ -417,45 +414,6 @@ const buildPlainText = (
       lines.push("");
     }
   }
-  lines.push(
-    `Итого проектов: ${totals.projects} · Лидов всего: ${totals.leadsTotal} · Новых: ${totals.leadsNew} · Закрыто: ${totals.leadsDone}`,
-  );
-  lines.push(`Сформировано: ${new Date().toLocaleString("ru-RU")}`);
-  return lines.join("\n");
-};
-
-const buildHtml = (
-  title: string,
-  period: string,
-  rows: {
-    name: string;
-    leads: { total: number; new: number; done: number };
-    billing: string;
-    spend?: string;
-  }[],
-  totals: { projects: number; leadsTotal: number; leadsNew: number; leadsDone: number },
-): string => {
-  const lines: string[] = [];
-  lines.push(`<b>${escapeHtml(title)}</b>`);
-  lines.push(`Период: <b>${escapeHtml(period)}</b>`);
-  lines.push("");
-  if (!rows.length) {
-    lines.push("Нет проектов для отчёта.");
-  } else {
-    for (const row of rows) {
-      lines.push(`• <b>${escapeHtml(row.name)}</b>`);
-      lines.push(
-        `  Лиды: <b>${row.leads.total}</b> (новые ${row.leads.new}, завершено ${row.leads.done})`,
-      );
-      lines.push(`  Биллинг: ${escapeHtml(row.billing || "—")}`);
-      lines.push(`  Расход: ${row.spend ? escapeHtml(row.spend) : "—"}`);
-      lines.push("");
-    }
-  }
-  lines.push(
-    `Итого проектов: <b>${totals.projects}</b> · Лидов всего: <b>${totals.leadsTotal}</b> · Новых: ${totals.leadsNew} · Закрыто: ${totals.leadsDone}`,
-  );
-  lines.push(`Сформировано: ${escapeHtml(new Date().toLocaleString("ru-RU"))}`);
   return lines.join("\n");
 };
 
@@ -502,13 +460,10 @@ export const generateReport = async (
     spend: project.spend.label === "—" ? undefined : project.spend.label,
   }));
 
-  const totals = dataset.totals;
-
   const defaultTitle = options.type === "detailed" ? "Автоотчёт по проектам" : "Сводка по проектам";
   const title = options.title || `${defaultTitle} (${periodLabel})`;
-  const format = options.format || "html";
-  const plain = buildPlainText(title, periodLabel, displayRows, totals);
-  const html = buildHtml(title, periodLabel, displayRows, totals);
+  const format = options.format || "text";
+  const plain = buildPlainText(title, periodLabel, displayRows);
 
   const projectIds = summaries.map((summary) => summary.id);
   const id = createId();
@@ -525,7 +480,6 @@ export const generateReport = async (
     projectIds,
     filters,
     summary: plain,
-    totals,
     channel: options.channel,
     generatedBy: options.triggeredBy,
     metadata: {
@@ -539,10 +493,10 @@ export const generateReport = async (
 
   await appendReportRecord(env, record);
 
-  const assetContent = format === "html" ? html : plain;
-  const contentType = format === "html" ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
+  const assetContent = plain;
+  const contentType = "text/plain; charset=utf-8";
   await saveReportAsset(env, record.id, assetContent, contentType);
 
-  return { record, text: plain, html, dataset };
+  return { record, text: plain, dataset };
 };
 

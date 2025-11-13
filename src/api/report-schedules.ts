@@ -107,7 +107,7 @@ const ensureBoolean = (value: unknown, fallback: boolean): boolean => {
 };
 
 const parseFormat = (value: unknown): ReportScheduleRecord["format"] => {
-  if (value === "csv" || value === "html") {
+  if (value === "csv" || value === "text") {
     return value;
   }
   return undefined;

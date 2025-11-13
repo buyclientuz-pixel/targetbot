@@ -481,7 +481,7 @@ export interface ReportRecord {
   projectId: string;
   type: ReportType;
   title: string;
-  format: "pdf" | "xlsx" | "csv" | "html";
+  format: "pdf" | "xlsx" | "csv" | "text";
   url?: string;
   generatedAt: string;
   createdAt: string;
@@ -505,7 +505,7 @@ export interface ReportScheduleRecord {
   weekdays?: number[];
   projectIds: string[];
   chatId: string;
-  format?: "html" | "pdf" | "xlsx" | "csv";
+  format?: "text" | "pdf" | "xlsx" | "csv";
   enabled: boolean;
   lastRunAt?: string | null;
   nextRunAt?: string | null;

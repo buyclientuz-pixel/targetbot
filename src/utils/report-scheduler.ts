@@ -4,6 +4,7 @@ import { createSlaReport } from "./sla";
 import { createId } from "./ids";
 import { ReportDeliveryRecord, ReportScheduleRecord } from "../types";
 import { sendTelegramMessage, TelegramEnv } from "./telegram";
+import { escapeHtml } from "./html";
 
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -167,7 +168,7 @@ export const runReportSchedules = async (
           channel: "telegram",
           scheduleId: schedule.id,
         });
-        message = `${result.text}\n\nID отчёта: <code>${result.record.id}</code>`;
+        message = `${escapeHtml(result.text)}\n\nID отчёта: <code>${escapeHtml(result.record.id)}</code>`;
         reportId = result.record.id;
         slaReports += 1;
       } else {
@@ -179,18 +180,15 @@ export const runReportSchedules = async (
           channel: "telegram",
           triggeredBy: `schedule:${schedule.id}`,
           command: `schedule:${schedule.type}`,
-          format: schedule.format === "csv" ? "csv" : "html",
+          format: schedule.format === "csv" ? "csv" : "text",
         });
-        message = `${result.html}\n\nID отчёта: <code>${result.record.id}</code>`;
+        message = `${escapeHtml(result.text)}\n\nID отчёта: <code>${escapeHtml(result.record.id)}</code>`;
         reportId = result.record.id;
       }
 
       await sendTelegramMessage(env, {
         chatId: schedule.chatId,
         text: message,
-        replyMarkup: {
-          inline_keyboard: [[{ text: "⬇️ Скачать отчёт", callback_data: `report:download:${reportId}` }]],
-        },
       });
 
       triggered += 1;

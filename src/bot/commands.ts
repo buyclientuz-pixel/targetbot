@@ -50,7 +50,6 @@ import {
   savePendingCampaignSelection,
   loadPortalByProjectId,
   savePortalRecord,
-  getReportAsset,
   MetaLinkFlow,
   PendingMetaLinkState,
   updateProjectRecord,
@@ -61,7 +60,7 @@ import {
   applyPaymentReminderPatch,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramDocument } from "../utils/telegram";
+import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
 import {
   fetchAdAccounts,
   fetchCampaigns,
@@ -1493,42 +1492,20 @@ const handleAutoReportSendNow = async (context: BotContext, projectId: string): 
     const nowIso = new Date().toISOString();
     const adminRoute = settings.autoReport.sendTarget === "admin" || settings.autoReport.sendTarget === "both";
     const chatRoute = settings.autoReport.sendTarget === "chat" || settings.autoReport.sendTarget === "both";
-    const asset = await getReportAsset(context.env, reportId).catch(() => null);
+    const reportText = escapeHtml(result.text);
     if (adminRoute && context.chatId) {
       await sendTelegramMessage(context.env, {
         chatId: context.chatId,
         threadId: context.threadId,
-        text: `${result.html}\n\nID отчёта: <code>${escapeHtml(reportId)}</code>`,
-        replyMarkup: {
-          inline_keyboard: [[{ text: "⬇️ Скачать", callback_data: `report:download:${reportId}` }]],
-        },
+        text: `${reportText}\n\nID отчёта: <code>${escapeHtml(reportId)}</code>`,
       });
-      if (asset) {
-        await sendTelegramDocument(context.env, {
-          chatId: context.chatId,
-          threadId: context.threadId,
-          data: asset.body,
-          fileName: `report_${reportId}.html`,
-          contentType: asset.contentType || "text/html; charset=utf-8",
-          caption: `Отчёт ${escapeHtml(summary.name)}`,
-        });
-      }
     }
     if (chatRoute && summary.telegramChatId) {
       const clientChatId = summary.telegramChatId.toString();
       await sendTelegramMessage(context.env, {
         chatId: clientChatId,
-        text: `${result.html}\n\nОтправлено автоматически (${REPORT_ROUTE_SUMMARY[settings.autoReport.sendTarget]})`,
+        text: `${reportText}\n\nОтправлено автоматически (${REPORT_ROUTE_SUMMARY[settings.autoReport.sendTarget]})`,
       });
-      if (asset) {
-        await sendTelegramDocument(context.env, {
-          chatId: clientChatId,
-          data: asset.body,
-          fileName: `report_${reportId}.html`,
-          contentType: asset.contentType || "text/html; charset=utf-8",
-          caption: `Отчёт ${escapeHtml(summary.name)}`,
-        });
-      }
     }
     await mutateProjectSettings(context, projectId, (draft) => {
       draft.autoReport.lastSentDaily = nowIso;
@@ -2316,23 +2293,12 @@ const handleProjectReportSend = async (
     triggeredBy: context.username,
     command: "project_report",
   });
-  const asset = await getReportAsset(context.env, report.record.id);
   const chatId = summary.telegramChatId.toString();
-  const message = `${report.html}\n\nПериод: <b>${escapeHtml(period.label)}</b>`;
+  const message = `${escapeHtml(report.text)}\n\nПериод: <b>${escapeHtml(period.label)}</b>`;
   await sendTelegramMessage(context.env, {
     chatId,
     text: message,
   });
-  if (asset) {
-    const fileName = `${summary.name.replace(/[^\w]+/g, "_")}_${period.key}.html`;
-    await sendTelegramDocument(context.env, {
-      chatId,
-      data: asset.body,
-      fileName,
-      contentType: asset.contentType || "text/html; charset=utf-8",
-      caption: `Отчёт по проекту ${escapeHtml(summary.name)} — ${escapeHtml(period.label)}`,
-    });
-  }
   const nowIso = new Date().toISOString();
   const currentSettings = (summary.settings as Record<string, unknown>) ?? {};
   const reportsSettings = (currentSettings.reports as Record<string, unknown>) ?? {};
@@ -2926,26 +2892,15 @@ const handleProjectPortalShare = async (context: BotContext, projectId: string):
     triggeredBy: context.username,
     command: "portal_share",
   });
-  const asset = await getReportAsset(context.env, report.record.id);
   const chatId = summary.telegramChatId.toString();
   const replyMarkup = {
     inline_keyboard: [[{ text: "Открыть портал", url: portalUrl }]],
   };
   await sendTelegramMessage(context.env, {
     chatId,
-    text: `${report.html}\n\n🔗 <a href="${escapeAttribute(portalUrl)}">Открыть портал</a>`,
+    text: `${escapeHtml(report.text)}\n\n🔗 <a href="${escapeAttribute(portalUrl)}">Открыть портал</a>`,
     replyMarkup,
   });
-  if (asset) {
-    const fileName = `${summary.name.replace(/[^\w]+/g, "_")}_today.html`;
-    await sendTelegramDocument(context.env, {
-      chatId,
-      data: asset.body,
-      fileName,
-      contentType: asset.contentType || "text/html; charset=utf-8",
-      caption: `Отчёт по проекту ${escapeHtml(summary.name)} за сегодня`,
-    });
-  }
   const now = new Date().toISOString();
   const updatedRecord: ProjectPortalRecord = {
     ...portalRecord,

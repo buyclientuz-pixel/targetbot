@@ -19,7 +19,7 @@ const parseReportType = (value: unknown): ReportType => {
 };
 
 const parseFormat = (value: unknown): ReportRecord["format"] => {
-  if (value === "pdf" || value === "xlsx" || value === "csv" || value === "html") {
+  if (value === "pdf" || value === "xlsx" || value === "csv" || value === "text") {
     return value;
   }
   return "pdf";
@@ -207,9 +207,9 @@ export const handleReportsGenerate = async (request: Request, env: unknown): Pro
       triggeredBy: typeof body.triggeredBy === "string" ? body.triggeredBy : undefined,
       command: typeof body.command === "string" ? body.command : undefined,
     });
-    const payload: ApiSuccess<{ report: ReportRecord; summary: string; html: string }> = {
+    const payload: ApiSuccess<{ report: ReportRecord; summary: string }> = {
       ok: true,
-      data: { report: result.record, summary: result.text, html: result.html },
+      data: { report: result.record, summary: result.text },
     };
     return jsonResponse(payload, { status: 201 });
   } catch (error) {

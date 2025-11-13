@@ -1,11 +1,10 @@
 import { BotContext } from "./types";
-import { escapeAttribute, escapeHtml } from "../utils/html";
+import { escapeHtml } from "../utils/html";
 import {
   ReportSessionRecord,
   deleteReportSession,
   loadReportSession,
   saveReportSession,
-  getReportAsset,
   loadMetaToken,
   loadPendingKpiSelection,
   savePendingKpiSelection,
@@ -15,7 +14,7 @@ import {
   savePortalRecord,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
-import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery, sendTelegramDocument } from "../utils/telegram";
+import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "../utils/telegram";
 import { generateReport } from "../utils/reports";
 import { summarizeProjects, sortProjectSummaries, applyProjectReportPreferencesPatch } from "../utils/projects";
 import { fetchCampaigns, withMetaSettings } from "../utils/meta";
@@ -543,7 +542,7 @@ const createSession = async (
             : options.projectId
               ? "Кастомный отчёт"
               : "Отчёт по проектам",
-    format: mode === "auto" ? "pdf" : mode === "finance" ? "html" : "html",
+    format: mode === "auto" ? "pdf" : mode === "finance" ? "text" : "text",
     createdAt: new Date(now).toISOString(),
     updatedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + REPORT_SESSION_TTL_MS).toISOString(),
@@ -644,14 +643,11 @@ const sendReportSummary = async (
     return;
   }
   const record = result.record;
-  const text = `${result.html}\n\nID отчёта: <code>${escapeHtml(record.id)}</code>`;
+  const text = `${escapeHtml(result.text)}\n\nID отчёта: <code>${escapeHtml(record.id)}</code>`;
   await sendTelegramMessage(context.env, {
     chatId,
     threadId: context.threadId,
     text,
-    replyMarkup: {
-      inline_keyboard: [[{ text: "⬇️ Скачать отчёт", callback_data: `report:download:${record.id}` }]],
-    },
   });
 };
 
@@ -727,40 +723,6 @@ export const handleReportCallback = async (context: BotContext, data: string): P
   if (!parsed) {
     return false;
   }
-  if (parsed.action === "download") {
-    const reportId = parsed.sessionId;
-    const chatId = ensureChatId(context);
-    if (!chatId) {
-      return true;
-    }
-    const asset = await getReportAsset(context.env, reportId);
-    if (!asset) {
-      await sendTelegramMessage(context.env, {
-        chatId,
-        threadId: context.threadId,
-        text: "Файл отчёта не найден. Сформируйте его заново.",
-      });
-      return true;
-    }
-    await sendTelegramDocument(context.env, {
-      chatId,
-      threadId: context.threadId,
-      data: asset.body,
-      fileName: `report_${reportId}.html`,
-      contentType: asset.contentType || "text/html; charset=utf-8",
-      caption: "⬇️ Отчёт загружен.",
-    });
-    if (context.update.callback_query?.id) {
-      await answerCallbackQuery(context.env, context.update.callback_query.id, "Отправлено");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    await sendTelegramMessage(context.env, {
-      chatId,
-      threadId: context.threadId,
-      text: "/admin",
-    });
-    return true;
-  }
   const session = await loadReportSession(context.env, parsed.sessionId);
   if (!session) {
     if (context.update.callback_query?.id) {
@@ -834,7 +796,7 @@ export const handleReportCallback = async (context: BotContext, data: string): P
                 ? "custom"
                 : "summary",
         projectIds: session.projectIds,
-        format: session.format === "csv" ? "csv" : session.format === "pdf" ? "pdf" : "html",
+        format: session.format === "csv" ? "csv" : session.format === "pdf" ? "pdf" : "text",
         channel: "telegram",
         triggeredBy: context.userId,
         command: session.command,

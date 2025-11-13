@@ -176,13 +176,6 @@ const formatRuDate = (date: Date): string => {
   return `${pad2(date.getUTCDate())}.${pad2(date.getUTCMonth() + 1)}.${date.getUTCFullYear()}`;
 };
 
-const formatRuDateTime = (date: Date): string => {
-  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
-    return "—";
-  }
-  return `${formatRuDate(date)}, ${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}:${pad2(date.getUTCSeconds())}`;
-};
-
 const formatWeekday = (date: Date): string => {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return "";
@@ -235,11 +228,6 @@ const buildAutoReportNotification = (
       lines.push("");
     });
   }
-
-  lines.push(
-    `Итого проектов: ${dataset.totals.projects} · Лидов всего: ${dataset.totals.leadsTotal} · Новых: ${dataset.totals.leadsNew} · Закрыто: ${dataset.totals.leadsDone}`,
-  );
-  lines.push(`Сформировано: ${escapeHtml(formatRuDateTime(new Date(dataset.generatedAt)))}`);
 
   let text = lines.join("\n");
   if (options.fallbackReason) {
