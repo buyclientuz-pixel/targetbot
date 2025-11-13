@@ -2608,34 +2608,17 @@ const handleProjectBilling = async (context: BotContext, projectId: string): Pro
   } else {
     lines.push("", "Платежи ещё не зафиксированы. Добавьте оплату кнопками ниже, чтобы активировать биллинг.");
   }
-  lines.push(
-    "",
-    "Обновите статус оплаты, дату следующего платежа и тариф прямо отсюда — кнопки ниже.",
-  );
-  const statusButtons = (Object.keys(BILLING_STATUS_LABELS) as ProjectBillingState[]).map((status) => ({
-    text: `${status === billing.status ? "✅" : "⚪️"} ${BILLING_STATUS_LABELS[status]}`,
-    callback_data: `proj:billing-status:${projectId}:${status}`,
-  }));
-  const nextButtons = [
-    [
-      { text: "📅 +30 дней", callback_data: `proj:billing-next:${projectId}:30` },
-      { text: "📅 Указать дату", callback_data: `proj:billing-next:${projectId}:custom` },
-    ],
-  ];
-  const tariffButtons = [
-    [
-      { text: "350$", callback_data: `proj:billing-tariff-preset:${projectId}:350` },
-      { text: "500$", callback_data: `proj:billing-tariff-preset:${projectId}:500` },
-    ],
-    [{ text: "📝 Ручной ввод", callback_data: `proj:billing-tariff:${projectId}` }],
-  ];
+  lines.push("", "Настройте дату следующего платежа и тариф прямо отсюда — кнопки ниже.");
   const replyMarkup = {
     inline_keyboard: [
-      statusButtons.slice(0, 2),
-      statusButtons.slice(2, 4),
-      ...nextButtons,
-      ...tariffButtons,
-      [{ text: "⬅ К проекту", callback_data: `proj:view:${projectId}` }],
+      [{ text: "📅 +30 дней", callback_data: `proj:billing-next:${projectId}:30` }],
+      [
+        { text: "350$", callback_data: `proj:billing-tariff-preset:${projectId}:350` },
+        { text: "500$", callback_data: `proj:billing-tariff-preset:${projectId}:500` },
+      ],
+      [{ text: "📅 Указать дату оплаты", callback_data: `proj:billing-next:${projectId}:custom` }],
+      [{ text: "📝 Ввести дату вручную", callback_data: `proj:billing-next:${projectId}:manual` }],
+      [{ text: "⬅ Назад", callback_data: `proj:view:${projectId}` }],
     ],
   };
   await sendMessage(context, lines.join("\n"), { replyMarkup });
