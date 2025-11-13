@@ -36,6 +36,7 @@ const expect = {
   },
 };
 
+import { ensureTelegramUrl, ensureTelegramUrlFromId, resolveChatLink } from "../src/utils/chat-links";
 import { evaluateQaDataset } from "../src/utils/qa";
 import {
   LeadRecord,
@@ -136,6 +137,30 @@ test("evaluateQaDataset flags missing references and reschedules schedules", () 
   const nextRun = evaluation.schedules[0].nextRunAt;
   expect.ok(nextRun);
   expect.ok(Date.parse(nextRun!) > Date.parse("2025-02-22T12:00:00Z"));
+});
+
+test("ensureTelegramUrl normalizes chat identifiers", () => {
+  expect.equal(
+    ensureTelegramUrl("-1001234567890"),
+    "tg://openmessage?chat_id=-1001234567890",
+  );
+  expect.equal(ensureTelegramUrl("@targetbot"), "https://t.me/targetbot");
+  expect.equal(ensureTelegramUrl("+InviteCode"), "https://t.me/+InviteCode");
+});
+
+test("resolveChatLink prefers explicit link but falls back to chat id", () => {
+  expect.equal(
+    resolveChatLink(undefined, "-1009876543210"),
+    "tg://openmessage?chat_id=-1009876543210",
+  );
+  expect.equal(
+    resolveChatLink("tg://openmessage?chat_id=-1001", "-1009876543210"),
+    "tg://openmessage?chat_id=-1001",
+  );
+  expect.equal(
+    ensureTelegramUrlFromId("123456"),
+    "tg://user?id=123456",
+  );
 });
 
 test("evaluateQaDataset keeps clean dataset untouched", () => {

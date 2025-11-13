@@ -81,6 +81,7 @@ import { runReminderSweep } from "./utils/reminders";
 import { runReportSchedules } from "./utils/report-scheduler";
 import { TelegramEnv } from "./utils/telegram";
 import { runRegressionChecks } from "./utils/qa";
+import { KPI_LABELS } from "./utils/kpi";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -499,14 +500,36 @@ export default {
           }
         };
 
-        const metricLabels: Record<PortalMetricKey, string> = {
-          leads_total: "Лиды всего",
-          leads_new: "Новые лиды",
-          leads_done: "Завершённые лиды",
-          spend: "Расход",
-          impressions: "Показы",
-          clicks: "Клики",
-        };
+        const aggregates = selectedCampaigns.reduce(
+          (acc, campaign) => ({
+            spend: acc.spend + (campaign.spend ?? 0),
+            impressions: acc.impressions + (campaign.impressions ?? 0),
+            clicks: acc.clicks + (campaign.clicks ?? 0),
+            reach: acc.reach + (campaign.reach ?? 0),
+            leads: acc.leads + (campaign.leads ?? 0),
+            conversations: acc.conversations + (campaign.conversations ?? 0),
+            purchases: acc.purchases + (campaign.purchases ?? 0),
+            engagements: acc.engagements + (campaign.engagements ?? 0),
+            thruplays: acc.thruplays + (campaign.thruplays ?? 0),
+            installs: acc.installs + (campaign.installs ?? 0),
+            revenue: acc.revenue + (campaign.roasValue ?? 0),
+          }),
+          {
+            spend: 0,
+            impressions: 0,
+            clicks: 0,
+            reach: 0,
+            leads: 0,
+            conversations: 0,
+            purchases: 0,
+            engagements: 0,
+            thruplays: 0,
+            installs: 0,
+            revenue: 0,
+          },
+        );
+
+        const metricLabels = KPI_LABELS;
 
         const metricValues: Record<PortalMetricKey, string> = {
           leads_total: formatNumber(leadsTotal),
@@ -515,7 +538,47 @@ export default {
           spend: spendTotal > 0 ? formatCurrency(spendTotal) : "—",
           impressions: impressionsTotal > 0 ? formatNumber(impressionsTotal) : "—",
           clicks: clicksTotal > 0 ? formatNumber(clicksTotal) : "—",
-        };
+          leads: aggregates.leads > 0 ? formatNumber(Math.round(aggregates.leads)) : formatNumber(leadsTotal),
+          cpl:
+            aggregates.leads > 0 && spendTotal > 0 ? formatCurrency(spendTotal / aggregates.leads) : "—",
+          ctr:
+            impressionsTotal > 0 && clicksTotal > 0
+              ? `${((clicksTotal / impressionsTotal) * 100).toFixed(2)}%`
+              : "—",
+          cpc:
+            clicksTotal > 0 && spendTotal > 0 ? formatCurrency(spendTotal / clicksTotal) : "—",
+          reach: aggregates.reach > 0 ? formatNumber(Math.round(aggregates.reach)) : "—",
+          conversations:
+            aggregates.conversations > 0 ? formatNumber(Math.round(aggregates.conversations)) : "—",
+          cpm:
+            impressionsTotal > 0 && spendTotal > 0 ? formatCurrency((spendTotal / impressionsTotal) * 1000) : "—",
+          purchases: aggregates.purchases > 0 ? formatNumber(Math.round(aggregates.purchases)) : "—",
+          cpa:
+            aggregates.purchases > 0 && spendTotal > 0
+              ? formatCurrency(spendTotal / aggregates.purchases)
+              : "—",
+          roas:
+            aggregates.revenue > 0 && spendTotal > 0
+              ? `${(aggregates.revenue / spendTotal).toFixed(2)}x`
+              : "—",
+          engagements:
+            aggregates.engagements > 0 ? formatNumber(Math.round(aggregates.engagements)) : "—",
+          cpe:
+            aggregates.engagements > 0 && spendTotal > 0
+              ? formatCurrency(spendTotal / aggregates.engagements)
+              : "—",
+          thruplays:
+            aggregates.thruplays > 0 ? formatNumber(Math.round(aggregates.thruplays)) : "—",
+          cpv:
+            aggregates.thruplays > 0 && spendTotal > 0
+              ? formatCurrency(spendTotal / aggregates.thruplays)
+              : "—",
+          installs: aggregates.installs > 0 ? formatNumber(Math.round(aggregates.installs)) : "—",
+          cpi:
+            aggregates.installs > 0 && spendTotal > 0
+              ? formatCurrency(spendTotal / aggregates.installs)
+              : "—",
+        } as Record<PortalMetricKey, string>;
 
         const preferredMetrics = portalRecord.metrics.length
           ? portalRecord.metrics

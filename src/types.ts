@@ -56,6 +56,26 @@ export interface MetaCampaign {
   spendFormatted?: string;
   impressions?: number;
   clicks?: number;
+  reach?: number;
+  uniqueReach?: number;
+  leads?: number;
+  conversations?: number;
+  purchases?: number;
+  installs?: number;
+  engagements?: number;
+  thruplays?: number;
+  conversions?: number;
+  roasValue?: number;
+  revenueCurrency?: string;
+  ctr?: number;
+  cpc?: number;
+  cpm?: number;
+  cpl?: number;
+  cpa?: number;
+  roas?: number;
+  cpv?: number;
+  cpi?: number;
+  cpe?: number;
   updatedTime?: string;
 }
 
@@ -67,7 +87,23 @@ export type PortalMetricKey =
   | "leads_done"
   | "spend"
   | "impressions"
-  | "clicks";
+  | "clicks"
+  | "leads"
+  | "cpl"
+  | "ctr"
+  | "cpc"
+  | "reach"
+  | "conversations"
+  | "cpm"
+  | "purchases"
+  | "cpa"
+  | "roas"
+  | "engagements"
+  | "cpe"
+  | "thruplays"
+  | "cpv"
+  | "installs"
+  | "cpi";
 
 export interface ProjectPortalRecord {
   portalId: string;
@@ -257,6 +293,13 @@ export interface PendingProjectEditOperation {
 export interface PendingCampaignSelectionRecord {
   projectId: string;
   campaignIds: string[];
+  updatedAt: string;
+}
+
+export interface PendingKpiSelectionRecord {
+  projectId: string;
+  campaignId: string;
+  metrics: PortalMetricKey[];
   updatedAt: string;
 }
 

@@ -111,6 +111,11 @@
 | `report:confirm:{sessionId}` | Сформировать отчёт и отправить сводку. |
 | `report:cancel:{sessionId}` | Отменить сессию отчёта и закрыть меню. |
 | `report:download:{reportId}` | Скачать ранее сформированный отчёт. |
+| `report:kpi_open:{projectId}` | Список кампаний проекта для настройки KPI. |
+| `report:kpi_campaign:{projectId}:{campaignId}` | Открыть редактор KPI выбранной кампании. |
+| `report:kpi_toggle:{projectId}:{campaignId}:{metric}` | Переключить метрику KPI в редакторе кампании. |
+| `report:kpi_save_default:{projectId}:{campaignId}` | Сохранить набор KPI в KV и назначить дефолтным для кампании. |
+| `report:kpi_save_once:{projectId}:{campaignId}` | Применить набор KPI разово (без обновления дефолта). |
 
 ## Общие правила
 

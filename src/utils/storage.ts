@@ -12,6 +12,7 @@ import {
   PaymentReminderRecord,
   PaymentRecord,
   PendingCampaignSelectionRecord,
+  PendingKpiSelectionRecord,
   PendingPortalOperation,
   PendingProjectEditOperation,
   PortalMetricKey,
@@ -28,6 +29,7 @@ import {
   UserRecord,
   QaRunRecord,
 } from "../types";
+import { ensureTelegramUrl, ensureTelegramUrlFromId } from "./chat-links";
 import { createId } from "./ids";
 
 const META_TOKEN_KEY = "meta:token";
@@ -84,6 +86,11 @@ const PORTAL_KV_INDEX_KEY = "portals:index";
 const PORTAL_KV_PREFIX = "portal:";
 const PORTAL_PENDING_PREFIX = "portal/pending/";
 const CAMPAIGN_PENDING_PREFIX = "campaigns/pending/";
+const CAMPAIGN_OBJECTIVES_DIR = "campaigns/objectives/";
+const CAMPAIGN_KPIS_DIR = "campaigns/kpis/";
+const CAMPAIGN_OBJECTIVE_KV_PREFIX = "campaign_objective:";
+const CAMPAIGN_KPI_KV_PREFIX = "project_campaign_kpis:";
+const KPI_PENDING_PREFIX = "kpi/pending/";
 
 const PORTAL_ALLOWED_METRICS: PortalMetricKey[] = [
   "leads_total",
@@ -92,6 +99,22 @@ const PORTAL_ALLOWED_METRICS: PortalMetricKey[] = [
   "spend",
   "impressions",
   "clicks",
+  "leads",
+  "cpl",
+  "ctr",
+  "cpc",
+  "reach",
+  "conversations",
+  "cpm",
+  "purchases",
+  "cpa",
+  "roas",
+  "engagements",
+  "cpe",
+  "thruplays",
+  "cpv",
+  "installs",
+  "cpi",
 ];
 
 const sanitizePortalMetrics = (values: unknown): PortalMetricKey[] => {
@@ -104,37 +127,17 @@ const sanitizePortalMetrics = (values: unknown): PortalMetricKey[] => {
   return normalized.length > 0 ? normalized : [...PORTAL_ALLOWED_METRICS];
 };
 
+const campaignObjectivesKey = (projectId: string): string => `${CAMPAIGN_OBJECTIVES_DIR}${projectId}.json`;
+const campaignKpisKey = (projectId: string): string => `${CAMPAIGN_KPIS_DIR}${projectId}.json`;
+
 const sanitizeTelegramLink = (value: unknown): string | undefined => {
-  if (typeof value !== "string") {
-    return undefined;
+  if (typeof value === "number") {
+    return ensureTelegramUrlFromId(value);
   }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return undefined;
+  if (typeof value === "string") {
+    return ensureTelegramUrl(value);
   }
-  const lower = trimmed.toLowerCase();
-  if (trimmed.startsWith("tg://")) {
-    return trimmed;
-  }
-  if (lower.startsWith("http://")) {
-    return `https://${trimmed.slice(7)}`;
-  }
-  if (lower.startsWith("https://")) {
-    return trimmed;
-  }
-  if (trimmed.startsWith("//")) {
-    return `https:${trimmed}`;
-  }
-  if (lower.startsWith("t.me/") || lower.startsWith("telegram.me/")) {
-    return `https://${trimmed.replace(/^\/+/, "")}`;
-  }
-  if (trimmed.startsWith("@")) {
-    return `https://t.me/${trimmed.slice(1)}`;
-  }
-  if (trimmed.startsWith("+")) {
-    return `https://t.me/${trimmed}`;
-  }
-  return `https://t.me/${trimmed.replace(/^\/+/, "")}`;
+  return undefined;
 };
 
 const MAX_REPORT_RECORDS = 200;
@@ -1464,6 +1467,108 @@ export const deletePortalRecord = async (
   }
 };
 
+const readCampaignObjectives = async (env: EnvBindings, projectId: string): Promise<Record<string, string>> => {
+  return readJsonFromR2<Record<string, string>>(env, campaignObjectivesKey(projectId), {});
+};
+
+const writeCampaignObjectives = async (
+  env: EnvBindings,
+  projectId: string,
+  map: Record<string, string>,
+): Promise<void> => {
+  await writeJsonToR2(env, campaignObjectivesKey(projectId), map);
+};
+
+const readCampaignKpis = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<Record<string, PortalMetricKey[]>> => {
+  const stored = await readJsonFromR2<Record<string, unknown>>(env, campaignKpisKey(projectId), {});
+  const result: Record<string, PortalMetricKey[]> = {};
+  Object.entries(stored).forEach(([campaignId, metrics]) => {
+    result[campaignId] = sanitizePortalMetrics(metrics);
+  });
+  return result;
+};
+
+const writeCampaignKpis = async (
+  env: EnvBindings,
+  projectId: string,
+  map: Record<string, PortalMetricKey[]>,
+): Promise<void> => {
+  await writeJsonToR2(env, campaignKpisKey(projectId), map);
+};
+
+export const listCampaignObjectivesForProject = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<Record<string, string>> => {
+  return readCampaignObjectives(env, projectId);
+};
+
+export const getCampaignObjective = async (
+  env: EnvBindings,
+  projectId: string,
+  campaignId: string,
+): Promise<string | null> => {
+  const map = await readCampaignObjectives(env, projectId);
+  const value = map[campaignId];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+};
+
+export const saveCampaignObjectiveRecord = async (
+  env: EnvBindings,
+  projectId: string,
+  campaignId: string,
+  objective: string | null | undefined,
+): Promise<void> => {
+  const map = await readCampaignObjectives(env, projectId);
+  const kvKey = `${CAMPAIGN_OBJECTIVE_KV_PREFIX}${projectId}:${campaignId}`;
+  if (objective && objective.trim()) {
+    const value = objective.trim();
+    map[campaignId] = value;
+    await env.DB.put(kvKey, value);
+  } else {
+    delete map[campaignId];
+    await env.DB.delete(kvKey);
+  }
+  await writeCampaignObjectives(env, projectId, map);
+};
+
+export const listProjectCampaignKpis = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<Record<string, PortalMetricKey[]>> => {
+  return readCampaignKpis(env, projectId);
+};
+
+export const saveProjectCampaignKpis = async (
+  env: EnvBindings,
+  projectId: string,
+  campaignId: string,
+  metrics: PortalMetricKey[],
+): Promise<PortalMetricKey[]> => {
+  const sanitized = sanitizePortalMetrics(metrics);
+  const map = await readCampaignKpis(env, projectId);
+  map[campaignId] = sanitized;
+  await writeCampaignKpis(env, projectId, map);
+  await env.DB.put(`${CAMPAIGN_KPI_KV_PREFIX}${projectId}:${campaignId}`, JSON.stringify(sanitized));
+  return sanitized;
+};
+
+export const deleteProjectCampaignKpis = async (
+  env: EnvBindings,
+  projectId: string,
+  campaignId: string,
+): Promise<void> => {
+  const map = await readCampaignKpis(env, projectId);
+  if (campaignId in map) {
+    delete map[campaignId];
+    await writeCampaignKpis(env, projectId, map);
+  }
+  await env.DB.delete(`${CAMPAIGN_KPI_KV_PREFIX}${projectId}:${campaignId}`);
+};
+
 export const listSettings = async (env: EnvBindings): Promise<SettingRecord[]> => {
   return readJsonFromR2<SettingRecord[]>(env, SETTINGS_KEY, []);
 };
@@ -2168,6 +2273,8 @@ export const clearPendingPortalOperation = async (
 
 const pendingCampaignKey = (userId: string): string => `${CAMPAIGN_PENDING_PREFIX}${userId}`;
 
+const pendingKpiKey = (userId: string): string => `${KPI_PENDING_PREFIX}${userId}`;
+
 export const loadPendingCampaignSelection = async (
   env: EnvBindings,
   userId: string,
@@ -2201,4 +2308,43 @@ export const clearPendingCampaignSelection = async (
   userId: string,
 ): Promise<void> => {
   await env.DB.delete(pendingCampaignKey(userId));
+};
+
+export const loadPendingKpiSelection = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<PendingKpiSelectionRecord | null> => {
+  const stored = await env.DB.get(pendingKpiKey(userId));
+  if (!stored) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(stored) as PendingKpiSelectionRecord;
+    parsed.metrics = sanitizePortalMetrics(parsed.metrics);
+    return parsed;
+  } catch (error) {
+    console.warn("Failed to parse pending KPI selection", error);
+    return null;
+  }
+};
+
+export const savePendingKpiSelection = async (
+  env: EnvBindings,
+  userId: string,
+  payload: PendingKpiSelectionRecord,
+  ttlSeconds = 900,
+): Promise<void> => {
+  const record: PendingKpiSelectionRecord = {
+    ...payload,
+    metrics: sanitizePortalMetrics(payload.metrics),
+    updatedAt: new Date().toISOString(),
+  };
+  await env.DB.put(pendingKpiKey(userId), JSON.stringify(record), { expirationTtl: Math.max(60, ttlSeconds) });
+};
+
+export const clearPendingKpiSelection = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<void> => {
+  await env.DB.delete(pendingKpiKey(userId));
 };

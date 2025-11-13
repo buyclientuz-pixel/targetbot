@@ -649,6 +649,12 @@ interface CampaignInsightsResponse {
     spend?: string;
     impressions?: string;
     clicks?: string;
+    reach?: string;
+    inline_link_clicks?: string;
+    unique_clicks?: string;
+    unique_actions?: Array<{ action_type?: string; value?: string }>;
+    actions?: Array<{ action_type?: string; value?: string }>;
+    action_values?: Array<{ action_type?: string; value?: string }>;
     account_currency?: string;
     date_start?: string;
     date_stop?: string;
@@ -951,12 +957,43 @@ export const fetchCampaigns = async (
     `${normalizedAccount}/insights`,
     {
       access_token: tokenRecord.accessToken,
-      fields: "campaign_id,campaign_name,spend,impressions,clicks,account_currency,date_start,date_stop",
+      fields:
+        "campaign_id,campaign_name,spend,impressions,clicks,reach,inline_link_clicks,unique_clicks,actions,action_values,account_currency,date_start,date_stop",
       level: "campaign",
       time_increment: "all_days",
       ...insightWindow,
     },
   );
+
+  const toActionMap = (
+    items: Array<{ action_type?: string; value?: string }> | undefined,
+  ): Map<string, number> => {
+    const map = new Map<string, number>();
+    if (!items) {
+      return map;
+    }
+    for (const entry of items) {
+      if (!entry?.action_type) {
+        continue;
+      }
+      const numeric = parseNumber(entry.value);
+      if (numeric !== undefined) {
+        map.set(entry.action_type, numeric);
+      }
+    }
+    return map;
+  };
+
+  const sumActions = (map: Map<string, number>, keys: string[]): number => {
+    let total = 0;
+    for (const key of keys) {
+      const value = map.get(key);
+      if (value !== undefined) {
+        total += value;
+      }
+    }
+    return total;
+  };
 
   for (const row of insightsResponse?.data || []) {
     const campaignId = row.campaign_id;
@@ -980,6 +1017,30 @@ export const fetchCampaigns = async (
     const spend = parseNumber(row.spend);
     const impressions = parseNumber(row.impressions);
     const clicks = parseNumber(row.clicks);
+    const reach = parseNumber(row.reach);
+    const actionMap = toActionMap(row.actions);
+    const valueMap = toActionMap(row.action_values);
+
+    const leads = sumActions(actionMap, ["lead", "leadgen.other", "onsite_conversion.lead", "leadgen" ]);
+    const conversations = sumActions(actionMap, [
+      "onsite_conversion.messaging_conversation_started_7d",
+      "messaging_conversation_started_7d",
+    ]);
+    const purchases = sumActions(actionMap, ["purchase", "offsite_conversion.fb_pixel_purchase"]);
+    const installs = sumActions(actionMap, ["app_install", "mobile_app_install"]);
+    const engagements = sumActions(actionMap, ["post_engagement", "onsite_conversion.post_save"]);
+    const thruplays = sumActions(actionMap, ["thruplay", "video_play"]);
+    const conversions = sumActions(actionMap, [
+      "offsite_conversion",
+      "offsite_conversion.purchase",
+      "onsite_conversion.lead",
+    ]);
+    const revenue = sumActions(valueMap, [
+      "purchase",
+      "offsite_conversion.fb_pixel_purchase",
+      "onsite_conversion.purchase",
+    ]);
+
     target.spend = spend;
     target.spendCurrency = row.account_currency || target.spendCurrency;
     target.spendPeriod = periodLabel;
@@ -989,6 +1050,62 @@ export const fetchCampaigns = async (
     }
     if (clicks !== undefined) {
       target.clicks = clicks;
+    }
+    if (reach !== undefined) {
+      target.reach = reach;
+    }
+    if (leads) {
+      target.leads = leads;
+    }
+    if (conversations) {
+      target.conversations = conversations;
+    }
+    if (purchases) {
+      target.purchases = purchases;
+    }
+    if (installs) {
+      target.installs = installs;
+    }
+    if (engagements) {
+      target.engagements = engagements;
+    }
+    if (thruplays) {
+      target.thruplays = thruplays;
+    }
+    if (conversions) {
+      target.conversions = conversions;
+    }
+    if (revenue) {
+      target.roasValue = revenue;
+      target.revenueCurrency = row.account_currency || target.revenueCurrency;
+    }
+
+    if (impressions && impressions > 0 && clicks !== undefined) {
+      target.ctr = clicks > 0 ? (clicks / impressions) * 100 : 0;
+    }
+    if (clicks && clicks > 0 && spend !== undefined) {
+      target.cpc = spend ? spend / clicks : 0;
+    }
+    if (impressions && impressions > 0 && spend !== undefined) {
+      target.cpm = spend ? (spend / impressions) * 1000 : 0;
+    }
+    if (leads && leads > 0 && spend !== undefined) {
+      target.cpl = spend ? spend / leads : 0;
+    }
+    if (purchases && purchases > 0 && spend !== undefined) {
+      target.cpa = spend ? spend / purchases : 0;
+    }
+    if (revenue && spend && spend > 0) {
+      target.roas = revenue / spend;
+    }
+    if (thruplays && thruplays > 0 && spend !== undefined) {
+      target.cpv = spend ? spend / thruplays : 0;
+    }
+    if (installs && installs > 0 && spend !== undefined) {
+      target.cpi = spend ? spend / installs : 0;
+    }
+    if (engagements && engagements > 0 && spend !== undefined) {
+      target.cpe = spend ? spend / engagements : 0;
     }
   }
 

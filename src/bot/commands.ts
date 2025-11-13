@@ -66,6 +66,8 @@ import {
   withMetaSettings,
 } from "../utils/meta";
 import { generateReport } from "../utils/reports";
+import { KPI_LABELS, syncCampaignObjectives } from "../utils/kpi";
+import { resolveChatLink } from "../utils/chat-links";
 import {
   ChatRegistrationRecord,
   LeadRecord,
@@ -182,14 +184,7 @@ const DEFAULT_PORTAL_METRICS: PortalMetricKey[] = [
   "clicks",
 ];
 
-const PORTAL_METRIC_LABELS: Record<PortalMetricKey, string> = {
-  leads_total: "Лиды всего",
-  leads_new: "Новые лиды",
-  leads_done: "Завершено",
-  spend: "Расход",
-  impressions: "Показы",
-  clicks: "Клики",
-};
+const PORTAL_METRIC_LABELS: Record<PortalMetricKey, string> = { ...KPI_LABELS };
 
 const REPORT_PERIODS = [
   { key: "today", label: "Сегодня", datePreset: "today" },
@@ -641,71 +636,8 @@ const buildProjectListMarkup = (
   return { inline_keyboard: keyboard };
 };
 
-const ensureTelegramUrl = (value?: string): string | undefined => {
-  if (!value) {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  const lower = trimmed.toLowerCase();
-  if (trimmed.startsWith("tg://")) {
-    return trimmed;
-  }
-  if (lower.startsWith("http://")) {
-    return `https://${trimmed.slice(7)}`;
-  }
-  if (lower.startsWith("https://")) {
-    return trimmed;
-  }
-  if (trimmed.startsWith("//")) {
-    return `https:${trimmed}`;
-  }
-  if (lower.startsWith("t.me/") || lower.startsWith("telegram.me/")) {
-    return `https://${trimmed.replace(/^\/+/, "")}`;
-  }
-  if (trimmed.startsWith("@")) {
-    return `https://t.me/${trimmed.slice(1)}`;
-  }
-  if (trimmed.startsWith("+")) {
-    return `https://t.me/${trimmed}`;
-  }
-  return `https://t.me/${trimmed.replace(/^\/+/, "")}`;
-};
-
-const buildChatUrlFromId = (chatId?: string | number): string | undefined => {
-  if (chatId === undefined || chatId === null) {
-    return undefined;
-  }
-  const text = String(chatId).trim();
-  if (!text) {
-    return undefined;
-  }
-  if (text.startsWith("tg://") || text.startsWith("//") || /^https?:\/\//i.test(text)) {
-    return ensureTelegramUrl(text);
-  }
-  if (text.startsWith("@") || text.startsWith("+") || /^(?:t\.me|telegram\.me)\//i.test(text)) {
-    return ensureTelegramUrl(text);
-  }
-  if (/^-?\d+$/.test(text)) {
-    if (text.startsWith("-")) {
-      const normalized = text.startsWith("-100") ? text.slice(4) : text.slice(1);
-      if (normalized) {
-        return `https://t.me/c/${normalized}`;
-      }
-    }
-    return `tg://user?id=${encodeURIComponent(text)}`;
-  }
-  return ensureTelegramUrl(text);
-};
-
 const resolveProjectChatUrl = (summary: ProjectSummary): string | undefined => {
-  const byLink = ensureTelegramUrl(summary.telegramLink);
-  if (byLink) {
-    return byLink;
-  }
-  return buildChatUrlFromId(summary.telegramChatId ?? summary.chatId);
+  return resolveChatLink(summary.telegramLink, summary.telegramChatId ?? summary.chatId ?? undefined);
 };
 
 const buildProjectActionsMarkup = (summary: ProjectSummary) => {
@@ -731,10 +663,13 @@ const buildProjectActionsMarkup = (summary: ProjectSummary) => {
         { text: "💳 Оплата", callback_data: `proj:billing:${summary.id}` },
       ],
       [
+        { text: "🎛 KPI кампаний", callback_data: `report:kpi_open:${summary.id}` },
         { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
-        { text: "❌ Удалить", callback_data: `proj:delete:${summary.id}` },
       ],
-      [{ text: "⬅ К списку", callback_data: "cmd:projects" }],
+      [
+        { text: "❌ Удалить", callback_data: `proj:delete:${summary.id}` },
+        { text: "⬅ К списку", callback_data: "cmd:projects" },
+      ],
       [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
     ],
   };
@@ -1544,6 +1479,9 @@ const handleProjectCampaigns = async (context: BotContext, projectId: string): P
     .slice()
     .sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0))
     .slice(0, 20);
+  await syncCampaignObjectives(context.env, projectId, campaigns).catch((error) =>
+    console.warn("Failed to sync campaign objectives", projectId, error),
+  );
   const rows = campaigns.map((campaign) => [{
     text: `${pending?.campaignIds.includes(campaign.id) ? "✅" : campaignStatusIcon(campaign)} ${truncateCampaignLabel(campaign.name)}`,
     callback_data: `proj:campaign-toggle:${projectId}:${campaign.id}`,
