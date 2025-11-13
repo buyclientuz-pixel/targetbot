@@ -117,6 +117,43 @@
 | `report:kpi_save_default:{projectId}:{campaignId}` | Сохранить набор KPI в KV и назначить дефолтным для кампании. |
 | `report:kpi_save_once:{projectId}:{campaignId}` | Применить набор KPI разово (без обновления дефолта). |
 
+## Автоотчёты (`auto:*`)
+
+| Callback шаблон | Описание |
+| --- | --- |
+| `auto_menu:{projectId}` | Открыть панель автоотчётов проекта. |
+| `auto_toggle:{projectId}` | Включить/выключить автоотчёты для проекта. |
+| `auto_time_toggle:{projectId}:{HH_MM}` | Переключить конкретное время отправки (формат `HH:MM`). |
+| `auto_send_target:{projectId}:{target}` | Назначить маршрут доставки (`chat`, `admin`, `both`). |
+| `auto_monday_toggle:{projectId}` | Включить/выключить режим двойного понедельничного отчёта. |
+| `auto_send_now:{projectId}` | Немедленно отправить автоотчёт по сохранённым настройкам. |
+
+## Алерты (`alert:*`)
+
+| Callback шаблон | Описание |
+| --- | --- |
+| `alert_menu:{projectId}` | Открыть панель алертов проекта. |
+| `alert_toggle_payment:{projectId}` | Переключить напоминания о платеже. |
+| `alert_toggle_spend:{projectId}` | Переключить алерты аномального расхода. |
+| `alert_toggle_api:{projectId}` | Переключить уведомления об ошибках Meta API. |
+| `alert_toggle_pause:{projectId}` | Переключить алерты долгих пауз кампаний. |
+| `alert_route:{projectId}:{target}` | Выбрать маршрут доставки алертов (`chat`, `admin`, `both`). |
+
+## KPI настройки (`kpi:*`)
+
+| Callback шаблон | Описание |
+| --- | --- |
+| `kpi_menu:{projectId}` | Открыть редактор KPI проекта. |
+| `kpi_toggle_default:{projectId}:{metric}` | Переключить метрику в дефолтном наборе KPI проекта. |
+| `kpi_toggle_campaign:{projectId}:{campaignId}:{metric}` | Переключить метрику KPI конкретной кампании. |
+
+## Экспорт (`report_*` расширения)
+
+| Callback шаблон | Описание |
+| --- | --- |
+| `report_manual:{projectId}:{period}` | Открыть ручной экспорт по периоду (`today`, `yesterday`, `week`, `month`, `lifetime`). |
+| `report_export:{projectId}:{period}:{format}` | Сформировать экспорт (например, `csv`, `html`, `pdf`) с учётом выбранного периода. |
+
 ## Общие правила
 
 - Первичный токен до первого двоеточия определяет пространство команд (`cmd`, `proj`, `meta`, `report`).
@@ -125,6 +162,7 @@
 
 ## История изменений
 
+- 2025-02-24 — Добавлены пространства `auto_*`, `alert_*`, `kpi_*`, `report_manual`/`report_export` согласно SPEC-AUTO-REPORT-v3; README и ER-диаграмма обновлены под новый стандарт.
 - 2025-02-24 — Ссылки на чат-группы перешли на формат `https://t.me/c/.../2`; структура callback'ов не изменилась, все действия используют прежние `proj:*` хендлеры.
 - 2025-02-24 — Уточнены тексты ответов `cmd:*`/`proj:*` без добавления новых callback'ов: бот больше не перенаправляет админов в веб-панель, все действия доступны внутри Telegram.
 - 2025-02-24 — Нормализация ссылок Telegram для `proj:view`/`proj:chat` не потребовала новых callback'ов: используются прежние `proj:*` шаблоны, а URL формируются на лету.
