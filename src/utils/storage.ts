@@ -251,6 +251,10 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
   const telegramChatId = typeof data.telegramChatId === "string" ? data.telegramChatId : chatId || undefined;
   const telegramThreadId = typeof data.telegramThreadId === "number" ? data.telegramThreadId : undefined;
   const telegramLink = typeof data.telegramLink === "string" ? data.telegramLink : undefined;
+  const telegramTitleSource =
+    data.telegramTitle ?? data.chatTitle ?? data.telegram_title ?? data.chat_title ?? data.title;
+  const telegramTitle =
+    typeof telegramTitleSource === "string" && telegramTitleSource.trim() ? telegramTitleSource.trim() : undefined;
   const adAccountId = typeof data.adAccountId === "string" ? data.adAccountId : metaAccountId;
 
   return {
@@ -269,8 +273,301 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     telegramChatId,
     telegramThreadId,
     telegramLink,
+    telegramTitle,
     adAccountId,
   };
+};
+
+const normalizeMetaAccountLinkRecord = (
+  input: MetaAccountLinkRecord | Record<string, unknown>,
+): MetaAccountLinkRecord => {
+  const data = input as Record<string, unknown>;
+  const idCandidate = data.accountId ?? data.account_id ?? data.id;
+  const accountId =
+    typeof idCandidate === "string" && idCandidate.trim()
+      ? idCandidate.trim()
+      : typeof idCandidate === "number"
+        ? String(idCandidate)
+        : `act_${createId(10)}`;
+
+  const nameCandidate = data.accountName ?? data.name ?? data.account_name ?? accountId;
+  const accountName =
+    typeof nameCandidate === "string" && nameCandidate.trim() ? nameCandidate.trim() : String(accountId);
+
+  const currencyCandidate = data.currency ?? data.accountCurrency ?? data.currency_code;
+  const currency =
+    typeof currencyCandidate === "string" && currencyCandidate.trim()
+      ? currencyCandidate.trim().toUpperCase()
+      : null;
+
+  const spentCandidate =
+    data.spentToday ??
+    data.spent_today ??
+    data.today_spent ??
+    data.spend_today ??
+    data.spend ??
+    data.spendToday;
+  const spentToday = (() => {
+    if (typeof spentCandidate === "number" && Number.isFinite(spentCandidate)) {
+      return spentCandidate;
+    }
+    if (typeof spentCandidate === "string" && spentCandidate.trim() && !Number.isNaN(Number(spentCandidate))) {
+      return Number(spentCandidate);
+    }
+    return null;
+  })();
+
+  const linkedCandidate = data.linkedProjectId ?? data.projectId ?? data.linked_project_id ?? data.project_id;
+  const linkedProjectId =
+    typeof linkedCandidate === "string" && linkedCandidate.trim() ? linkedCandidate.trim() : null;
+
+  const isLinkedCandidate = data.isLinked ?? data.is_linked ?? data.linked ?? data.connected;
+  const isLinked = (() => {
+    if (typeof isLinkedCandidate === "boolean") {
+      return isLinkedCandidate;
+    }
+    if (typeof isLinkedCandidate === "number") {
+      return isLinkedCandidate > 0;
+    }
+    if (typeof isLinkedCandidate === "string") {
+      const normalized = isLinkedCandidate.trim().toLowerCase();
+      return ["1", "true", "yes", "linked"].includes(normalized);
+    }
+    return Boolean(linkedProjectId);
+  })();
+
+  const updatedCandidate = data.updatedAt ?? data.updated_at ?? data.synced_at;
+  const updatedAt =
+    typeof updatedCandidate === "string" && updatedCandidate.trim() ? updatedCandidate.trim() : undefined;
+
+  return {
+    accountId,
+    accountName,
+    currency,
+    spentToday,
+    isLinked,
+    linkedProjectId,
+    updatedAt,
+  };
+};
+
+const normalizeTelegramGroupLinkRecord = (
+  input: TelegramGroupLinkRecord | Record<string, unknown>,
+): TelegramGroupLinkRecord => {
+  const data = input as Record<string, unknown>;
+  const chatCandidate = data.chatId ?? data.chat_id ?? data.id ?? data.group_id;
+  const chatId =
+    typeof chatCandidate === "string" && chatCandidate.trim()
+      ? chatCandidate.trim()
+      : typeof chatCandidate === "number"
+        ? String(chatCandidate)
+        : `chat_${createId(8)}`;
+
+  const titleCandidate = data.title ?? data.chatTitle ?? data.name ?? data.chat_title;
+  const title = typeof titleCandidate === "string" && titleCandidate.trim() ? titleCandidate.trim() : null;
+
+  const membersCandidate = data.members ?? data.memberCount ?? data.member_count ?? data.participants;
+  const members = (() => {
+    if (typeof membersCandidate === "number" && Number.isFinite(membersCandidate)) {
+      return membersCandidate;
+    }
+    if (typeof membersCandidate === "string" && membersCandidate.trim() && !Number.isNaN(Number(membersCandidate))) {
+      return Number(membersCandidate);
+    }
+    return null;
+  })();
+
+  const registeredCandidate = data.registered ?? data.isRegistered ?? data.registered_at ?? data.status;
+  const registered = (() => {
+    if (typeof registeredCandidate === "boolean") {
+      return registeredCandidate;
+    }
+    if (typeof registeredCandidate === "number") {
+      return registeredCandidate > 0;
+    }
+    if (typeof registeredCandidate === "string") {
+      const normalized = registeredCandidate.trim().toLowerCase();
+      if (normalized === "registered" || normalized === "yes" || normalized === "true" || normalized === "1") {
+        return true;
+      }
+      if (normalized === "0" || normalized === "false" || normalized === "no") {
+        return false;
+      }
+    }
+    return false;
+  })();
+
+  const linkedCandidate = data.linkedProjectId ?? data.projectId ?? data.linked_project_id ?? data.project_id;
+  const linkedProjectId =
+    typeof linkedCandidate === "string" && linkedCandidate.trim() ? linkedCandidate.trim() : null;
+
+  const updatedCandidate = data.updatedAt ?? data.updated_at ?? data.synced_at;
+  const updatedAt =
+    typeof updatedCandidate === "string" && updatedCandidate.trim() ? updatedCandidate.trim() : undefined;
+
+  return {
+    chatId,
+    title,
+    members,
+    registered,
+    linkedProjectId,
+    updatedAt,
+  };
+};
+
+const coalesce = <T>(...values: (T | null | undefined)[]): T | undefined => {
+  for (const value of values) {
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const chooseLatest = (a?: string, b?: string): { latest?: string; winner: 1 | 2 | 0 } => {
+  const aTime = a ? Date.parse(a) : Number.NaN;
+  const bTime = b ? Date.parse(b) : Number.NaN;
+  if (!Number.isNaN(aTime) && !Number.isNaN(bTime)) {
+    if (aTime === bTime) {
+      return { latest: a, winner: 0 };
+    }
+    return aTime > bTime ? { latest: a, winner: 1 } : { latest: b, winner: 2 };
+  }
+  if (!Number.isNaN(aTime)) {
+    return { latest: a, winner: 1 };
+  }
+  if (!Number.isNaN(bTime)) {
+    return { latest: b, winner: 2 };
+  }
+  return { latest: undefined, winner: 0 };
+};
+
+const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): ProjectRecord => {
+  const { latest, winner } = chooseLatest(first.updatedAt, second.updatedAt);
+  const base = winner === 2 ? second : first;
+  const extra = winner === 2 ? first : second;
+  const tariff = base.tariff && base.tariff > 0 ? base.tariff : extra.tariff ?? base.tariff ?? 0;
+  return {
+    ...base,
+    metaAccountId: base.metaAccountId || extra.metaAccountId,
+    metaAccountName: base.metaAccountName || extra.metaAccountName || base.name,
+    adAccountId: base.adAccountId || extra.adAccountId || base.metaAccountId || extra.metaAccountId,
+    chatId: base.chatId || extra.chatId,
+    billingStatus: base.billingStatus || extra.billingStatus,
+    nextPaymentDate: coalesce(base.nextPaymentDate, extra.nextPaymentDate, null) ?? null,
+    tariff,
+    settings: { ...extra.settings, ...base.settings },
+    userId: base.userId ?? extra.userId,
+    telegramChatId: base.telegramChatId ?? extra.telegramChatId,
+    telegramThreadId: base.telegramThreadId ?? extra.telegramThreadId,
+    telegramLink: base.telegramLink ?? extra.telegramLink,
+    telegramTitle: base.telegramTitle ?? extra.telegramTitle,
+    updatedAt: latest ?? base.updatedAt ?? extra.updatedAt,
+  };
+};
+
+const mergeMetaAccountRecords = (
+  first: MetaAccountLinkRecord,
+  second: MetaAccountLinkRecord,
+): MetaAccountLinkRecord => {
+  const { latest, winner } = chooseLatest(first.updatedAt, second.updatedAt);
+  const base = winner === 2 ? second : first;
+  const extra = winner === 2 ? first : second;
+  return {
+    ...base,
+    accountName: base.accountName || extra.accountName || base.accountId,
+    currency: base.currency ?? extra.currency ?? null,
+    spentToday: base.spentToday ?? extra.spentToday ?? null,
+    isLinked: base.isLinked || extra.isLinked,
+    linkedProjectId: base.linkedProjectId ?? extra.linkedProjectId ?? null,
+    updatedAt: latest ?? base.updatedAt ?? extra.updatedAt,
+  };
+};
+
+const mergeTelegramGroupRecords = (
+  first: TelegramGroupLinkRecord,
+  second: TelegramGroupLinkRecord,
+): TelegramGroupLinkRecord => {
+  const { latest, winner } = chooseLatest(first.updatedAt, second.updatedAt);
+  const base = winner === 2 ? second : first;
+  const extra = winner === 2 ? first : second;
+  return {
+    ...base,
+    title: base.title ?? extra.title ?? null,
+    members: base.members ?? extra.members ?? null,
+    registered: base.registered || extra.registered,
+    linkedProjectId: base.linkedProjectId ?? extra.linkedProjectId ?? null,
+    updatedAt: latest ?? base.updatedAt ?? extra.updatedAt,
+  };
+};
+
+const readProjectsFromKv = async (env: EnvBindings): Promise<ProjectRecord[]> => {
+  const ids = await readKvIndex(env, PROJECT_KV_INDEX_KEY);
+  if (!ids.length) {
+    return [];
+  }
+  const records = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const stored = await env.DB.get(`${PROJECT_KV_PREFIX}${id}`);
+        if (!stored) {
+          return null;
+        }
+        const parsed = JSON.parse(stored) as Record<string, unknown>;
+        return normalizeProjectRecord({ id, ...parsed });
+      } catch (error) {
+        console.warn("Failed to read project from KV", id, error);
+        return null;
+      }
+    }),
+  );
+  return records.filter((record): record is ProjectRecord => Boolean(record));
+};
+
+const readMetaAccountsFromKv = async (env: EnvBindings): Promise<MetaAccountLinkRecord[]> => {
+  const ids = await readKvIndex(env, META_KV_INDEX_KEY);
+  if (!ids.length) {
+    return [];
+  }
+  const records = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const stored = await env.DB.get(`${META_KV_PREFIX}${id}`);
+        if (!stored) {
+          return null;
+        }
+        const parsed = JSON.parse(stored) as Record<string, unknown>;
+        return normalizeMetaAccountLinkRecord({ accountId: id, ...parsed });
+      } catch (error) {
+        console.warn("Failed to read meta account from KV", id, error);
+        return null;
+      }
+    }),
+  );
+  return records.filter((record): record is MetaAccountLinkRecord => Boolean(record));
+};
+
+const readTelegramGroupsFromKv = async (env: EnvBindings): Promise<TelegramGroupLinkRecord[]> => {
+  const ids = await readKvIndex(env, TELEGRAM_GROUP_KV_INDEX_KEY);
+  if (!ids.length) {
+    return [];
+  }
+  const records = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const stored = await env.DB.get(`${TELEGRAM_GROUP_KV_PREFIX}${id}`);
+        if (!stored) {
+          return null;
+        }
+        const parsed = JSON.parse(stored) as Record<string, unknown>;
+        return normalizeTelegramGroupLinkRecord({ chatId: id, ...parsed });
+      } catch (error) {
+        console.warn("Failed to read telegram group from KV", id, error);
+        return null;
+      }
+    }),
+  );
+  return records.filter((record): record is TelegramGroupLinkRecord => Boolean(record));
 };
 
 const normalizeUserRecord = (input: UserRecord | Record<string, unknown>): UserRecord => {
@@ -424,12 +721,21 @@ export const deleteMetaToken = async (env: EnvBindings): Promise<void> => {
 };
 
 export const listProjects = async (env: EnvBindings): Promise<ProjectRecord[]> => {
-  const stored = await readJsonFromR2<ProjectRecord[] | Record<string, unknown>[]>(
-    env,
-    PROJECT_INDEX_KEY,
-    [],
-  );
-  return stored.map((record) => normalizeProjectRecord(record));
+  const [r2Records, kvRecords] = await Promise.all([
+    readJsonFromR2<ProjectRecord[] | Record<string, unknown>[]>(env, PROJECT_INDEX_KEY, []).catch(() => []),
+    readProjectsFromKv(env).catch(() => [] as ProjectRecord[]),
+  ]);
+  const map = new Map<string, ProjectRecord>();
+  kvRecords.forEach((record) => {
+    map.set(record.id, normalizeProjectRecord(record));
+  });
+  r2Records
+    .map((record) => normalizeProjectRecord(record))
+    .forEach((record) => {
+      const existing = map.get(record.id);
+      map.set(record.id, existing ? mergeProjectRecords(existing, record) : record);
+    });
+  return Array.from(map.values());
 };
 
 export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]): Promise<void> => {
@@ -455,6 +761,7 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
         meta_account_id: metaAccountId,
         meta_account_name: project.metaAccountName || project.name,
         chat_id: chatIdValue,
+        chat_title: project.telegramTitle ?? null,
         billing_status: project.billingStatus ?? "pending",
         next_payment_date: project.nextPaymentDate ?? null,
         tariff: project.tariff ?? 0,
@@ -942,7 +1249,22 @@ export const saveChatRegistrations = async (
 export const listMetaAccountLinks = async (
   env: EnvBindings,
 ): Promise<MetaAccountLinkRecord[]> => {
-  return readJsonFromR2<MetaAccountLinkRecord[]>(env, META_ACCOUNTS_KEY, []);
+  const [r2Records, kvRecords] = await Promise.all([
+    readJsonFromR2<MetaAccountLinkRecord[] | Record<string, unknown>[]>(env, META_ACCOUNTS_KEY, []).catch(() => []),
+    readMetaAccountsFromKv(env).catch(() => [] as MetaAccountLinkRecord[]),
+  ]);
+  const map = new Map<string, MetaAccountLinkRecord>();
+  kvRecords.forEach((record) => {
+    const normalized = normalizeMetaAccountLinkRecord(record);
+    map.set(normalized.accountId, normalized);
+  });
+  r2Records
+    .map((record) => normalizeMetaAccountLinkRecord(record))
+    .forEach((record) => {
+      const existing = map.get(record.accountId);
+      map.set(record.accountId, existing ? mergeMetaAccountRecords(existing, record) : record);
+    });
+  return Array.from(map.values());
 };
 
 export const saveMetaAccountLinks = async (
@@ -970,7 +1292,22 @@ export const saveMetaAccountLinks = async (
 export const listTelegramGroupLinks = async (
   env: EnvBindings,
 ): Promise<TelegramGroupLinkRecord[]> => {
-  return readJsonFromR2<TelegramGroupLinkRecord[]>(env, TELEGRAM_GROUPS_KEY, []);
+  const [r2Records, kvRecords] = await Promise.all([
+    readJsonFromR2<TelegramGroupLinkRecord[] | Record<string, unknown>[]>(env, TELEGRAM_GROUPS_KEY, []).catch(() => []),
+    readTelegramGroupsFromKv(env).catch(() => [] as TelegramGroupLinkRecord[]),
+  ]);
+  const map = new Map<string, TelegramGroupLinkRecord>();
+  kvRecords.forEach((record) => {
+    const normalized = normalizeTelegramGroupLinkRecord(record);
+    map.set(normalized.chatId, normalized);
+  });
+  r2Records
+    .map((record) => normalizeTelegramGroupLinkRecord(record))
+    .forEach((record) => {
+      const existing = map.get(record.chatId);
+      map.set(record.chatId, existing ? mergeTelegramGroupRecords(existing, record) : record);
+    });
+  return Array.from(map.values());
 };
 
 export const saveTelegramGroupLinks = async (

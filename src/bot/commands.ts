@@ -1,5 +1,6 @@
 import { BotContext } from "./types";
 import { sendMainMenu } from "./menu";
+import { appendQueryParameter, buildAuthState, resolveAuthUrl, resolveManageWebhookUrl } from "./environment";
 import { startReportWorkflow } from "./reports";
 import { escapeAttribute, escapeHtml } from "../utils/html";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
@@ -14,7 +15,6 @@ import {
   listLeads,
   listPayments,
   listProjects,
-  listSettings,
   listTelegramGroupLinks,
   listUsers,
   loadMetaToken,
@@ -38,7 +38,7 @@ import {
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
-import { encodeMetaOAuthState, fetchAdAccounts, resolveMetaStatus } from "../utils/meta";
+import { fetchAdAccounts, resolveMetaStatus } from "../utils/meta";
 import {
   ChatRegistrationRecord,
   LeadRecord,
@@ -54,268 +54,6 @@ import {
 } from "../types";
 import { calculateLeadAnalytics } from "../utils/analytics";
 import { createSlaReport } from "../utils/sla";
-
-const AUTH_URL_FALLBACK = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
-
-const resolveAuthUrl = (env: BotContext["env"]): string => {
-  const candidates = [
-    env.AUTH_FACEBOOK_URL,
-    env.META_AUTH_URL,
-    env.FB_AUTH_URL,
-    env.PUBLIC_WEB_URL ? `${env.PUBLIC_WEB_URL}/auth/facebook` : null,
-    env.PUBLIC_BASE_URL ? `${env.PUBLIC_BASE_URL}/auth/facebook` : null,
-    env.WORKER_BASE_URL ? `${env.WORKER_BASE_URL}/auth/facebook` : null,
-  ];
-  const resolved = candidates.find((value): value is string => typeof value === "string" && value.trim().length > 0);
-  return resolved ? resolved : AUTH_URL_FALLBACK;
-};
-
-const resolveReportLink = (env: BotContext["env"], reportId: string): string => {
-  const candidates = [env.PUBLIC_WEB_URL, env.PUBLIC_BASE_URL, env.WORKER_BASE_URL, env.ADMIN_BASE_URL];
-  const resolved = candidates.find((value): value is string => typeof value === "string" && value.trim().length > 0);
-  if (resolved) {
-    const normalized = resolved.endsWith("/") ? resolved.slice(0, -1) : resolved;
-    return `${normalized}/api/reports/${reportId}/content`;
-  }
-  return `/api/reports/${reportId}/content`;
-};
-
-const BOT_USERNAME_ENV_KEYS = [
-  "BOT_USERNAME",
-  "BOT_HANDLE",
-  "BOT_USER",
-  "TELEGRAM_BOT_USERNAME",
-  "TELEGRAM_BOT_HANDLE",
-];
-
-const BOT_DEEPLINK_ENV_KEYS = [
-  "BOT_DEEPLINK",
-  "BOT_URL",
-  "BOT_LINK",
-  "TELEGRAM_BOT_URL",
-  "TELEGRAM_BOT_LINK",
-  "TELEGRAM_DEEPLINK",
-];
-
-const BOT_USERNAME_SETTING_KEYS = [
-  "bot.username",
-  "bot.telegram.username",
-  "bot.telegram.handle",
-];
-
-const BOT_DEEPLINK_SETTING_KEYS = [
-  "bot.link",
-  "bot.telegram.link",
-  "bot.telegram.url",
-  "bot.telegram.deeplink",
-];
-
-const takeEnvString = (env: BotContext["env"], keys: string[]): string | null => {
-  const record = env as Record<string, unknown>;
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-  return null;
-};
-
-const normalizeUsername = (raw?: string | null): string | undefined => {
-  if (!raw) {
-    return undefined;
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  return trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
-};
-
-const ensureHttpLink = (value?: string | null): string | undefined => {
-  if (!value) {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  if (/^(https?:\/\/|tg:\/\/)/i.test(trimmed)) {
-    return trimmed;
-  }
-  if (/^t\.me\//i.test(trimmed)) {
-    return `https://${trimmed}`;
-  }
-  if (trimmed.startsWith("@")) {
-    return `https://t.me/${trimmed.slice(1)}`;
-  }
-  return `https://${trimmed}`;
-};
-
-const deriveUsernameFromLink = (link?: string | null): string | undefined => {
-  if (!link) {
-    return undefined;
-  }
-  const trimmed = link.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  const domainMatch = trimmed.match(/domain=([^&]+)/i);
-  if (domainMatch && domainMatch[1]) {
-    return normalizeUsername(domainMatch[1]);
-  }
-  const tmeMatch = trimmed.match(/t\.me\/(?:joinchat\/)?([^/?]+)/i);
-  if (tmeMatch && tmeMatch[1]) {
-    return normalizeUsername(tmeMatch[1]);
-  }
-  if (trimmed.startsWith("@")) {
-    return normalizeUsername(trimmed);
-  }
-  try {
-    const url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
-    const segment = url.pathname.replace(/^\/+/, "").split("/")[0];
-    return normalizeUsername(segment || undefined);
-  } catch (error) {
-    console.warn("Failed to derive username from link", link, error);
-  }
-  return undefined;
-};
-
-const extractSettingString = (value: unknown): string | undefined => {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-  if (value && typeof value === "object" && "value" in (value as Record<string, unknown>)) {
-    const nested = (value as Record<string, unknown>).value;
-    if (typeof nested === "string" && nested.trim()) {
-      return nested.trim();
-    }
-  }
-  return undefined;
-};
-
-const pickSettingString = (settings: Awaited<ReturnType<typeof listSettings>>, keys: string[]): string | undefined => {
-  for (const key of keys) {
-    const entry = settings.find((item) => item.key === key);
-    if (entry) {
-      const value = extractSettingString(entry.value);
-      if (value) {
-        return value;
-      }
-    }
-  }
-  return undefined;
-};
-
-const resolveBotIdentity = async (
-  context: BotContext,
-): Promise<{ username?: string; link?: string }> => {
-  let username = normalizeUsername(takeEnvString(context.env, BOT_USERNAME_ENV_KEYS));
-  let link = ensureHttpLink(takeEnvString(context.env, BOT_DEEPLINK_ENV_KEYS));
-
-  if (!username) {
-    username = deriveUsernameFromLink(link);
-  }
-  if (!link && username) {
-    link = `https://t.me/${username}`;
-  }
-
-  if (!username || !link) {
-    try {
-      const settings = await listSettings(context.env);
-      if (!username) {
-        username = normalizeUsername(pickSettingString(settings, BOT_USERNAME_SETTING_KEYS)) || username;
-      }
-      if (!link) {
-        const rawLink = pickSettingString(settings, BOT_DEEPLINK_SETTING_KEYS);
-        link = ensureHttpLink(rawLink) ?? link;
-      }
-      if (!username) {
-        username = deriveUsernameFromLink(link);
-      }
-      if (!link && username) {
-        link = `https://t.me/${username}`;
-      }
-    } catch (error) {
-      console.warn("Failed to resolve bot identity from settings", error);
-    }
-  }
-
-  return { username, link };
-};
-
-const appendQueryParameter = (base: string, key: string, value: string): string => {
-  if (!value) {
-    return base;
-  }
-  try {
-    const url = new URL(base);
-    url.searchParams.set(key, value);
-    return url.toString();
-  } catch (error) {
-    const separator = base.includes("?") ? "&" : "?";
-    return `${base}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
-  }
-};
-
-const buildAuthState = async (context: BotContext): Promise<string | null> => {
-  const origin = context.chatId ? "telegram" : "external";
-  const identity = await resolveBotIdentity(context);
-  const payload = {
-    origin,
-    chatId: context.chatId,
-    messageId: typeof context.messageId === "number" ? context.messageId : undefined,
-    userId: context.userId,
-    botUsername: identity.username,
-    botDeeplink: identity.link,
-    timestamp: Date.now(),
-  } as const;
-  const encoded = encodeMetaOAuthState(payload);
-  return encoded || null;
-};
-
-const buildManageWebhookUrl = (value: string): string | null => {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  let base: URL;
-  try {
-    base = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
-  } catch (error) {
-    console.warn("Invalid manage webhook base", trimmed, error);
-    return null;
-  }
-  base.pathname = "/manage/telegram/webhook";
-  base.search = "";
-  base.searchParams.set("action", "refresh");
-  base.searchParams.set("drop", "1");
-  return base.toString();
-};
-
-const resolveManageWebhookUrl = (env: BotContext["env"]): string | null => {
-  const candidates = [
-    env.MANAGE_WEBHOOK_URL,
-    env.MANAGE_BASE_URL,
-    env.PUBLIC_WORKER_URL,
-    env.WORKER_PUBLIC_URL,
-    env.PUBLIC_BASE_URL,
-    env.PUBLIC_WEB_URL,
-    env.WORKER_BASE_URL,
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      const resolved = buildManageWebhookUrl(candidate);
-      if (resolved) {
-        return resolved;
-      }
-    }
-  }
-
-  const fallback = buildManageWebhookUrl(AUTH_URL_FALLBACK);
-  return fallback;
-};
 
 const buildAbsoluteUrl = (value: string | null | undefined, path: string): string | null => {
   if (!value) {
@@ -372,12 +110,27 @@ const HOME_MARKUP = {
   inline_keyboard: [[{ text: "⬅ Назад", callback_data: "cmd:menu" }]],
 };
 
-const SETTINGS_MARKUP = {
-  inline_keyboard: [
-    [{ text: "🔄 Обновить вебхуки", callback_data: "cmd:webhooks" }],
-    [{ text: "🧩 Проверить токен Meta", callback_data: "cmd:auth" }],
-    [{ text: "⬅ Назад", callback_data: "cmd:menu" }],
-  ],
+const resolveReportLink = (env: BotContext["env"], reportId: string): string => {
+  const candidates = [env.PUBLIC_WEB_URL, env.PUBLIC_BASE_URL, env.WORKER_BASE_URL, env.ADMIN_BASE_URL];
+  const resolved = candidates.find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  if (resolved) {
+    const normalized = resolved.endsWith("/") ? resolved.slice(0, -1) : resolved;
+    return `${normalized}/api/reports/${reportId}/content`;
+  }
+  return `/api/reports/${reportId}/content`;
+};
+
+const buildSettingsMarkup = (env: BotContext["env"]) => {
+  const webhookUrl = resolveManageWebhookUrl(env);
+  const webhookButton = webhookUrl
+    ? { text: "🔄 Обновить вебхуки", url: webhookUrl }
+    : { text: "🔄 Обновить вебхуки", callback_data: "cmd:webhooks" };
+  return {
+    inline_keyboard: [
+      [webhookButton, { text: "🧩 Проверить токен Meta", callback_data: "cmd:auth" }],
+      [{ text: "⬅ Назад", callback_data: "cmd:menu" }],
+    ],
+  };
 };
 
 const COMMAND_ALIASES: Record<string, string> = {
@@ -628,7 +381,7 @@ const handleRegisterChat = async (context: BotContext): Promise<void> => {
   } else {
     lines.push(
       "Чат сохранён в списке свободных групп.",
-      "Назначьте его на проект через веб-панель (/admin → Проекты), чтобы включить отчёты и уведомления.",
+      "Назначьте его на проект в разделе «📊 Проекты» и подтвердите привязку через «➕ Новый проект».",
     );
   }
 
@@ -1181,21 +934,24 @@ const handleProjectView = async (context: BotContext, projectId: string): Promis
   );
   lines.push(describeBillingStatus(summary));
   lines.push(describePaymentSchedule(summary));
+  const chatLabel = summary.telegramTitle ?? (summary.telegramChatId ? `ID ${summary.telegramChatId}` : null);
   const chatLine = summary.telegramLink
     ? `📲 Чат-группа: <a href="${escapeAttribute(summary.telegramLink)}">Перейти</a>`
-    : summary.telegramChatId
-      ? `📲 Чат: <code>${escapeHtml(summary.telegramChatId)}</code> (ссылка не указана)`
+    : chatLabel
+      ? `📲 Чат-группа: ${escapeHtml(chatLabel)}`
       : "📲 Чат-группа: не подключена";
-  lines.push(chatLine);
+  if (summary.telegramChatId && chatLabel !== `ID ${summary.telegramChatId}`) {
+    lines.push(`${chatLine} (ID: <code>${escapeHtml(summary.telegramChatId)}</code>)`);
+  } else {
+    lines.push(chatLine);
+  }
   const portalUrl = resolvePortalUrl(context.env, summary.id);
   if (portalUrl) {
     lines.push(`🧩 Портал: <a href="${escapeAttribute(portalUrl)}">Открыть клиентский портал</a>`);
   }
   const adminUrl = resolveAdminProjectUrl(context.env, summary.id);
   if (adminUrl) {
-    lines.push(`✏️ Управление: <a href="${escapeAttribute(adminUrl)}">открыть в веб-панели</a>.`);
-  } else {
-    lines.push("✏️ Управляйте карточкой проекта через веб-панель TargetBot.");
+    lines.push(`🔗 Браузер: <a href="${escapeAttribute(adminUrl)}">Открыть проект</a>`);
   }
   if (accountInfo.status !== "valid" && summary.adAccountId) {
     lines.push(
@@ -1212,7 +968,11 @@ const handleProjectChat = async (context: BotContext, projectId: string): Promis
   if (!summary) {
     return;
   }
-  const lines = [`📲 Чат-группа — <b>${escapeHtml(summary.name)}</b>`, ""];
+  const chatTitle = summary.telegramTitle ?? summary.name;
+  const lines = [`📲 Чат-группа — <b>${escapeHtml(chatTitle)}</b>`, ""];
+  if (chatTitle !== summary.name) {
+    lines.push(`Проект: <b>${escapeHtml(summary.name)}</b>`);
+  }
   if (summary.telegramLink) {
     lines.push(`Ссылка: <a href="${escapeAttribute(summary.telegramLink)}">перейти в чат</a>.`);
   }
@@ -1223,11 +983,11 @@ const handleProjectChat = async (context: BotContext, projectId: string): Promis
     lines.push(`Thread ID: <code>${escapeHtml(summary.telegramThreadId.toString())}</code>`);
   }
   if (!summary.telegramLink && !summary.telegramChatId) {
-    lines.push("Чат не подключён. Добавьте бота в группу и обновите карточку проекта в веб-панели.");
+    lines.push("Чат не подключён. Добавьте бота в группу, выполните /reg и обновите карточку через кнопку «📲 Чат-группа».");
   }
   lines.push(
     "",
-    "После изменения чата откройте веб-панель TargetBot → карточка проекта, чтобы сохранить новые параметры.",
+    "После изменения чата повторно выполните /reg в нужной группе и подтвердите обновление через кнопку «📲 Чат-группа».",
   );
   await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
 };
@@ -1363,7 +1123,7 @@ const handleProjectCampaigns = async (context: BotContext, projectId: string): P
   const lines: string[] = [];
   lines.push(`👀 Рекламные кампании — <b>${escapeHtml(summary.name)}</b>`);
   if (!summary.adAccountId) {
-    lines.push("Рекламный кабинет не подключён. Добавьте его в веб-панели, чтобы видеть кампании.");
+    lines.push("Рекламный кабинет не подключён. Привяжите Meta-аккаунт через раздел «📊 Проекты».");
   } else if (!account) {
     if (accountInfo.status === "expired") {
       lines.push("Токен Meta истёк. Обновите авторизацию Facebook, чтобы получить список кампаний.");
@@ -1395,7 +1155,7 @@ const handleProjectCampaigns = async (context: BotContext, projectId: string): P
   }
   lines.push(
     "",
-    "Детальная аналитика доступна в веб-панели и в разделе «📈 Аналитика» главного меню.",
+    "Расширенная аналитика доступна в разделе «📈 Аналитика» главного меню.",
   );
   await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
 };
@@ -1702,15 +1462,15 @@ const handleProjectSettings = async (context: BotContext, projectId: string): Pr
   const lines = [
     `⚙ Настройки проекта — <b>${escapeHtml(summary.name)}</b>`,
     "",
-    "Карточка проекта синхронизируется с веб-панелью TargetBot.",
-    "Измените название, владельца, подключенный кабинет и чат из веб-панели — бот обновит данные автоматически.",
+    "Используйте кнопки карточки проекта, чтобы обновить Meta-аккаунт, чат и тарифы.",
+    "Роли и доступы меняются в разделе «👥 Пользователи».",
   ];
   if (adminUrl) {
-    lines.push("", `Открыть настройки: <a href="${escapeAttribute(adminUrl)}">перейти в веб-панель</a>.`);
+    lines.push("", `🔗 Браузер: <a href="${escapeAttribute(adminUrl)}">Открыть проект</a>`);
   }
   lines.push(
     "",
-    "Для глобальных параметров уведомлений используйте раздел ⚙ Настройки в главном меню.",
+    "Глобальные параметры уведомлений доступны в разделе ⚙ Настройки главного меню.",
   );
   await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
 };
@@ -1724,11 +1484,11 @@ const handleProjectDelete = async (context: BotContext, projectId: string): Prom
   const lines = [
     `❌ Удаление проекта — <b>${escapeHtml(summary.name)}</b>`,
     "",
-    "Удаление выполняется из веб-панели. После подтверждения TargetBot удалит архив лидов и оплат из R2.",
-    "Перед удалением убедитесь, что отчёты и оплаты выгружены для клиента.",
+    "Перед удалением выгрузите лиды и отчёты клиенту. Подтвердите действие с учётом последствий.",
+    "Удалённые данные восстановить невозможно.",
   ];
   if (adminUrl) {
-    lines.push("", `Открыть карточку для удаления: <a href="${escapeAttribute(adminUrl)}">перейти</a>.`);
+    lines.push("", `🔗 Браузер: <a href="${escapeAttribute(adminUrl)}">Открыть проект</a>`);
   }
   await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
 };
@@ -1828,14 +1588,17 @@ const formatProjectLines = (summaries: ProjectSummary[]): string[] => {
       "📊 Проекты",
       "",
       "Пока нет активных проектов.",
-      "Используйте веб-панель, чтобы создать первый проект и привязать чат.",
+      "Нажмите «➕ Новый проект», чтобы создать его и привязать чат.",
     ];
   }
   const items = summaries.map((project, index) => {
     const numberEmoji = `${index + 1}️⃣`;
+    const chatLabel = project.telegramTitle ?? (project.telegramChatId ? `ID ${project.telegramChatId}` : null);
     const chatLine = project.telegramLink
       ? `📲 <a href="${escapeAttribute(project.telegramLink)}">Чат-группа</a>`
-      : "📲 Чат не подключён";
+      : chatLabel
+        ? `📲 Чат-группа: ${escapeHtml(chatLabel)}`
+        : "📲 Чат не подключён";
     const adAccountLine = project.adAccountId
       ? `🧩 Meta: <code>${escapeHtml(project.adAccountId)}</code>`
       : "🧩 Meta: не подключено";
@@ -1902,7 +1665,7 @@ const ensureProjectSummary = async (
       "📊 Проект не найден",
       "",
       `ID: <code>${escapeHtml(projectId)}</code>`,
-      "Проверьте список проектов в веб-панели и повторите попытку.",
+      "Откройте раздел «📊 Проекты» и обновите список.",
     ].join("\n"),
   );
   return null;
@@ -2314,7 +2077,6 @@ const handleMetaAccounts = async (context: BotContext): Promise<void> => {
     );
   }
 
-  lines.push("", "Список синхронизируется с веб-панелью /admin → Meta Accounts.");
 
   const replyMarkup = records.length
     ? buildMetaAccountsMarkup(records)
@@ -2470,7 +2232,8 @@ const finalizeProjectLink = async (
     settings: {},
     userId,
     telegramChatId: group.chatId,
-    telegramLink: group.title ?? undefined,
+    telegramLink: undefined,
+    telegramTitle: group.title ?? undefined,
     adAccountId: account.accountId,
   };
 
@@ -2771,13 +2534,13 @@ const handleSettings = async (context: BotContext): Promise<void> => {
   const lines = [
     "⚙ Настройки",
     "",
-    "Используйте кнопки ниже для управления сервисными настройками.",
-    "🔄 Обновить вебхуки — выполните после изменения URL воркера или токена.",
-    "🧩 Проверить токен Meta — доступно в разделе Авторизация Facebook.",
-    "⏰ Время автоотчёта и формат уведомлений настраиваются в веб-панели.",
+    "Используйте кнопки ниже, чтобы переподключить вебхуки Telegram и проверить авторизацию Meta.",
+    "🔄 Обновить вебхуки — выполните после изменения адреса воркера или токена.",
+    "🧩 Проверить токен Meta — доступно в разделе «Авторизация Facebook».",
+    "⏰ Планировщик автоотчётов и уведомления доступны из карточек проектов и меню бота.",
   ];
 
-  await sendMessage(context, lines.join("\n"), { replyMarkup: SETTINGS_MARKUP });
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildSettingsMarkup(context.env) });
 };
 
 const handleWebhookRefresh = async (context: BotContext): Promise<void> => {
@@ -2796,7 +2559,7 @@ const handleWebhookRefresh = async (context: BotContext): Promise<void> => {
         "❌ Не удалось определить адрес воркера для обновления вебхуков.",
         "Укажите переменную окружения PUBLIC_BASE_URL или MANAGE_WEBHOOK_URL.",
       ].join("\n"),
-      { replyMarkup: SETTINGS_MARKUP },
+      { replyMarkup: buildSettingsMarkup(context.env) },
     );
     return;
   }
@@ -2852,7 +2615,7 @@ const handleWebhookRefresh = async (context: BotContext): Promise<void> => {
     responseText || "Ответ не получен.",
   ];
 
-  await sendMessage(context, lines.join("\n"), { replyMarkup: SETTINGS_MARKUP });
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildSettingsMarkup(context.env) });
 };
 
 const handleAutoReport = async (context: BotContext): Promise<void> => {

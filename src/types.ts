@@ -146,6 +146,7 @@ export interface ProjectRecord {
   telegramChatId?: string;
   telegramThreadId?: number;
   telegramLink?: string;
+  telegramTitle?: string;
   adAccountId?: string;
 }
 

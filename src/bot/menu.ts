@@ -1,36 +1,93 @@
 import { BotContext } from "./types";
+import { appendQueryParameter, buildAuthState, resolveAuthUrl, resolveManageWebhookUrl } from "./environment";
 import { editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
+import { loadMetaToken } from "../utils/storage";
+import { resolveMetaStatus } from "../utils/meta";
+import { escapeHtml } from "../utils/html";
 
-const MAIN_MENU_TEXT = `🏠 Главное меню\n\nВыберите раздел, чтобы продолжить работу с TargetBot.`;
+const formatDateTime = (value?: string): string => {
+  if (!value) {
+    return "—";
+  }
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return "—";
+  }
+  return new Intl.DateTimeFormat("ru-RU", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(parsed));
+};
 
-const MAIN_MENU_BUTTONS = [
-  ["🔐 Авторизация Facebook", "cmd:auth"],
-  ["📊 Проекты", "cmd:projects"],
-  ["👥 Пользователи", "cmd:users"],
-  ["🔗 Meta-аккаунты", "cmd:meta"],
-  ["📈 Аналитика", "cmd:analytics"],
-  ["💰 Финансы", "cmd:finance"],
-  ["⚙ Настройки", "cmd:settings"],
-];
+const buildMetaStatusBlock = (status: Awaited<ReturnType<typeof resolveMetaStatus>>): string => {
+  const lines: string[] = [];
+  switch (status.status) {
+    case "valid":
+      lines.push("🧩 Facebook: ✅ Подключено");
+      if (status.accountName) {
+        lines.push(`Аккаунт: <b>${escapeHtml(status.accountName)}</b>`);
+      }
+      if (status.expiresAt) {
+        lines.push(`Токен действует до: <b>${escapeHtml(formatDateTime(status.expiresAt))}</b>`);
+      }
+      break;
+    case "expired":
+      lines.push("🧩 Facebook: ⚠️ Токен истёк");
+      lines.push("Обновите авторизацию, чтобы продолжить работу с Meta.");
+      break;
+    case "missing":
+    default:
+      lines.push("🧩 Facebook: ❌ Не подключено");
+      lines.push("Нажмите «Авторизация Facebook», чтобы войти.");
+      break;
+  }
+  if (status.issues?.length) {
+    lines.push(`⚠️ ${escapeHtml(status.issues[0])}`);
+    if (status.issues.length > 1) {
+      lines.push(`… ещё ${status.issues.length - 1} предупреждений.`);
+    }
+  }
+  return lines.join("\n");
+};
 
-const buildReplyMarkup = () => ({
-  inline_keyboard: MAIN_MENU_BUTTONS.map(([label, data]) => [
-    {
-      text: label,
-      callback_data: data,
-    },
-  ]),
-});
+const buildMenuMarkup = (authUrl: string, webhookUrl: string | null) => {
+  const webhookButton = webhookUrl
+    ? { text: "🔄 Вебхуки Telegram", url: webhookUrl }
+    : { text: "🔄 Вебхуки Telegram", callback_data: "cmd:webhooks" };
+  return {
+    inline_keyboard: [
+      [
+        { text: "🔐 Авторизация Facebook", url: authUrl },
+        { text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" },
+      ],
+      [
+        { text: "📊 Проекты", callback_data: "cmd:projects" },
+        { text: "📈 Аналитика", callback_data: "cmd:analytics" },
+      ],
+      [
+        { text: "👥 Пользователи", callback_data: "cmd:users" },
+        { text: "💰 Финансы", callback_data: "cmd:finance" },
+      ],
+      [
+        { text: "⚙ Настройки", callback_data: "cmd:settings" },
+        webhookButton,
+      ],
+    ],
+  };
+};
 
 const deliverMenuMessage = async (
   context: BotContext,
   text: string,
+  replyMarkup: ReturnType<typeof buildMenuMarkup>,
 ): Promise<void> => {
   if (!context.chatId) {
     console.warn("Cannot render menu without chatId");
     return;
   }
-  const replyMarkup = buildReplyMarkup();
   if (context.update.callback_query?.message && typeof context.messageId === "number") {
     await editTelegramMessage(context.env, {
       chatId: context.chatId,
@@ -48,16 +105,42 @@ const deliverMenuMessage = async (
   });
 };
 
+interface MenuOptions {
+  message?: string;
+}
+
+const renderMenu = async (context: BotContext, options: MenuOptions = {}): Promise<void> => {
+  const token = await loadMetaToken(context.env).catch(() => null);
+  let status;
+  try {
+    status = await resolveMetaStatus(context.env, token);
+  } catch (error) {
+    console.warn("Failed to resolve Meta status", error);
+    status = { ok: false, status: "missing" as const, issues: ["Meta API недоступен"] };
+  }
+  const statusBlock = buildMetaStatusBlock(status);
+
+  let authUrl = resolveAuthUrl(context.env);
+  const state = await buildAuthState(context);
+  if (state) {
+    authUrl = appendQueryParameter(authUrl, "state", state);
+  }
+  const webhookUrl = resolveManageWebhookUrl(context.env);
+  const replyMarkup = buildMenuMarkup(authUrl, webhookUrl);
+
+  const intro = options.message ?? "🏠 Главное меню";
+  const lines = [intro, "", statusBlock, "", "Все разделы доступны через кнопки ниже."].filter(Boolean);
+  await deliverMenuMessage(context, lines.join("\n"), replyMarkup);
+};
+
 export const sendMainMenu = async (context: BotContext): Promise<void> => {
-  await deliverMenuMessage(context, MAIN_MENU_TEXT);
+  await renderMenu(context);
 };
 
 export const acknowledgeCommand = async (context: BotContext): Promise<void> => {
-  const text =
-    context.text && context.text.trim()
-      ? `Команда «${context.text.trim()}» пока недоступна. Используйте кнопки ниже.`
-      : "Команда пока недоступна. Используйте кнопки ниже.";
-  await deliverMenuMessage(context, text);
+  const trimmed = context.text?.trim();
+  const message = trimmed
+    ? `Команда «${escapeHtml(trimmed)}» пока не поддерживается. Используйте кнопки ниже.`
+    : "Команда пока не поддерживается. Используйте кнопки ниже.";
+  await renderMenu(context, { message });
 };
-
-export const buildMenuMarkup = buildReplyMarkup;
