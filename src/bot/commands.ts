@@ -3,7 +3,13 @@ import { sendMainMenu } from "./menu";
 import { appendQueryParameter, buildAuthState, resolveAuthUrl, resolveManageWebhookUrl } from "./environment";
 import { startReportWorkflow } from "./reports";
 import { escapeAttribute, escapeHtml } from "../utils/html";
-import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
+import {
+  summarizeProjects,
+  sortProjectSummaries,
+  extractProjectSettings,
+  applyProjectSettingsPatch,
+  DEFAULT_PROJECT_SETTINGS,
+} from "../utils/projects";
 import {
   appendCommandLog,
   clearLeadReminder,
@@ -12,6 +18,7 @@ import {
   clearPendingUserOperation,
   clearPendingPortalOperation,
   clearPendingCampaignSelection,
+  clearPendingProjectEditOperation,
   listChatRegistrations,
   listMetaAccountLinks,
   listLeads,
@@ -24,10 +31,12 @@ import {
   loadPendingBillingOperation,
   loadPendingPortalOperation,
   loadPendingCampaignSelection,
+  loadPendingProjectEditOperation,
   saveChatRegistrations,
   saveMetaAccountLinks,
   savePendingMetaLink,
   savePendingBillingOperation,
+  savePendingProjectEditOperation,
   deleteProjectCascade,
   saveProjects,
   saveLeads,
@@ -70,6 +79,8 @@ import {
   ProjectRecord,
   ProjectSummary,
   ProjectBillingState,
+  ProjectSettings,
+  ProjectReportFrequency,
   TelegramGroupLinkRecord,
   UserRecord,
   UserRole,
@@ -998,7 +1009,15 @@ const describePaymentSchedule = (summary: ProjectSummary): string => {
   return "📅 Оплата: дата не указана";
 };
 
-const handleProjectView = async (context: BotContext, projectId: string): Promise<void> => {
+interface ProjectViewOptions {
+  prefix?: string;
+}
+
+const handleProjectView = async (
+  context: BotContext,
+  projectId: string,
+  options: ProjectViewOptions = {},
+): Promise<void> => {
   const summary = await ensureProjectSummary(context, projectId);
   if (!summary) {
     return;
@@ -1030,6 +1049,9 @@ const handleProjectView = async (context: BotContext, projectId: string): Promis
     return `🧩 Meta: ID <code>${escapeHtml(summary.adAccountId)}</code> — данные недоступны.`;
   })();
   const lines: string[] = [];
+  if (options.prefix) {
+    lines.push(options.prefix, "");
+  }
   lines.push(`🏗 Проект: <b>${escapeHtml(summary.name)}</b>`);
   lines.push(metaLine);
   lines.push(
@@ -2245,30 +2267,275 @@ export const handlePendingBillingInput = async (context: BotContext): Promise<bo
   return false;
 };
 
-const handleProjectEdit = async (context: BotContext, projectId: string): Promise<void> => {
-  await handleProjectSettings(context, projectId);
+export const handlePendingProjectEditInput = async (context: BotContext): Promise<boolean> => {
+  if (context.update.callback_query) {
+    return false;
+  }
+  const adminId = context.userId;
+  if (!adminId) {
+    return false;
+  }
+  const pending = await loadPendingProjectEditOperation(context.env, adminId);
+  if (!pending) {
+    return false;
+  }
+  const text = context.text?.trim();
+  if (!text) {
+    await sendMessage(context, "ℹ️ Отправьте новое название текстом (до 80 символов).", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
+    });
+    return true;
+  }
+  if (pending.action === "rename") {
+    if (text.length < 3) {
+      await sendMessage(context, "❌ Название должно содержать не менее 3 символов.", {
+        replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
+      });
+      return true;
+    }
+    if (text.length > 80) {
+      await sendMessage(context, "❌ Максимальная длина названия — 80 символов.", {
+        replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
+      });
+      return true;
+    }
+    const summary = await ensureProjectSummary(context, pending.projectId);
+    if (!summary) {
+      await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+      return true;
+    }
+    if (text === summary.name) {
+      await sendMessage(
+        context,
+        "ℹ️ Новое название совпадает с текущим. Введите другое значение или отмените действие.",
+        {
+          replyMarkup: {
+            inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]],
+          },
+        },
+      );
+      return true;
+    }
+    const updated = await updateProjectRecord(context.env, pending.projectId, { name: text });
+    if (!updated) {
+      await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+      await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+      return true;
+    }
+    await clearPendingProjectEditOperation(context.env, adminId);
+    await handleProjectView(context, pending.projectId, {
+      prefix: `✅ Название обновлено: <b>${escapeHtml(text)}</b>`,
+    });
+    return true;
+  }
+  return false;
 };
+
+const buildProjectEditMarkup = (summary: ProjectSummary) => ({
+  inline_keyboard: [
+    [{ text: "✏️ Переименовать", callback_data: `proj:edit-name:${summary.id}` }],
+    [
+      summary.telegramLink
+        ? { text: "📲 Открыть чат", url: summary.telegramLink }
+        : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
+      { text: "📈 Отчёты", callback_data: `proj:report:${summary.id}` },
+    ],
+    [
+      { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
+      { text: "⬅ К проекту", callback_data: `proj:view:${summary.id}` },
+    ],
+    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+  ],
+});
+
+const handleProjectEdit = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const lines = [
+    `✏️ Управление проектом — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    summary.metaAccountName
+      ? `🧩 Meta: ${escapeHtml(summary.metaAccountName)} (${escapeHtml(summary.adAccountId ?? "—")})`
+      : "🧩 Meta: не подключено",
+  ];
+  if (summary.telegramTitle || summary.telegramChatId) {
+    const chatLabel = summary.telegramTitle ?? `ID ${summary.telegramChatId}`;
+    lines.push(`📲 Чат: ${escapeHtml(chatLabel)}`);
+  } else {
+    lines.push("📲 Чат: не подключён");
+  }
+  lines.push("", "Выберите действие для обновления данных проекта.");
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectEditMarkup(summary) });
+};
+
+const handleProjectEditNamePrompt = async (context: BotContext, projectId: string): Promise<void> => {
+  const adminId = context.userId;
+  if (!adminId) {
+    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду в приватном чате.");
+    return;
+  }
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  await savePendingProjectEditOperation(context.env, adminId, { action: "rename", projectId });
+  const lines = [
+    `✏️ Новое название — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    "Отправьте новое название текстом (до 80 символов).",
+  ];
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: {
+      inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${projectId}` }]],
+    },
+  });
+};
+
+const handleProjectEditCancel = async (context: BotContext, projectId: string): Promise<void> => {
+  const adminId = context.userId;
+  if (adminId) {
+    await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+  }
+  await handleProjectEdit(context, projectId);
+};
+
+const formatProjectSettingsLines = (
+  summary: ProjectSummary,
+  settings: ProjectSettings,
+): string[] => {
+  const frequencyLabel =
+    settings.reportFrequency === "weekly"
+      ? "📅 Автоотчёт: еженедельно (понедельник за прошлую неделю)"
+      : "📅 Автоотчёт: ежедневно";
+  const quietLabel = settings.quietWeekends
+    ? "🛌 Тихие выходные: включены"
+    : "🛌 Тихие выходные: выключены";
+  const silentLabel = settings.silentReports
+    ? "🤫 Тихая отправка: включена"
+    : "🤫 Тихая отправка: выключена";
+  const alertsLabel = settings.leadAlerts
+    ? "🚨 Аллерты по лидам: включены"
+    : "🚨 Аллерты по лидам: отключены";
+  return [
+    `⚙ Настройки проекта — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    frequencyLabel,
+    quietLabel,
+    silentLabel,
+    alertsLabel,
+    "",
+    "Переключайте опции кнопками ниже.",
+  ];
+};
+
+const buildProjectSettingsMarkup = (projectId: string, settings: ProjectSettings) => ({
+  inline_keyboard: [
+    [
+      {
+        text: `${settings.reportFrequency === "daily" ? "✅" : "☑️"} Ежедневно`,
+        callback_data: `proj:settings-frequency:${projectId}:daily`,
+      },
+      {
+        text: `${settings.reportFrequency === "weekly" ? "✅" : "☑️"} Еженедельно`,
+        callback_data: `proj:settings-frequency:${projectId}:weekly`,
+      },
+    ],
+    [
+      {
+        text: `${settings.quietWeekends ? "✅" : "❌"} Тихие выходные`,
+        callback_data: `proj:settings-quiet:${projectId}:${settings.quietWeekends ? "off" : "on"}`,
+      },
+      {
+        text: `${settings.silentReports ? "✅" : "❌"} Тихая отправка`,
+        callback_data: `proj:settings-silent:${projectId}:${settings.silentReports ? "off" : "on"}`,
+      },
+    ],
+    [
+      {
+        text: `${settings.leadAlerts ? "✅" : "❌"} Аллерты по лидам`,
+        callback_data: `proj:settings-alerts:${projectId}:${settings.leadAlerts ? "off" : "on"}`,
+      },
+    ],
+    [{ text: "⬅ К проекту", callback_data: `proj:view:${projectId}` }],
+    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+  ],
+});
 
 const handleProjectSettings = async (context: BotContext, projectId: string): Promise<void> => {
   const summary = await ensureProjectSummary(context, projectId);
   if (!summary) {
     return;
   }
-  const adminUrl = resolveAdminProjectUrl(context.env, summary.id);
-  const lines = [
-    `⚙ Настройки проекта — <b>${escapeHtml(summary.name)}</b>`,
-    "",
-    "Используйте кнопки карточки проекта, чтобы обновить Meta-аккаунт, чат и тарифы.",
-    "Роли и доступы меняются в разделе «👥 Пользователи».",
-  ];
-  if (adminUrl) {
-    lines.push("", `🔗 Браузер: <a href="${escapeAttribute(adminUrl)}">Открыть проект</a>`);
+  const settings = {
+    ...DEFAULT_PROJECT_SETTINGS,
+    ...extractProjectSettings(summary.settings ?? {}),
+  } satisfies ProjectSettings;
+  const lines = formatProjectSettingsLines(summary, settings);
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: buildProjectSettingsMarkup(projectId, settings),
+  });
+};
+
+const handleProjectSettingsUpdate = async (
+  context: BotContext,
+  projectId: string,
+  patch: Partial<ProjectSettings>,
+  confirmation?: string,
+): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
   }
-  lines.push(
-    "",
-    "Глобальные параметры уведомлений доступны в разделе ⚙ Настройки главного меню.",
+  const updatedSettings = applyProjectSettingsPatch(summary.settings ?? {}, patch);
+  await updateProjectRecord(context.env, projectId, { settings: updatedSettings });
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, confirmation ?? "Готово");
+  }
+  await handleProjectSettings(context, projectId);
+};
+
+const handleProjectSettingsFrequency = async (
+  context: BotContext,
+  projectId: string,
+  frequency: string,
+): Promise<void> => {
+  const safeFrequency: ProjectReportFrequency = frequency === "weekly" ? "weekly" : "daily";
+  await handleProjectSettingsUpdate(context, projectId, { reportFrequency: safeFrequency },
+    safeFrequency === "weekly" ? "Еженедельный отчёт" : "Ежедневный отчёт",
   );
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+};
+
+const handleProjectSettingsQuiet = async (
+  context: BotContext,
+  projectId: string,
+  nextState: string,
+): Promise<void> => {
+  const enabled = nextState === "on";
+  await handleProjectSettingsUpdate(context, projectId, { quietWeekends: enabled }, enabled ? "Тихие выходные включены" : "Тихие выходные выключены");
+};
+
+const handleProjectSettingsSilent = async (
+  context: BotContext,
+  projectId: string,
+  nextState: string,
+): Promise<void> => {
+  const enabled = nextState === "on";
+  await handleProjectSettingsUpdate(context, projectId, { silentReports: enabled },
+    enabled ? "Тихая отправка включена" : "Тихая отправка выключена",
+  );
+};
+
+const handleProjectSettingsAlerts = async (
+  context: BotContext,
+  projectId: string,
+  nextState: string,
+): Promise<void> => {
+  const enabled = nextState === "on";
+  await handleProjectSettingsUpdate(context, projectId, { leadAlerts: enabled },
+    enabled ? "Аллерты включены" : "Аллерты отключены",
+  );
 };
 
 const buildProjectDeleteMarkup = (projectId: string) => ({
@@ -3897,6 +4164,23 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       await handleProjectEdit(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
+    case "edit-name":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectEditNamePrompt(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "edit-cancel":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      if (context.update.callback_query?.id) {
+        await answerCallbackQuery(context.env, context.update.callback_query.id, "Отменено");
+      }
+      await handleProjectEditCancel(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
     case "settings":
       if (!rest[0]) {
         return ensureId();
@@ -3904,6 +4188,42 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       await handleProjectSettings(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
+    case "settings-frequency": {
+      const [projectId, frequency] = rest;
+      if (!projectId || !frequency) {
+        return ensureId();
+      }
+      await handleProjectSettingsFrequency(context, projectId, frequency);
+      await logProjectAction(context, action, projectId, frequency);
+      return true;
+    }
+    case "settings-quiet": {
+      const [projectId, nextState] = rest;
+      if (!projectId || !nextState) {
+        return ensureId();
+      }
+      await handleProjectSettingsQuiet(context, projectId, nextState);
+      await logProjectAction(context, action, projectId, nextState);
+      return true;
+    }
+    case "settings-silent": {
+      const [projectId, nextState] = rest;
+      if (!projectId || !nextState) {
+        return ensureId();
+      }
+      await handleProjectSettingsSilent(context, projectId, nextState);
+      await logProjectAction(context, action, projectId, nextState);
+      return true;
+    }
+    case "settings-alerts": {
+      const [projectId, nextState] = rest;
+      if (!projectId || !nextState) {
+        return ensureId();
+      }
+      await handleProjectSettingsAlerts(context, projectId, nextState);
+      await logProjectAction(context, action, projectId, nextState);
+      return true;
+    }
     case "lead-toggle": {
       const [projectId, leadId] = rest;
       if (!projectId || !leadId) {

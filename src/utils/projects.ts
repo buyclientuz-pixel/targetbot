@@ -1,9 +1,75 @@
-import { LeadRecord, PaymentRecord, ProjectBillingSummary, ProjectLeadStats, ProjectSummary } from "../types";
+import {
+  JsonObject,
+  ProjectSettings,
+  ProjectReportFrequency,
+  LeadRecord,
+  PaymentRecord,
+  ProjectBillingSummary,
+  ProjectLeadStats,
+  ProjectSummary,
+} from "../types";
 import { EnvBindings, listLeads, listPayments, listProjects } from "./storage";
 
 export interface SummarizeProjectsOptions {
   projectIds?: string[];
 }
+
+const ensureObject = (value: unknown): JsonObject => {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return { ...(value as JsonObject) };
+  }
+  return {};
+};
+
+export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
+  reportFrequency: "daily",
+  quietWeekends: false,
+  silentReports: false,
+  leadAlerts: true,
+};
+
+export const extractProjectSettings = (raw: unknown): ProjectSettings => {
+  const settings = ensureObject(raw);
+  const reports = ensureObject(settings["reports"]);
+  const auto = ensureObject(reports["auto"]);
+  const alerts = ensureObject(settings["alerts"]);
+  const frequency = (auto["frequency"] as ProjectReportFrequency) === "weekly" ? "weekly" : "daily";
+  return {
+    reportFrequency: frequency,
+    quietWeekends: auto["quietWeekends"] === true,
+    silentReports: auto["silent"] === true,
+    leadAlerts: alerts["leads"] !== false,
+  } satisfies ProjectSettings;
+};
+
+export const applyProjectSettingsPatch = (
+  current: unknown,
+  patch: Partial<ProjectSettings>,
+): JsonObject => {
+  const settings = ensureObject(current);
+  const reports = ensureObject(settings["reports"]);
+  const auto = ensureObject(reports["auto"]);
+  const alerts = ensureObject(settings["alerts"]);
+
+  if (patch.reportFrequency) {
+    auto["frequency"] = patch.reportFrequency;
+  }
+  if (patch.quietWeekends !== undefined) {
+    auto["quietWeekends"] = patch.quietWeekends;
+  }
+  if (patch.silentReports !== undefined) {
+    auto["silent"] = patch.silentReports;
+  }
+  if (patch.leadAlerts !== undefined) {
+    alerts["leads"] = patch.leadAlerts;
+  }
+
+  reports["auto"] = auto;
+  settings["reports"] = reports;
+  settings["alerts"] = alerts;
+
+  return settings;
+};
 
 const summarizeLeads = (leads: LeadRecord[]): ProjectLeadStats => {
   let latestTimestamp = 0;

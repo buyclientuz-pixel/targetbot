@@ -13,6 +13,7 @@ import {
   PaymentRecord,
   PendingCampaignSelectionRecord,
   PendingPortalOperation,
+  PendingProjectEditOperation,
   PortalMetricKey,
   ProjectBillingState,
   ProjectDeletionSummary,
@@ -50,6 +51,7 @@ const META_WEBHOOK_INDEX_KEY = "meta/webhook/events.json";
 const META_PENDING_PREFIX = "meta/link/pending/";
 const USER_PENDING_PREFIX = "users/pending/";
 const BILLING_PENDING_PREFIX = "billing/pending/";
+const PROJECT_PENDING_PREFIX = "projects/pending/";
 
 const TELEGRAM_GROUP_KV_INDEX_KEY = "telegram:groups:index";
 const TELEGRAM_GROUP_KV_PREFIX = "telegram:group:";
@@ -1888,6 +1890,8 @@ const pendingMetaLinkKey = (userId: string): string => `${META_PENDING_PREFIX}${
 
 const pendingBillingKey = (userId: string): string => `${BILLING_PENDING_PREFIX}${userId}`;
 
+const pendingProjectEditKey = (userId: string): string => `${PROJECT_PENDING_PREFIX}${userId}`;
+
 export const loadPendingMetaLink = async (
   env: EnvBindings,
   userId: string,
@@ -1962,6 +1966,41 @@ export const clearPendingBillingOperation = async (
   userId: string,
 ): Promise<void> => {
   await env.DB.delete(pendingBillingKey(userId));
+};
+
+export const loadPendingProjectEditOperation = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<PendingProjectEditOperation | null> => {
+  const stored = await env.DB.get(pendingProjectEditKey(userId));
+  if (!stored) {
+    return null;
+  }
+  try {
+    return JSON.parse(stored) as PendingProjectEditOperation;
+  } catch (error) {
+    console.error("Failed to parse pending project edit", error);
+    return null;
+  }
+};
+
+export const savePendingProjectEditOperation = async (
+  env: EnvBindings,
+  userId: string,
+  operation: PendingProjectEditOperation,
+  ttlSeconds = 900,
+): Promise<void> => {
+  const payload = { ...operation, updatedAt: new Date().toISOString() } satisfies PendingProjectEditOperation;
+  await env.DB.put(pendingProjectEditKey(userId), JSON.stringify(payload), {
+    expirationTtl: Math.max(60, ttlSeconds),
+  });
+};
+
+export const clearPendingProjectEditOperation = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<void> => {
+  await env.DB.delete(pendingProjectEditKey(userId));
 };
 
 export type PendingUserAction = "create" | "create-role";

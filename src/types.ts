@@ -220,6 +220,15 @@ export interface ProjectBillingSummary {
   notes?: string;
 }
 
+export type ProjectReportFrequency = "daily" | "weekly";
+
+export interface ProjectSettings {
+  reportFrequency: ProjectReportFrequency;
+  quietWeekends: boolean;
+  silentReports: boolean;
+  leadAlerts: boolean;
+}
+
 export interface ProjectSummary extends ProjectRecord {
   leadStats: ProjectLeadStats;
   billing: ProjectBillingSummary;
@@ -230,6 +239,14 @@ export interface PendingPortalOperation {
   action: "metrics" | "campaigns";
   page?: number;
   updatedAt: string;
+}
+
+export type PendingProjectEditAction = "rename";
+
+export interface PendingProjectEditOperation {
+  action: PendingProjectEditAction;
+  projectId: string;
+  updatedAt?: string;
 }
 
 export interface PendingCampaignSelectionRecord {

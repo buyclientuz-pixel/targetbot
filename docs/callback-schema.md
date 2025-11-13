@@ -51,7 +51,14 @@
 | `proj:billing-next:{projectId}:{preset}` | Обновить дату следующего платежа (`today`, `yesterday`, `7`, `14`, `30`, `clear`, `custom`, `manual`). |
 | `proj:billing-tariff:{projectId}` | Запросить обновление тарифа проекта. |
 | `proj:billing-tariff-preset:{projectId}:{amount}` | Установить тариф из пресета (`350`, `500` и др.). |
+| `proj:edit:{projectId}` | Управление основными данными проекта (переименование, быстрые ссылки). |
+| `proj:edit-name:{projectId}` | Запустить ввод нового названия проекта. |
+| `proj:edit-cancel:{projectId}` | Отменить операцию редактирования проекта. |
 | `proj:settings:{projectId}` | Настройки проекта. |
+| `proj:settings-frequency:{projectId}:{mode}` | Переключить период автоотчётов (`daily`, `weekly`). |
+| `proj:settings-quiet:{projectId}:{state}` | Включить или выключить тихие выходные (`on`, `off`). |
+| `proj:settings-silent:{projectId}:{state}` | Включить или выключить тихую отправку отчётов (`on`, `off`). |
+| `proj:settings-alerts:{projectId}:{state}` | Управлять алертами по лидам (`on`, `off`). |
 | `proj:delete:{projectId}` | Запрос удаления проекта. |
 | `proj:delete-confirm:{projectId}` | Подтвердить удаление проекта и отвязку всех связей. |
 | `proj:delete-cancel:{projectId}` | Отменить сценарий удаления проекта и вернуться в карточку. |
