@@ -21,6 +21,10 @@
 | Callback шаблон | Описание |
 | --- | --- |
 | `proj:new` | Старт создания нового проекта. |
+| `proj:new:meta:{metaAccountId}` | Выбор рекламного аккаунта на шаге создания проекта. |
+| `proj:new:chat:{chatId}` | Выбор Telegram-группы для нового проекта. |
+| `proj:new:confirm` | Подтверждение создания проекта в мастере. |
+| `proj:new:cancel` | Отмена мастера создания проекта. |
 | `proj:view:{projectId}` | Открыть карточку проекта. |
 | `proj:chat:{projectId}` | Информация о Telegram-группе проекта. |
 | `proj:leads:{projectId}` | Последние лиды проекта. |

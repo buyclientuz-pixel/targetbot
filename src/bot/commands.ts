@@ -26,6 +26,8 @@ import {
   loadProject,
   loadPendingUserOperation,
   savePendingUserOperation,
+  MetaLinkFlow,
+  PendingMetaLinkState,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
@@ -346,23 +348,6 @@ const resolveAdminProjectUrl = (env: BotContext["env"], projectId: string): stri
   return null;
 };
 
-const resolveNewProjectUrl = (env: BotContext["env"]): string | null => {
-  const path = "/admin/projects/new";
-  const candidates = [
-    env.ADMIN_BASE_URL,
-    env.PUBLIC_WEB_URL,
-    env.PUBLIC_BASE_URL,
-    env.WORKER_BASE_URL,
-  ];
-  for (const candidate of candidates) {
-    const url = buildAbsoluteUrl(typeof candidate === "string" ? candidate : null, path);
-    if (url) {
-      return url;
-    }
-  }
-  return null;
-};
-
 const HOME_MARKUP = {
   inline_keyboard: [[{ text: "⬅ Назад", callback_data: "cmd:menu" }]],
 };
@@ -372,13 +357,6 @@ const SETTINGS_MARKUP = {
     [{ text: "🔄 Обновить вебхуки", callback_data: "cmd:webhooks" }],
     [{ text: "🧩 Проверить токен Meta", callback_data: "cmd:auth" }],
     [{ text: "⬅ Назад", callback_data: "cmd:menu" }],
-  ],
-};
-
-const NEW_PROJECT_MARKUP = {
-  inline_keyboard: [
-    [{ text: "📊 Все проекты", callback_data: "cmd:projects" }],
-    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
   ],
 };
 
@@ -942,24 +920,62 @@ const buildMetaAccountsMarkup = (accounts: MetaAccountLinkRecord[]) => {
   return { inline_keyboard: rows };
 };
 
-const buildMetaGroupMarkup = (groups: TelegramGroupLinkRecord[]) => {
-  const rows = groups.map((group) => {
+const buildLinkGroupMarkup = (groups: TelegramGroupLinkRecord[], flow: MetaLinkFlow) => {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = groups.map((group) => {
     const label = group.title ? `👥 ${group.title}` : `👥 ${group.chatId}`;
-    return [{ text: label, callback_data: `meta:group:${group.chatId}` }];
+    const callback = flow === "meta" ? `meta:group:${group.chatId}` : `proj:new:chat:${group.chatId}`;
+    return [{ text: label, callback_data: callback }];
   });
-  rows.push([{ text: "❌ Отменить", callback_data: "meta:cancel" }]);
-  rows.push([{ text: "⬅ Meta-аккаунты", callback_data: "cmd:meta" }]);
+  const cancelCallback = flow === "meta" ? "meta:cancel" : "proj:new:cancel";
+  const backCallback = flow === "meta" ? "cmd:meta" : "cmd:projects";
+  const backLabel = flow === "meta" ? "⬅ Meta-аккаунты" : "⬅ К проектам";
+  rows.push([{ text: "❌ Отменить", callback_data: cancelCallback }]);
+  rows.push([{ text: backLabel, callback_data: backCallback }]);
+  rows.push([{ text: "🏠 Меню", callback_data: "cmd:menu" }]);
   return { inline_keyboard: rows };
 };
 
-const META_CONFIRM_MARKUP = {
-  inline_keyboard: [
-    [
-      { text: "✅ Подтвердить", callback_data: "meta:confirm" },
-      { text: "❌ Отменить", callback_data: "meta:cancel" },
+const buildLinkConfirmMarkup = (flow: MetaLinkFlow) => {
+  const confirmCallback = flow === "meta" ? "meta:confirm" : "proj:new:confirm";
+  const cancelCallback = flow === "meta" ? "meta:cancel" : "proj:new:cancel";
+  const backRow =
+    flow === "meta"
+      ? [{ text: "⬅ Meta-аккаунты", callback_data: "cmd:meta" }]
+      : [{ text: "📊 Проекты", callback_data: "cmd:projects" }];
+  return {
+    inline_keyboard: [
+      [
+        { text: "✅ Подтвердить", callback_data: confirmCallback },
+        { text: "❌ Отменить", callback_data: cancelCallback },
+      ],
+      backRow,
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
     ],
-    [{ text: "⬅ Meta-аккаунты", callback_data: "cmd:meta" }],
-  ],
+  };
+};
+
+const buildProjectNewMetaMarkup = (accounts: MetaAccountLinkRecord[]) => {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = accounts.map((account) => {
+    const spendLabel = formatMetaSpendLabel(account.spentToday, account.currency);
+    const label = `➕ ${account.accountName}${spendLabel ? ` | ${spendLabel}` : ""}`;
+    return [{ text: label, callback_data: `proj:new:meta:${account.accountId}` }];
+  });
+  rows.push([{ text: "❌ Отменить", callback_data: "proj:new:cancel" }]);
+  rows.push([{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }]);
+  rows.push([{ text: "🏠 Меню", callback_data: "cmd:menu" }]);
+  return { inline_keyboard: rows };
+};
+
+const buildLinkCompleteMarkup = (flow: MetaLinkFlow, projectId: string) => {
+  const backLabel = flow === "meta" ? "🔗 Meta-аккаунты" : "📊 Проекты";
+  const backCallback = flow === "meta" ? "cmd:meta" : "cmd:projects";
+  return {
+    inline_keyboard: [
+      [{ text: "Перейти в проект", callback_data: `proj:view:${projectId}` }],
+      [{ text: backLabel, callback_data: backCallback }],
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+    ],
+  };
 };
 
 const ensureTelegramGroupIndex = async (context: BotContext): Promise<TelegramGroupLinkRecord[]> => {
@@ -1389,16 +1405,92 @@ const handleProjectDelete = async (context: BotContext, projectId: string): Prom
 };
 
 const handleProjectNew = async (context: BotContext): Promise<void> => {
-  const newProjectUrl = resolveNewProjectUrl(context.env);
+  const userId = context.userId;
+  if (!userId) {
+    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду.");
+    return;
+  }
+
+  const [accounts, groups] = await Promise.all([
+    listMetaAccountLinks(context.env),
+    ensureTelegramGroupIndex(context),
+  ]);
+
+  const availableAccounts = accounts.filter((account) => !account.isLinked);
+  const availableGroups = groups.filter((group) => group.registered && !group.linkedProjectId);
+
+  await savePendingMetaLink(context.env, userId, { flow: "project" });
+
   const lines = [
     "➕ Новый проект",
     "",
-    newProjectUrl
-      ? `Создайте проект в веб-панели: <a href="${escapeAttribute(newProjectUrl)}">перейти к форме</a>.`
-      : "Создайте проект через веб-панель TargetBot (/admin → Проекты).",
-    "После создания привяжите чат и рекламный кабинет, чтобы бот показывал статистику и лиды.",
+    "Шаг 1. Выберите рекламный аккаунт Meta, который хотите привязать.",
   ];
-  await sendMessage(context, lines.join("\n"), { replyMarkup: NEW_PROJECT_MARKUP });
+
+  if (!availableGroups.length) {
+    lines.push(
+      "",
+      "Доступных Telegram-групп пока нет. Выполните команду /reg в нужном чате и вернитесь к мастеру.",
+    );
+  }
+
+  if (!availableAccounts.length) {
+    lines.push(
+      "",
+      "Свободные рекламные аккаунты не найдены. Добавьте их в разделе «🔗 Meta-аккаунты» или отвяжите неиспользуемые проекты.",
+    );
+    await sendMessage(context, lines.join("\n"), {
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
+          [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+        ],
+      },
+    });
+    return;
+  }
+
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: buildProjectNewMetaMarkup(availableAccounts),
+  });
+};
+
+const handleProjectNewMetaSelection = async (context: BotContext, accountId: string): Promise<void> => {
+  const userId = context.userId;
+  if (!userId) {
+    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду.");
+    return;
+  }
+
+  await savePendingMetaLink(context.env, userId, { flow: "project" });
+  await handleMetaAccountSelection(context, accountId);
+};
+
+const handleProjectNewGroupSelection = async (context: BotContext, chatId: string): Promise<void> => {
+  await handleMetaGroupSelection(context, chatId);
+};
+
+const handleProjectNewConfirm = async (context: BotContext): Promise<void> => {
+  await handleMetaLinkConfirm(context);
+};
+
+const handleProjectNewCancel = async (context: BotContext): Promise<void> => {
+  if (context.userId) {
+    try {
+      await clearPendingMetaLink(context.env, context.userId);
+    } catch (error) {
+      console.warn("Failed to clear pending project link", error);
+    }
+  }
+
+  await sendMessage(context, "❌ Создание проекта отменено.", {
+    replyMarkup: {
+      inline_keyboard: [
+        [{ text: "📊 Проекты", callback_data: "cmd:projects" }],
+        [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+      ],
+    },
+  });
 };
 
 const formatProjectLines = (summaries: ProjectSummary[]): string[] => {
@@ -1455,7 +1547,7 @@ const formatProjectLines = (summaries: ProjectSummary[]): string[] => {
     "",
     ...items,
     "",
-    "➕ Новый проект — откройте веб-панель TargetBot или выполните /project_new (в разработке)",
+    "➕ Новый проект — нажмите кнопку ниже, чтобы пройти мастер привязки прямо в боте.",
   ];
 };
 
@@ -1914,6 +2006,8 @@ const handleMetaAccountSelection = async (context: BotContext, accountId: string
     return;
   }
 
+  const previous = await loadPendingMetaLink(context.env, userId);
+
   const accounts = await listMetaAccountLinks(context.env);
   const account = accounts.find((entry) => entry.accountId === accountId);
   if (!account) {
@@ -1925,7 +2019,9 @@ const handleMetaAccountSelection = async (context: BotContext, accountId: string
     return;
   }
 
-  await savePendingMetaLink(context.env, userId, { metaAccountId: accountId });
+  const flow: MetaLinkFlow = previous?.flow ?? "meta";
+
+  await savePendingMetaLink(context.env, userId, { flow, metaAccountId: accountId });
 
   const groups = await ensureTelegramGroupIndex(context);
   const availableGroups = groups.filter((group) => group.registered && !group.linkedProjectId);
@@ -1945,7 +2041,12 @@ const handleMetaAccountSelection = async (context: BotContext, accountId: string
     await sendMessage(context, lines.join("\n"), {
       replyMarkup: {
         inline_keyboard: [
-          [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
+          [
+            {
+              text: flow === "meta" ? "🔗 Meta-аккаунты" : "📊 Проекты",
+              callback_data: flow === "meta" ? "cmd:meta" : "cmd:projects",
+            },
+          ],
           [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
         ],
       },
@@ -1954,7 +2055,7 @@ const handleMetaAccountSelection = async (context: BotContext, accountId: string
   }
 
   lines.push("", "Список доступных Telegram-групп:");
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildMetaGroupMarkup(availableGroups) });
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildLinkGroupMarkup(availableGroups, flow) });
 };
 
 const handleMetaGroupSelection = async (context: BotContext, chatId: string): Promise<void> => {
@@ -1969,6 +2070,8 @@ const handleMetaGroupSelection = async (context: BotContext, chatId: string): Pr
     await sendMessage(context, "❌ Процесс привязки не найден. Начните заново.");
     return;
   }
+
+  const flow: MetaLinkFlow = pending.flow ?? "meta";
 
   const [accounts, groups] = await Promise.all([
     listMetaAccountLinks(context.env),
@@ -1997,6 +2100,7 @@ const handleMetaGroupSelection = async (context: BotContext, chatId: string): Pr
   }
 
   await savePendingMetaLink(context.env, userId, {
+    flow,
     metaAccountId: pending.metaAccountId,
     telegramChatId: chatId,
   });
@@ -2008,68 +2112,19 @@ const handleMetaGroupSelection = async (context: BotContext, chatId: string): Pr
     `Привязать аккаунт <b>${escapeHtml(account.accountName)}</b> к группе <b>${escapeHtml(groupLabel)}</b>?`,
   ];
 
-  await sendMessage(context, lines.join("\n"), { replyMarkup: META_CONFIRM_MARKUP });
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildLinkConfirmMarkup(flow) });
 };
 
-const handleMetaLinkCancel = async (context: BotContext): Promise<void> => {
-  if (context.userId) {
-    try {
-      await clearPendingMetaLink(context.env, context.userId);
-    } catch (error) {
-      console.warn("Failed to clear pending meta link", error);
-    }
-  }
-
-  await sendMessage(context, "❌ Привязка отменена.", {
-    replyMarkup: {
-      inline_keyboard: [
-        [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
-        [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
-      ],
-    },
-  });
-};
-
-const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
-  const userId = context.userId;
-  if (!userId) {
-    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду.");
-    return;
-  }
-
-  const pending = await loadPendingMetaLink(context.env, userId);
-  if (!pending?.metaAccountId || !pending.telegramChatId) {
-    await sendMessage(context, "❌ Процесс привязки не найден. Начните заново.");
-    return;
-  }
-
-  const [accounts, groups, projects] = await Promise.all([
-    listMetaAccountLinks(context.env),
-    ensureTelegramGroupIndex(context),
-    listProjects(context.env),
-  ]);
-
-  const account = accounts.find((entry) => entry.accountId === pending.metaAccountId);
-  if (!account) {
-    await clearPendingMetaLink(context.env, userId);
-    await sendMessage(context, "❌ Рекламный аккаунт не найден. Обновите список Meta-аккаунтов.");
-    return;
-  }
-  if (account.isLinked) {
-    await sendMessage(context, "❌ Этот рекламный аккаунт уже подключён к другому проекту.");
-    return;
-  }
-
-  const group = groups.find((entry) => entry.chatId === pending.telegramChatId);
-  if (!group || !group.registered) {
-    await sendMessage(context, "❌ Группа не найдена. Убедитесь, что команда /reg выполнена в нужном чате.");
-    return;
-  }
-  if (group.linkedProjectId) {
-    await sendMessage(context, "❌ Эта группа уже используется в другом проекте.");
-    return;
-  }
-
+const finalizeProjectLink = async (
+  context: BotContext,
+  userId: string,
+  pending: PendingMetaLinkState,
+  account: MetaAccountLinkRecord,
+  group: TelegramGroupLinkRecord,
+  projects: ProjectRecord[],
+  accounts: MetaAccountLinkRecord[],
+  groups: TelegramGroupLinkRecord[],
+): Promise<void> => {
   const now = new Date().toISOString();
   const projectId = `p_${createId(10)}`;
   const projectRecord: ProjectRecord = {
@@ -2115,6 +2170,7 @@ const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
     text: "🎉 Ваш рекламный аккаунт успешно подключён!",
   });
 
+  const flow: MetaLinkFlow = pending.flow ?? "meta";
   const lines = [
     "Проект создан!",
     `RA: <b>${escapeHtml(account.accountName)}</b>`,
@@ -2122,14 +2178,81 @@ const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
   ];
 
   await sendMessage(context, lines.join("\n"), {
-    replyMarkup: {
-      inline_keyboard: [
-        [{ text: "Перейти в проект", callback_data: `proj:view:${projectId}` }],
-        [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
-        [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
-      ],
-    },
+    replyMarkup: buildLinkCompleteMarkup(flow, projectId),
   });
+};
+
+const handleMetaLinkCancel = async (context: BotContext): Promise<void> => {
+  let flow: MetaLinkFlow = "meta";
+  if (context.userId) {
+    try {
+      const pending = await loadPendingMetaLink(context.env, context.userId);
+      if (pending?.flow) {
+        flow = pending.flow;
+      }
+      await clearPendingMetaLink(context.env, context.userId);
+    } catch (error) {
+      console.warn("Failed to clear pending meta link", error);
+    }
+  }
+
+  const replyMarkup = {
+    inline_keyboard: [
+      [
+        {
+          text: flow === "meta" ? "🔗 Meta-аккаунты" : "📊 Проекты",
+          callback_data: flow === "meta" ? "cmd:meta" : "cmd:projects",
+        },
+      ],
+      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+    ],
+  };
+
+  const message = flow === "meta" ? "❌ Привязка отменена." : "❌ Создание проекта отменено.";
+  await sendMessage(context, message, { replyMarkup });
+};
+
+const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
+  const userId = context.userId;
+  if (!userId) {
+    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду.");
+    return;
+  }
+
+  const pending = await loadPendingMetaLink(context.env, userId);
+  if (!pending?.metaAccountId || !pending.telegramChatId) {
+    await sendMessage(context, "❌ Процесс привязки не найден. Начните заново.");
+    return;
+  }
+
+  const [accounts, groups, projects] = await Promise.all([
+    listMetaAccountLinks(context.env),
+    ensureTelegramGroupIndex(context),
+    listProjects(context.env),
+  ]);
+
+  const account = accounts.find((entry) => entry.accountId === pending.metaAccountId);
+  if (!account) {
+    await clearPendingMetaLink(context.env, userId);
+    await sendMessage(context, "❌ Рекламный аккаунт не найден. Обновите список Meta-аккаунтов.");
+    return;
+  }
+  if (account.isLinked) {
+    await sendMessage(context, "❌ Этот рекламный аккаунт уже подключён к другому проекту.");
+    return;
+  }
+
+  const group = groups.find((entry) => entry.chatId === pending.telegramChatId);
+  if (!group || !group.registered) {
+    await sendMessage(context, "❌ Группа не найдена. Убедитесь, что команда /reg выполнена в нужном чате.");
+    return;
+  }
+  if (group.linkedProjectId) {
+    await sendMessage(context, "❌ Эта группа уже используется в другом проекте.");
+    return;
+  }
+
+  await finalizeProjectLink(context, userId, pending, account, group, projects, accounts, groups);
 };
 
 const handleMetaProjectView = async (context: BotContext, projectId: string): Promise<void> => {
@@ -2531,7 +2654,6 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
   if (!action) {
     return false;
   }
-  const projectId = rest.length ? rest.join(":") : undefined;
   const ensureId = async (): Promise<boolean> => {
     await sendMessage(
       context,
@@ -2541,79 +2663,114 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
   };
   switch (action) {
     case "view":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectView(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectView(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "chat":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectChat(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectChat(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "leads":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectLeads(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectLeads(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "report":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectReport(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectReport(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "campaigns":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectCampaigns(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectCampaigns(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "export":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectExport(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectExport(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "portal":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectPortal(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectPortal(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "billing":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectBilling(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectBilling(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "settings":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectSettings(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectSettings(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "delete":
-      if (!projectId) {
+      if (!rest[0]) {
         return ensureId();
       }
-      await handleProjectDelete(context, projectId);
-      await logProjectAction(context, action, projectId);
+      await handleProjectDelete(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
       return true;
     case "new":
-      await handleProjectNew(context);
-      await logProjectAction(context, action);
-      return true;
+      if (!rest.length) {
+        await handleProjectNew(context);
+        await logProjectAction(context, action);
+        return true;
+      }
+      const [step, ...args] = rest;
+      switch (step) {
+        case "meta": {
+          const accountId = args.join(":");
+          if (!accountId) {
+            await sendMessage(context, "❌ Рекламный аккаунт не найден. Обновите список проектов.");
+            return true;
+          }
+          await handleProjectNewMetaSelection(context, accountId);
+          return true;
+        }
+        case "chat": {
+          const chatId = args.join(":");
+          if (!chatId) {
+            await sendMessage(context, "❌ Группа не найдена. Запустите мастер заново.");
+            return true;
+          }
+          await handleProjectNewGroupSelection(context, chatId);
+          return true;
+        }
+        case "confirm":
+          await handleProjectNewConfirm(context);
+          return true;
+        case "cancel":
+          await handleProjectNewCancel(context);
+          return true;
+        default:
+          await sendMessage(
+            context,
+            "❌ Неизвестный шаг мастера проекта. Запустите создание заново из списка проектов.",
+          );
+          return true;
+      }
     default:
       return false;
   }

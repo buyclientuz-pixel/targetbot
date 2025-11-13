@@ -662,10 +662,13 @@ export const deleteReportSession = async (env: EnvBindings, sessionId: string): 
   await env.DB.delete(sessionKey(sessionId));
 };
 
+export type MetaLinkFlow = "meta" | "project";
+
 export interface PendingMetaLinkState {
   metaAccountId?: string;
   telegramChatId?: string;
   updatedAt?: string;
+  flow?: MetaLinkFlow;
 }
 
 const pendingMetaLinkKey = (userId: string): string => `${META_PENDING_PREFIX}${userId}`;
