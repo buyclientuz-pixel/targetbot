@@ -5,7 +5,7 @@
 - Токен: long-lived пользовательский токен с правами `ads_management`, `business_management`, `pages_read_engagement`
 
 ## Предусловия
-1. Выполнен OAuth-флоу через `/api/meta/oauth/start` → `/api/meta/oauth/callback`; токен сохранён в KV.
+1. Выполнен OAuth-флоу через `/api/meta/oauth/start` → `/auth/facebook/callback` (алиас: `/api/meta/oauth/callback`); токен сохранён в KV.
 2. В переменных окружения заданы резервные параметры (при необходимости):
    - `META_ACCESS_TOKEN`
    - `META_BUSINESS_IDS` и/или `META_AD_ACCOUNTS`

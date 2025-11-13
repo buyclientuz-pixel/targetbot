@@ -127,7 +127,7 @@ flowchart LR
 
 | Модуль | Конечные точки | Описание |
 | ------ | -------------- | -------- |
-| Meta | `GET /api/meta/status`, `GET /api/meta/adaccounts`, `GET /api/meta/campaigns`, `GET /api/meta/oauth/start`, `GET /api/meta/oauth/callback`, `POST /api/meta/refresh` | OAuth, выбор кабинетов и метрики кампаний |
+| Meta | `GET /api/meta/status`, `GET /api/meta/adaccounts`, `GET /api/meta/campaigns`, `GET /api/meta/oauth/start`, `GET /auth/facebook/callback` (alias: `/api/meta/oauth/callback`), `POST /api/meta/refresh` | OAuth, выбор кабинетов и метрики кампаний |
 | Projects | `GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/:id`, `GET /api/projects/:id/leads` | CRUD проектов и привязки |
 | Leads | `POST /api/leads`, `GET /api/leads?projectId=`, `PATCH /api/leads/:id` | Приём и обработка лидов |
 | Users | `GET/POST /api/users`, `PATCH/DELETE /api/users/:id` | Управление пользователями и ролями |
@@ -309,3 +309,8 @@ Telegram-бот полностью покрывает FSM: список прое
 - Что сделано: добавлены регистрация чат-групп через `/reg`, реестр свободных чатов (`chats/index.json`) и политика безопасности, которая отключает меню/inline-кнопки в клиентских чатах и разрешает их только в админских чатах и личных диалогах.
 - Какая задача сейчас в работе: синхронизировать список зарегистрированных групп с веб-панелью (карточки проектов и раздел настроек).
 - Следующие задачи: вывести реестр свободных чатов в /admin, позволить назначать чат на проект в один клик и зафиксировать успешные smoke-проверки после обновления.
+
+### Progress 35
+- Что сделано: переориентирован OAuth-редирект на `/auth/facebook/callback` (добавлен алиас `/api/meta/oauth/callback`), а документация и роутер обновлены, чтобы кнопка авторизации в админке больше не упиралась в заблокированный URL Facebook.
+- Какая задача сейчас в работе: обновить список разрешённых Redirect URI в Meta и подтвердить успешный OAuth-флоу после деплоя.
+- Следующие задачи: синхронизировать список зарегистрированных чатов с карточками проектов и зафиксировать свежие логи деплоя.

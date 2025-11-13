@@ -21,7 +21,7 @@ const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
 
 const buildRedirectUri = (request: Request): string => {
   const url = new URL(request.url);
-  url.pathname = "/api/meta/oauth/callback";
+  url.pathname = "/auth/facebook/callback";
   url.search = "";
   return url.toString();
 };

@@ -106,12 +106,16 @@ export default {
         );
       }
 
+      if (pathname === "/health") {
+        return jsonResponse({ ok: true, data: { status: "healthy" } });
+      }
+
       if (pathname === "/auth/facebook" && method === "GET") {
         return withCors(await handleMetaOAuthStart(request, env));
       }
 
-      if (pathname === "/health") {
-        return jsonResponse({ ok: true, data: { status: "healthy" } });
+      if (pathname === "/auth/facebook/callback" && method === "GET") {
+        return withCors(await handleMetaOAuthCallback(request, env));
       }
 
       if (pathname.startsWith("/api/meta/status") && method === "GET") {

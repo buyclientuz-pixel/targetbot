@@ -44,7 +44,7 @@ curl -i https://<worker>/api/users
 ## 5. Meta OAuth
 
 1. Если токен близок к истечению, выполните `/api/meta/refresh` и убедитесь, что статус обновился.
-2. При необходимости повторите OAuth-флоу (`/api/meta/oauth/start` → авторизация → `/api/meta/oauth/callback`).
+2. При необходимости повторите OAuth-флоу (`/api/meta/oauth/start` → авторизация → `/auth/facebook/callback`, алиас `/api/meta/oauth/callback`).
 3. Убедитесь, что `/api/meta/adaccounts` возвращает список без ошибок `Graph API error`.
 
 ## 6. Логи и алерты
