@@ -109,7 +109,7 @@ export type PortalMetricKey =
   | "freq"
   | "cpurchase";
 
-export type ReportRoutingTarget = "chat" | "admin" | "both";
+export type ReportRoutingTarget = "chat" | "admin" | "both" | "none";
 
 export interface ProjectAutoReportSettings {
   enabled: boolean;

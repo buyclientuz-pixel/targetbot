@@ -138,7 +138,7 @@ const sanitizePortalMetrics = (values: unknown): PortalMetricKey[] => {
 const campaignObjectivesKey = (projectId: string): string => `${CAMPAIGN_OBJECTIVES_DIR}${projectId}.json`;
 const campaignKpisKey = (projectId: string): string => `${CAMPAIGN_KPIS_DIR}${projectId}.json`;
 
-const ROUTING_TARGETS: ReportRoutingTarget[] = ["chat", "admin", "both"];
+const ROUTING_TARGETS: ReportRoutingTarget[] = ["chat", "admin", "both", "none"];
 
 const DEFAULT_PROJECT_SETTINGS: ProjectSettingsRecord = {
   autoReport: {

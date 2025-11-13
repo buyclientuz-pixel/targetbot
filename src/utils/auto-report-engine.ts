@@ -149,6 +149,9 @@ const collectTargets = (
 ): string[] => {
   const { adminChatId, clientChatId } = resolveRoutingContext(project);
   const chats = new Set<string>();
+  if (target === "none") {
+    return [];
+  }
   if (target === "admin" || target === "both") {
     if (adminChatId) {
       chats.add(adminChatId);

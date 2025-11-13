@@ -355,18 +355,81 @@ const sendPlainMessage = async (context: BotContext, text: string): Promise<void
 
 const AUTO_REPORT_TIME_OPTIONS = ["10:00", "13:00", "15:00", "20:00"] as const;
 
-const ROUTE_TARGETS: ReportRoutingTarget[] = ["chat", "admin", "both"];
+const ROUTE_TARGETS: ReportRoutingTarget[] = ["chat", "admin", "both", "none"];
 
 const REPORT_ROUTE_LABEL: Record<ReportRoutingTarget, string> = {
   chat: "В чат",
   admin: "Админу",
   both: "В чат и админу",
+  none: "Не отправлять",
 };
 
 const REPORT_ROUTE_SUMMARY: Record<ReportRoutingTarget, string> = {
   chat: "в чат",
   admin: "админу",
   both: "в чат и админу",
+  none: "без отправки",
+};
+
+const ROUTE_CHANNEL_LABEL: Record<Exclude<ReportRoutingTarget, "both" | "none">, string> = {
+  chat: "Отправлять в чат",
+  admin: "Отправлять админу",
+};
+
+type RouteChannel = Exclude<ReportRoutingTarget, "both" | "none">;
+
+const isRouteChannelEnabled = (target: ReportRoutingTarget, channel: RouteChannel): boolean => {
+  if (target === "both") {
+    return true;
+  }
+  if (target === "none") {
+    return false;
+  }
+  return target === channel;
+};
+
+const toggleRouteChannel = (target: ReportRoutingTarget, channel: RouteChannel): ReportRoutingTarget => {
+  const enabled = isRouteChannelEnabled(target, channel);
+  if (enabled) {
+    if (channel === "chat") {
+      if (target === "both") {
+        return "admin";
+      }
+      if (target === "chat") {
+        return "none";
+      }
+      return target;
+    }
+    if (channel === "admin") {
+      if (target === "both") {
+        return "chat";
+      }
+      if (target === "admin") {
+        return "none";
+      }
+      return target;
+    }
+  } else {
+    if (channel === "chat") {
+      if (target === "admin") {
+        return "both";
+      }
+      if (target === "none") {
+        return "chat";
+      }
+      return target === "both" ? target : "chat";
+    }
+    if (channel === "admin") {
+      if (target === "chat") {
+        return "both";
+      }
+      if (target === "none") {
+        return "admin";
+      }
+      return target === "both" ? target : "admin";
+    }
+  }
+  return target;
 };
 
 type AlertToggleKey = "payment" | "budget" | "meta" | "pause";
@@ -741,11 +804,10 @@ const buildAutoReportLines = (
     `📅 Понедельник: ${auto.mondayDoubleReport ? "[✔] Сегодня + неделя" : "[ ] Сегодня + неделя"}`,
   );
   lines.push("", "📡 Маршрут отчётов:");
-  lines.push(
-    ROUTE_TARGETS.map((target) => `${auto.sendTarget === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`).join(
-      "   ",
-    ),
-  );
+  (Object.keys(ROUTE_CHANNEL_LABEL) as RouteChannel[]).forEach((channel) => {
+    const enabled = isRouteChannelEnabled(auto.sendTarget, channel);
+    lines.push(`${enabled ? "[✔]" : "[ ]"} ${ROUTE_CHANNEL_LABEL[channel]}`);
+  });
   lines.push("", "📢 Алерты:");
   (Object.keys(ALERT_TOGGLE_CONFIG) as AlertToggleKey[]).forEach((key) => {
     const config = ALERT_TOGGLE_CONFIG[key];
@@ -782,9 +844,9 @@ const buildAutoReportMarkup = (projectId: string, settings: ProjectSettingsRecor
     };
   });
   const alertRows = chunkButtons(alertButtons, 2);
-  const reportRouteRow = ROUTE_TARGETS.map((target) => ({
-    text: `${auto.sendTarget === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`,
-    callback_data: `auto_send_target:${projectId}:${target}`,
+  const reportRouteRow = (Object.keys(ROUTE_CHANNEL_LABEL) as RouteChannel[]).map((channel) => ({
+    text: `${isRouteChannelEnabled(auto.sendTarget, channel) ? "✅" : "☑️"} ${ROUTE_CHANNEL_LABEL[channel]}`,
+    callback_data: `auto_send_target:${projectId}:${channel}`,
   }));
   const alertRouteRow = ROUTE_TARGETS.map((target) => ({
     text: `${settings.alerts.target === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`,
@@ -937,13 +999,33 @@ const handleAutoReportSendTarget = async (
   projectId: string,
   target: string | undefined,
 ): Promise<void> => {
-  if (!target || !ROUTE_TARGETS.includes(target as ReportRoutingTarget)) {
+  if (!target) {
     await handleAutoReportMenu(context, projectId, { status: "❌ Недопустимый маршрут" });
     return;
   }
+  if (target === "both" || target === "none") {
+    if (!ROUTE_TARGETS.includes(target as ReportRoutingTarget)) {
+      await handleAutoReportMenu(context, projectId, { status: "❌ Недопустимый маршрут" });
+      return;
+    }
+    await mutateProjectSettings(context, projectId, (draft) => {
+      draft.autoReport.sendTarget = target as ReportRoutingTarget;
+      return `📡 Отчёты → ${REPORT_ROUTE_LABEL[draft.autoReport.sendTarget]}`;
+    });
+    return;
+  }
+  if (!(target in ROUTE_CHANNEL_LABEL)) {
+    await handleAutoReportMenu(context, projectId, { status: "❌ Недопустимый маршрут" });
+    return;
+  }
+  const channel = target as RouteChannel;
   await mutateProjectSettings(context, projectId, (draft) => {
-    draft.autoReport.sendTarget = target as ReportRoutingTarget;
-    return `📡 Отчёты → ${REPORT_ROUTE_LABEL[draft.autoReport.sendTarget]}`;
+    const nextTarget = toggleRouteChannel(draft.autoReport.sendTarget, channel);
+    draft.autoReport.sendTarget = nextTarget;
+    const enabled = isRouteChannelEnabled(nextTarget, channel);
+    return enabled
+      ? `📡 ${ROUTE_CHANNEL_LABEL[channel]} — включено`
+      : `📡 ${ROUTE_CHANNEL_LABEL[channel]} — отключено`;
   });
 };
 

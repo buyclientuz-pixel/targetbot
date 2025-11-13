@@ -124,7 +124,7 @@
 | `auto_menu:{projectId}` | Открыть панель автоотчётов проекта. |
 | `auto_toggle:{projectId}` | Включить/выключить автоотчёты для проекта. |
 | `auto_time_toggle:{projectId}:{HH_MM}` | Переключить конкретное время отправки (формат `HH:MM`). |
-| `auto_send_target:{projectId}:{target}` | Назначить маршрут доставки (`chat`, `admin`, `both`). |
+| `auto_send_target:{projectId}:{target}` | Переключить канал доставки auto-отчётов (`chat` или `admin`; для обратной совместимости поддерживаются `both`/`none`). |
 | `auto_monday_toggle:{projectId}` | Включить/выключить режим двойного понедельничного отчёта. |
 | `auto_send_now:{projectId}` | Немедленно отправить автоотчёт по сохранённым настройкам. |
 
@@ -137,7 +137,7 @@
 | `alert_toggle_spend:{projectId}` | Переключить алерты аномального расхода. |
 | `alert_toggle_api:{projectId}` | Переключить уведомления об ошибках Meta API. |
 | `alert_toggle_pause:{projectId}` | Переключить алерты долгих пауз кампаний. |
-| `alert_route:{projectId}:{target}` | Выбрать маршрут доставки алертов (`chat`, `admin`, `both`). |
+| `alert_route:{projectId}:{target}` | Выбрать маршрут доставки алертов (`chat`, `admin`, `both`, `none`). |
 
 ## KPI настройки (`kpi:*`)
 
