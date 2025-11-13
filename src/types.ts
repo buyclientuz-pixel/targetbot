@@ -198,6 +198,32 @@ export interface LeadRecord {
   createdAt: string;
 }
 
+export type LeadReminderStatus = "pending" | "notified" | "resolved";
+
+export interface LeadReminderRecord {
+  id: string;
+  leadId: string;
+  projectId: string;
+  status: LeadReminderStatus;
+  notifiedCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastNotifiedAt?: string | null;
+}
+
+export type PaymentReminderStatus = "pending" | "upcoming" | "overdue";
+
+export interface PaymentReminderRecord {
+  id: string;
+  projectId: string;
+  status: PaymentReminderStatus;
+  dueDate?: string | null;
+  notifiedCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastNotifiedAt?: string | null;
+}
+
 export type PaymentStatus = "pending" | "active" | "overdue" | "cancelled";
 
 export interface PaymentRecord {

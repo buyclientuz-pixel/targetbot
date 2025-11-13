@@ -1,5 +1,13 @@
 import { jsonResponse, parseJsonRequest } from "../utils/http";
-import { EnvBindings, deleteLeads, listProjects, loadProject, saveProjects } from "../utils/storage";
+import {
+  EnvBindings,
+  deleteLeads,
+  listProjects,
+  loadProject,
+  saveProjects,
+  clearLeadRemindersByProject,
+  clearPaymentReminder,
+} from "../utils/storage";
 import { ApiSuccess, ProjectRecord, ProjectSummary } from "../types";
 import { createId } from "../utils/ids";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
@@ -136,6 +144,11 @@ export const handleProjectUpdate = async (
     };
     projects[index] = updated;
     await saveProjects(bindings, projects);
+    if (body.nextPaymentDate !== undefined || body.billingStatus !== undefined) {
+      await clearPaymentReminder(bindings, projectId).catch((error) => {
+        console.warn("Failed to clear payment reminder", projectId, error);
+      });
+    }
     return jsonResponse({ ok: true, data: updated });
   } catch (error) {
     return jsonResponse({ ok: false, error: (error as Error).message }, { status: 400 });
@@ -158,6 +171,14 @@ export const handleProjectDelete = async (
     await deleteLeads(bindings, projectId).catch((error) => {
       console.warn("Failed to delete project leads", projectId, error);
     });
+    await Promise.all([
+      clearLeadRemindersByProject(bindings, projectId).catch((error) => {
+        console.warn("Failed to purge lead reminders", projectId, error);
+      }),
+      clearPaymentReminder(bindings, projectId).catch((error) => {
+        console.warn("Failed to purge payment reminders", projectId, error);
+      }),
+    ]);
     return jsonResponse({ ok: true, data: { id: projectId } });
   } catch (error) {
     return jsonResponse({ ok: false, error: (error as Error).message }, { status: 500 });

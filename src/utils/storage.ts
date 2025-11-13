@@ -2,12 +2,14 @@ import {
   ChatRegistrationRecord,
   CommandLogRecord,
   LeadRecord,
+  LeadReminderRecord,
   MetaAccountLinkRecord,
   MetaProjectLinkRecord,
   MetaTokenRecord,
   MetaTokenStatus,
   MetaWebhookEventRecord,
   JsonObject,
+  PaymentReminderRecord,
   PaymentRecord,
   ProjectBillingState,
   ProjectRecord,
@@ -28,6 +30,8 @@ const REPORT_INDEX_KEY = "reports/index.json";
 const SETTINGS_KEY = "settings/index.json";
 const COMMAND_LOG_KEY = "logs/commands.json";
 const REPORT_SESSION_PREFIX = "reports/session/";
+const LEAD_REMINDER_INDEX_KEY = "reminders/leads.json";
+const PAYMENT_REMINDER_INDEX_KEY = "reminders/payments.json";
 const CHAT_REGISTRY_KEY = "chats/index.json";
 const META_ACCOUNTS_KEY = "meta/accounts.json";
 const TELEGRAM_GROUPS_KEY = "telegram/groups.json";
@@ -45,12 +49,16 @@ const PROJECT_KV_INDEX_KEY = "projects:index";
 const META_KV_INDEX_KEY = "meta:index";
 const LEAD_KV_INDEX_PREFIX = "leads:index:";
 const META_WEBHOOK_KV_INDEX_KEY = "meta:webhook:index";
+const LEAD_REMINDER_KV_INDEX_KEY = "reminders:lead:index";
+const PAYMENT_REMINDER_KV_INDEX_KEY = "reminders:payment:index";
 
 const USER_KV_PREFIX = "users:";
 const PROJECT_KV_PREFIX = "project:";
 const META_KV_PREFIX = "meta:";
 const LEAD_KV_PREFIX = "leads:";
 const META_WEBHOOK_KV_PREFIX = "meta:webhook:event:";
+const LEAD_REMINDER_KV_PREFIX = "reminders:lead:";
+const PAYMENT_REMINDER_KV_PREFIX = "reminders:payment:";
 
 export interface ReportSessionRecord {
   id: string;
@@ -490,6 +498,243 @@ export const deleteLeads = async (env: EnvBindings, projectId: string): Promise<
   const existing = await readKvIndex(env, indexKey);
   await Promise.all(existing.map((id) => env.DB.delete(`${LEAD_KV_PREFIX}${projectId}:${id}`)));
   await writeKvIndex(env, indexKey, []);
+};
+
+const normalizeLeadReminderRecord = (
+  input: LeadReminderRecord | Record<string, unknown>,
+): LeadReminderRecord => {
+  const data = input as Record<string, unknown>;
+  const nowIso = new Date().toISOString();
+  const leadSource = data.leadId ?? data.lead_id ?? data.leadID ?? data.id;
+  const leadId =
+    typeof leadSource === "string" && leadSource.trim()
+      ? leadSource.trim()
+      : leadSource !== undefined
+        ? String(leadSource)
+        : "";
+  const projectSource = data.projectId ?? data.project_id;
+  const projectId =
+    typeof projectSource === "string" && projectSource.trim()
+      ? projectSource.trim()
+      : projectSource !== undefined
+        ? String(projectSource)
+        : "";
+  const idSource = data.id ?? leadId;
+  const id =
+    typeof idSource === "string" && idSource.trim()
+      ? idSource.trim()
+      : `leadrem_${createId(8)}`;
+  const statusSource = data.status;
+  const status: LeadReminderRecord["status"] =
+    statusSource === "notified" || statusSource === "resolved" ? statusSource : "pending";
+  const notifiedSource = data.notifiedCount ?? data.notified_count ?? data.count;
+  const notifiedCount =
+    typeof notifiedSource === "number" && Number.isFinite(notifiedSource)
+      ? Math.max(0, Math.floor(notifiedSource))
+      : 0;
+  const createdSource = data.createdAt ?? data.created_at;
+  const createdAt =
+    typeof createdSource === "string" && createdSource.trim() && !Number.isNaN(Date.parse(createdSource))
+      ? new Date(createdSource).toISOString()
+      : nowIso;
+  const updatedSource = data.updatedAt ?? data.updated_at;
+  const updatedAt =
+    typeof updatedSource === "string" && updatedSource.trim() && !Number.isNaN(Date.parse(updatedSource))
+      ? new Date(updatedSource).toISOString()
+      : nowIso;
+  const lastSource = data.lastNotifiedAt ?? data.last_notified_at;
+  const lastNotifiedAt =
+    typeof lastSource === "string" && lastSource.trim() && !Number.isNaN(Date.parse(lastSource))
+      ? new Date(lastSource).toISOString()
+      : lastSource === null
+        ? null
+        : undefined;
+  return {
+    id,
+    leadId,
+    projectId,
+    status,
+    notifiedCount,
+    createdAt,
+    updatedAt,
+    lastNotifiedAt,
+  };
+};
+
+const normalizePaymentReminderRecord = (
+  input: PaymentReminderRecord | Record<string, unknown>,
+): PaymentReminderRecord => {
+  const data = input as Record<string, unknown>;
+  const nowIso = new Date().toISOString();
+  const projectSource = data.projectId ?? data.project_id;
+  const projectId =
+    typeof projectSource === "string" && projectSource.trim()
+      ? projectSource.trim()
+      : projectSource !== undefined
+        ? String(projectSource)
+        : "";
+  const idSource = data.id ?? projectId;
+  const id =
+    typeof idSource === "string" && idSource.trim()
+      ? idSource.trim()
+      : `payrem_${createId(8)}`;
+  const statusSource = data.status;
+  const status: PaymentReminderRecord["status"] =
+    statusSource === "upcoming" || statusSource === "overdue" ? statusSource : "pending";
+  const dueSource = data.dueDate ?? data.due_date ?? data.nextPaymentDate ?? data.next_payment_date;
+  const dueDate =
+    typeof dueSource === "string" && dueSource.trim() && !Number.isNaN(Date.parse(dueSource))
+      ? new Date(dueSource).toISOString()
+      : dueSource === null
+        ? null
+        : undefined;
+  const notifiedSource = data.notifiedCount ?? data.notified_count ?? data.count;
+  const notifiedCount =
+    typeof notifiedSource === "number" && Number.isFinite(notifiedSource)
+      ? Math.max(0, Math.floor(notifiedSource))
+      : 0;
+  const createdSource = data.createdAt ?? data.created_at;
+  const createdAt =
+    typeof createdSource === "string" && createdSource.trim() && !Number.isNaN(Date.parse(createdSource))
+      ? new Date(createdSource).toISOString()
+      : nowIso;
+  const updatedSource = data.updatedAt ?? data.updated_at;
+  const updatedAt =
+    typeof updatedSource === "string" && updatedSource.trim() && !Number.isNaN(Date.parse(updatedSource))
+      ? new Date(updatedSource).toISOString()
+      : nowIso;
+  const lastSource = data.lastNotifiedAt ?? data.last_notified_at;
+  const lastNotifiedAt =
+    typeof lastSource === "string" && lastSource.trim() && !Number.isNaN(Date.parse(lastSource))
+      ? new Date(lastSource).toISOString()
+      : lastSource === null
+        ? null
+        : undefined;
+  return {
+    id,
+    projectId,
+    status,
+    dueDate,
+    notifiedCount,
+    createdAt,
+    updatedAt,
+    lastNotifiedAt,
+  };
+};
+
+export const listLeadReminders = async (env: EnvBindings): Promise<LeadReminderRecord[]> => {
+  const stored = await readJsonFromR2<LeadReminderRecord[] | Record<string, unknown>[]>(
+    env,
+    LEAD_REMINDER_INDEX_KEY,
+    [],
+  );
+  return stored
+    .map((record) => normalizeLeadReminderRecord(record))
+    .filter((record) => record.leadId && record.projectId);
+};
+
+export const saveLeadReminders = async (
+  env: EnvBindings,
+  reminders: LeadReminderRecord[],
+): Promise<void> => {
+  const normalized = reminders
+    .map((record) => normalizeLeadReminderRecord(record))
+    .filter((record) => record.leadId && record.projectId);
+  await writeJsonToR2(env, LEAD_REMINDER_INDEX_KEY, normalized);
+  await syncKvRecords({
+    env,
+    indexKey: LEAD_REMINDER_KV_INDEX_KEY,
+    prefix: LEAD_REMINDER_KV_PREFIX,
+    items: normalized,
+    getId: (record) => record.id,
+    serialize: (record) => ({
+      id: record.id,
+      lead_id: record.leadId,
+      project_id: record.projectId,
+      status: record.status,
+      notified_count: record.notifiedCount,
+      last_notified_at: record.lastNotifiedAt ?? null,
+      created_at: record.createdAt,
+      updated_at: record.updatedAt,
+    }),
+  });
+};
+
+export const clearLeadReminder = async (env: EnvBindings, leadId: string): Promise<void> => {
+  if (!leadId) {
+    return;
+  }
+  const reminders = await listLeadReminders(env);
+  const filtered = reminders.filter((record) => record.leadId !== leadId);
+  if (filtered.length === reminders.length) {
+    return;
+  }
+  await saveLeadReminders(env, filtered);
+};
+
+export const clearLeadRemindersByProject = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<void> => {
+  if (!projectId) {
+    return;
+  }
+  const reminders = await listLeadReminders(env);
+  const filtered = reminders.filter((record) => record.projectId !== projectId);
+  if (filtered.length === reminders.length) {
+    return;
+  }
+  await saveLeadReminders(env, filtered);
+};
+
+export const listPaymentReminders = async (env: EnvBindings): Promise<PaymentReminderRecord[]> => {
+  const stored = await readJsonFromR2<PaymentReminderRecord[] | Record<string, unknown>[]>(
+    env,
+    PAYMENT_REMINDER_INDEX_KEY,
+    [],
+  );
+  return stored
+    .map((record) => normalizePaymentReminderRecord(record))
+    .filter((record) => record.projectId);
+};
+
+export const savePaymentReminders = async (
+  env: EnvBindings,
+  reminders: PaymentReminderRecord[],
+): Promise<void> => {
+  const normalized = reminders
+    .map((record) => normalizePaymentReminderRecord(record))
+    .filter((record) => record.projectId);
+  await writeJsonToR2(env, PAYMENT_REMINDER_INDEX_KEY, normalized);
+  await syncKvRecords({
+    env,
+    indexKey: PAYMENT_REMINDER_KV_INDEX_KEY,
+    prefix: PAYMENT_REMINDER_KV_PREFIX,
+    items: normalized,
+    getId: (record) => record.id,
+    serialize: (record) => ({
+      id: record.id,
+      project_id: record.projectId,
+      status: record.status,
+      due_date: record.dueDate ?? null,
+      notified_count: record.notifiedCount,
+      last_notified_at: record.lastNotifiedAt ?? null,
+      created_at: record.createdAt,
+      updated_at: record.updatedAt,
+    }),
+  });
+};
+
+export const clearPaymentReminder = async (env: EnvBindings, projectId: string): Promise<void> => {
+  if (!projectId) {
+    return;
+  }
+  const reminders = await listPaymentReminders(env);
+  const filtered = reminders.filter((record) => record.projectId !== projectId);
+  if (filtered.length === reminders.length) {
+    return;
+  }
+  await savePaymentReminders(env, filtered);
 };
 
 export const listUsers = async (env: EnvBindings): Promise<UserRecord[]> => {

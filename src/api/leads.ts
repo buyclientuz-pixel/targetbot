@@ -1,5 +1,5 @@
 import { jsonResponse, parseJsonRequest } from "../utils/http";
-import { EnvBindings, listLeads, loadProject, saveLeads } from "../utils/storage";
+import { EnvBindings, listLeads, loadProject, saveLeads, clearLeadReminder } from "../utils/storage";
 import { ApiError, ApiSuccess, LeadRecord } from "../types";
 import { createId } from "../utils/ids";
 import { sendTelegramMessage } from "../utils/telegram";
@@ -89,6 +89,11 @@ export const handleLeadUpdateStatus = async (
     }
     leads[index] = { ...leads[index], status: body.status };
     await saveLeads(bindings, body.projectId, leads);
+    if (body.status === "done") {
+      await clearLeadReminder(bindings, leadId).catch((error) => {
+        console.warn("Failed to clear lead reminder", leadId, error);
+      });
+    }
     return jsonResponse({ ok: true, data: leads[index] });
   } catch (error) {
     return jsonResponse({ ok: false, error: (error as Error).message }, { status: 400 });

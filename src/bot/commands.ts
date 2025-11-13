@@ -5,6 +5,7 @@ import { escapeAttribute, escapeHtml } from "../utils/html";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
 import {
   appendCommandLog,
+  clearLeadReminder,
   clearPendingBillingOperation,
   clearPendingMetaLink,
   clearPendingUserOperation,
@@ -33,6 +34,7 @@ import {
   MetaLinkFlow,
   PendingMetaLinkState,
   updateProjectRecord,
+  clearPaymentReminder,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
@@ -1241,6 +1243,11 @@ const toggleLeadStatus = async (
   const updated: LeadRecord = { ...current, status: nextStatus };
   leads[index] = updated;
   await saveLeads(env, projectId, leads);
+  if (nextStatus === "done") {
+    await clearLeadReminder(env, leadId).catch((error) => {
+      console.warn("Failed to clear lead reminder", projectId, leadId, error);
+    });
+  }
   return updated;
 };
 
@@ -1503,6 +1510,9 @@ const handleProjectBillingStatus = async (
     await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
     return;
   }
+  await clearPaymentReminder(context.env, projectId).catch((error) => {
+    console.warn("Failed to clear payment reminder from bot", projectId, error);
+  });
   await sendMessage(
     context,
     `✅ Статус биллинга обновлён: ${escapeHtml(updated.name)} — ${BILLING_STATUS_LABELS[status]}.`,
@@ -1588,6 +1598,9 @@ const handleProjectBillingNext = async (
     await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
     return;
   }
+  await clearPaymentReminder(context.env, projectId).catch((error) => {
+    console.warn("Failed to clear payment reminder from bot", projectId, error);
+  });
   if (adminId) {
     await clearPendingBillingOperation(context.env, adminId).catch(() => undefined);
   }

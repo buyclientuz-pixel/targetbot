@@ -68,6 +68,7 @@ import { projectBilling, summarizeProjects, sortProjectSummaries } from "./utils
 import { ProjectSummary } from "./types";
 import { handleTelegramUpdate } from "./bot/router";
 import { handleMetaWebhook } from "./api/meta-webhook";
+import { runReminderSweep } from "./utils/reminders";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -405,6 +406,18 @@ export default {
     } catch (error) {
       console.error("Unhandled error", error);
       return jsonResponse({ ok: false, error: (error as Error).message }, { status: 500 });
+    }
+  },
+
+  async scheduled(_event: unknown, env: unknown): Promise<void> {
+    try {
+      const bindings = ensureEnv(env);
+      const result = await runReminderSweep(bindings);
+      if (result.leadRemindersSent || result.paymentRemindersSent) {
+        console.log("reminders:sent", result);
+      }
+    } catch (error) {
+      console.error("reminders:error", error);
     }
   },
 };
