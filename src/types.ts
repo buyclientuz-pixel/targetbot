@@ -105,6 +105,47 @@ export type PortalMetricKey =
   | "installs"
   | "cpi";
 
+export type ReportRoutingTarget = "chat" | "admin" | "both";
+
+export interface ProjectAutoReportSettings {
+  enabled: boolean;
+  times: string[];
+  sendTarget: ReportRoutingTarget;
+  alertsTarget: ReportRoutingTarget;
+  mondayDoubleReport: boolean;
+  lastSentDaily?: string | null;
+  lastSentMonday?: string | null;
+}
+
+export interface ProjectAlertSettings {
+  payment: boolean;
+  budget: boolean;
+  metaApi: boolean;
+  pause: boolean;
+  target: ReportRoutingTarget;
+}
+
+export interface ProjectKpiSettings {
+  default: PortalMetricKey[];
+  perCampaign: Record<string, PortalMetricKey[]>;
+}
+
+export interface ProjectSettingsRecord {
+  autoReport: ProjectAutoReportSettings;
+  alerts: ProjectAlertSettings;
+  kpi: ProjectKpiSettings;
+  billing: {
+    nextPaymentDate: string | null;
+    status: string;
+  };
+  meta: {
+    adAccountId: string;
+    status: string;
+    name: string;
+    currency: string;
+  };
+}
+
 export interface ProjectPortalRecord {
   portalId: string;
   projectId: string;

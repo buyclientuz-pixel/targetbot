@@ -4,6 +4,7 @@ import {
   runCommand,
   resolveCommand,
   handleProjectCallback,
+  handleAutoReportCallback,
   handleMetaCallback,
   handlePendingBillingInput,
   handlePendingProjectEditInput,
@@ -216,6 +217,13 @@ const handleUpdate = async (context: BotContext): Promise<void> => {
     }
     const handledMeta = await handleMetaCallback(context, callbackData);
     if (handledMeta) {
+      if (context.update.callback_query?.id) {
+        await answerCallbackQuery(context.env, context.update.callback_query.id);
+      }
+      return;
+    }
+    const handledAuto = await handleAutoReportCallback(context, callbackData);
+    if (handledAuto) {
       if (context.update.callback_query?.id) {
         await answerCallbackQuery(context.env, context.update.callback_query.id);
       }

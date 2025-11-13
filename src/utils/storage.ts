@@ -20,6 +20,7 @@ import {
   ProjectDeletionSummary,
   ProjectPortalRecord,
   ProjectRecord,
+  ProjectSettingsRecord,
   ReportFilters,
   ReportRecord,
   ReportScheduleRecord,
@@ -28,6 +29,7 @@ import {
   TelegramGroupLinkRecord,
   UserRecord,
   QaRunRecord,
+  ReportRoutingTarget,
 } from "../types";
 import { ensureTelegramUrl, ensureTelegramUrlFromId } from "./chat-links";
 import { createId } from "./ids";
@@ -70,6 +72,7 @@ const PAYMENT_REMINDER_KV_INDEX_KEY = "reminders:payment:index";
 const REPORT_SCHEDULE_KV_INDEX_KEY = "reports:schedule:index";
 const REPORT_DELIVERY_KV_INDEX_KEY = "reports:delivery:index";
 const QA_RUN_KV_INDEX_KEY = "qa:runs:index";
+const PROJECT_SETTINGS_KV_INDEX_KEY = "project_settings:index";
 
 const USER_KV_PREFIX = "users:";
 const PROJECT_KV_PREFIX = "project:";
@@ -91,6 +94,7 @@ const CAMPAIGN_KPIS_DIR = "campaigns/kpis/";
 const CAMPAIGN_OBJECTIVE_KV_PREFIX = "campaign_objective:";
 const CAMPAIGN_KPI_KV_PREFIX = "project_campaign_kpis:";
 const KPI_PENDING_PREFIX = "kpi/pending/";
+const PROJECT_SETTINGS_KV_PREFIX = "project_settings:";
 
 const PORTAL_ALLOWED_METRICS: PortalMetricKey[] = [
   "leads_total",
@@ -129,6 +133,233 @@ const sanitizePortalMetrics = (values: unknown): PortalMetricKey[] => {
 
 const campaignObjectivesKey = (projectId: string): string => `${CAMPAIGN_OBJECTIVES_DIR}${projectId}.json`;
 const campaignKpisKey = (projectId: string): string => `${CAMPAIGN_KPIS_DIR}${projectId}.json`;
+
+const ROUTING_TARGETS: ReportRoutingTarget[] = ["chat", "admin", "both"];
+
+const DEFAULT_PROJECT_SETTINGS: ProjectSettingsRecord = {
+  autoReport: {
+    enabled: false,
+    times: ["10:00"],
+    sendTarget: "chat",
+    alertsTarget: "admin",
+    mondayDoubleReport: false,
+    lastSentDaily: null,
+    lastSentMonday: null,
+  },
+  alerts: {
+    payment: true,
+    budget: true,
+    metaApi: true,
+    pause: true,
+    target: "admin",
+  },
+  kpi: {
+    default: ["spend", "leads", "cpa"],
+    perCampaign: {},
+  },
+  billing: {
+    nextPaymentDate: null,
+    status: "pending",
+  },
+  meta: {
+    adAccountId: "",
+    status: "unknown",
+    name: "",
+    currency: "USD",
+  },
+};
+
+const normalizeTimeValue = (value: unknown): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  const hours = Math.max(0, Math.min(23, Number(match[1])));
+  const minutes = Math.max(0, Math.min(59, Number(match[2])));
+  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+};
+
+const sanitizeTimeList = (value: unknown, fallback: string[]): string[] => {
+  if (!Array.isArray(value)) {
+    return [...fallback];
+  }
+  const times = new Set<string>();
+  value.forEach((entry) => {
+    const normalized = normalizeTimeValue(entry);
+    if (normalized) {
+      times.add(normalized);
+    }
+  });
+  if (!times.size) {
+    return [...fallback];
+  }
+  return Array.from(times).sort();
+};
+
+const sanitizeRoutingTarget = (value: unknown, fallback: ReportRoutingTarget): ReportRoutingTarget => {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (ROUTING_TARGETS.includes(normalized as ReportRoutingTarget)) {
+    return normalized as ReportRoutingTarget;
+  }
+  return fallback;
+};
+
+const sanitizeBoolean = (value: unknown, fallback: boolean): boolean => {
+  if (value === true) {
+    return true;
+  }
+  if (value === false) {
+    return false;
+  }
+  return fallback;
+};
+
+const sanitizeMetricList = (value: unknown, fallback: PortalMetricKey[]): PortalMetricKey[] => {
+  if (!Array.isArray(value)) {
+    return [...fallback];
+  }
+  const metrics = value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter((entry): entry is PortalMetricKey => PORTAL_ALLOWED_METRICS.includes(entry as PortalMetricKey));
+  return metrics.length ? metrics : [...fallback];
+};
+
+const sanitizePerCampaignMetrics = (value: unknown): Record<string, PortalMetricKey[]> => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const result: Record<string, PortalMetricKey[]> = {};
+  Object.entries(value as Record<string, unknown>).forEach(([campaignId, metrics]) => {
+    const id = campaignId.trim();
+    if (!id) {
+      return;
+    }
+    const sanitized = sanitizeMetricList(metrics, [] as PortalMetricKey[]);
+    if (sanitized.length) {
+      result[id] = sanitized;
+    }
+  });
+  return result;
+};
+
+const sanitizeProjectSettingsRecord = (raw: unknown): ProjectSettingsRecord => {
+  if (!raw || typeof raw !== "object") {
+    return JSON.parse(JSON.stringify(DEFAULT_PROJECT_SETTINGS)) as ProjectSettingsRecord;
+  }
+  const source = raw as Record<string, unknown>;
+  const autoSource = (source.auto_report ?? source.autoReport ?? {}) as Record<string, unknown>;
+  const alertsSource = (source.alerts ?? {}) as Record<string, unknown>;
+  const kpiSource = (source.kpi ?? {}) as Record<string, unknown>;
+  const billingSource = (source.billing ?? {}) as Record<string, unknown>;
+  const metaSource = (source.meta ?? {}) as Record<string, unknown>;
+
+  const fallback = DEFAULT_PROJECT_SETTINGS;
+
+  const autoTimes = sanitizeTimeList(autoSource.times, fallback.autoReport.times);
+  const autoEnabled = sanitizeBoolean(autoSource.enabled, fallback.autoReport.enabled);
+  const mondayMode = sanitizeBoolean(
+    autoSource.monday_double_report ?? autoSource.mondayDoubleReport,
+    fallback.autoReport.mondayDoubleReport,
+  );
+  const sendTarget = sanitizeRoutingTarget(autoSource.send_target ?? autoSource.sendTarget, fallback.autoReport.sendTarget);
+  const alertsTarget = sanitizeRoutingTarget(
+    autoSource.alerts_target ?? autoSource.alertsTarget ?? alertsSource.route,
+    fallback.autoReport.alertsTarget,
+  );
+  const paymentAlert = sanitizeBoolean(alertsSource.payment, fallback.alerts.payment);
+  const budgetAlert = sanitizeBoolean(alertsSource.budget, fallback.alerts.budget);
+  const metaAlert = sanitizeBoolean(alertsSource.meta_api ?? alertsSource.metaApi, fallback.alerts.metaApi);
+  const pauseAlert = sanitizeBoolean(alertsSource.pause, fallback.alerts.pause);
+  const alertsRoute = sanitizeRoutingTarget(alertsSource.route ?? alertsTarget, fallback.alerts.target);
+  const defaultMetrics = sanitizeMetricList(kpiSource.default, fallback.kpi.default);
+  const perCampaign = sanitizePerCampaignMetrics(kpiSource.per_campaign ?? kpiSource.perCampaign);
+
+  const nextPayment = typeof billingSource.next_payment_date === "string" ? billingSource.next_payment_date : null;
+  const billingStatus = typeof billingSource.status === "string" ? billingSource.status : fallback.billing.status;
+
+  const metaAccountId = typeof metaSource.ad_account_id === "string" ? metaSource.ad_account_id : "";
+  const metaStatus = typeof metaSource.status === "string" ? metaSource.status : fallback.meta.status;
+  const metaName = typeof metaSource.name === "string" ? metaSource.name : fallback.meta.name;
+  const metaCurrency = typeof metaSource.currency === "string" ? metaSource.currency : fallback.meta.currency;
+
+  const lastDaily = typeof autoSource.last_sent_daily === "string" ? autoSource.last_sent_daily : null;
+  const lastMonday = typeof autoSource.last_sent_monday === "string" ? autoSource.last_sent_monday : null;
+
+  return {
+    autoReport: {
+      enabled: autoEnabled,
+      times: autoTimes,
+      sendTarget,
+      alertsTarget,
+      mondayDoubleReport: mondayMode,
+      lastSentDaily: lastDaily,
+      lastSentMonday: lastMonday,
+    },
+    alerts: {
+      payment: paymentAlert,
+      budget: budgetAlert,
+      metaApi: metaAlert,
+      pause: pauseAlert,
+      target: alertsRoute,
+    },
+    kpi: {
+      default: defaultMetrics,
+      perCampaign,
+    },
+    billing: {
+      nextPaymentDate: nextPayment,
+      status: billingStatus,
+    },
+    meta: {
+      adAccountId: metaAccountId,
+      status: metaStatus,
+      name: metaName,
+      currency: metaCurrency,
+    },
+  };
+};
+
+const serializeProjectSettingsRecord = (record: ProjectSettingsRecord): JsonObject => {
+  return {
+    auto_report: {
+      enabled: record.autoReport.enabled,
+      times: record.autoReport.times,
+      send_target: record.autoReport.sendTarget,
+      alerts_target: record.autoReport.alertsTarget,
+      monday_double_report: record.autoReport.mondayDoubleReport,
+      last_sent_daily: record.autoReport.lastSentDaily ?? null,
+      last_sent_monday: record.autoReport.lastSentMonday ?? null,
+    },
+    alerts: {
+      payment: record.alerts.payment,
+      budget: record.alerts.budget,
+      meta_api: record.alerts.metaApi,
+      pause: record.alerts.pause,
+      route: record.alerts.target,
+    },
+    kpi: {
+      default: record.kpi.default,
+      per_campaign: record.kpi.perCampaign,
+    },
+    billing: {
+      next_payment_date: record.billing.nextPaymentDate,
+      status: record.billing.status,
+    },
+    meta: {
+      ad_account_id: record.meta.adAccountId,
+      status: record.meta.status,
+      name: record.meta.name,
+      currency: record.meta.currency,
+    },
+  } as JsonObject;
+};
 
 const sanitizeTelegramLink = (value: unknown): string | undefined => {
   if (typeof value === "number") {
@@ -877,6 +1108,43 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
 export const loadProject = async (env: EnvBindings, projectId: string): Promise<ProjectRecord | null> => {
   const projects = await listProjects(env);
   return projects.find((project) => project.id === projectId) || null;
+};
+
+const projectSettingsKey = (projectId: string): string => `${PROJECT_SETTINGS_KV_PREFIX}${projectId}`;
+
+export const loadProjectSettingsRecord = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<ProjectSettingsRecord> => {
+  try {
+    const stored = await env.DB.get(projectSettingsKey(projectId));
+    if (!stored) {
+      return sanitizeProjectSettingsRecord(null);
+    }
+    try {
+      const parsed = JSON.parse(stored);
+      return sanitizeProjectSettingsRecord(parsed);
+    } catch (error) {
+      console.warn("Failed to parse project settings", projectId, error);
+      return sanitizeProjectSettingsRecord(null);
+    }
+  } catch (error) {
+    console.warn("Failed to load project settings", projectId, error);
+    return sanitizeProjectSettingsRecord(null);
+  }
+};
+
+export const saveProjectSettingsRecord = async (
+  env: EnvBindings,
+  projectId: string,
+  record: ProjectSettingsRecord,
+): Promise<ProjectSettingsRecord> => {
+  const sanitized = sanitizeProjectSettingsRecord(record);
+  await env.DB.put(projectSettingsKey(projectId), JSON.stringify(serializeProjectSettingsRecord(sanitized)));
+  const index = new Set(await readKvIndex(env, PROJECT_SETTINGS_KV_INDEX_KEY));
+  index.add(projectId);
+  await writeKvIndex(env, PROJECT_SETTINGS_KV_INDEX_KEY, Array.from(index).sort((a, b) => a.localeCompare(b, "en")));
+  return sanitized;
 };
 
 export const updateProjectRecord = async (

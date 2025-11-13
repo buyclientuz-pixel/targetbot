@@ -55,6 +55,8 @@ import {
   PendingMetaLinkState,
   updateProjectRecord,
   clearPaymentReminder,
+  loadProjectSettingsRecord,
+  saveProjectSettingsRecord,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage, sendTelegramDocument } from "../utils/telegram";
@@ -85,6 +87,8 @@ import {
   ProjectSettings,
   ProjectReportFrequency,
   ProjectReportPreferences,
+  ProjectSettingsRecord,
+  ReportRoutingTarget,
   TelegramGroupLinkRecord,
   UserRecord,
   UserRole,
@@ -346,6 +350,65 @@ const sendPlainMessage = async (context: BotContext, text: string): Promise<void
     threadId: context.threadId,
     text,
   });
+};
+
+const AUTO_REPORT_TIME_OPTIONS = ["10:00", "13:00", "15:00", "20:00"] as const;
+
+const ROUTE_TARGETS: ReportRoutingTarget[] = ["chat", "admin", "both"];
+
+const REPORT_ROUTE_LABEL: Record<ReportRoutingTarget, string> = {
+  chat: "В чат",
+  admin: "Админу",
+  both: "В чат и админу",
+};
+
+const REPORT_ROUTE_SUMMARY: Record<ReportRoutingTarget, string> = {
+  chat: "в чат",
+  admin: "админу",
+  both: "в чат и админу",
+};
+
+type AlertToggleKey = "payment" | "budget" | "meta" | "pause";
+
+const ALERT_TOGGLE_CONFIG: Record<AlertToggleKey, { label: string; accessor: (settings: ProjectSettingsRecord) => boolean } & {
+  setter: (settings: ProjectSettingsRecord, next: boolean) => void;
+}> = {
+  payment: {
+    label: "Оплата",
+    accessor: (settings) => settings.alerts.payment,
+    setter: (settings, next) => {
+      settings.alerts.payment = next;
+    },
+  },
+  budget: {
+    label: "Бюджет",
+    accessor: (settings) => settings.alerts.budget,
+    setter: (settings, next) => {
+      settings.alerts.budget = next;
+    },
+  },
+  meta: {
+    label: "Meta API",
+    accessor: (settings) => settings.alerts.metaApi,
+    setter: (settings, next) => {
+      settings.alerts.metaApi = next;
+    },
+  },
+  pause: {
+    label: "Пауза",
+    accessor: (settings) => settings.alerts.pause,
+    setter: (settings, next) => {
+      settings.alerts.pause = next;
+    },
+  },
+};
+
+const chunkButtons = <T>(values: T[], size: number): T[][] => {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
 };
 
 const ensureAdminUser = async (context: BotContext): Promise<void> => {
@@ -640,6 +703,159 @@ const resolveProjectChatUrl = (summary: ProjectSummary): string | undefined => {
   return resolveChatLink(summary.telegramLink, summary.telegramChatId ?? summary.chatId ?? undefined);
 };
 
+const normalizeTimeSelection = (times: string[]): string[] => {
+  const unique = new Set(times.map((time) => time.trim()));
+  const ordered: string[] = [...AUTO_REPORT_TIME_OPTIONS];
+  const rest = Array.from(unique).filter((time) => !ordered.includes(time));
+  return [
+    ...ordered.filter((time) => unique.has(time)),
+    ...rest.sort((a, b) => a.localeCompare(b, "ru-RU")),
+  ];
+};
+
+const buildAutoReportLines = (
+  summary: ProjectSummary,
+  settings: ProjectSettingsRecord,
+  status?: string,
+): string[] => {
+  const auto = settings.autoReport;
+  const alerts = settings.alerts;
+  const lines: string[] = [`⏰ Авто-отчёты — <b>${escapeHtml(summary.name)}</b>`];
+  if (status) {
+    lines.splice(1, 0, status);
+  }
+  lines.push("", `Статус: ${auto.enabled ? "[✔ Включены]" : "[✖ Выключены]"}`);
+  const selectedTimes = normalizeTimeSelection(auto.times);
+  lines.push(
+    "",
+    "🕒 Время отправки:",
+    AUTO_REPORT_TIME_OPTIONS.map((time) => `${auto.times.includes(time) ? "[✔]" : "[ ]"} ${time}`).join("   "),
+  );
+  const additionalTimes = selectedTimes.filter((time) => !AUTO_REPORT_TIME_OPTIONS.includes(time as typeof AUTO_REPORT_TIME_OPTIONS[number]));
+  if (additionalTimes.length) {
+    lines.push(`Дополнительно: ${additionalTimes.map((time) => `[✔] ${time}`).join(", ")}`);
+  }
+  lines.push(
+    "",
+    `📅 Понедельник: ${auto.mondayDoubleReport ? "[✔] Сегодня + неделя" : "[ ] Сегодня + неделя"}`,
+  );
+  lines.push("", "📡 Маршрут отчётов:");
+  lines.push(
+    ROUTE_TARGETS.map((target) => `${auto.sendTarget === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`).join(
+      "   ",
+    ),
+  );
+  lines.push("", "📢 Алерты:");
+  (Object.keys(ALERT_TOGGLE_CONFIG) as AlertToggleKey[]).forEach((key) => {
+    const config = ALERT_TOGGLE_CONFIG[key];
+    lines.push(`${config.accessor(settings) ? "[✔]" : "[ ]"} ${config.label}`);
+  });
+  lines.push("", "📡 Маршрут алертов:");
+  lines.push(
+    ROUTE_TARGETS.map((target) => `${alerts.target === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`).join(
+      "   ",
+    ),
+  );
+  if (auto.lastSentDaily) {
+    lines.push("", `Последний автоотчёт: ${escapeHtml(formatDateTime(auto.lastSentDaily))}`);
+  }
+  lines.push(
+    "",
+    "Используйте кнопки ниже, чтобы настроить расписание, маршруты доставки и алерты.",
+  );
+  return lines;
+};
+
+const buildAutoReportMarkup = (projectId: string, settings: ProjectSettingsRecord) => {
+  const auto = settings.autoReport;
+  const timeButtons = AUTO_REPORT_TIME_OPTIONS.map((time) => ({
+    text: `${auto.times.includes(time) ? "✅" : "☑️"} ${time}`,
+    callback_data: `auto_time_toggle:${projectId}:${time}`,
+  }));
+  const timeRows = chunkButtons(timeButtons, 2);
+  const alertButtons = (Object.keys(ALERT_TOGGLE_CONFIG) as AlertToggleKey[]).map((key) => {
+    const config = ALERT_TOGGLE_CONFIG[key];
+    return {
+      text: `${config.accessor(settings) ? "✅" : "☑️"} ${config.label}`,
+      callback_data: `alert_toggle_${key}:${projectId}`,
+    };
+  });
+  const alertRows = chunkButtons(alertButtons, 2);
+  const reportRouteRow = ROUTE_TARGETS.map((target) => ({
+    text: `${auto.sendTarget === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`,
+    callback_data: `auto_send_target:${projectId}:${target}`,
+  }));
+  const alertRouteRow = ROUTE_TARGETS.map((target) => ({
+    text: `${settings.alerts.target === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`,
+    callback_data: `alert_route:${projectId}:${target}`,
+  }));
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: auto.enabled ? "✖ Выключить автоотчёты" : "✅ Включить автоотчёты",
+          callback_data: `auto_toggle:${projectId}`,
+        },
+      ],
+      ...timeRows,
+      [
+        {
+          text: auto.mondayDoubleReport
+            ? "✅ Понедельник: сегодня + неделя"
+            : "☑️ Понедельник: сегодня + неделя",
+          callback_data: `auto_monday_toggle:${projectId}`,
+        },
+      ],
+      reportRouteRow,
+      ...alertRows,
+      alertRouteRow,
+      [{ text: "🔄 Отправить отчёт сейчас", callback_data: `auto_send_now:${projectId}` }],
+      [{ text: "⬅ Назад", callback_data: `proj:view:${projectId}` }],
+    ],
+  };
+};
+
+const handleAutoReportMenu = async (
+  context: BotContext,
+  projectId: string,
+  options: { status?: string; settings?: ProjectSettingsRecord } = {},
+): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const settings = options.settings ?? (await loadProjectSettingsRecord(context.env, projectId));
+  const lines = buildAutoReportLines(summary, settings, options.status);
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildAutoReportMarkup(projectId, settings) });
+};
+
+const normalizeTimeInput = (value: string | undefined): string | null => {
+  if (!value) {
+    return null;
+  }
+  const match = value.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) {
+    return null;
+  }
+  const hours = Math.min(23, Math.max(0, Number(match[1])));
+  const minutes = Math.min(59, Math.max(0, Number(match[2])));
+  return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+};
+
+const mutateProjectSettings = async (
+  context: BotContext,
+  projectId: string,
+  mutator: (draft: ProjectSettingsRecord) => string | undefined,
+): Promise<void> => {
+  const current = await loadProjectSettingsRecord(context.env, projectId);
+  const draft = JSON.parse(JSON.stringify(current)) as ProjectSettingsRecord;
+  const status = mutator(draft);
+  draft.autoReport.times = normalizeTimeSelection(draft.autoReport.times);
+  draft.autoReport.alertsTarget = draft.alerts.target;
+  const saved = await saveProjectSettingsRecord(context.env, projectId, draft);
+  await handleAutoReportMenu(context, projectId, { status, settings: saved });
+};
+
 const buildProjectActionsMarkup = (summary: ProjectSummary) => {
   const chatUrl = resolveProjectChatUrl(summary);
   return {
@@ -663,16 +879,190 @@ const buildProjectActionsMarkup = (summary: ProjectSummary) => {
         { text: "💳 Оплата", callback_data: `proj:billing:${summary.id}` },
       ],
       [
+        { text: "⏰ Авто-отчёты", callback_data: `auto_menu:${summary.id}` },
         { text: "🎛 KPI кампаний", callback_data: `report:kpi_open:${summary.id}` },
-        { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
       ],
       [
+        { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
         { text: "❌ Удалить", callback_data: `proj:delete:${summary.id}` },
-        { text: "⬅ К списку", callback_data: "cmd:projects" },
       ],
-      [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+      [
+        { text: "⬅ К списку", callback_data: "cmd:projects" },
+        { text: "🏠 Меню", callback_data: "cmd:menu" },
+      ],
     ],
   };
+};
+
+const handleAutoReportToggle = async (context: BotContext, projectId: string): Promise<void> => {
+  await mutateProjectSettings(context, projectId, (draft) => {
+    draft.autoReport.enabled = !draft.autoReport.enabled;
+    if (draft.autoReport.enabled && draft.autoReport.times.length === 0) {
+      draft.autoReport.times = [AUTO_REPORT_TIME_OPTIONS[0]];
+    }
+    return draft.autoReport.enabled ? "✅ Автоотчёты включены" : "⏸ Автоотчёты выключены";
+  });
+};
+
+const handleAutoReportTimeToggle = async (
+  context: BotContext,
+  projectId: string,
+  timeValue: string | undefined,
+): Promise<void> => {
+  const normalized = normalizeTimeInput(timeValue);
+  if (!normalized) {
+    await handleAutoReportMenu(context, projectId, { status: "❌ Неверный формат времени" });
+    return;
+  }
+  await mutateProjectSettings(context, projectId, (draft) => {
+    const current = new Set(draft.autoReport.times);
+    const existed = current.has(normalized);
+    if (existed) {
+      current.delete(normalized);
+    } else {
+      current.add(normalized);
+    }
+    draft.autoReport.times = Array.from(current);
+    if (!draft.autoReport.times.length && draft.autoReport.enabled) {
+      draft.autoReport.enabled = false;
+      return "⏸ Автоотчёты выключены: расписание пустое";
+    }
+    return existed ? `⏰ ${normalized} удалено` : `✅ ${normalized} добавлено`;
+  });
+};
+
+const handleAutoReportSendTarget = async (
+  context: BotContext,
+  projectId: string,
+  target: string | undefined,
+): Promise<void> => {
+  if (!target || !ROUTE_TARGETS.includes(target as ReportRoutingTarget)) {
+    await handleAutoReportMenu(context, projectId, { status: "❌ Недопустимый маршрут" });
+    return;
+  }
+  await mutateProjectSettings(context, projectId, (draft) => {
+    draft.autoReport.sendTarget = target as ReportRoutingTarget;
+    return `📡 Отчёты → ${REPORT_ROUTE_LABEL[draft.autoReport.sendTarget]}`;
+  });
+};
+
+const handleAutoReportMondayToggle = async (context: BotContext, projectId: string): Promise<void> => {
+  await mutateProjectSettings(context, projectId, (draft) => {
+    draft.autoReport.mondayDoubleReport = !draft.autoReport.mondayDoubleReport;
+    return draft.autoReport.mondayDoubleReport
+      ? "📅 По понедельникам: сегодня + неделя"
+      : "📅 По понедельникам: только сегодня";
+  });
+};
+
+const handleAlertToggle = async (
+  context: BotContext,
+  projectId: string,
+  key: AlertToggleKey,
+): Promise<void> => {
+  const config = ALERT_TOGGLE_CONFIG[key];
+  if (!config) {
+    await handleAutoReportMenu(context, projectId, { status: "❌ Опция не найдена" });
+    return;
+  }
+  await mutateProjectSettings(context, projectId, (draft) => {
+    const current = config.accessor(draft);
+    config.setter(draft, !current);
+    return `${config.label}: ${!current ? "включено" : "выключено"}`;
+  });
+};
+
+const handleAlertRoute = async (
+  context: BotContext,
+  projectId: string,
+  target: string | undefined,
+): Promise<void> => {
+  if (!target || !ROUTE_TARGETS.includes(target as ReportRoutingTarget)) {
+    await handleAutoReportMenu(context, projectId, { status: "❌ Недопустимый маршрут алертов" });
+    return;
+  }
+  await mutateProjectSettings(context, projectId, (draft) => {
+    draft.alerts.target = target as ReportRoutingTarget;
+    draft.autoReport.alertsTarget = draft.alerts.target;
+    return `📢 Алерты → ${REPORT_ROUTE_LABEL[draft.alerts.target]}`;
+  });
+};
+
+const handleAutoReportSendNow = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const settings = await loadProjectSettingsRecord(context.env, projectId);
+  if ((settings.autoReport.sendTarget === "chat" || settings.autoReport.sendTarget === "both") && !summary.telegramChatId) {
+    await handleAutoReportMenu(context, projectId, {
+      status: "❌ Чат проекта не подключён. Добавьте группу через «📲 Чат-группа».",
+    });
+    return;
+  }
+  try {
+    const result = await generateReport(context.env, {
+      type: "summary",
+      projectIds: [projectId],
+      includeMeta: true,
+      channel: "telegram",
+      triggeredBy: context.username,
+      command: "auto_report_manual",
+      datePreset: "today",
+    });
+    const reportId = result.record.id;
+    const nowIso = new Date().toISOString();
+    const adminRoute = settings.autoReport.sendTarget === "admin" || settings.autoReport.sendTarget === "both";
+    const chatRoute = settings.autoReport.sendTarget === "chat" || settings.autoReport.sendTarget === "both";
+    const asset = await getReportAsset(context.env, reportId).catch(() => null);
+    if (adminRoute && context.chatId) {
+      await sendTelegramMessage(context.env, {
+        chatId: context.chatId,
+        threadId: context.threadId,
+        text: `${result.html}\n\nID отчёта: <code>${escapeHtml(reportId)}</code>`,
+        replyMarkup: {
+          inline_keyboard: [[{ text: "⬇️ Скачать", callback_data: `report:download:${reportId}` }]],
+        },
+      });
+      if (asset) {
+        await sendTelegramDocument(context.env, {
+          chatId: context.chatId,
+          threadId: context.threadId,
+          data: asset.body,
+          fileName: `report_${reportId}.html`,
+          contentType: asset.contentType || "text/html; charset=utf-8",
+          caption: `Отчёт ${escapeHtml(summary.name)}`,
+        });
+      }
+    }
+    if (chatRoute && summary.telegramChatId) {
+      const clientChatId = summary.telegramChatId.toString();
+      await sendTelegramMessage(context.env, {
+        chatId: clientChatId,
+        text: `${result.html}\n\nОтправлено автоматически (${REPORT_ROUTE_SUMMARY[settings.autoReport.sendTarget]})`,
+      });
+      if (asset) {
+        await sendTelegramDocument(context.env, {
+          chatId: clientChatId,
+          data: asset.body,
+          fileName: `report_${reportId}.html`,
+          contentType: asset.contentType || "text/html; charset=utf-8",
+          caption: `Отчёт ${escapeHtml(summary.name)}`,
+        });
+      }
+    }
+    await mutateProjectSettings(context, projectId, (draft) => {
+      draft.autoReport.lastSentDaily = nowIso;
+      const sentDate = new Date(nowIso);
+      if (sentDate.getUTCDay() === 1) {
+        draft.autoReport.lastSentMonday = nowIso;
+      }
+      return "✅ Отчёт отправлен";
+    });
+  } catch (error) {
+    console.error("Failed to send auto report", projectId, error);
+    await handleAutoReportMenu(context, projectId, { status: "❌ Не удалось сформировать отчёт" });
+  }
 };
 
 const buildProjectBackMarkup = (projectId: string) => ({
@@ -789,6 +1179,89 @@ const formatCurrencyValue = (amount: number | undefined, currency?: string): str
     console.warn("Failed to format currency", safeCurrency, error);
     return `${amount.toFixed(2)} ${safeCurrency}`;
   }
+};
+
+export const handleAutoReportCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (!data.startsWith("auto_") && !data.startsWith("alert_")) {
+    return false;
+  }
+  await ensureAdminUser(context);
+  const [prefix, ...rest] = data.split(":");
+  if (prefix === "auto_menu") {
+    const projectId = rest[0];
+    if (!projectId) {
+      return false;
+    }
+    await handleAutoReportMenu(context, projectId);
+    await logProjectAction(context, prefix, projectId);
+    return true;
+  }
+  if (prefix === "auto_toggle") {
+    const projectId = rest[0];
+    if (!projectId) {
+      return false;
+    }
+    await handleAutoReportToggle(context, projectId);
+    await logProjectAction(context, prefix, projectId);
+    return true;
+  }
+  if (prefix === "auto_time_toggle") {
+    const projectId = rest[0];
+    const timeValue = rest.slice(1).join(":");
+    if (!projectId || !timeValue) {
+      return false;
+    }
+    await handleAutoReportTimeToggle(context, projectId, timeValue);
+    await logProjectAction(context, prefix, projectId, timeValue);
+    return true;
+  }
+  if (prefix === "auto_send_target") {
+    const [projectId, target] = rest;
+    if (!projectId) {
+      return false;
+    }
+    await handleAutoReportSendTarget(context, projectId, target);
+    await logProjectAction(context, prefix, projectId, target);
+    return true;
+  }
+  if (prefix === "auto_monday_toggle") {
+    const projectId = rest[0];
+    if (!projectId) {
+      return false;
+    }
+    await handleAutoReportMondayToggle(context, projectId);
+    await logProjectAction(context, prefix, projectId);
+    return true;
+  }
+  if (prefix === "auto_send_now") {
+    const projectId = rest[0];
+    if (!projectId) {
+      return false;
+    }
+    await handleAutoReportSendNow(context, projectId);
+    await logProjectAction(context, prefix, projectId);
+    return true;
+  }
+  if (prefix.startsWith("alert_toggle_")) {
+    const projectId = rest[0];
+    const key = prefix.replace("alert_toggle_", "") as AlertToggleKey;
+    if (!projectId || !(key in ALERT_TOGGLE_CONFIG)) {
+      return false;
+    }
+    await handleAlertToggle(context, projectId, key);
+    await logProjectAction(context, prefix, projectId);
+    return true;
+  }
+  if (prefix === "alert_route") {
+    const [projectId, target] = rest;
+    if (!projectId) {
+      return false;
+    }
+    await handleAlertRoute(context, projectId, target);
+    await logProjectAction(context, prefix, projectId, target);
+    return true;
+  }
+  return false;
 };
 
 const formatMetaSpendLabel = (amount?: number | null, currency?: string | null): string | null => {
@@ -1112,6 +1585,24 @@ const handleProjectView = async (
   );
   lines.push(describeBillingStatus(summary));
   lines.push(describePaymentSchedule(summary));
+  try {
+    const settings = await loadProjectSettingsRecord(context.env, summary.id);
+    const auto = settings.autoReport;
+    const timesLabel = auto.times.length ? auto.times.join(", ") : "нет времени";
+    const autoLabel = auto.enabled
+      ? `${timesLabel} (вкл)`
+      : "выключены";
+    lines.push(`⏰ Автоотчёты: ${escapeHtml(autoLabel)}`);
+    const alertFlags = [settings.alerts.payment, settings.alerts.budget, settings.alerts.metaApi, settings.alerts.pause].filter(
+      Boolean,
+    ).length;
+    const alertsLabel = alertFlags
+      ? `включены (${REPORT_ROUTE_SUMMARY[settings.alerts.target]})`
+      : "отключены";
+    lines.push(`📡 Алерты: ${escapeHtml(alertsLabel)}`);
+  } catch (error) {
+    console.warn("Failed to load project settings for view", summary.id, error);
+  }
   const chatUrl = resolveProjectChatUrl(summary);
   const chatLabel = summary.telegramTitle ?? (summary.telegramChatId ? `ID ${summary.telegramChatId}` : null);
   const chatLine = chatUrl
