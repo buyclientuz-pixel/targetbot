@@ -560,12 +560,24 @@ const truncateLabel = (label: string, max = 40): string => {
   return `${label.slice(0, max - 1)}…`;
 };
 
-const buildProjectListMarkup = (summaries: ProjectSummary[]) => {
+const buildProjectListMarkup = (
+  summaries: ProjectSummary[],
+  metaIndex: Map<string, MetaAccountLinkRecord>,
+) => {
   const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
   summaries.forEach((project, index) => {
+    const account = project.metaAccountId
+      ? metaIndex.get(project.metaAccountId) || metaIndex.get(project.adAccountId ?? "")
+      : undefined;
+    const spendValue = account?.spentToday ?? undefined;
+    const spendLabel =
+      account && spendValue !== undefined && spendValue !== null
+        ? formatCurrencyValue(spendValue, account.currency ?? undefined)
+        : null;
+    const suffix = spendLabel ? ` [${spendLabel}]` : "";
     keyboard.push([
       {
-        text: `${index + 1}️⃣ ${truncateLabel(project.name)}`,
+        text: `${index + 1}️⃣ ${truncateLabel(project.name)}${suffix}`,
         callback_data: `proj:view:${project.id}`,
       },
     ]);
@@ -575,27 +587,29 @@ const buildProjectListMarkup = (summaries: ProjectSummary[]) => {
   return { inline_keyboard: keyboard };
 };
 
-const buildProjectActionsMarkup = (projectId: string) => ({
+const buildProjectActionsMarkup = (summary: ProjectSummary) => ({
   inline_keyboard: [
     [
-      { text: "✏️ Изменить данные", callback_data: `proj:edit:${projectId}` },
-      { text: "📲 Чат-группа", callback_data: `proj:chat:${projectId}` },
+      { text: "✏️ Изменить данные", callback_data: `proj:edit:${summary.id}` },
+      summary.telegramLink
+        ? { text: "📲 Чат-группа", url: summary.telegramLink }
+        : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
     ],
     [
-      { text: "💬 Лиды", callback_data: `proj:leads:${projectId}` },
-      { text: "📈 Отчёт по рекламе", callback_data: `proj:report:${projectId}` },
+      { text: "💬 Лиды", callback_data: `proj:leads:${summary.id}` },
+      { text: "📈 Отчёт по рекламе", callback_data: `proj:report:${summary.id}` },
     ],
     [
-      { text: "👀 Рекламные кампании", callback_data: `proj:campaigns:${projectId}` },
-      { text: "📤 Экспорт данных", callback_data: `proj:export:${projectId}` },
+      { text: "👀 Рекламные кампании", callback_data: `proj:campaigns:${summary.id}` },
+      { text: "📤 Экспорт данных", callback_data: `proj:export:${summary.id}` },
     ],
     [
-      { text: "🧩 Портал", callback_data: `proj:portal:${projectId}` },
-      { text: "💳 Оплата", callback_data: `proj:billing:${projectId}` },
+      { text: "🧩 Портал", callback_data: `proj:portal:${summary.id}` },
+      { text: "💳 Оплата", callback_data: `proj:billing:${summary.id}` },
     ],
     [
-      { text: "⚙ Настройки", callback_data: `proj:settings:${projectId}` },
-      { text: "❌ Удалить", callback_data: `proj:delete:${projectId}` },
+      { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
+      { text: "❌ Удалить", callback_data: `proj:delete:${summary.id}` },
     ],
     [{ text: "⬅ К списку", callback_data: "cmd:projects" }],
     [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
@@ -1055,7 +1069,7 @@ const handleProjectView = async (context: BotContext, projectId: string): Promis
     );
   }
   lines.push("", "Выберите действие на кнопках ниже.");
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectActionsMarkup(projectId) });
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectActionsMarkup(summary) });
 };
 
 const handleProjectChat = async (context: BotContext, projectId: string): Promise<void> => {
@@ -1236,6 +1250,9 @@ const handleProjectReport = async (
   if (!summary) {
     return;
   }
+  const currentSettings = (summary.settings as Record<string, unknown>) ?? {};
+  const reportSettings = (currentSettings.reports as Record<string, unknown>) ?? {};
+  const lastSentAt = typeof reportSettings.lastSentAt === "string" ? reportSettings.lastSentAt : undefined;
   const period = resolveReportPeriod(periodKey);
   const accountInfo = await fetchProjectAccountInfo(context, summary, { datePreset: period.datePreset });
   const account = accountInfo.account;
@@ -1262,6 +1279,9 @@ const handleProjectReport = async (
   const periodRows: { text: string; callback_data: string }[][] = [];
   for (let i = 0; i < buttons.length; i += 2) {
     periodRows.push(buttons.slice(i, i + 2));
+  }
+  if (lastSentAt) {
+    lines.push("", `Последняя отправка: ${escapeHtml(formatDateTime(lastSentAt))}`);
   }
   periodRows.push([{ text: "📨 В чат клиента", callback_data: `proj:report-send:${projectId}:${period.key}` }]);
   periodRows.push([{ text: "⬅ К проекту", callback_data: `proj:view:${projectId}` }]);
@@ -1310,7 +1330,21 @@ const handleProjectReportSend = async (
       caption: `Отчёт по проекту ${escapeHtml(summary.name)} — ${escapeHtml(period.label)}`,
     });
   }
-  await sendMessage(context, "Отчёт отправлен в чат клиента.", { replyMarkup: buildProjectBackMarkup(projectId) });
+  const nowIso = new Date().toISOString();
+  const currentSettings = (summary.settings as Record<string, unknown>) ?? {};
+  const reportsSettings = (currentSettings.reports as Record<string, unknown>) ?? {};
+  const updatedSettings = {
+    ...currentSettings,
+    reports: {
+      ...reportsSettings,
+      lastSentAt: nowIso,
+    },
+  } as typeof summary.settings;
+  await updateProjectRecord(context.env, projectId, { settings: updatedSettings });
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, "Отправлено");
+  }
+  await handleProjectReport(context, projectId, period.key as ReportPeriodKey);
 };
 
 const campaignStatusIcon = (campaign: MetaCampaign): string => {
@@ -1633,23 +1667,15 @@ const handleProjectPortalCreate = async (context: BotContext, projectId: string)
   if (!summary) {
     return;
   }
-  const record = await ensurePortalRecord(context, projectId);
-  const portalUrl = resolvePortalUrl(context.env, record.portalId);
-  const lines = [
-    `✅ Портал создан для проекта <b>${escapeHtml(summary.name)}</b>.`,
-    portalUrl ? `Ссылка: <a href="${escapeAttribute(portalUrl)}">${escapeHtml(portalUrl)}</a>` : "Ссылка будет доступна после генерации.",
-  ];
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+  await ensurePortalRecord(context, projectId);
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, "Портал создан");
+  }
+  await handleProjectPortal(context, summary.id);
 };
 
 const handleProjectPortalRegenerate = async (context: BotContext, projectId: string): Promise<void> => {
-  const portalRecord = await loadProjectPortalRecord(context, projectId);
-  if (!portalRecord) {
-    await sendMessage(context, "Портал ещё не создан. Используйте «Создать портал».", {
-      replyMarkup: buildProjectBackMarkup(projectId),
-    });
-    return;
-  }
+  const portalRecord = await ensurePortalRecord(context, projectId);
   const now = new Date().toISOString();
   const updated: ProjectPortalRecord = {
     ...portalRecord,
@@ -1658,12 +1684,10 @@ const handleProjectPortalRegenerate = async (context: BotContext, projectId: str
     lastRegeneratedAt: now,
   };
   await savePortalRecord(context.env, updated);
-  const portalUrl = resolvePortalUrl(context.env, updated.portalId);
-  const lines = [
-    "🔁 Ссылка портала обновлена.",
-    portalUrl ? `Новый адрес: <a href="${escapeAttribute(portalUrl)}">${escapeHtml(portalUrl)}</a>` : "Укажите PUBLIC_WEB_URL или PORTAL_BASE_URL для публикации ссылки.",
-  ];
-  await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, "Ссылка обновлена");
+  }
+  await handleProjectPortal(context, projectId);
 };
 
 const handleProjectPortalMode = async (
@@ -1676,10 +1700,7 @@ const handleProjectPortalMode = async (
     return;
   }
   const portalRecord = await ensurePortalRecord(context, projectId);
-  if (portalRecord.mode === mode) {
-    await handleProjectPortal(context, projectId);
-    return;
-  }
+  const wasMode = portalRecord.mode;
   const now = new Date().toISOString();
   const updated: ProjectPortalRecord = {
     ...portalRecord,
@@ -1687,8 +1708,12 @@ const handleProjectPortalMode = async (
     updatedAt: now,
   };
   await savePortalRecord(context.env, updated);
-  const label = mode === "auto" ? "автоматический режим" : "ручной режим";
-  await sendMessage(context, `Режим портала обновлён: ${label}.`, { replyMarkup: buildProjectBackMarkup(projectId) });
+  if (context.update.callback_query?.id) {
+    const label = mode === "auto" ? "Авто" : "Ручной";
+    const text = wasMode === mode ? undefined : `Режим: ${label}`;
+    await answerCallbackQuery(context.env, context.update.callback_query.id, text);
+  }
+  await handleProjectPortal(context, projectId);
 };
 
 const renderPortalMetricsMessage = (record: ProjectPortalRecord) => {
@@ -1908,7 +1933,10 @@ const handleProjectPortalShare = async (context: BotContext, projectId: string):
     updatedAt: now,
   };
   await savePortalRecord(context.env, updatedRecord);
-  await sendMessage(context, "Портал и отчёт отправлены в чат клиента.", { replyMarkup: buildProjectBackMarkup(projectId) });
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, "Отправлено");
+  }
+  await handleProjectPortal(context, projectId);
 };
 
 const BILLING_STATUS_LABELS: Record<ProjectBillingState, string> = {
@@ -1965,21 +1993,23 @@ const handleProjectBilling = async (context: BotContext, projectId: string): Pro
   }));
   const nextButtons = [
     [
-      { text: "+7 дней", callback_data: `proj:billing-next:${projectId}:7` },
-      { text: "+14 дней", callback_data: `proj:billing-next:${projectId}:14` },
+      { text: "📅 +30 дней", callback_data: `proj:billing-next:${projectId}:30` },
+      { text: "📅 Указать дату", callback_data: `proj:billing-next:${projectId}:custom` },
     ],
+  ];
+  const tariffButtons = [
     [
-      { text: "+30 дней", callback_data: `proj:billing-next:${projectId}:30` },
-      { text: "Очистить", callback_data: `proj:billing-next:${projectId}:clear` },
+      { text: "350$", callback_data: `proj:billing-tariff-preset:${projectId}:350` },
+      { text: "500$", callback_data: `proj:billing-tariff-preset:${projectId}:500` },
     ],
-    [{ text: "📅 Указать дату", callback_data: `proj:billing-next:${projectId}:custom` }],
+    [{ text: "📝 Ручной ввод", callback_data: `proj:billing-tariff:${projectId}` }],
   ];
   const replyMarkup = {
     inline_keyboard: [
       statusButtons.slice(0, 2),
       statusButtons.slice(2, 4),
       ...nextButtons,
-      [{ text: "💵 Обновить тариф", callback_data: `proj:billing-tariff:${projectId}` }],
+      ...tariffButtons,
       [{ text: "⬅ К проекту", callback_data: `proj:view:${projectId}` }],
     ],
   };
@@ -2015,6 +2045,12 @@ const handleProjectBillingStatus = async (
 const computeNextPaymentDate = (preset: string): string | null => {
   if (preset === "clear") {
     return null;
+  }
+  if (preset === "today") {
+    return new Date().toISOString();
+  }
+  if (preset === "yesterday") {
+    return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   }
   const days = Number(preset);
   if (!Number.isFinite(days) || days <= 0) {
@@ -2063,6 +2099,20 @@ const handleProjectBillingNext = async (
 ): Promise<void> => {
   const adminId = context.userId;
   if (preset === "custom") {
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: "Сегодня", callback_data: `proj:billing-next:${projectId}:today` },
+          { text: "Вчера", callback_data: `proj:billing-next:${projectId}:yesterday` },
+        ],
+        [{ text: "📝 Ввести дату", callback_data: `proj:billing-next:${projectId}:manual` }],
+        [{ text: "⬅ Назад", callback_data: `proj:billing:${projectId}` }],
+      ],
+    };
+    await sendMessage(context, "Выберите дату следующего платежа:", { replyMarkup: keyboard });
+    return;
+  }
+  if (preset === "manual") {
     if (!adminId) {
       await sendMessage(context, "❌ Пользователь не найден. Повторите команду из админского чата.");
       return;
@@ -2122,6 +2172,27 @@ const handleProjectBillingTariff = async (context: BotContext, projectId: string
   );
 };
 
+const handleProjectBillingTariffPreset = async (
+  context: BotContext,
+  projectId: string,
+  rawAmount: string,
+): Promise<void> => {
+  const amount = Number(rawAmount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    await sendMessage(context, "❌ Не удалось распознать сумму. Выберите другой вариант.");
+    return;
+  }
+  const updated = await updateProjectRecord(context.env, projectId, { tariff: Number(amount.toFixed(2)) });
+  if (!updated) {
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    return;
+  }
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, `Тариф: ${amount}`);
+  }
+  await handleProjectBilling(context, projectId);
+};
+
 export const handlePendingBillingInput = async (context: BotContext): Promise<boolean> => {
   if (context.update.callback_query) {
     return false;
@@ -2172,6 +2243,10 @@ export const handlePendingBillingInput = async (context: BotContext): Promise<bo
     return true;
   }
   return false;
+};
+
+const handleProjectEdit = async (context: BotContext, projectId: string): Promise<void> => {
+  await handleProjectSettings(context, projectId);
 };
 
 const handleProjectSettings = async (context: BotContext, projectId: string): Promise<void> => {
@@ -2411,63 +2486,24 @@ const formatProjectLines = (summaries: ProjectSummary[]): string[] => {
       "Нажмите «➕ Новый проект», чтобы создать его и привязать чат.",
     ];
   }
-  const items = summaries.map((project, index) => {
-    const numberEmoji = `${index + 1}️⃣`;
-    const chatLabel = project.telegramTitle ?? (project.telegramChatId ? `ID ${project.telegramChatId}` : null);
-    const chatLine = project.telegramLink
-      ? `📲 <a href="${escapeAttribute(project.telegramLink)}">Чат-группа</a>`
-      : chatLabel
-        ? `📲 Чат-группа: ${escapeHtml(chatLabel)}`
-        : "📲 Чат не подключён";
-    const adAccountLine = project.adAccountId
-      ? `🧩 Meta: <code>${escapeHtml(project.adAccountId)}</code>`
-      : "🧩 Meta: не подключено";
-    const stats = project.leadStats;
-    const statsLine = `💬 Лиды: ${stats.total} (новые ${stats.new}, завершено ${stats.done})`;
-    const billing = project.billing;
-    const billingLine = (() => {
-      if (billing.status === "missing") {
-        return "💳 Оплата: не настроена";
-      }
-      const statusMap: Record<string, string> = {
-        active: "Активен",
-        pending: "Ожидает оплаты",
-        overdue: "Просрочен",
-        cancelled: "Отменён",
-      };
-      const label = statusMap[billing.status] ?? billing.status;
-      const amount = billing.amountFormatted
-        ? billing.amountFormatted
-        : billing.amount !== undefined
-          ? `${billing.amount.toFixed(2)} ${billing.currency || "USD"}`
-          : null;
-      const period = billing.periodLabel ? ` · ${billing.periodLabel}` : "";
-      const prefix = billing.overdue ? "⚠️" : "💳";
-      return `${prefix} Оплата: ${escapeHtml(label)}${amount ? ` — ${escapeHtml(amount)}` : ""}${escapeHtml(period)}`;
-    })();
-    return [
-      `${numberEmoji} <b>${escapeHtml(project.name)}</b>`,
-      chatLine,
-      adAccountLine,
-      statsLine,
-      billingLine,
-    ].join("\n");
-  });
-
-  return [
-    "📊 Проекты",
-    "",
-    ...items,
-    "",
-    "➕ Новый проект — нажмите кнопку ниже, чтобы пройти мастер привязки прямо в боте.",
-  ];
+  return ["📊 Ваши проекты:", ""];
 };
 
 const handleProjects = async (context: BotContext): Promise<void> => {
   const summaries = await loadProjectSummaries(context);
+  let accounts: MetaAccountLinkRecord[] = [];
+  try {
+    accounts = await listMetaAccountLinks(context.env);
+  } catch (error) {
+    console.warn("Failed to load meta accounts for project list", error);
+  }
+  const metaIndex = new Map<string, MetaAccountLinkRecord>();
+  for (const account of accounts) {
+    metaIndex.set(account.accountId, account);
+  }
   const lines = formatProjectLines(summaries);
   await sendMessage(context, lines.join("\n"), {
-    replyMarkup: buildProjectListMarkup(summaries),
+    replyMarkup: buildProjectListMarkup(summaries, metaIndex),
   });
 };
 
@@ -3045,7 +3081,7 @@ const finalizeProjectLink = async (
     metaAccountName: account.accountName,
     chatId: group.chatId,
     billingStatus: "pending",
-    nextPaymentDate: null,
+    nextPaymentDate: now,
     tariff: 0,
     createdAt: now,
     updatedAt: now,
@@ -3818,6 +3854,15 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       await handleProjectBilling(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
+    case "billing-tariff-preset": {
+      const [projectId, amount] = rest;
+      if (!projectId || !amount) {
+        return ensureId();
+      }
+      await handleProjectBillingTariffPreset(context, projectId, amount);
+      await logProjectAction(context, action, projectId, amount);
+      return true;
+    }
     case "billing-status": {
       const [projectId, statusValue] = rest;
       if (!projectId || !statusValue) {
@@ -3845,6 +3890,13 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       await logProjectAction(context, action, projectId);
       return true;
     }
+    case "edit":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectEdit(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
     case "settings":
       if (!rest[0]) {
         return ensureId();

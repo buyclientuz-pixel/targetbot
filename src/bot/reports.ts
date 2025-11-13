@@ -163,12 +163,22 @@ export const startReportWorkflow = async (
   }
   const chatId = session.chatId;
   const { text, replyMarkup } = buildSelectionMessage(session);
-  await sendTelegramMessage(context.env, {
-    chatId,
-    threadId: context.threadId,
-    text,
-    replyMarkup,
-  });
+  const message = context.update.callback_query?.message;
+  if (message && typeof context.messageId === "number" && context.chatId === chatId) {
+    await editTelegramMessage(context.env, {
+      chatId,
+      messageId: context.messageId,
+      text,
+      replyMarkup,
+    });
+  } else {
+    await sendTelegramMessage(context.env, {
+      chatId,
+      threadId: context.threadId,
+      text,
+      replyMarkup,
+    });
+  }
 };
 
 const resolveCallback = (data: string): { action: string; sessionId: string; argument?: string } | null => {
@@ -280,6 +290,12 @@ export const handleReportCallback = async (context: BotContext, data: string): P
     if (context.update.callback_query?.id) {
       await answerCallbackQuery(context.env, context.update.callback_query.id, "Отправлено");
     }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await sendTelegramMessage(context.env, {
+      chatId,
+      threadId: context.threadId,
+      text: "/admin",
+    });
     return true;
   }
   const session = await loadReportSession(context.env, parsed.sessionId);

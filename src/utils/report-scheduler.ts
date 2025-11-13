@@ -167,8 +167,7 @@ export const runReportSchedules = async (
           channel: "telegram",
           scheduleId: schedule.id,
         });
-        const link = resolveReportLink(env, result.record.id);
-        message = `${result.text}\n\nСкачать CSV: ${link}\nID отчёта: <code>${result.record.id}</code>`;
+        message = `${result.text}\n\nID отчёта: <code>${result.record.id}</code>`;
         reportId = result.record.id;
         slaReports += 1;
       } else {
@@ -182,12 +181,17 @@ export const runReportSchedules = async (
           command: `schedule:${schedule.type}`,
           format: schedule.format === "csv" ? "csv" : "html",
         });
-        const link = resolveReportLink(env, result.record.id);
-        message = `${result.html}\n\nСкачать экспорт: ${link}\nID отчёта: <code>${result.record.id}</code>`;
+        message = `${result.html}\n\nID отчёта: <code>${result.record.id}</code>`;
         reportId = result.record.id;
       }
 
-      await sendTelegramMessage(env, { chatId: schedule.chatId, text: message });
+      await sendTelegramMessage(env, {
+        chatId: schedule.chatId,
+        text: message,
+        replyMarkup: {
+          inline_keyboard: [[{ text: "⬇️ Скачать отчёт", callback_data: `report:download:${reportId}` }]],
+        },
+      });
 
       triggered += 1;
       schedule.lastRunAt = now.toISOString();

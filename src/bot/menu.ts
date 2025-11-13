@@ -54,9 +54,7 @@ const buildMetaStatusBlock = (status: Awaited<ReturnType<typeof resolveMetaStatu
 };
 
 const buildMenuMarkup = (authUrl: string, webhookUrl: string | null) => {
-  const webhookButton = webhookUrl
-    ? { text: "🔄 Вебхуки Telegram", url: webhookUrl }
-    : { text: "🔄 Вебхуки Telegram", callback_data: "cmd:webhooks" };
+  const webhookButton = { text: "🔄 Вебхуки Telegram", url: webhookUrl };
   return {
     inline_keyboard: [
       [
