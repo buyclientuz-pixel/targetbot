@@ -320,7 +320,7 @@ const billingLabel = (summary: ProjectSummary): string => {
   return pieces.join(" · ");
 };
 
-const buildAutoReportDataset = (
+export const buildAutoReportDataset = (
   summaries: ProjectSummary[],
   accounts: Map<string, MetaAdAccount>,
   overrides: Map<string, CampaignSpendOverride>,

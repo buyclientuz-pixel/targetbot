@@ -36,14 +36,21 @@ const expect = {
   },
 };
 
+import {
+  buildAutoReportNotification,
+  evaluateAutoReportTrigger,
+} from "../src/utils/auto-report-engine";
+import { buildAutoReportDataset } from "../src/utils/reports";
 import { ensureTelegramUrl, ensureTelegramUrlFromId, resolveChatLink } from "../src/utils/chat-links";
-import { evaluateAutoReportTrigger } from "../src/utils/auto-report-engine";
 import { evaluateQaDataset } from "../src/utils/qa";
 import {
+  AutoReportDataset,
+  MetaAdAccount,
   LeadRecord,
   LeadReminderRecord,
   PaymentReminderRecord,
   ProjectRecord,
+  ProjectSummary,
   ReportScheduleRecord,
 } from "../src/types";
 
@@ -62,6 +69,49 @@ const createProject = (id: string): ProjectRecord => {
     updatedAt: now,
     settings: {},
   };
+};
+
+const createSummary = (id: string): ProjectSummary => {
+  const base = createProject(id);
+  return {
+    ...base,
+    adAccountId: base.metaAccountId,
+    telegramTitle: `Client ${id}`,
+    leadStats: { total: 5, new: 3, done: 2, latestAt: base.createdAt },
+    billing: {
+      status: "active",
+      active: true,
+      overdue: false,
+      amount: 350,
+      currency: "USD",
+      amountFormatted: "$350",
+      periodLabel: "Ноябрь 2025",
+      periodStart: base.createdAt,
+      periodEnd: base.createdAt,
+      updatedAt: base.createdAt,
+    },
+  };
+};
+
+const createDataset = (): AutoReportDataset => {
+  const summary = createSummary("p1");
+  const account: MetaAdAccount = {
+    id: summary.metaAccountId,
+    name: summary.metaAccountName,
+    currency: "USD",
+    spend: 9.92,
+    spendCurrency: "USD",
+  };
+  return buildAutoReportDataset(
+    [summary],
+    new Map([[account.id, account]]),
+    new Map(),
+    new Map([[summary.id, ["leads", "cpl", "spend"]]]),
+    new Map([[summary.id, { portalId: "portal1", portalUrl: "https://example.com/portal/p1" }]]),
+    "13.11.2025 [Чт]",
+    new Date("2025-11-13T10:00:00Z").toISOString(),
+    { datePreset: "today" },
+  );
 };
 
 const createLead = (id: string, projectId: string): LeadRecord => ({
@@ -181,6 +231,36 @@ test("evaluateAutoReportTrigger respects cooldown and monday double", () => {
     new Date("2025-02-24T15:02:00Z"),
   );
   expect.equal(mondayResult.weekly, "15:00");
+});
+
+test("buildAutoReportDataset merges portal links and metrics", () => {
+  const dataset = createDataset();
+  expect.equal(dataset.projects.length, 1);
+  const project = dataset.projects[0];
+  expect.equal(dataset.periodLabel, "13.11.2025 [Чт]");
+  expect.equal(project.portalUrl, "https://example.com/portal/p1");
+  expect.deepEqual(project.metrics, ["leads", "cpl", "spend"]);
+  expect.equal(project.billing.label, "активен · $350 · Ноябрь 2025");
+  expect.equal(project.spend.label, "9.92 USD");
+});
+
+test("buildAutoReportNotification renders summary text and buttons", () => {
+  const dataset = createDataset();
+  const { text, replyMarkup } = buildAutoReportNotification(dataset, {
+    datePreset: "today",
+    now: new Date("2025-11-13T12:00:00Z"),
+  });
+  expect.ok(text.includes("👀 Сводка по проектам"));
+  expect.ok(text.includes("Период: 13.11.2025 [Чт]"));
+  expect.ok(text.includes("• Project p1 · Client p1"));
+  expect.ok(text.includes("Лиды: 5 (новые 3, завершено 2)"));
+  expect.ok(text.includes("Биллинг: активен · $350 · Ноябрь 2025"));
+  expect.ok(text.includes("Расход: 9.92 USD"));
+  expect.ok(!text.includes("<"), "text should not contain HTML tags");
+  expect.ok(replyMarkup && replyMarkup.inline_keyboard.length === 1);
+  expect.deepEqual(replyMarkup?.inline_keyboard[0], [
+    { text: "Портал проекта", url: "https://example.com/portal/p1" },
+  ]);
 });
 
 test("ensureTelegramUrl normalizes chat identifiers", () => {

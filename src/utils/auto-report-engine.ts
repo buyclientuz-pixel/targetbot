@@ -200,7 +200,7 @@ const formatAutoReportPeriod = (datePreset: string, dataset: AutoReportDataset, 
   return dataset.periodLabel;
 };
 
-const buildAutoReportNotification = (
+export const buildAutoReportNotification = (
   dataset: AutoReportDataset,
   options: { datePreset: string; now: Date; fallbackReason?: string | null },
 ): { text: string; replyMarkup?: { inline_keyboard: { text: string; url: string }[][] } } => {
