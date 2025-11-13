@@ -2,6 +2,8 @@ import {
   ChatRegistrationRecord,
   CommandLogRecord,
   LeadRecord,
+  MetaAccountLinkRecord,
+  MetaProjectLinkRecord,
   MetaTokenRecord,
   MetaTokenStatus,
   PaymentRecord,
@@ -9,6 +11,7 @@ import {
   ReportFilters,
   ReportRecord,
   SettingRecord,
+  TelegramGroupLinkRecord,
   UserRecord,
 } from "../types";
 
@@ -22,6 +25,10 @@ const SETTINGS_KEY = "settings/index.json";
 const COMMAND_LOG_KEY = "logs/commands.json";
 const REPORT_SESSION_PREFIX = "reports/session/";
 const CHAT_REGISTRY_KEY = "chats/index.json";
+const META_ACCOUNTS_KEY = "meta/accounts.json";
+const TELEGRAM_GROUPS_KEY = "telegram/groups.json";
+const META_PROJECTS_KEY = "meta/projects.json";
+const META_PENDING_PREFIX = "meta/link/pending/";
 
 export interface ReportSessionRecord {
   id: string;
@@ -248,6 +255,53 @@ export const saveChatRegistrations = async (
   await writeJsonToR2(env, CHAT_REGISTRY_KEY, records);
 };
 
+export const listMetaAccountLinks = async (
+  env: EnvBindings,
+): Promise<MetaAccountLinkRecord[]> => {
+  return readJsonFromR2<MetaAccountLinkRecord[]>(env, META_ACCOUNTS_KEY, []);
+};
+
+export const saveMetaAccountLinks = async (
+  env: EnvBindings,
+  records: MetaAccountLinkRecord[],
+): Promise<void> => {
+  await writeJsonToR2(env, META_ACCOUNTS_KEY, records);
+};
+
+export const listTelegramGroupLinks = async (
+  env: EnvBindings,
+): Promise<TelegramGroupLinkRecord[]> => {
+  return readJsonFromR2<TelegramGroupLinkRecord[]>(env, TELEGRAM_GROUPS_KEY, []);
+};
+
+export const saveTelegramGroupLinks = async (
+  env: EnvBindings,
+  records: TelegramGroupLinkRecord[],
+): Promise<void> => {
+  await writeJsonToR2(env, TELEGRAM_GROUPS_KEY, records);
+};
+
+export const listMetaProjectLinks = async (
+  env: EnvBindings,
+): Promise<MetaProjectLinkRecord[]> => {
+  return readJsonFromR2<MetaProjectLinkRecord[]>(env, META_PROJECTS_KEY, []);
+};
+
+export const saveMetaProjectLinks = async (
+  env: EnvBindings,
+  records: MetaProjectLinkRecord[],
+): Promise<void> => {
+  await writeJsonToR2(env, META_PROJECTS_KEY, records);
+};
+
+export const loadMetaProjectLink = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<MetaProjectLinkRecord | null> => {
+  const projects = await listMetaProjectLinks(env);
+  return projects.find((project) => project.projectId === projectId) ?? null;
+};
+
 export const appendCommandLog = async (
   env: EnvBindings,
   entry: CommandLogRecord,
@@ -314,4 +368,50 @@ export const saveReportSession = async (
 
 export const deleteReportSession = async (env: EnvBindings, sessionId: string): Promise<void> => {
   await env.DB.delete(sessionKey(sessionId));
+};
+
+export interface PendingMetaLinkState {
+  metaAccountId?: string;
+  telegramChatId?: string;
+  updatedAt?: string;
+}
+
+const pendingMetaLinkKey = (userId: string): string => `${META_PENDING_PREFIX}${userId}`;
+
+export const loadPendingMetaLink = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<PendingMetaLinkState | null> => {
+  const stored = await env.DB.get(pendingMetaLinkKey(userId));
+  if (!stored) {
+    return null;
+  }
+  try {
+    return JSON.parse(stored) as PendingMetaLinkState;
+  } catch (error) {
+    console.error("Failed to parse pending meta link", error);
+    return null;
+  }
+};
+
+export const savePendingMetaLink = async (
+  env: EnvBindings,
+  userId: string,
+  state: PendingMetaLinkState,
+  ttlSeconds = 900,
+): Promise<void> => {
+  const payload = {
+    ...state,
+    updatedAt: new Date().toISOString(),
+  } satisfies PendingMetaLinkState;
+  await env.DB.put(pendingMetaLinkKey(userId), JSON.stringify(payload), {
+    expirationTtl: Math.max(60, ttlSeconds),
+  });
+};
+
+export const clearPendingMetaLink = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<void> => {
+  await env.DB.delete(pendingMetaLinkKey(userId));
 };

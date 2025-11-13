@@ -6,18 +6,37 @@ import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
 import {
   appendCommandLog,
   listChatRegistrations,
+  listMetaAccountLinks,
+  listMetaProjectLinks,
   listLeads,
   listPayments,
   listProjects,
   listSettings,
+  listTelegramGroupLinks,
+  loadMetaProjectLink,
   listUsers,
   loadMetaToken,
+  loadPendingMetaLink,
   saveChatRegistrations,
+  saveMetaAccountLinks,
+  saveMetaProjectLinks,
+  savePendingMetaLink,
+  saveTelegramGroupLinks,
+  clearPendingMetaLink,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
 import { encodeMetaOAuthState, fetchAdAccounts, resolveMetaStatus } from "../utils/meta";
-import { ChatRegistrationRecord, LeadRecord, MetaAdAccount, ProjectRecord, ProjectSummary } from "../types";
+import {
+  ChatRegistrationRecord,
+  LeadRecord,
+  MetaAccountLinkRecord,
+  MetaAdAccount,
+  MetaProjectLinkRecord,
+  ProjectRecord,
+  ProjectSummary,
+  TelegramGroupLinkRecord,
+} from "../types";
 
 const AUTH_URL_FALLBACK = "https://th-reports.buyclientuz.workers.dev/auth/facebook";
 
@@ -511,6 +530,32 @@ const handleRegisterChat = async (context: BotContext): Promise<void> => {
 
   await saveChatRegistrations(context.env, next);
 
+  try {
+    const groups = await listTelegramGroupLinks(context.env).catch(() => [] as TelegramGroupLinkRecord[]);
+    const updated = [...groups];
+    const index = updated.findIndex((entry) => entry.chatId === chatId);
+    const nowTimestamp = new Date().toISOString();
+    const groupRecord: TelegramGroupLinkRecord = {
+      chatId,
+      title: context.chatTitle ?? record.chatTitle ?? null,
+      members: null,
+      registered: true,
+      linkedProjectId: record.linkedProjectId ?? null,
+      updatedAt: nowTimestamp,
+    };
+    if (index >= 0) {
+      updated[index] = {
+        ...updated[index],
+        ...groupRecord,
+      };
+    } else {
+      updated.push(groupRecord);
+    }
+    await saveTelegramGroupLinks(context.env, updated);
+  } catch (error) {
+    console.warn("Failed to update telegram group index", error);
+  }
+
   const lines: Array<string | null> = [
     "🔐 Регистрация чат-группы",
     "",
@@ -684,6 +729,141 @@ const formatCurrencyValue = (amount: number | undefined, currency?: string): str
     console.warn("Failed to format currency", safeCurrency, error);
     return `${amount.toFixed(2)} ${safeCurrency}`;
   }
+};
+
+const formatMetaSpendLabel = (amount?: number | null, currency?: string | null): string | null => {
+  if (amount === null || amount === undefined) {
+    return null;
+  }
+  const formatted = formatCurrencyValue(amount, currency ?? undefined);
+  return formatted ?? `${amount.toFixed(2)} ${currency ?? "USD"}`;
+};
+
+const mergeMetaAccountLinks = (
+  stored: MetaAccountLinkRecord[],
+  fetched: MetaAdAccount[] | null,
+): { records: MetaAccountLinkRecord[]; changed: boolean } => {
+  const storedMap = new Map(stored.map((item) => [item.accountId, item]));
+  const fetchedMap = new Map((fetched ?? []).map((item) => [item.id, item]));
+  const ids = new Set<string>([...storedMap.keys(), ...fetchedMap.keys()]);
+  const now = new Date().toISOString();
+  let changed = false;
+  const records: MetaAccountLinkRecord[] = [];
+
+  for (const id of Array.from(ids)) {
+    const storedRecord = storedMap.get(id);
+    const fetchedRecord = fetchedMap.get(id);
+    const accountName = fetchedRecord?.name?.trim() || storedRecord?.accountName || id;
+    const currency = fetchedRecord?.currency ?? storedRecord?.currency ?? null;
+    const spentToday =
+      fetchedRecord && fetchedRecord.spend !== undefined
+        ? fetchedRecord.spend ?? 0
+        : storedRecord?.spentToday ?? null;
+    const isLinked = storedRecord?.isLinked ?? false;
+    const linkedProjectId = storedRecord?.linkedProjectId ?? null;
+    let updatedAt = storedRecord?.updatedAt;
+
+    if (!storedRecord) {
+      updatedAt = fetchedRecord ? now : undefined;
+      changed = true;
+    } else if (
+      storedRecord.accountName !== accountName ||
+      storedRecord.currency !== currency ||
+      (storedRecord.spentToday ?? null) !== (spentToday ?? null)
+    ) {
+      updatedAt = fetchedRecord ? now : storedRecord.updatedAt;
+      changed = true;
+    }
+
+    records.push({
+      accountId: id,
+      accountName,
+      currency,
+      spentToday,
+      isLinked,
+      linkedProjectId,
+      updatedAt,
+    });
+  }
+
+  records.sort((a, b) => a.accountName.localeCompare(b.accountName, "ru-RU", { sensitivity: "base" }));
+
+  return { records, changed };
+};
+
+const buildMetaAccountsMarkup = (accounts: MetaAccountLinkRecord[]) => {
+  const rows = accounts.map((account) => {
+    const spendLabel = formatMetaSpendLabel(account.spentToday, account.currency);
+    const title = account.isLinked
+      ? `✅ ${account.accountName}${spendLabel ? ` | ${spendLabel}` : ""}`
+      : `➕ ${account.accountName}`;
+    const callbackData =
+      account.isLinked && account.linkedProjectId
+        ? `meta:project:${account.linkedProjectId}`
+        : `meta:account:${account.accountId}`;
+    return [{ text: title, callback_data: callbackData }];
+  });
+  rows.push([{ text: "🏠 Меню", callback_data: "cmd:menu" }]);
+  return { inline_keyboard: rows };
+};
+
+const buildMetaGroupMarkup = (groups: TelegramGroupLinkRecord[]) => {
+  const rows = groups.map((group) => {
+    const label = group.title ? `👥 ${group.title}` : `👥 ${group.chatId}`;
+    return [{ text: label, callback_data: `meta:group:${group.chatId}` }];
+  });
+  rows.push([{ text: "❌ Отменить", callback_data: "meta:cancel" }]);
+  rows.push([{ text: "⬅ Meta-аккаунты", callback_data: "cmd:meta" }]);
+  return { inline_keyboard: rows };
+};
+
+const META_CONFIRM_MARKUP = {
+  inline_keyboard: [
+    [
+      { text: "✅ Подтвердить", callback_data: "meta:confirm" },
+      { text: "❌ Отменить", callback_data: "meta:cancel" },
+    ],
+    [{ text: "⬅ Meta-аккаунты", callback_data: "cmd:meta" }],
+  ],
+};
+
+const buildMetaProjectMarkup = () => ({
+  inline_keyboard: [
+    [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
+    [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+  ],
+});
+
+const ensureTelegramGroupIndex = async (context: BotContext): Promise<TelegramGroupLinkRecord[]> => {
+  let groups: TelegramGroupLinkRecord[] = [];
+  try {
+    groups = await listTelegramGroupLinks(context.env);
+  } catch (error) {
+    console.warn("Failed to read telegram group index", error);
+  }
+  if (groups.length) {
+    return groups;
+  }
+
+  try {
+    const registrations = await listChatRegistrations(context.env);
+    if (registrations.length) {
+      const now = new Date().toISOString();
+      groups = registrations.map<TelegramGroupLinkRecord>((entry) => ({
+        chatId: entry.chatId,
+        title: entry.chatTitle ?? null,
+        members: null,
+        registered: true,
+        linkedProjectId: entry.linkedProjectId ?? null,
+        updatedAt: now,
+      }));
+      await saveTelegramGroupLinks(context.env, groups);
+    }
+  } catch (error) {
+    console.warn("Failed to rebuild telegram group index", error);
+  }
+
+  return groups;
 };
 
 const formatShortDate = (value?: string | null): string | null => {
@@ -1209,76 +1389,372 @@ const handleUsers = async (context: BotContext): Promise<void> => {
 const handleMetaAccounts = async (context: BotContext): Promise<void> => {
   const record = await loadMetaToken(context.env);
   const status = record?.status ?? "missing";
-  const statusLabel =
+  const lines = ["🔗 Meta-аккаунты", ""];
+
+  lines.push(
     status === "valid"
       ? "✅ Подключение к Meta активно."
       : status === "expired"
         ? "⚠️ Токен истёк. Обновите подключение через раздел Авторизация Facebook."
-        : "❌ Токен не найден. Авторизуйтесь, чтобы получить список кабинетов.";
+        : "❌ Токен не найден. Авторизуйтесь, чтобы получить список кабинетов.",
+  );
 
-  const lines = ["🔗 Meta-аккаунты", "", statusLabel];
+  let fetchedAccounts: MetaAdAccount[] | null = null;
+  let fetchError: string | null = null;
 
-  if (status === "valid") {
+  if (status === "valid" && record) {
     try {
-      const accounts = await fetchAdAccounts(context.env, record, {
+      fetchedAccounts = await fetchAdAccounts(context.env, record, {
         includeSpend: true,
-        includeCampaigns: true,
-        campaignsLimit: 3,
+        includeCampaigns: false,
+        campaignsLimit: 0,
         datePreset: "today",
       });
-      if (accounts.length) {
-        lines.push("", "📊 Сводка по аккаунтам:");
-        const sorted = [...accounts].sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0));
-        sorted.forEach((account, index) => {
-          lines.push("", `${index + 1}️⃣ <b>${escapeHtml(account.name)}</b>${account.currency ? ` (${escapeHtml(account.currency)})` : ""}`);
-          lines.push(`ID: <code>${escapeHtml(account.id)}</code>`);
-          if (account.spendFormatted) {
-            lines.push(`💵 Расход ${escapeHtml(account.spendFormatted)}${account.spendPeriod ? ` (${escapeHtml(account.spendPeriod)})` : ""}`);
-          } else {
-            lines.push("💵 Расход недоступен.");
-          }
-          if (account.status) {
-            const statusCode = account.statusCode ? ` (код ${account.statusCode})` : "";
-            lines.push(`⚙️ Статус: ${escapeHtml(account.status)}${statusCode}`);
-          }
-          if (account.impressions !== undefined || account.clicks !== undefined) {
-            const impressions = account.impressions ?? 0;
-            const clicks = account.clicks ?? 0;
-            lines.push(`📈 Импрессии: ${impressions.toLocaleString("ru-RU")} · Клики: ${clicks.toLocaleString("ru-RU")}`);
-          }
-          if (account.campaigns?.length) {
-            lines.push("👀 Топ кампаний:");
-            account.campaigns.slice(0, 3).forEach((campaign) => {
-              const spend = campaign.spendFormatted
-                ? ` — ${escapeHtml(campaign.spendFormatted)}${campaign.spendPeriod ? ` (${escapeHtml(campaign.spendPeriod)})` : ""}`
-                : "";
-              lines.push(`   • ${escapeHtml(campaign.name)}${spend}`);
-            });
-            if (account.campaigns.length > 3) {
-              lines.push("   …");
-            }
-          }
-        });
-      } else {
-        lines.push("", "Доступные рекламные кабинеты не найдены.");
-      }
     } catch (error) {
       console.error("Failed to load Meta accounts", error);
-      lines.push("", "Не удалось получить список аккаунтов. Попробуйте обновить токен в разделе Авторизация Facebook.");
+      fetchError = "Не удалось получить список аккаунтов. Попробуйте обновить токен.";
     }
+  }
+
+  let storedAccounts: MetaAccountLinkRecord[] = [];
+  try {
+    storedAccounts = await listMetaAccountLinks(context.env);
+  } catch (error) {
+    console.warn("Failed to read Meta account index", error);
+  }
+
+  const { records, changed } = mergeMetaAccountLinks(storedAccounts, fetchedAccounts);
+  if (changed) {
+    await saveMetaAccountLinks(context.env, records);
+  }
+
+  const linkedCount = records.filter((account) => account.isLinked).length;
+  const availableCount = records.length - linkedCount;
+
+  if (fetchError) {
+    lines.push("", `⚠️ ${escapeHtml(fetchError)}`);
+  }
+
+  if (records.length) {
+    lines.push(
+      "",
+      `Аккаунтов: <b>${records.length}</b> · Привязано: ${linkedCount} · Свободно: ${availableCount}.`,
+      "",
+      "Выберите рекламный аккаунт, чтобы привязать его к чат-группе.",
+    );
   } else {
     lines.push(
       "",
-      "После подключения Facebook аккаунта бот автоматически подтянет рекламные кабинеты и покажет статистику расходов.",
+      "Список рекламных аккаунтов пока пуст. Подключите Meta Business и обновите права доступа.",
     );
   }
 
-  lines.push(
+  if (status !== "valid") {
+    lines.push(
+      "",
+      "Подключите или обновите токен Meta, чтобы получать расходы и кампании автоматически.",
+    );
+  }
+
+  lines.push("", "Список синхронизируется с веб-панелью /admin → Meta Accounts.");
+
+  const replyMarkup = records.length
+    ? buildMetaAccountsMarkup(records)
+    : {
+        inline_keyboard: [
+          [{ text: "🔄 Обновить", callback_data: "cmd:meta" }],
+          [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+        ],
+      };
+
+  await sendMessage(context, lines.join("\n"), { replyMarkup });
+};
+
+const handleMetaAccountSelection = async (context: BotContext, accountId: string): Promise<void> => {
+  const userId = context.userId;
+  if (!userId) {
+    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду.");
+    return;
+  }
+
+  const accounts = await listMetaAccountLinks(context.env);
+  const account = accounts.find((entry) => entry.accountId === accountId);
+  if (!account) {
+    await sendMessage(context, "❌ Рекламный аккаунт не найден. Обновите список Meta-аккаунтов.");
+    return;
+  }
+  if (account.isLinked) {
+    await sendMessage(context, "❌ Этот рекламный аккаунт уже подключён к другому проекту.");
+    return;
+  }
+
+  await savePendingMetaLink(context.env, userId, { metaAccountId: accountId });
+
+  const groups = await ensureTelegramGroupIndex(context);
+  const availableGroups = groups.filter((group) => group.registered && !group.linkedProjectId);
+
+  const lines = [
+    "🔗 Подключение Meta-аккаунта",
     "",
-    "Веб-панель синхронизирует тот же список в разделе Meta Accounts.",
+    `Выбран рекламный аккаунт: <b>${escapeHtml(account.accountName)}</b>`,
+    "Теперь выберите Telegram-группу, к которой хотите его привязать.",
+  ];
+
+  if (!availableGroups.length) {
+    lines.push(
+      "",
+      "Нет доступных групп. Зарегистрируйте чат командой /reg и убедитесь, что он не привязан к проекту.",
+    );
+    await sendMessage(context, lines.join("\n"), {
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
+          [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+        ],
+      },
+    });
+    return;
+  }
+
+  lines.push("", "Список доступных Telegram-групп:");
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildMetaGroupMarkup(availableGroups) });
+};
+
+const handleMetaGroupSelection = async (context: BotContext, chatId: string): Promise<void> => {
+  const userId = context.userId;
+  if (!userId) {
+    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду.");
+    return;
+  }
+
+  const pending = await loadPendingMetaLink(context.env, userId);
+  if (!pending?.metaAccountId) {
+    await sendMessage(context, "❌ Процесс привязки не найден. Начните заново.");
+    return;
+  }
+
+  const [accounts, groups] = await Promise.all([
+    listMetaAccountLinks(context.env),
+    ensureTelegramGroupIndex(context),
+  ]);
+
+  const account = accounts.find((entry) => entry.accountId === pending.metaAccountId);
+  if (!account) {
+    await clearPendingMetaLink(context.env, userId);
+    await sendMessage(context, "❌ Рекламный аккаунт не найден. Начните процесс заново.");
+    return;
+  }
+  if (account.isLinked) {
+    await sendMessage(context, "❌ Этот рекламный аккаунт уже подключён к другому проекту.");
+    return;
+  }
+
+  const group = groups.find((entry) => entry.chatId === chatId);
+  if (!group || !group.registered) {
+    await sendMessage(context, "❌ Группа не найдена. Убедитесь, что команда /reg выполнена в нужном чате.");
+    return;
+  }
+  if (group.linkedProjectId) {
+    await sendMessage(context, "❌ Эта группа уже используется в другом проекте.");
+    return;
+  }
+
+  await savePendingMetaLink(context.env, userId, {
+    metaAccountId: pending.metaAccountId,
+    telegramChatId: chatId,
+  });
+
+  const groupLabel = group.title ? group.title : group.chatId;
+  const lines = [
+    "📌 Готово.",
+    "",
+    `Привязать аккаунт <b>${escapeHtml(account.accountName)}</b> к группе <b>${escapeHtml(groupLabel)}</b>?`,
+  ];
+
+  await sendMessage(context, lines.join("\n"), { replyMarkup: META_CONFIRM_MARKUP });
+};
+
+const handleMetaLinkCancel = async (context: BotContext): Promise<void> => {
+  if (context.userId) {
+    try {
+      await clearPendingMetaLink(context.env, context.userId);
+    } catch (error) {
+      console.warn("Failed to clear pending meta link", error);
+    }
+  }
+
+  await sendMessage(context, "❌ Привязка отменена.", {
+    replyMarkup: {
+      inline_keyboard: [
+        [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
+        [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+      ],
+    },
+  });
+};
+
+const handleMetaLinkConfirm = async (context: BotContext): Promise<void> => {
+  const userId = context.userId;
+  if (!userId) {
+    await sendMessage(context, "❌ Не удалось определить администратора. Повторите команду.");
+    return;
+  }
+
+  const pending = await loadPendingMetaLink(context.env, userId);
+  if (!pending?.metaAccountId || !pending.telegramChatId) {
+    await sendMessage(context, "❌ Процесс привязки не найден. Начните заново.");
+    return;
+  }
+
+  const [accounts, groups, projects] = await Promise.all([
+    listMetaAccountLinks(context.env),
+    ensureTelegramGroupIndex(context),
+    listMetaProjectLinks(context.env),
+  ]);
+
+  const account = accounts.find((entry) => entry.accountId === pending.metaAccountId);
+  if (!account) {
+    await clearPendingMetaLink(context.env, userId);
+    await sendMessage(context, "❌ Рекламный аккаунт не найден. Обновите список Meta-аккаунтов.");
+    return;
+  }
+  if (account.isLinked) {
+    await sendMessage(context, "❌ Этот рекламный аккаунт уже подключён к другому проекту.");
+    return;
+  }
+
+  const group = groups.find((entry) => entry.chatId === pending.telegramChatId);
+  if (!group || !group.registered) {
+    await sendMessage(context, "❌ Группа не найдена. Убедитесь, что команда /reg выполнена в нужном чате.");
+    return;
+  }
+  if (group.linkedProjectId) {
+    await sendMessage(context, "❌ Эта группа уже используется в другом проекте.");
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const projectId = createId();
+  const projectName = `${account.accountName} · ${group.title ?? group.chatId}`;
+  const projectRecord: MetaProjectLinkRecord = {
+    projectId,
+    projectName,
+    accountId: account.accountId,
+    chatId: group.chatId,
+    chatTitle: group.title ?? null,
+    createdAt: now,
+    billingStatus: "pending",
+    nextPaymentDate: null,
+    settings: {},
+  };
+
+  const nextProjects = [...projects, projectRecord];
+  const nextAccounts = accounts.map((entry) =>
+    entry.accountId === account.accountId
+      ? { ...entry, isLinked: true, linkedProjectId: projectId, updatedAt: now }
+      : entry,
+  );
+  const nextGroups = groups.map((entry) =>
+    entry.chatId === group.chatId
+      ? { ...entry, linkedProjectId: projectId, registered: true, updatedAt: now }
+      : entry,
   );
 
-  await sendMessage(context, lines.join("\n"));
+  await Promise.all([
+    saveMetaProjectLinks(context.env, nextProjects),
+    saveMetaAccountLinks(context.env, nextAccounts),
+    saveTelegramGroupLinks(context.env, nextGroups),
+  ]);
+
+  await clearPendingMetaLink(context.env, userId);
+
+  await sendTelegramMessage(context.env, {
+    chatId: group.chatId,
+    text: "🎉 Ваш рекламный аккаунт успешно подключён!",
+  });
+
+  const lines = [
+    "Проект создан!",
+    `RA: <b>${escapeHtml(account.accountName)}</b>`,
+    `Группа: <b>${escapeHtml(group.title ?? group.chatId)}</b>`,
+  ];
+
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: {
+      inline_keyboard: [
+        [{ text: "Перейти в проект", callback_data: `meta:project:${projectId}` }],
+        [{ text: "🔗 Meta-аккаунты", callback_data: "cmd:meta" }],
+        [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+      ],
+    },
+  });
+};
+
+const handleMetaProjectView = async (context: BotContext, projectId: string): Promise<void> => {
+  const project = await loadMetaProjectLink(context.env, projectId);
+  if (!project) {
+    await sendMessage(context, "❌ Проект не найден. Обновите список Meta-аккаунтов.");
+    return;
+  }
+
+  const [accounts, groups] = await Promise.all([
+    listMetaAccountLinks(context.env),
+    ensureTelegramGroupIndex(context),
+  ]);
+
+  const account = accounts.find((entry) => entry.accountId === project.accountId) ?? null;
+  const group = groups.find((entry) => entry.chatId === project.chatId) ?? null;
+
+  const billingStatusMap: Record<string, string> = {
+    active: "активен",
+    pending: "ожидает оплаты",
+    overdue: "просрочен",
+    cancelled: "отменён",
+  };
+  const billingLabel = billingStatusMap[project.billingStatus] ?? project.billingStatus;
+  const paymentLabel = formatShortDate(project.nextPaymentDate) ?? "—";
+
+  let cpaLabel = "—";
+  const settings = project.settings;
+  if (settings && typeof settings === "object") {
+    const data = settings as Record<string, unknown>;
+    const candidate =
+      data.cpaToday ??
+      data.cpa_today ??
+      data.cpa ??
+      (typeof data.metrics === "object" && data.metrics !== null
+        ? (data.metrics as Record<string, unknown>).cpaToday ?? (data.metrics as Record<string, unknown>).cpa_today
+        : undefined);
+    if (typeof candidate === "number") {
+      cpaLabel =
+        formatCurrencyValue(candidate, account?.currency ?? undefined) ?? `${candidate.toFixed(2)} ${account?.currency ?? "USD"}`;
+    } else if (typeof candidate === "string" && candidate.trim()) {
+      cpaLabel = candidate.trim();
+    }
+  }
+
+  const lines = [
+    `🏗 Проект: <b>${escapeHtml(project.projectName)}</b>`,
+    account
+      ? `🧩 Meta: подключено — ${escapeHtml(account.accountName)} (<code>${escapeHtml(account.accountId)}</code>)`
+      : `🧩 Meta: подключено — <code>${escapeHtml(project.accountId)}</code>`,
+    `📈 CPA (сегодня): ${escapeHtml(cpaLabel)}`,
+    `💳 Биллинг: ${escapeHtml(billingLabel)}`,
+    `📅 Оплата: ${escapeHtml(paymentLabel)}`,
+    "",
+    "Действия:",
+    "✏️ Изменить данные",
+    group ? `📲 Чат-группа: ${escapeHtml(group.title ?? group.chatId)}` : "📲 Чат-группа",
+    "💬 Посмотреть лиды",
+    "📈 Отчёт по рекламе",
+    "👀 Рекламные кампании",
+    "📤 Экспорт данных",
+    "💰 Оплата",
+    "⚙️ Настройки",
+    "❌ Удалить проект",
+  ];
+
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildMetaProjectMarkup() });
 };
 
 const handleAnalytics = async (context: BotContext): Promise<void> => {
@@ -1613,6 +2089,50 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       await handleProjectNew(context);
       await logProjectAction(context, action);
       return true;
+    default:
+      return false;
+  }
+};
+
+export const handleMetaCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (!data.startsWith("meta:")) {
+    return false;
+  }
+  const [, action, ...rest] = data.split(":");
+  switch (action) {
+    case "account": {
+      const accountId = rest.join(":");
+      if (!accountId) {
+        await sendMessage(context, "❌ Рекламный аккаунт не найден. Обновите список Meta-аккаунтов.");
+        return true;
+      }
+      await handleMetaAccountSelection(context, accountId);
+      return true;
+    }
+    case "group": {
+      const chatId = rest.join(":");
+      if (!chatId) {
+        await sendMessage(context, "❌ Группа не найдена. Начните привязку заново.");
+        return true;
+      }
+      await handleMetaGroupSelection(context, chatId);
+      return true;
+    }
+    case "confirm":
+      await handleMetaLinkConfirm(context);
+      return true;
+    case "cancel":
+      await handleMetaLinkCancel(context);
+      return true;
+    case "project": {
+      const projectId = rest.join(":");
+      if (!projectId) {
+        await sendMessage(context, "❌ Проект не найден. Обновите список Meta-аккаунтов.");
+        return true;
+      }
+      await handleMetaProjectView(context, projectId);
+      return true;
+    }
     default:
       return false;
   }

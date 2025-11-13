@@ -70,6 +70,37 @@ export interface MetaOAuthStatePayload {
   timestamp?: number;
 }
 
+export interface MetaAccountLinkRecord {
+  accountId: string;
+  accountName: string;
+  currency?: string | null;
+  spentToday?: number | null;
+  isLinked: boolean;
+  linkedProjectId?: string | null;
+  updatedAt?: string;
+}
+
+export interface TelegramGroupLinkRecord {
+  chatId: string;
+  title?: string | null;
+  members?: number | null;
+  registered: boolean;
+  linkedProjectId?: string | null;
+  updatedAt?: string;
+}
+
+export interface MetaProjectLinkRecord {
+  projectId: string;
+  projectName: string;
+  accountId: string;
+  chatId: string;
+  chatTitle?: string | null;
+  createdAt: string;
+  billingStatus: string;
+  nextPaymentDate?: string | null;
+  settings: JsonObject;
+}
+
 export interface ProjectRecord {
   id: string;
   name: string;

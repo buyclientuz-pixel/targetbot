@@ -1,6 +1,6 @@
 import { createContext } from "./context";
 import { acknowledgeCommand } from "./menu";
-import { runCommand, resolveCommand, handleProjectCallback } from "./commands";
+import { runCommand, resolveCommand, handleProjectCallback, handleMetaCallback } from "./commands";
 import { handleReportCallback, isReportCallbackData } from "./reports";
 import { BotContext, TelegramUpdate } from "./types";
 import { jsonResponse } from "../utils/http";
@@ -175,6 +175,13 @@ const handleUpdate = async (context: BotContext): Promise<void> => {
     }
   }
   if (callbackData) {
+    const handledMeta = await handleMetaCallback(context, callbackData);
+    if (handledMeta) {
+      if (context.update.callback_query?.id) {
+        await answerCallbackQuery(context.env, context.update.callback_query.id);
+      }
+      return;
+    }
     const handled = await handleProjectCallback(context, callbackData);
     if (handled) {
       if (context.update.callback_query?.id) {
