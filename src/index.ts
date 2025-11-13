@@ -79,6 +79,7 @@ import { handleTelegramUpdate } from "./bot/router";
 import { handleMetaWebhook } from "./api/meta-webhook";
 import { runReminderSweep } from "./utils/reminders";
 import { runReportSchedules } from "./utils/report-scheduler";
+import { runAutoReportEngine } from "./utils/auto-report-engine";
 import { TelegramEnv } from "./utils/telegram";
 import { runRegressionChecks } from "./utils/qa";
 import { KPI_LABELS } from "./utils/kpi";
@@ -614,11 +615,15 @@ export default {
     try {
       const bindings = ensureEnv(env);
       const extended = bindings as typeof bindings & TelegramEnv & Record<string, unknown>;
-      const [reminders, reports] = await Promise.all([
+      const [autoStats, reminders, reports] = await Promise.all([
+        runAutoReportEngine(extended),
         runReminderSweep(extended),
         runReportSchedules(extended),
       ]);
       const qa = await runRegressionChecks(bindings);
+      if (autoStats.reportsSent || autoStats.weeklyReports || autoStats.alertsSent || autoStats.errors) {
+        console.log("auto-report", autoStats);
+      }
       if (reminders.leadRemindersSent || reminders.paymentRemindersSent) {
         console.log("reminders:sent", reminders);
       }

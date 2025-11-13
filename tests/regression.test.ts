@@ -37,6 +37,7 @@ const expect = {
 };
 
 import { ensureTelegramUrl, ensureTelegramUrlFromId, resolveChatLink } from "../src/utils/chat-links";
+import { evaluateAutoReportTrigger } from "../src/utils/auto-report-engine";
 import { evaluateQaDataset } from "../src/utils/qa";
 import {
   LeadRecord,
@@ -137,6 +138,43 @@ test("evaluateQaDataset flags missing references and reschedules schedules", () 
   const nextRun = evaluation.schedules[0].nextRunAt;
   expect.ok(nextRun);
   expect.ok(Date.parse(nextRun!) > Date.parse("2025-02-22T12:00:00Z"));
+});
+
+test("evaluateAutoReportTrigger detects daily window", () => {
+  const settings = {
+    enabled: true,
+    times: ["10:00"],
+    sendTarget: "chat",
+    alertsTarget: "admin",
+    mondayDoubleReport: false,
+    lastSentDaily: null,
+    lastSentMonday: null,
+  } satisfies Parameters<typeof evaluateAutoReportTrigger>[0];
+  const now = new Date("2025-02-20T10:02:00Z");
+  const result = evaluateAutoReportTrigger(settings, now);
+  expect.equal(result.daily, "10:00");
+  expect.equal(result.weekly, null);
+});
+
+test("evaluateAutoReportTrigger respects cooldown and monday double", () => {
+  const baseSettings = {
+    enabled: true,
+    times: ["15:00"],
+    sendTarget: "chat",
+    alertsTarget: "admin",
+    mondayDoubleReport: true,
+    lastSentDaily: new Date("2025-02-24T14:58:00Z").toISOString(),
+    lastSentMonday: null,
+  } satisfies Parameters<typeof evaluateAutoReportTrigger>[0];
+
+  const cooldownResult = evaluateAutoReportTrigger(baseSettings, new Date("2025-02-24T15:01:00Z"));
+  expect.equal(cooldownResult.daily, null, "Cooldown should suppress repeated send");
+
+  const mondayResult = evaluateAutoReportTrigger(
+    { ...baseSettings, lastSentDaily: new Date("2025-02-23T09:00:00Z").toISOString() },
+    new Date("2025-02-24T15:02:00Z"),
+  );
+  expect.equal(mondayResult.weekly, "15:00");
 });
 
 test("ensureTelegramUrl normalizes chat identifiers", () => {

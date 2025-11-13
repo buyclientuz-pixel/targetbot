@@ -70,6 +70,7 @@ import {
 import { generateReport } from "../utils/reports";
 import { KPI_LABELS, syncCampaignObjectives } from "../utils/kpi";
 import { resolveChatLink } from "../utils/chat-links";
+import { mergeMetaAccountLinks } from "../utils/meta-accounts";
 import {
   ChatRegistrationRecord,
   LeadRecord,
@@ -1272,60 +1273,11 @@ const formatMetaSpendLabel = (amount?: number | null, currency?: string | null):
   return formatted ?? `${amount.toFixed(2)} ${currency ?? "USD"}`;
 };
 
-const mergeMetaAccountLinks = (
-  stored: MetaAccountLinkRecord[],
-  fetched: MetaAdAccount[] | null,
-): { records: MetaAccountLinkRecord[]; changed: boolean } => {
-  const storedMap = new Map(stored.map((item) => [item.accountId, item]));
-  const fetchedMap = new Map((fetched ?? []).map((item) => [item.id, item]));
-  const ids = new Set<string>([...storedMap.keys(), ...fetchedMap.keys()]);
-  const now = new Date().toISOString();
-  let changed = false;
-  const records: MetaAccountLinkRecord[] = [];
-
-  for (const id of Array.from(ids)) {
-    const storedRecord = storedMap.get(id);
-    const fetchedRecord = fetchedMap.get(id);
-    const accountName = fetchedRecord?.name?.trim() || storedRecord?.accountName || id;
-    const currency = fetchedRecord?.currency ?? storedRecord?.currency ?? null;
-    const spentToday =
-      fetchedRecord && fetchedRecord.spend !== undefined
-        ? fetchedRecord.spend ?? 0
-        : storedRecord?.spentToday ?? null;
-    const isLinked = storedRecord?.isLinked ?? false;
-    const linkedProjectId = storedRecord?.linkedProjectId ?? null;
-    let updatedAt = storedRecord?.updatedAt;
-
-    if (!storedRecord) {
-      updatedAt = fetchedRecord ? now : undefined;
-      changed = true;
-    } else if (
-      storedRecord.accountName !== accountName ||
-      storedRecord.currency !== currency ||
-      (storedRecord.spentToday ?? null) !== (spentToday ?? null)
-    ) {
-      updatedAt = fetchedRecord ? now : storedRecord.updatedAt;
-      changed = true;
-    }
-
-    records.push({
-      accountId: id,
-      accountName,
-      currency,
-      spentToday,
-      isLinked,
-      linkedProjectId,
-      updatedAt,
-    });
-  }
-
-  records.sort((a, b) => a.accountName.localeCompare(b.accountName, "ru-RU", { sensitivity: "base" }));
-
-  return { records, changed };
-};
-
 const buildMetaAccountsMarkup = (accounts: MetaAccountLinkRecord[]) => {
-  const rows = accounts.map((account) => {
+  const sorted = accounts
+    .slice()
+    .sort((a, b) => a.accountName.localeCompare(b.accountName, "ru-RU", { sensitivity: "base" }));
+  const rows = sorted.map((account) => {
     const spendLabel = formatMetaSpendLabel(account.spentToday, account.currency);
     const title = account.isLinked
       ? `✅ ${account.accountName}${spendLabel ? ` | ${spendLabel}` : ""}`

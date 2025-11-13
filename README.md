@@ -134,22 +134,20 @@ flowchart LR
 
 ## Iteration Progress
 
-- Выполнено: зафиксирован паспорт модуля отчётности (`SPEC-AUTO-REPORT-v3.md`), README и ER-диаграмма дополнены сущностью `PROJECT_SETTINGS`, callback-schema расширена новыми пространствами `auto_*`/`alert_*`/`kpi_*`.
-- Осталось: переподключить обработчики бота и cron-движок к новым идентификаторам и расписанию SPEC-AUTO-REPORT-v3.
-- Итераций до полного покрытия ТЗ: ≈1 — внедрение SPEC-AUTO-REPORT-v3 и финальный QA.
+- Выполнено: auto-report engine SPEC-AUTO-REPORT-v3 подключён к cron-циклу Workers; Telegram-бот обслуживает `auto_*` и `alert_*` callbacks, обновляет `project_settings:{id}` и рассылает отчёты/алерты каждые 5 минут.
+- Осталось: провести итоговый smoke/QA отчётных сценариев (daily/weekly/alerts/export) и зафиксировать результаты в runbook.
+- Итераций до полного покрытия ТЗ: ≈0.5 — финальный QA и выпуск отчётного модуля.
 
 ### Текущее состояние задач
 
 **Выполнено в этой итерации**
-- Создан корневой паспорт `SPEC-AUTO-REPORT-v3.md` (Auto-Report Engine · Alert Engine · KPI Engine · Export Engine · Billing Engine).
-- README обновлён: добавлена сущность `PROJECT_SETTINGS`, статус итерации и уточнённый список задач.
-- Callback-schema расширена `auto_menu`, `auto_toggle`, `auto_time_toggle`, `auto_send_target`, `auto_monday_toggle`, `auto_send_now`, `alert_*`, `kpi_*`, `report_manual`, `report_export`.
-- Зафиксирована необходимость миграции cron и бота к новой схеме, отражено в журнале задач.
+- Реализован cron-движок SPEC-AUTO-REPORT-v3: auto-отчёты, понедельничный double-report, маршрутизация в чат/админа и алерты (billing/budget/meta/pause) работают из Workers без участия веб-панели.
+- Project settings синхронизируются с актуальными Meta-аккаунтами и биллингом, `project_settings:{id}` хранит таймстемпы отправок и статусы meta/alerts.
+- Telegram-бот обслуживает inline-меню автоотчётов (`auto_*`) и алертов (`alert_*`), обновляя настройки и запускает отправку отчётов «сейчас» прямо из карточки проекта.
 
 **Осталось закрыть**
-- Привести обработчики Telegram-бота к новым callback-форматам (`auto_menu`, `alert_route`, `kpi_toggle_default`, `report_manual`...).
-- Синхронизировать cron/Report Scheduler с расписанием SPEC-AUTO-REPORT-v3 (интервал 5 минут, понедельничный двойной отчёт).
-- Провести smoke/QA всех отчётных сценариев и задокументировать результаты.
+- Провести smoke/QA всех отчётных сценариев и задокументировать результаты (runbook + Progress Log).
+- Подтвердить экспорт/cron в продуктивном окружении и обновить раздел Deployment с чек-листом SPEC-AUTO-REPORT.
 
 ## Data Model (ER Diagram)
 
@@ -680,4 +678,9 @@ Telegram-бот полностью покрывает FSM: список прое
 - Что сделано: внедрена inline-панель автоотчётов SPEC-AUTO-REPORT-v3 — кнопки `auto_*`/`alert_*` управляют расписанием, маршрутами и алертами, состояние хранится в KV (`project_settings:{id}`) и отображается в карточке проекта.
 - Какая задача сейчас в работе: перенос cron- и экспорт-логики на новые настройки `project_settings` (маршруты, double-report, `last_sent_*`).
 - Следующие задачи: обновить планировщик/alert-движок под новое хранилище, прогнать `npm run qa` и зафиксировать результат в документации.
+
+### Progress 54
+- Что сделано: cron-движок SPEC-AUTO-REPORT-v3 запущен — воркер каждые 5 минут собирает проекты, синхронизирует `project_settings`, рассылает ежедневные/понедельничные отчёты и отправляет алерты (billing/budget/meta/pause) по заданным маршрутам.
+- Какая задача сейчас в работе: финальный smoke-/QA-прогон отчётности, экспортов и алертов с фиксацией результатов в runbook.
+- Следующие задачи: обновить deployment/runbook чек-листы и подготовить релизную выдачу модуля отчётности.
 
