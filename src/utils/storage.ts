@@ -104,6 +104,39 @@ const sanitizePortalMetrics = (values: unknown): PortalMetricKey[] => {
   return normalized.length > 0 ? normalized : [...PORTAL_ALLOWED_METRICS];
 };
 
+const sanitizeTelegramLink = (value: unknown): string | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const lower = trimmed.toLowerCase();
+  if (trimmed.startsWith("tg://")) {
+    return trimmed;
+  }
+  if (lower.startsWith("http://")) {
+    return `https://${trimmed.slice(7)}`;
+  }
+  if (lower.startsWith("https://")) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("//")) {
+    return `https:${trimmed}`;
+  }
+  if (lower.startsWith("t.me/") || lower.startsWith("telegram.me/")) {
+    return `https://${trimmed.replace(/^\/+/, "")}`;
+  }
+  if (trimmed.startsWith("@")) {
+    return `https://t.me/${trimmed.slice(1)}`;
+  }
+  if (trimmed.startsWith("+")) {
+    return `https://t.me/${trimmed}`;
+  }
+  return `https://t.me/${trimmed.replace(/^\/+/, "")}`;
+};
+
 const MAX_REPORT_RECORDS = 200;
 const MAX_REPORT_DELIVERIES = 200;
 
@@ -285,9 +318,15 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       : ({} as ProjectRecord["settings"]);
 
   const userId = typeof data.userId === "string" ? data.userId : undefined;
-  const telegramChatId = typeof data.telegramChatId === "string" ? data.telegramChatId : chatId || undefined;
+  const telegramChatId =
+    typeof data.telegramChatId === "string" && data.telegramChatId.trim()
+      ? data.telegramChatId.trim()
+      : chatId || undefined;
   const telegramThreadId = typeof data.telegramThreadId === "number" ? data.telegramThreadId : undefined;
-  const telegramLink = typeof data.telegramLink === "string" ? data.telegramLink : undefined;
+  const telegramLink =
+    sanitizeTelegramLink(
+      data.telegramLink ?? data.chatLink ?? data.telegram_link ?? data.chat_link ?? data.inviteLink ?? data.invite_link,
+    ) || undefined;
   const telegramTitleSource =
     data.telegramTitle ?? data.chatTitle ?? data.telegram_title ?? data.chat_title ?? data.title;
   const telegramTitle =

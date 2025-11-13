@@ -641,19 +641,71 @@ const buildProjectListMarkup = (
   return { inline_keyboard: keyboard };
 };
 
+const ensureTelegramUrl = (value?: string): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const lower = trimmed.toLowerCase();
+  if (trimmed.startsWith("tg://")) {
+    return trimmed;
+  }
+  if (lower.startsWith("http://")) {
+    return `https://${trimmed.slice(7)}`;
+  }
+  if (lower.startsWith("https://")) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("//")) {
+    return `https:${trimmed}`;
+  }
+  if (lower.startsWith("t.me/") || lower.startsWith("telegram.me/")) {
+    return `https://${trimmed.replace(/^\/+/, "")}`;
+  }
+  if (trimmed.startsWith("@")) {
+    return `https://t.me/${trimmed.slice(1)}`;
+  }
+  if (trimmed.startsWith("+")) {
+    return `https://t.me/${trimmed}`;
+  }
+  return `https://t.me/${trimmed.replace(/^\/+/, "")}`;
+};
+
+const buildChatUrlFromId = (chatId?: string | number): string | undefined => {
+  if (chatId === undefined || chatId === null) {
+    return undefined;
+  }
+  const text = String(chatId).trim();
+  if (!text) {
+    return undefined;
+  }
+  if (text.startsWith("tg://") || text.startsWith("//") || /^https?:\/\//i.test(text)) {
+    return ensureTelegramUrl(text);
+  }
+  if (text.startsWith("@") || text.startsWith("+") || /^(?:t\.me|telegram\.me)\//i.test(text)) {
+    return ensureTelegramUrl(text);
+  }
+  if (/^-?\d+$/.test(text)) {
+    if (text.startsWith("-")) {
+      const normalized = text.startsWith("-100") ? text.slice(4) : text.slice(1);
+      if (normalized) {
+        return `https://t.me/c/${normalized}`;
+      }
+    }
+    return `tg://user?id=${encodeURIComponent(text)}`;
+  }
+  return ensureTelegramUrl(text);
+};
+
 const resolveProjectChatUrl = (summary: ProjectSummary): string | undefined => {
-  if (summary.telegramLink && summary.telegramLink.trim()) {
-    return summary.telegramLink.trim();
+  const byLink = ensureTelegramUrl(summary.telegramLink);
+  if (byLink) {
+    return byLink;
   }
-  const chatCandidate = summary.telegramChatId ?? summary.chatId;
-  if (!chatCandidate) {
-    return undefined;
-  }
-  const chatId = String(chatCandidate).trim();
-  if (!chatId) {
-    return undefined;
-  }
-  return `tg://openmessage?chat_id=${encodeURIComponent(chatId)}`;
+  return buildChatUrlFromId(summary.telegramChatId ?? summary.chatId);
 };
 
 const buildProjectActionsMarkup = (summary: ProjectSummary) => {
@@ -1125,9 +1177,10 @@ const handleProjectView = async (
   );
   lines.push(describeBillingStatus(summary));
   lines.push(describePaymentSchedule(summary));
+  const chatUrl = resolveProjectChatUrl(summary);
   const chatLabel = summary.telegramTitle ?? (summary.telegramChatId ? `ID ${summary.telegramChatId}` : null);
-  const chatLine = summary.telegramLink
-    ? `📲 Чат-группа: <a href="${escapeAttribute(summary.telegramLink)}">Перейти</a>`
+  const chatLine = chatUrl
+    ? `📲 Чат-группа: <a href="${escapeAttribute(chatUrl)}">Перейти</a>`
     : chatLabel
       ? `📲 Чат-группа: ${escapeHtml(chatLabel)}`
       : "📲 Чат-группа: не подключена";
@@ -1175,7 +1228,7 @@ const handleProjectChat = async (context: BotContext, projectId: string): Promis
   if (summary.telegramThreadId !== undefined) {
     lines.push(`Thread ID: <code>${escapeHtml(summary.telegramThreadId.toString())}</code>`);
   }
-  if (!summary.telegramLink && !summary.telegramChatId) {
+  if (!chatUrl && !summary.telegramChatId) {
     lines.push("Чат не подключён. Добавьте бота в группу, выполните /reg и обновите карточку через кнопку «📲 Чат-группа».");
   }
   lines.push(
