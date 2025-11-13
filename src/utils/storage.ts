@@ -32,6 +32,7 @@ const TELEGRAM_GROUPS_KEY = "telegram/groups.json";
 const META_PROJECTS_KEY = "meta/projects.json";
 const META_PENDING_PREFIX = "meta/link/pending/";
 const USER_PENDING_PREFIX = "users/pending/";
+const BILLING_PENDING_PREFIX = "billing/pending/";
 
 const TELEGRAM_GROUP_KV_INDEX_KEY = "telegram:groups:index";
 const TELEGRAM_GROUP_KV_PREFIX = "telegram:group:";
@@ -443,6 +444,28 @@ export const loadProject = async (env: EnvBindings, projectId: string): Promise<
   return projects.find((project) => project.id === projectId) || null;
 };
 
+export const updateProjectRecord = async (
+  env: EnvBindings,
+  projectId: string,
+  patch: Partial<ProjectRecord>,
+): Promise<ProjectRecord | null> => {
+  const projects = await listProjects(env);
+  const index = projects.findIndex((project) => project.id === projectId);
+  if (index < 0) {
+    return null;
+  }
+  const current = projects[index];
+  const updated: ProjectRecord = {
+    ...current,
+    ...patch,
+    id: current.id,
+    updatedAt: new Date().toISOString(),
+  };
+  projects[index] = updated;
+  await saveProjects(env, projects);
+  return normalizeProjectRecord(updated);
+};
+
 export const listLeads = async (env: EnvBindings, projectId: string): Promise<LeadRecord[]> => {
   return readJsonFromR2<LeadRecord[]>(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, []);
 };
@@ -688,7 +711,17 @@ export interface PendingMetaLinkState {
   flow?: MetaLinkFlow;
 }
 
+export type PendingBillingAction = "set-next-payment" | "set-tariff";
+
+export interface PendingBillingOperation {
+  action: PendingBillingAction;
+  projectId: string;
+  updatedAt?: string;
+}
+
 const pendingMetaLinkKey = (userId: string): string => `${META_PENDING_PREFIX}${userId}`;
+
+const pendingBillingKey = (userId: string): string => `${BILLING_PENDING_PREFIX}${userId}`;
 
 export const loadPendingMetaLink = async (
   env: EnvBindings,
@@ -726,6 +759,44 @@ export const clearPendingMetaLink = async (
   userId: string,
 ): Promise<void> => {
   await env.DB.delete(pendingMetaLinkKey(userId));
+};
+
+export const loadPendingBillingOperation = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<PendingBillingOperation | null> => {
+  const stored = await env.DB.get(pendingBillingKey(userId));
+  if (!stored) {
+    return null;
+  }
+  try {
+    return JSON.parse(stored) as PendingBillingOperation;
+  } catch (error) {
+    console.error("Failed to parse pending billing operation", error);
+    return null;
+  }
+};
+
+export const savePendingBillingOperation = async (
+  env: EnvBindings,
+  userId: string,
+  operation: PendingBillingOperation,
+  ttlSeconds = 900,
+): Promise<void> => {
+  const payload = {
+    ...operation,
+    updatedAt: new Date().toISOString(),
+  } satisfies PendingBillingOperation;
+  await env.DB.put(pendingBillingKey(userId), JSON.stringify(payload), {
+    expirationTtl: Math.max(60, ttlSeconds),
+  });
+};
+
+export const clearPendingBillingOperation = async (
+  env: EnvBindings,
+  userId: string,
+): Promise<void> => {
+  await env.DB.delete(pendingBillingKey(userId));
 };
 
 export type PendingUserAction = "create" | "create-role";

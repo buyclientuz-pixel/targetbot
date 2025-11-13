@@ -5,6 +5,7 @@ import {
   resolveCommand,
   handleProjectCallback,
   handleMetaCallback,
+  handlePendingBillingInput,
   handlePendingUserInput,
   handleUserCallback,
   handleAnalyticsCallback,
@@ -176,6 +177,10 @@ const handleUpdate = async (context: BotContext): Promise<void> => {
   }
 
   if (!context.update.callback_query && !command) {
+    const pendingBillingHandled = await handlePendingBillingInput(context);
+    if (pendingBillingHandled) {
+      return;
+    }
     const pendingHandled = await handlePendingUserInput(context);
     if (pendingHandled) {
       return;

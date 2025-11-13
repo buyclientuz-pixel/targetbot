@@ -33,8 +33,12 @@
 | `proj:export:{projectId}` | Экспорт данных проекта. |
 | `proj:portal:{projectId}` | Ссылка на клиентский портал. |
 | `proj:billing:{projectId}` | Статус оплаты и платежей. |
+| `proj:billing-status:{projectId}:{status}` | Установить статус биллинга (`active`, `pending`, `overdue`, `blocked`). |
+| `proj:billing-next:{projectId}:{preset}` | Обновить дату следующего платежа (`7`, `14`, `30`, `clear`, `custom`). |
+| `proj:billing-tariff:{projectId}` | Запросить обновление тарифа проекта. |
 | `proj:settings:{projectId}` | Настройки проекта. |
 | `proj:delete:{projectId}` | Запрос удаления проекта. |
+| `proj:lead-toggle:{projectId}:{leadId}` | Переключить статус лида между «новый» и «обработан». |
 
 ## Meta-аккаунты (`meta:*`)
 
