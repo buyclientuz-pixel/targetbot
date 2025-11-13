@@ -33,6 +33,9 @@ const META_PROJECTS_KEY = "meta/projects.json";
 const META_PENDING_PREFIX = "meta/link/pending/";
 const USER_PENDING_PREFIX = "users/pending/";
 
+const TELEGRAM_GROUP_KV_INDEX_KEY = "telegram:groups:index";
+const TELEGRAM_GROUP_KV_PREFIX = "telegram:group:";
+
 const USER_KV_INDEX_KEY = "users:index";
 const PROJECT_KV_INDEX_KEY = "projects:index";
 const META_KV_INDEX_KEY = "meta:index";
@@ -571,6 +574,20 @@ export const saveTelegramGroupLinks = async (
   records: TelegramGroupLinkRecord[],
 ): Promise<void> => {
   await writeJsonToR2(env, TELEGRAM_GROUPS_KEY, records);
+  await syncKvRecords({
+    env,
+    indexKey: TELEGRAM_GROUP_KV_INDEX_KEY,
+    prefix: TELEGRAM_GROUP_KV_PREFIX,
+    items: records,
+    getId: (record) => record.chatId,
+    serialize: (record) => ({
+      chat_id: record.chatId,
+      title: record.title ?? null,
+      members: record.members ?? null,
+      registered: Boolean(record.registered),
+      linked_project_id: record.linkedProjectId ?? null,
+    }),
+  });
 };
 
 export const listMetaProjectLinks = async (
