@@ -56,7 +56,7 @@
 3. При повреждённых данных в R2 (пустые массивы):
    - Откройте Cloudflare Dashboard → R2 → bucket `R2` → объекты `projects/index.json` и `leads/<projectId>.json`.
    - Восстановите содержимое из резервной копии (если есть) и сохраните JSON вручную.
-4. Проверьте портал клиента: `https://<worker>/portal/<projectId>` должен показывать список лидов.
+4. Проверьте портал клиента: `https://<worker>/portal/<projectId>` должен показывать список лидов (если `PORTAL_BASE_URL` не задан, бот использует workers.dev домен авторизации — ссылка должна открываться по нему).
 
 ## 6. Пользователи и доступы
 
@@ -92,7 +92,7 @@
 
 - **Meta**: `FB_APP_ID`, `FB_APP_SECRET`, `META_ACCESS_TOKEN`, `META_ACCESS_TOKEN_EXPIRES`, `META_AD_ACCOUNT_IDS`, `META_BUSINESS_IDS`.
 - **Telegram**: `BOT_TOKEN` или `TELEGRAM_BOT_TOKEN`.
-- **Прочее**: `PORTAL_BASE_URL`, `WORKER_BASE_URL` (опционально).
+- **Прочее**: `PORTAL_BASE_URL`, `WORKER_BASE_URL` (опционально; при отсутствии портал использует домен авторизации Facebook / workers.dev fallback).
 
 Изменяйте значения через Cloudflare Dashboard или командой:
 ```bash

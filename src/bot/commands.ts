@@ -111,13 +111,38 @@ const resolvePortalUrl = (env: BotContext["env"], portalId: string | null | unde
     return null;
   }
   const path = `/portal/${encodeURIComponent(portalId)}`;
-  const candidates = [
+  const candidates: unknown[] = [
     env.PORTAL_BASE_URL,
     env.PUBLIC_WEB_URL,
     env.PUBLIC_BASE_URL,
     env.WORKER_BASE_URL,
     env.ADMIN_BASE_URL,
   ];
+
+  const authDerivedBase = (() => {
+    try {
+      const authUrl = resolveAuthUrl(env);
+      if (!authUrl) {
+        return null;
+      }
+      const auth = new URL(authUrl);
+      auth.pathname = auth.pathname.replace(/\/?auth\/facebook\/?$/i, "");
+      auth.search = "";
+      auth.hash = "";
+      return auth.toString();
+    } catch (error) {
+      console.warn("Failed to derive portal base from auth url", error);
+      return null;
+    }
+  })();
+
+  if (authDerivedBase) {
+    candidates.push(authDerivedBase);
+  }
+
+  const FALLBACK_PORTAL_BASE = "https://th-reports.buyclientuz.workers.dev";
+  candidates.push(FALLBACK_PORTAL_BASE);
+
   for (const candidate of candidates) {
     const url = buildAbsoluteUrl(typeof candidate === "string" ? candidate : null, path);
     if (url) {
