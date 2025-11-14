@@ -2,6 +2,7 @@ import { escapeAttribute, escapeHtml } from "./html";
 import { sendTelegramMessage } from "./telegram";
 import { LeadRecord, MetaLeadDetails, ProjectRecord, JsonObject } from "../types";
 import { EnvBindings } from "./storage";
+import { buildCampaignShortName } from "./campaigns";
 
 interface PhoneFormat {
   raw: string;
@@ -14,6 +15,7 @@ interface LeadNotificationContent {
   name: string;
   phone?: PhoneFormat;
   profileUrl?: string;
+  campaign?: string;
 }
 
 interface LeadNotificationOptions {
@@ -179,11 +181,14 @@ export const metaLeadParser = (
   options: LeadNotificationOptions = {},
 ): LeadNotificationContent => {
   const phone = options.details?.phone || lead.phone || null;
+  const campaignLabel = lead.campaignShortName
+    || (lead.campaignName ? buildCampaignShortName(lead.campaignName) : undefined);
   if (phone) {
     return {
       kind: "contact",
       name: lead.name,
       phone: formatPhone(phone),
+      campaign: campaignLabel,
     };
   }
   const profileUrl = detectProfileUrl(lead, options.details, options.payload);
@@ -191,6 +196,7 @@ export const metaLeadParser = (
     kind: "message",
     name: lead.name,
     profileUrl,
+    campaign: campaignLabel,
   };
 };
 
@@ -200,12 +206,18 @@ const buildLeadMessage = (content: LeadNotificationContent): { text: string; rep
     const phone = content.phone!;
     lines.push("🔔 Новый лид (контакт)");
     lines.push(`Имя: ${escapeHtml(content.name)}`);
+    if (content.campaign) {
+      lines.push(`Кампания: ${escapeHtml(content.campaign)}`);
+    }
     lines.push(`Телефон: <a href=\"${escapeAttribute(phone.tel)}\">${escapeHtml(phone.display)}</a>`);
     lines.push(`👉 <a href=\"${escapeAttribute(phone.tel)}\">Нажми, чтобы позвонить</a>`);
     return { text: lines.join("\n") };
   }
   lines.push("🔔 Новый лид (сообщение)");
   lines.push(`Имя: ${escapeHtml(content.name)}`);
+  if (content.campaign) {
+    lines.push(`Кампания: ${escapeHtml(content.campaign)}`);
+  }
   lines.push("Сообщение: открыть диалог");
   const markup = content.profileUrl
     ? {

@@ -28,6 +28,7 @@ import { createId } from "./ids";
 import { fetchAdAccounts, fetchCampaigns, withMetaSettings } from "./meta";
 import { syncCampaignObjectives, getCampaignKPIs, applyKpiSelection, getKPIsForCampaign } from "./kpi";
 import { syncProjectLeads } from "./leads";
+import { compareCampaigns, normalizeCampaign, normalizeCampaigns } from "./campaigns";
 
 const GLOBAL_PROJECT_ID = "__multi__";
 const PORTAL_BASE_KEYS = [
@@ -411,7 +412,7 @@ const selectProjectCampaigns = (
   if (!campaigns.length) {
     return [];
   }
-  const sorted = campaigns.slice().sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0));
+  const sorted = campaigns.slice().sort(compareCampaigns);
   if (preferences.campaignIds.length) {
     const ids = new Set(preferences.campaignIds);
     const manual = sorted.filter((campaign) => ids.has(campaign.id));
@@ -672,7 +673,22 @@ export const buildProjectReportEntry = (
     if (campaign.cpl !== undefined && kpis.cpl === undefined) {
       assignMetricValue(kpis, "cpl", campaign.cpl);
     }
-    return { name: campaign.name, kpis };
+    const normalized = normalizeCampaign(campaign);
+    return {
+      id: normalized.id,
+      name: normalized.name,
+      shortName: normalized.shortName,
+      status: normalized.status,
+      effectiveStatus: normalized.effectiveStatus,
+      objective: normalized.objective,
+      resultLabel: normalized.resultLabel,
+      resultValue: normalized.resultValue,
+      resultMetric: normalized.resultMetric,
+      spend: campaign.spend,
+      impressions: campaign.impressions,
+      clicks: campaign.clicks,
+      kpis,
+    };
   });
 
   const aggregated = aggregateCampaigns(selected);
@@ -870,11 +886,12 @@ const buildCampaignLines = (
   }
   const lines: string[] = ["  Активные кампании:"];
   project.report.campaigns.slice(0, 5).forEach((campaign) => {
-    const leads = formatNumberValue(campaign.kpis.leads);
+    const resultLabel = campaign.resultLabel ?? "Результат";
+    const resultValue = formatNumberValue(campaign.resultValue ?? campaign.kpis.leads);
     const spend = campaign.kpis.spend ?? 0;
     const cpaBase = campaign.kpis.cpa ?? (campaign.kpis.leads && campaign.kpis.leads > 0 ? spend / campaign.kpis.leads : undefined);
     const cpa = formatCurrencyValue(cpaBase, currency);
-    lines.push(`  • ${campaign.name} — ${leads} лидов, CPA ${cpa}`);
+    lines.push(`  • ${campaign.name} — ${resultLabel}: ${resultValue}, CPA ${cpa}`);
   });
   return lines;
 };

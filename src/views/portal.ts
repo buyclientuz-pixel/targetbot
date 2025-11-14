@@ -1,12 +1,13 @@
 import {
   LeadRecord,
-  MetaCampaign,
+  NormalizedCampaign,
   PortalMetricKey,
   ProjectBillingSummary,
   ProjectRecord,
 } from "../types";
 import { renderLayout } from "../components/layout";
 import { escapeAttribute, escapeHtml } from "../utils/html";
+import { buildCampaignShortName } from "../utils/campaigns";
 
 interface PortalMetricEntry {
   key: PortalMetricKey;
@@ -38,7 +39,7 @@ interface PortalViewProps {
   project: ProjectRecord;
   leads: LeadRecord[];
   billing: ProjectBillingSummary;
-  campaigns: MetaCampaign[];
+  campaigns: NormalizedCampaign[];
   metrics: PortalMetricEntry[];
   periodOptions: PortalPeriodOption[];
   periodLabel: string;
@@ -51,22 +52,21 @@ const resolveConversionType = (lead: LeadRecord): string => {
   return lead.phone ? "Контакт" : "Сообщение";
 };
 
-const shortenLabel = (value: string, limit = 48): string => {
-  if (value.length <= limit) {
-    return value;
-  }
-  return `${value.slice(0, limit - 1)}…`;
-};
-
 const resolveCampaignLabel = (lead: LeadRecord, names: Record<string, string>): string => {
+  if (lead.campaignShortName) {
+    return lead.campaignShortName;
+  }
   if (lead.campaignId && names[lead.campaignId]) {
-    return shortenLabel(names[lead.campaignId]);
+    return names[lead.campaignId];
+  }
+  if (lead.campaignName) {
+    return buildCampaignShortName(lead.campaignName);
   }
   if (lead.source && lead.source.trim()) {
-    return shortenLabel(lead.source.trim());
+    return buildCampaignShortName(lead.source.trim());
   }
   if (lead.formId) {
-    return shortenLabel(`Форма ${lead.formId}`);
+    return buildCampaignShortName(`Форма ${lead.formId}`);
   }
   return "—";
 };
@@ -171,7 +171,7 @@ const renderMetrics = (metrics: PortalMetricEntry[]): string => {
   `;
 };
 
-const formatCampaignStatus = (campaign: MetaCampaign): string => {
+const formatCampaignStatus = (campaign: NormalizedCampaign): string => {
   const effective = campaign.effectiveStatus || campaign.status || "UNKNOWN";
   const label = effective.replace(/_/g, " ");
   const upper = effective.toUpperCase();
@@ -184,20 +184,44 @@ const formatCampaignStatus = (campaign: MetaCampaign): string => {
   return `<span class="badge muted">${escapeHtml(label)}</span>`;
 };
 
-const renderCampaigns = (campaigns: MetaCampaign[]): string => {
+const renderCampaigns = (campaigns: NormalizedCampaign[]): string => {
   if (!campaigns.length) {
     return '';
   }
-  const rows = campaigns
+  const sorted = campaigns
+    .slice()
+    .sort((a, b) => {
+      const statusDiff = a.statusOrder - b.statusOrder;
+      if (statusDiff !== 0) {
+        return statusDiff;
+      }
+      const spendDiff = (b.spend ?? 0) - (a.spend ?? 0);
+      if (spendDiff !== 0) {
+        return spendDiff;
+      }
+      return a.name.localeCompare(b.name, "ru-RU");
+    });
+  const rows = sorted
     .map((campaign) => {
       const spend = campaign.spendFormatted
-        || (campaign.spend !== undefined ? `${campaign.spend.toFixed(2)} ${campaign.spendCurrency || ""}`.trim() : "—");
-      const impressions = campaign.impressions !== undefined ? campaign.impressions.toLocaleString("ru-RU") : "—";
-      const clicks = campaign.clicks !== undefined ? campaign.clicks.toLocaleString("ru-RU") : "—";
+        || (campaign.spend !== undefined
+          ? `${campaign.spend.toFixed(2)} ${campaign.spendCurrency || ""}`.trim()
+          : "—");
+      const impressions = campaign.impressions !== undefined
+        ? campaign.impressions.toLocaleString("ru-RU")
+        : "—";
+      const clicks = campaign.clicks !== undefined
+        ? campaign.clicks.toLocaleString("ru-RU")
+        : "—";
+      const resultValue = campaign.resultValue !== undefined ? Math.round(campaign.resultValue).toLocaleString("ru-RU") : "—";
+      const result = campaign.resultLabel
+        ? `${escapeHtml(campaign.resultLabel)} — ${escapeHtml(resultValue)}`
+        : "—";
       return `
         <tr>
           <td>${escapeHtml(campaign.name)}</td>
           <td>${formatCampaignStatus(campaign)}</td>
+          <td>${result}</td>
           <td>${escapeHtml(spend)}</td>
           <td>${escapeHtml(impressions)}</td>
           <td>${escapeHtml(clicks)}</td>
@@ -213,6 +237,7 @@ const renderCampaigns = (campaigns: MetaCampaign[]): string => {
           <tr>
             <th>Название</th>
             <th>Статус</th>
+            <th>Результат</th>
             <th>Расход</th>
             <th>Показы</th>
             <th>Клики</th>
@@ -277,14 +302,13 @@ export const renderPortal = ({
       <div class="actions" id="leadFilters">
         <button class="btn btn-secondary active" data-filter="all">Все <span class="count" data-role="count">${statusCounts.all}</span></button>
         <button class="btn btn-secondary" data-filter="new">Новые <span class="count" data-role="count">${statusCounts.new}</span></button>
-        <button class="btn btn-secondary" data-filter="done">Завершённые <span class="count" data-role="count">${statusCounts.done}</span></button>
       </div>
       <table id="leadsTable">
         <thead>
           <tr>
             <th>Имя</th>
             <th>Телефон</th>
-            <th>Тип конверсии</th>
+            <th>Тип</th>
             <th>Дата</th>
             <th>Кампания</th>
           </tr>

@@ -57,6 +57,7 @@ export interface MetaCampaign {
   spendFormatted?: string;
   impressions?: number;
   clicks?: number;
+  inlineLinkClicks?: number;
   reach?: number;
   uniqueReach?: number;
   leads?: number;
@@ -78,6 +79,30 @@ export interface MetaCampaign {
   cpi?: number;
   cpe?: number;
   updatedTime?: string;
+  resultLabel?: string;
+  resultValue?: number;
+  resultMetric?: string;
+  shortName?: string;
+}
+
+export interface NormalizedCampaign {
+  id: string;
+  name: string;
+  shortName: string;
+  status?: string;
+  effectiveStatus?: string;
+  objective?: string | null;
+  spend: number;
+  spendFormatted?: string;
+  spendCurrency?: string;
+  impressions: number;
+  clicks: number;
+  reach: number;
+  resultLabel?: string;
+  resultValue?: number;
+  resultMetric?: string;
+  statusOrder: number;
+  raw: MetaCampaign;
 }
 
 export type PortalMode = "auto" | "manual";
@@ -141,7 +166,18 @@ export type KPISet = {
 };
 
 export interface CampaignReportBlock {
+  id: string;
   name: string;
+  shortName: string;
+  status?: string;
+  effectiveStatus?: string;
+  objective?: string | null;
+  resultLabel?: string;
+  resultValue?: number;
+  resultMetric?: string;
+  spend?: number;
+  impressions?: number;
+  clicks?: number;
   kpis: KPISet;
 }
 
@@ -406,6 +442,8 @@ export interface LeadRecord {
   adId?: string | null;
   status: "new" | "done";
   createdAt: string;
+  campaignName?: string | null;
+  campaignShortName?: string | null;
 }
 
 export type LeadReminderStatus = "pending" | "notified" | "resolved";

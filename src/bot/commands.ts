@@ -72,6 +72,7 @@ import { generateReport } from "../utils/reports";
 import { KPI_LABELS, syncCampaignObjectives } from "../utils/kpi";
 import { resolveChatLink } from "../utils/chat-links";
 import { mergeMetaAccountLinks } from "../utils/meta-accounts";
+import { normalizeCampaigns, buildCampaignShortName } from "../utils/campaigns";
 import {
   buildAdminPaymentReviewMarkup,
   buildAdminPaymentReviewMessage,
@@ -2135,7 +2136,9 @@ const formatLeadPreview = (lead: LeadRecord): string => {
   const statusIcon = lead.status === "done" ? "✅" : "🆕";
   const created = formatDateTime(lead.createdAt);
   const phone = lead.phone ? `, ${escapeHtml(lead.phone)}` : "";
-  return `${statusIcon} ${escapeHtml(lead.name)}${phone} — ${escapeHtml(lead.source)} · ${escapeHtml(created)}`;
+  const campaignLabel = lead.campaignShortName
+    || (lead.campaignName ? buildCampaignShortName(lead.campaignName) : "—");
+  return `${statusIcon} ${escapeHtml(lead.name)}${phone} — ${escapeHtml(campaignLabel)} · ${escapeHtml(created)}`;
 };
 
 const computeLeadStatsForPeriod = (
@@ -2369,7 +2372,7 @@ const handleProjectReportSend = async (
   await handleProjectReport(context, projectId, period.key as ReportPeriodKey);
 };
 
-const campaignStatusIcon = (campaign: MetaCampaign): string => {
+const campaignStatusIcon = (campaign: { status?: string; effectiveStatus?: string }): string => {
   const status = (campaign.effectiveStatus || campaign.status || "").toUpperCase();
   if (status.includes("ACTIVE")) {
     return "🟢";
@@ -2415,14 +2418,16 @@ const handleProjectCampaigns = async (context: BotContext, projectId: string): P
       await savePendingCampaignSelection(context.env, operatorId, pending);
     }
   }
-  const campaigns = account.campaigns
-    .slice()
-    .sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0))
-    .slice(0, 20);
-  await syncCampaignObjectives(context.env, projectId, campaigns).catch((error) =>
+  const normalizedCampaigns = normalizeCampaigns(account.campaigns ?? []);
+  const limitedCampaigns = normalizedCampaigns.slice(0, 20);
+  await syncCampaignObjectives(
+    context.env,
+    projectId,
+    limitedCampaigns.map((campaign) => campaign.raw),
+  ).catch((error) =>
     console.warn("Failed to sync campaign objectives", projectId, error),
   );
-  const rows = campaigns.map((campaign) => [{
+  const rows = limitedCampaigns.map((campaign) => [{
     text: `${pending?.campaignIds.includes(campaign.id) ? "✅" : campaignStatusIcon(campaign)} ${truncateCampaignLabel(campaign.name)}`,
     callback_data: `proj:campaign-toggle:${projectId}:${campaign.id}`,
   }]);
@@ -2432,8 +2437,28 @@ const handleProjectCampaigns = async (context: BotContext, projectId: string): P
     `👀 Рекламные кампании — <b>${escapeHtml(summary.name)}</b>`,
     `Выбрано: ${pending?.campaignIds.length ?? 0}`,
     "",
-    "Отметьте кампании и нажмите «Выбрать действие», чтобы управлять статусами или сохранить выбор по умолчанию.",
   ];
+  limitedCampaigns.forEach((campaign, index) => {
+    const statusLabel = (campaign.effectiveStatus || campaign.status || "UNKNOWN").replace(/_/g, " ");
+    const resultLabel = campaign.resultLabel ?? "Результат";
+    const resultValue = campaign.resultValue !== undefined
+      ? Math.round(campaign.resultValue).toLocaleString("ru-RU")
+      : "—";
+    const spendLabel = campaign.spendFormatted ?? formatCurrencyValue(campaign.spend, campaign.spendCurrency) ?? "—";
+    const impressions = campaign.impressions !== undefined
+      ? campaign.impressions.toLocaleString("ru-RU")
+      : "—";
+    const clicks = campaign.clicks !== undefined ? campaign.clicks.toLocaleString("ru-RU") : "—";
+    lines.push(
+      `${index + 1}. ${escapeHtml(campaign.name)} (${escapeHtml(statusLabel)})`,
+      `   ${escapeHtml(resultLabel)}: ${escapeHtml(resultValue)} · Расход: ${escapeHtml(spendLabel)}`,
+      `   Показы: ${escapeHtml(impressions)} · Клики: ${escapeHtml(clicks)}`,
+      "",
+    );
+  });
+  lines.push(
+    "Отметьте кампании и нажмите «Выбрать действие», чтобы управлять статусами или сохранить выбор по умолчанию.",
+  );
   await sendMessage(context, lines.join("\n"), { replyMarkup: { inline_keyboard: rows } });
 };
 
@@ -2558,9 +2583,10 @@ const handleProjectCampaignAction = async (
       campaignsLimit: 50,
     });
     const campaigns = accountInfo.account?.campaigns ?? [];
+    const normalized = normalizeCampaigns(campaigns);
     const selectedCampaigns = selection.length
-      ? campaigns.filter((campaign) => selection.includes(campaign.id))
-      : campaigns.slice(0, 10);
+      ? normalized.filter((campaign) => selection.includes(campaign.id))
+      : normalized.slice(0, 10);
     if (!selectedCampaigns.length) {
       await sendMessage(context, "Кампании не найдены. Обновите список и попробуйте снова.", {
         replyMarkup: buildProjectBackMarkup(projectId),
@@ -2575,8 +2601,12 @@ const handleProjectCampaignAction = async (
       const spend = campaign.spendFormatted ?? formatCurrencyValue(campaign.spend, campaign.spendCurrency) ?? "—";
       const impressions = campaign.impressions !== undefined ? campaign.impressions.toLocaleString("ru-RU") : "—";
       const clicks = campaign.clicks !== undefined ? campaign.clicks.toLocaleString("ru-RU") : "—";
+      const resultLabel = campaign.resultLabel ?? "Результат";
+      const resultValue = campaign.resultValue !== undefined
+        ? Math.round(campaign.resultValue).toLocaleString("ru-RU")
+        : "—";
       lines.push(
-        `${index + 1}. ${escapeHtml(campaign.name)} — ${escapeHtml(spend)} · Показы: ${escapeHtml(impressions)} · Клики: ${escapeHtml(clicks)}`,
+        `${index + 1}. ${escapeHtml(campaign.name)} — ${escapeHtml(resultLabel)}: ${escapeHtml(resultValue)} · Расход: ${escapeHtml(spend)} · Показы: ${escapeHtml(impressions)} · Клики: ${escapeHtml(clicks)}`,
       );
     });
     await sendMessage(context, lines.join("\n"), { replyMarkup: buildProjectBackMarkup(projectId) });
@@ -2849,10 +2879,7 @@ const handleProjectPortalCampaigns = async (context: BotContext, projectId: stri
     });
     return;
   }
-  const sorted = campaigns
-    .slice()
-    .sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0))
-    .slice(0, 25);
+  const sorted = normalizeCampaigns(campaigns).slice(0, 25);
   const rows = sorted.map((campaign) => [{
     text: `${portalRecord.campaignIds.includes(campaign.id) ? "✅" : "☑️"} ${truncateCampaignLabel(campaign.name)}`,
     callback_data: `proj:portal-campaign-toggle:${projectId}:${campaign.id}`,

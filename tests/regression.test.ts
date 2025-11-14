@@ -308,7 +308,7 @@ test("buildAutoReportNotification renders summary text and buttons", () => {
   expect.ok(text.includes("CTR:"));
   expect.ok(text.includes("CPC:"));
   expect.ok(text.includes("Активные кампании:"));
-  expect.ok(text.includes("• Campaign 1 — 5 лидов"));
+  expect.ok(text.includes("• Campaign 1 — Лиды на платформе: 5"));
   expect.ok(!text.includes("<"), "text should not contain HTML tags");
   expect.ok(replyMarkup && replyMarkup.inline_keyboard.length === 1);
   expect.deepEqual(replyMarkup?.inline_keyboard[0], [

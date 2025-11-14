@@ -1,6 +1,7 @@
 import { LeadRecord, MetaCampaign } from "../types";
 import { EnvBindings, listLeads, loadMetaToken, loadProject, saveLeads } from "./storage";
 import { fetchCampaigns, withMetaSettings, callGraph } from "./meta";
+import { mapCampaignShortNames } from "./campaigns";
 
 interface GraphLeadField {
   name?: string;
@@ -198,6 +199,24 @@ export const syncProjectLeads = async (
     fetchAccountForms(metaEnv, accessToken, normalizedAccount),
     fetchCampaigns(metaEnv, tokenRecord, normalizedAccount, { limit: 50, datePreset: "today" }).catch(() => [] as MetaCampaign[]),
   ]);
+  const campaignNameMap = new Map<string, string>();
+  campaigns.forEach((campaign) => {
+    campaignNameMap.set(campaign.id, campaign.name);
+  });
+  const shortNameMap = mapCampaignShortNames(campaigns);
+  const applyCampaignMetadata = (record: LeadRecord): void => {
+    if (!record.campaignId) {
+      return;
+    }
+    const name = campaignNameMap.get(record.campaignId);
+    if (name && !record.campaignName) {
+      record.campaignName = name;
+    }
+    const short = shortNameMap[record.campaignId];
+    if (short) {
+      record.campaignShortName = short;
+    }
+  };
   const adIds = new Set<string>();
   const collected = new Map<string, LeadRecord>();
   const existingMap = new Map(existing.map((lead) => [lead.id, lead]));
@@ -210,6 +229,7 @@ export const syncProjectLeads = async (
       if (record.adId) {
         adIds.add(record.adId);
       }
+      applyCampaignMetadata(record);
       const previous = existingMap.get(record.id);
       if (previous) {
         record.status = previous.status;
@@ -233,6 +253,7 @@ export const syncProjectLeads = async (
       if (!record.campaignId && node.campaign_id) {
         record.campaignId = String(node.campaign_id);
       }
+      applyCampaignMetadata(record);
       const previous = existingMap.get(record.id) || collected.get(record.id);
       if (previous) {
         record.status = previous.status;
@@ -250,6 +271,12 @@ export const syncProjectLeads = async (
     }
   });
   const next = Array.from(collected.values());
+  next.forEach((lead) => {
+    if (!lead.campaignId) {
+      return;
+    }
+    applyCampaignMetadata(lead);
+  });
   const beforeIds = new Set(existing.map((lead) => lead.id));
   const newCount = next.filter((lead) => !beforeIds.has(lead.id)).length;
   await saveLeads(env, projectId, next);

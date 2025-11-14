@@ -14,6 +14,7 @@ import {
   fetchLeadDetails,
   resolveMetaWebhookVerifyToken,
   withMetaSettings,
+  callGraph,
 } from "../utils/meta";
 import { leadReceiveHandler } from "../utils/lead-notifications";
 import {
@@ -22,8 +23,10 @@ import {
   LeadRecord,
   MetaAccountLinkRecord,
   MetaLeadDetails,
+  MetaTokenRecord,
   ProjectRecord,
 } from "../types";
+import { buildCampaignShortName } from "../utils/campaigns";
 
 const ensureBindings = (env: unknown): (EnvBindings & Record<string, unknown>) => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -108,6 +111,9 @@ const toJsonObject = (value: JsonValue | undefined): JsonObject => {
   }
   return {};
 };
+
+const leadsCache = new Map<string, LeadRecord[]>();
+const campaignMetadataCache = new Map<string, { name: string; shortName: string }>();
 
 interface MetaWebhookChange {
   field?: string;
@@ -204,18 +210,57 @@ const ensureLeadStorage = async (
   return cache.get(projectId) ?? [];
 };
 
+const resolveCampaignMetadata = async (
+  env: EnvBindings & Record<string, unknown>,
+  token: MetaTokenRecord | null,
+  campaignId: string | null | undefined,
+): Promise<{ name: string; shortName: string } | null> => {
+  if (!campaignId) {
+    return null;
+  }
+  const cached = campaignMetadataCache.get(campaignId);
+  if (cached) {
+    return cached;
+  }
+  if (!token?.accessToken) {
+    return null;
+  }
+  const response = await callGraph<{ id?: string; name?: string }>(env, campaignId, {
+    access_token: token.accessToken,
+    fields: "id,name",
+  }).catch((error: Error) => {
+    console.warn("meta:webhook:campaign", campaignId, error.message);
+    return null;
+  });
+  if (!response?.id || !response?.name) {
+    return null;
+  }
+  const metadata = { name: response.name, shortName: buildCampaignShortName(response.name) };
+  campaignMetadataCache.set(campaignId, metadata);
+  return metadata;
+};
+
 const upsertLeadRecord = (
   leads: LeadRecord[],
   lead: LeadRecord,
-): { next: LeadRecord[]; created: boolean } => {
+): { next: LeadRecord[]; created: boolean; updated: boolean } => {
   const exists = leads.find((item) => item.id === lead.id);
   if (exists) {
-    return { next: leads, created: false };
+    const index = leads.findIndex((item) => item.id === lead.id);
+    const merged: LeadRecord = {
+      ...exists,
+      ...lead,
+      status: exists.status,
+      phone: lead.phone ?? exists.phone,
+    };
+    const next = leads.slice();
+    next[index] = merged;
+    return { next, created: false, updated: true };
   }
   const next = [lead, ...leads].sort(
     (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
   );
-  return { next, created: true };
+  return { next, created: true, updated: false };
 };
 
 export const handleMetaWebhook = async (
@@ -258,7 +303,6 @@ export const handleMetaWebhook = async (
     listMetaAccountLinks(bindings),
   ]);
 
-  const leadsCache = new Map<string, LeadRecord[]>();
   const projects = await listProjects(bindings).catch(() => [] as ProjectRecord[]);
   const results: Array<{ eventId: string; processed: boolean; projectId?: string; leadId?: string; reason?: string }> = [];
 
@@ -401,8 +445,14 @@ export const handleMetaWebhook = async (
         createdAt,
       };
 
-      const { next, created } = upsertLeadRecord(leads, leadRecord);
-      if (created) {
+      const campaignMetadata = await resolveCampaignMetadata(metaEnv, tokenRecord, campaignId);
+      if (campaignMetadata) {
+        leadRecord.campaignName = campaignMetadata.name;
+        leadRecord.campaignShortName = campaignMetadata.shortName;
+      }
+
+      const { next, created, updated } = upsertLeadRecord(leads, leadRecord);
+      if (created || updated) {
         leadsCache.set(project.id, next);
         await saveLeads(bindings, project.id, next);
       }

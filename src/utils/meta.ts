@@ -9,6 +9,7 @@ import {
   MetaLeadDetails,
   JsonObject,
 } from "../types";
+import { assignCampaignResult, buildCampaignShortName, compareCampaigns } from "./campaigns";
 
 const GRAPH_BASE = "https://graph.facebook.com";
 const DEFAULT_GRAPH_VERSION = "v19.0";
@@ -939,6 +940,7 @@ export const fetchCampaigns = async (
       objective: objectiveNormalized,
       updatedTime: item.updated_time || undefined,
       dailyBudget,
+      shortName: buildCampaignShortName(item.name),
     };
     campaigns.push(campaign);
     campaignMap.set(item.id, campaign);
@@ -1020,6 +1022,7 @@ export const fetchCampaigns = async (
     const spend = parseNumber(row.spend);
     const impressions = parseNumber(row.impressions);
     const clicks = parseNumber(row.clicks);
+    const inlineLinkClicks = parseNumber(row.inline_link_clicks);
     const reach = parseNumber(row.reach);
     const actionMap = toActionMap(row.actions);
     const valueMap = toActionMap(row.action_values);
@@ -1053,6 +1056,9 @@ export const fetchCampaigns = async (
     }
     if (clicks !== undefined) {
       target.clicks = clicks;
+    }
+    if (inlineLinkClicks !== undefined) {
+      target.inlineLinkClicks = inlineLinkClicks;
     }
     if (reach !== undefined) {
       target.reach = reach;
@@ -1110,15 +1116,11 @@ export const fetchCampaigns = async (
     if (engagements && engagements > 0 && spend !== undefined) {
       target.cpe = spend ? spend / engagements : 0;
     }
+
+    assignCampaignResult(target);
   }
 
-  campaigns.sort((a, b) => {
-    const spendDiff = (b.spend ?? 0) - (a.spend ?? 0);
-    if (spendDiff !== 0) {
-      return spendDiff;
-    }
-    return a.name.localeCompare(b.name);
-  });
+  campaigns.sort(compareCampaigns);
 
   return campaigns;
 };

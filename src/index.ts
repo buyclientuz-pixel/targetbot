@@ -58,6 +58,7 @@ import { renderPaymentsPage } from "./admin/payments";
 import { renderSettingsPage } from "./admin/settings";
 import { renderPortal } from "./views/portal";
 import { htmlResponse, jsonResponse } from "./utils/http";
+import { normalizeCampaigns } from "./utils/campaigns";
 import {
   EnvBindings,
   listCommandLogs,
@@ -727,7 +728,10 @@ export default {
         };
 
         const metricLabels = KPI_LABELS;
-        const metrics = metricKeys
+        const filteredMetricKeys = metricKeys.filter(
+          (key) => key !== "leads_done" && key !== "conversations",
+        );
+        const metrics = filteredMetricKeys
           .map((key) => {
             const raw = (report.kpis as Record<PortalMetricKey, number | undefined>)[key];
             let value: string;
@@ -760,18 +764,17 @@ export default {
           })
           .filter((entry) => entry.value && entry.value !== "—");
 
+        const normalizedCampaigns = normalizeCampaigns(selectedCampaigns);
         const campaignNames: Record<string, string> = {};
-        campaigns.forEach((campaign) => {
-          if (campaign.id) {
-            campaignNames[campaign.id] = campaign.name;
-          }
+        normalizedCampaigns.forEach((campaign) => {
+          campaignNames[campaign.id] = campaign.shortName;
         });
 
         const html = renderPortal({
           project,
           leads: paginatedLeads,
           billing,
-          campaigns: selectedCampaigns,
+          campaigns: normalizedCampaigns,
           metrics,
           periodOptions,
           periodLabel,
