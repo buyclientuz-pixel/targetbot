@@ -22,6 +22,7 @@ import {
   clearPendingProjectEditOperation,
   listChatRegistrations,
   listMetaAccountLinks,
+  listLeads,
   listPayments,
   listProjects,
   listTelegramGroupLinks,
@@ -57,6 +58,7 @@ import {
   saveProjectSettingsRecord,
   loadPaymentReminderRecord,
   applyPaymentReminderPatch,
+  unlinkProjectChat,
 } from "../utils/storage";
 import { syncProjectLeads, getProjectLeads } from "../utils/leads";
 import { createId } from "../utils/ids";
@@ -272,6 +274,8 @@ const COMMAND_ALIASES: Record<string, string> = {
   "summary": "summary_report",
   "краткий отчёт": "summary_report",
   "cmd:summary": "summary_report",
+  "/cleanup_projects": "cleanup_projects",
+  "cmd:cleanup_projects": "cleanup_projects",
 };
 
 const formatDateTime = (value?: string): string => {
@@ -308,6 +312,7 @@ const formatDate = (value?: string): string => {
 
 const PAYMENT_TRANSFER_RATE = 12_000;
 const PAYMENT_FOLLOW_UP_DELAY_MS = 60 * 60 * 1000;
+const EMPTY_PROJECT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 const resolveAdminChatIdFromSummary = (summary: ProjectSummary): string | null => {
   const candidate = summary.chatId;
@@ -1367,40 +1372,46 @@ const mutateProjectSettings = async (
 
 const buildProjectActionsMarkup = (summary: ProjectSummary) => {
   const chatUrl = resolveProjectChatUrl(summary);
-  return {
-    inline_keyboard: [
-      [
-        { text: "✏️ Изменить данные", callback_data: `proj:edit:${summary.id}` },
-        chatUrl
-          ? { text: "📲 Чат-группа", url: chatUrl }
-          : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
-      ],
-      [
-        { text: "💬 Лиды", callback_data: `proj:leads:${summary.id}` },
-        { text: "📈 Отчёт по рекламе", callback_data: `proj:report:${summary.id}` },
-      ],
-      [
-        { text: "👀 Рекламные кампании", callback_data: `proj:campaigns:${summary.id}` },
-        { text: "📤 Экспорт данных", callback_data: `proj:export:${summary.id}` },
-      ],
-      [
-        { text: "🧩 Портал", callback_data: `proj:portal:${summary.id}` },
-        { text: "💳 Оплата", callback_data: `proj:billing:${summary.id}` },
-      ],
-      [
-        { text: "⏰ Авто-отчёты", callback_data: `auto_menu:${summary.id}` },
-        { text: "⚙ Изменить KPI проекта", callback_data: `PROJECT_KPI_EDIT:${summary.id}` },
-      ],
-      [
-        { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
-        { text: "❌ Удалить", callback_data: `proj:delete:${summary.id}` },
-      ],
-      [
-        { text: "⬅ К списку", callback_data: "cmd:projects" },
-        { text: "🏠 Меню", callback_data: "cmd:menu" },
-      ],
+  const rows: Array<Array<{ text: string; callback_data?: string; url?: string }>> = [
+    [
+      { text: "✏️ Изменить данные", callback_data: `proj:edit:${summary.id}` },
+      chatUrl
+        ? { text: "📲 Чат-группа", url: chatUrl }
+        : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
     ],
-  };
+    [
+      { text: "💬 Лиды", callback_data: `proj:leads:${summary.id}` },
+      { text: "📈 Отчёт по рекламе", callback_data: `proj:report:${summary.id}` },
+    ],
+    [
+      { text: "👀 Рекламные кампании", callback_data: `proj:campaigns:${summary.id}` },
+      { text: "📤 Экспорт данных", callback_data: `proj:export:${summary.id}` },
+    ],
+    [
+      { text: "🧩 Портал", callback_data: `proj:portal:${summary.id}` },
+      { text: "💳 Оплата", callback_data: `proj:billing:${summary.id}` },
+    ],
+    [
+      { text: "⏰ Авто-отчёты", callback_data: `auto_menu:${summary.id}` },
+      { text: "⚙ Изменить KPI проекта", callback_data: `PROJECT_KPI_EDIT:${summary.id}` },
+    ],
+    [
+      { text: "⚙ Настройки", callback_data: `proj:settings:${summary.id}` },
+      { text: "❌ Удалить", callback_data: `project_delete:${summary.id}` },
+    ],
+  ];
+  const hasChatLink = Boolean(
+    (typeof summary.chatId === "string" && summary.chatId.trim()) ||
+      (summary.telegramChatId && String(summary.telegramChatId).trim()),
+  );
+  if (hasChatLink) {
+    rows.push([{ text: "🔌 Отвязать чат", callback_data: `project_unlink_chat:${summary.id}` }]);
+  }
+  rows.push([
+    { text: "⬅ К списку", callback_data: "cmd:projects" },
+    { text: "🏠 Меню", callback_data: "cmd:menu" },
+  ]);
+  return { inline_keyboard: rows };
 };
 
 const handleAutoReportToggle = async (context: BotContext, projectId: string): Promise<void> => {
@@ -3563,8 +3574,8 @@ const handleProjectSettingsAlerts = async (
 const buildProjectDeleteMarkup = (projectId: string) => ({
   inline_keyboard: [
     [
-      { text: "❌ Подтвердить удаление", callback_data: `proj:delete-confirm:${projectId}` },
-      { text: "↩️ Отмена", callback_data: `proj:view:${projectId}` },
+      { text: "❌ Подтвердить удаление", callback_data: `project_delete_confirm:${projectId}` },
+      { text: "↩️ Отмена", callback_data: `project_delete_cancel:${projectId}` },
     ],
     [
       { text: "📊 Все проекты", callback_data: "cmd:projects" },
@@ -3572,6 +3583,33 @@ const buildProjectDeleteMarkup = (projectId: string) => ({
     ],
   ],
 });
+
+const handleProjectUnlinkChat = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const updated = await unlinkProjectChat(context.env, projectId);
+  if (!updated) {
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.", {
+      replyMarkup: { inline_keyboard: [[{ text: "📊 Список проектов", callback_data: "cmd:projects" }]] },
+    });
+    return;
+  }
+  const lines = [
+    `🔌 Отвязка чата — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    "Чат и тема успешно отвязаны от проекта.",
+  ];
+  const replyMarkup = {
+    inline_keyboard: [
+      [{ text: "⬅ К проекту", callback_data: `proj:view:${projectId}` }],
+      [{ text: "📊 Список проектов", callback_data: "cmd:projects" }],
+    ],
+  };
+  await sendMessage(context, lines.join("\n"), { replyMarkup });
+  await handleProjectView(context, projectId);
+};
 
 const handleProjectDelete = async (context: BotContext, projectId: string): Promise<void> => {
   const summary = await ensureProjectSummary(context, projectId);
@@ -3596,7 +3634,7 @@ const handleProjectDelete = async (context: BotContext, projectId: string): Prom
 };
 
 const formatProjectDeletionSummary = (summary: ProjectDeletionSummary): string[] => {
-  const lines: string[] = ["Проект успешно удалён.", "", `🏗 <b>${escapeHtml(summary.project.name)}</b>`, ""];
+  const lines: string[] = ["Проект удалён.", "", `🏗 <b>${escapeHtml(summary.project.name)}</b>`, ""];
   const accountName = summary.metaAccount?.accountName ?? summary.project.metaAccountName;
   if (accountName) {
     lines.push(`🧩 Meta-аккаунт освобождён: <b>${escapeHtml(accountName)}</b>.`);
@@ -4772,6 +4810,95 @@ const handleSummaryReport = async (context: BotContext): Promise<void> => {
   await startReportWorkflow(context, "summary");
 };
 
+const handleCleanupProjects = async (context: BotContext): Promise<void> => {
+  const [projects, payments, users] = await Promise.all([
+    listProjects(context.env),
+    listPayments(context.env).catch(() => [] as PaymentRecord[]),
+    listUsers(context.env).catch(() => [] as UserRecord[]),
+  ]);
+  const userIds = new Set(users.map((user) => user.id));
+  const paymentCount = payments.reduce<Map<string, number>>((map, payment) => {
+    map.set(payment.projectId, (map.get(payment.projectId) ?? 0) + 1);
+    return map;
+  }, new Map());
+  const cutoff = Date.now() - EMPTY_PROJECT_MAX_AGE_MS;
+  let removed = 0;
+  const removedNames: string[] = [];
+  for (const project of projects) {
+    const createdAt = Date.parse(project.createdAt);
+    if (Number.isNaN(createdAt) || createdAt > cutoff) {
+      continue;
+    }
+    const hasMetaAccount = typeof project.metaAccountId === "string" && project.metaAccountId.trim().length > 0;
+    const hasAdAccount = typeof project.adAccountId === "string" && project.adAccountId.trim().length > 0;
+    if (hasMetaAccount || hasAdAccount) {
+      continue;
+    }
+    const hasChat = Boolean(
+      (typeof project.chatId === "string" && project.chatId.trim()) ||
+        (project.telegramChatId && project.telegramChatId.trim()),
+    );
+    if (hasChat) {
+      continue;
+    }
+    if (project.userId && userIds.has(project.userId)) {
+      continue;
+    }
+    if ((paymentCount.get(project.id) ?? 0) > 0) {
+      continue;
+    }
+    const leads = await listLeads(context.env, project.id).catch(() => [] as LeadRecord[]);
+    if (leads.length > 0) {
+      continue;
+    }
+    const hasCampaigns = (() => {
+      const settings = project.settings ?? {};
+      if (!settings || typeof settings !== "object") {
+        return false;
+      }
+      const reports = (settings as Record<string, unknown>)["reports"];
+      if (!reports || typeof reports !== "object") {
+        return false;
+      }
+      const defaultCampaigns = Array.isArray((reports as { defaultCampaignIds?: unknown[] }).defaultCampaignIds)
+        ? (reports as { defaultCampaignIds: unknown[] }).defaultCampaignIds
+        : [];
+      const preferences = (reports as { preferences?: Record<string, unknown> }).preferences;
+      const prefCampaigns = Array.isArray(preferences?.campaignIds)
+        ? (preferences!.campaignIds as unknown[])
+        : [];
+      return defaultCampaigns.length > 0 || prefCampaigns.length > 0;
+    })();
+    if (hasCampaigns) {
+      continue;
+    }
+    try {
+      const deletion = await deleteProjectCascade(context.env, project.id);
+      if (deletion) {
+        removed += 1;
+        removedNames.push(project.name);
+      }
+    } catch (error) {
+      console.warn("cleanup_projects:failed", project.id, error);
+    }
+  }
+  const lines = ["🧹 Очистка проектов", "", `Удалено ${removed} пустых проектов.`];
+  if (removedNames.length) {
+    lines.push("", "Список:");
+    removedNames.forEach((name, index) => {
+      lines.push(`${index + 1}. ${escapeHtml(name)}`);
+    });
+  }
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: {
+      inline_keyboard: [
+        [{ text: "📊 Список проектов", callback_data: "cmd:projects" }],
+        [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+      ],
+    },
+  });
+};
+
 const COMMAND_HANDLERS: Record<string, (context: BotContext) => Promise<void>> = {
   menu: sendMainMenu,
   auth: handleAuth,
@@ -4785,6 +4912,7 @@ const COMMAND_HANDLERS: Record<string, (context: BotContext) => Promise<void>> =
   auto_report: handleAutoReport,
   summary_report: handleSummaryReport,
   register_chat: handleRegisterChat,
+  cleanup_projects: handleCleanupProjects,
 };
 
 export const resolveCommand = (text: string | undefined): string | null => {
@@ -4960,6 +5088,50 @@ export const handleUserCallback = async (context: BotContext, data: string): Pro
 };
 
 export const handleProjectCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (data.startsWith("project_delete")) {
+    await ensureAdminUser(context);
+    if (data.startsWith("project_delete_confirm:")) {
+      const [, projectId] = data.split(":");
+      if (!projectId) {
+        await sendMessage(context, "Не удалось определить проект. Откройте список проектов и попробуйте снова.");
+        return true;
+      }
+      await handleProjectDeleteConfirm(context, projectId);
+      await logProjectAction(context, "delete-confirm", projectId);
+      return true;
+    }
+    if (data.startsWith("project_delete_cancel:")) {
+      const [, projectId] = data.split(":");
+      if (!projectId) {
+        await sendMessage(context, "Не удалось определить проект. Откройте список проектов и попробуйте снова.");
+        return true;
+      }
+      await handleProjectDeleteCancel(context, projectId);
+      await logProjectAction(context, "delete-cancel", projectId);
+      return true;
+    }
+    if (data.startsWith("project_delete:")) {
+      const [, projectId] = data.split(":");
+      if (!projectId) {
+        await sendMessage(context, "Не удалось определить проект. Откройте список проектов и попробуйте снова.");
+        return true;
+      }
+      await handleProjectDelete(context, projectId);
+      await logProjectAction(context, "delete", projectId);
+      return true;
+    }
+  }
+  if (data.startsWith("project_unlink_chat:")) {
+    await ensureAdminUser(context);
+    const [, projectId] = data.split(":");
+    if (!projectId) {
+      await sendMessage(context, "Не удалось определить проект. Откройте список проектов и попробуйте снова.");
+      return true;
+    }
+    await handleProjectUnlinkChat(context, projectId);
+    await logProjectAction(context, "unlink-chat", projectId);
+    return true;
+  }
   if (!data.startsWith("proj:")) {
     return false;
   }
@@ -5340,6 +5512,13 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
         return ensureId();
       }
       await handleProjectDeleteConfirm(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "unlink-chat":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectUnlinkChat(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
     case "delete-cancel":

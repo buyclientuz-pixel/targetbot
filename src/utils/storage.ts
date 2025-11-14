@@ -17,6 +17,7 @@ import {
   PendingProjectEditOperation,
   PortalMetricKey,
   ProjectBillingState,
+  ProjectCleanupSummary,
   ProjectDeletionSummary,
   ProjectPortalRecord,
   ProjectRecord,
@@ -609,7 +610,7 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       ? chatCandidate.trim()
       : typeof chatCandidate === "number"
         ? chatCandidate.toString()
-        : "";
+        : null;
 
   const billingCandidate = (data.billingStatus ?? data.billing_status) as string | undefined;
   const allowedBilling: ProjectBillingState[] = ["active", "overdue", "blocked", "pending"];
@@ -2297,23 +2298,31 @@ export const saveTelegramGroupLinks = async (
   });
 };
 
-export const deleteProjectCascade = async (
+interface ProjectContext {
+  project: ProjectRecord;
+  projects: ProjectRecord[];
+  index: number;
+}
+
+const loadProjectContext = async (
   env: EnvBindings,
   projectId: string,
-): Promise<ProjectDeletionSummary | null> => {
+): Promise<ProjectContext | null> => {
   const projects = await listProjects(env);
   const index = projects.findIndex((project) => project.id === projectId);
   if (index === -1) {
     return null;
   }
+  return { project: projects[index], projects, index };
+};
 
-  const project = projects[index];
+const cleanupProjectArtifactsInternal = async (
+  env: EnvBindings,
+  project: ProjectRecord,
+): Promise<ProjectCleanupSummary> => {
+  const projectId = project.id;
   const now = new Date().toISOString();
-  const projectChatId = project.telegramChatId || project.chatId;
-
   const [
-    metaAccounts,
-    telegramGroups,
     leads,
     payments,
     leadReminders,
@@ -2322,8 +2331,6 @@ export const deleteProjectCascade = async (
     reports,
     portals,
   ] = await Promise.all([
-    listMetaAccountLinks(env).catch(() => [] as MetaAccountLinkRecord[]),
-    listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]),
     listLeads(env, projectId).catch(() => [] as LeadRecord[]),
     listPayments(env).catch(() => [] as PaymentRecord[]),
     listLeadReminders(env).catch(() => [] as LeadReminderRecord[]),
@@ -2332,26 +2339,6 @@ export const deleteProjectCascade = async (
     listReports(env).catch(() => [] as ReportRecord[]),
     listPortals(env).catch(() => [] as ProjectPortalRecord[]),
   ]);
-
-  const account = metaAccounts.find(
-    (entry) => entry.linkedProjectId === projectId || entry.accountId === project.metaAccountId,
-  );
-  const group = telegramGroups.find(
-    (entry) => entry.linkedProjectId === projectId || entry.chatId === projectChatId,
-  );
-
-  const updatedAccounts = account
-    ? metaAccounts.map((entry) =>
-        entry.accountId === account.accountId
-          ? { ...entry, isLinked: false, linkedProjectId: null, updatedAt: now }
-          : entry,
-      )
-    : metaAccounts;
-  const updatedGroups = group
-    ? telegramGroups.map((entry) =>
-        entry.chatId === group.chatId ? { ...entry, linkedProjectId: null, updatedAt: now } : entry,
-      )
-    : telegramGroups;
 
   const paymentsRemaining = payments.filter((payment) => payment.projectId !== projectId);
   const removedPayments = payments.length - paymentsRemaining.length;
@@ -2402,16 +2389,7 @@ export const deleteProjectCascade = async (
     { kept: [], removed: [] },
   );
 
-  const nextProjects = [...projects];
-  nextProjects.splice(index, 1);
-
-  const storageUpdates: Promise<unknown>[] = [saveProjects(env, nextProjects)];
-  if (account) {
-    storageUpdates.push(saveMetaAccountLinks(env, updatedAccounts));
-  }
-  if (group) {
-    storageUpdates.push(saveTelegramGroupLinks(env, updatedGroups));
-  }
+  const storageUpdates: Promise<unknown>[] = [];
   if (removedPayments > 0) {
     storageUpdates.push(savePayments(env, paymentsRemaining));
   }
@@ -2430,7 +2408,6 @@ export const deleteProjectCascade = async (
   if (removedPortal) {
     storageUpdates.push(savePortals(env, portalsRemaining));
   }
-
   await Promise.all(storageUpdates);
 
   const cleanupTasks: Promise<void>[] = [
@@ -2461,8 +2438,6 @@ export const deleteProjectCascade = async (
 
   return {
     project,
-    metaAccount: account ?? null,
-    telegramGroup: group ?? null,
     removedLeads: leads.length,
     removedPayments,
     removedReports: reportPartition.removed.length,
@@ -2470,6 +2445,125 @@ export const deleteProjectCascade = async (
     clearedPaymentReminders: removedPaymentReminders,
     updatedSchedules: updatedSchedulesCount,
     portalRemoved: removedPortal,
+  } satisfies ProjectCleanupSummary;
+};
+
+export const cleanupProjectArtifacts = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<ProjectCleanupSummary | null> => {
+  const context = await loadProjectContext(env, projectId);
+  if (!context) {
+    return null;
+  }
+  return cleanupProjectArtifactsInternal(env, context.project);
+};
+
+export const unlinkProjectChat = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<ProjectRecord | null> => {
+  const context = await loadProjectContext(env, projectId);
+  if (!context) {
+    return null;
+  }
+  const now = new Date().toISOString();
+  const { project, projects, index } = context;
+  const updated: ProjectRecord = {
+    ...project,
+    chatId: null,
+    telegramChatId: undefined,
+    telegramThreadId: undefined,
+    telegramLink: undefined,
+    telegramTitle: undefined,
+    updatedAt: now,
+  };
+  const projectChatId = project.telegramChatId || project.chatId || null;
+  const [telegramGroups, registrations] = await Promise.all([
+    listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]),
+    listChatRegistrations(env).catch(() => [] as ChatRegistrationRecord[]),
+  ]);
+  let groupsChanged = false;
+  const updatedGroups = telegramGroups.map((entry) => {
+    if (entry.chatId === projectChatId || entry.linkedProjectId === project.id) {
+      groupsChanged = true;
+      return { ...entry, linkedProjectId: null, updatedAt: now };
+    }
+    return entry;
+  });
+  let registrationsChanged = false;
+  const updatedRegistrations = registrations.map((entry): ChatRegistrationRecord => {
+    if (entry.linkedProjectId !== project.id) {
+      return entry;
+    }
+    registrationsChanged = true;
+    return { ...entry, linkedProjectId: null, status: "pending", updatedAt: now };
+  });
+  const nextProjects = [...projects];
+  nextProjects[index] = updated;
+  await saveProjects(env, nextProjects);
+  if (groupsChanged) {
+    await saveTelegramGroupLinks(env, updatedGroups);
+  }
+  if (registrationsChanged) {
+    await saveChatRegistrations(env, updatedRegistrations);
+  }
+  return updated;
+};
+
+export const deleteProjectCascade = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<ProjectDeletionSummary | null> => {
+  const context = await loadProjectContext(env, projectId);
+  if (!context) {
+    return null;
+  }
+  const cleanupSummary = await cleanupProjectArtifactsInternal(env, context.project);
+  const { project } = context;
+  const now = new Date().toISOString();
+  const projectChatId = project.telegramChatId || project.chatId || null;
+
+  const [metaAccounts, telegramGroups] = await Promise.all([
+    listMetaAccountLinks(env).catch(() => [] as MetaAccountLinkRecord[]),
+    listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]),
+  ]);
+
+  const account = metaAccounts.find(
+    (entry) => entry.linkedProjectId === projectId || entry.accountId === project.metaAccountId,
+  );
+  const group = telegramGroups.find(
+    (entry) => entry.linkedProjectId === projectId || entry.chatId === projectChatId,
+  );
+
+  const updatedAccounts = account
+    ? metaAccounts.map((entry) =>
+        entry.accountId === account.accountId
+          ? { ...entry, isLinked: false, linkedProjectId: null, updatedAt: now }
+          : entry,
+      )
+    : metaAccounts;
+  const updatedGroups = group
+    ? telegramGroups.map((entry) =>
+        entry.chatId === group.chatId ? { ...entry, linkedProjectId: null, updatedAt: now } : entry,
+      )
+    : telegramGroups;
+
+  const nextProjects = [...context.projects];
+  nextProjects.splice(context.index, 1);
+  const storageUpdates: Promise<unknown>[] = [saveProjects(env, nextProjects)];
+  if (account) {
+    storageUpdates.push(saveMetaAccountLinks(env, updatedAccounts));
+  }
+  if (group) {
+    storageUpdates.push(saveTelegramGroupLinks(env, updatedGroups));
+  }
+  await Promise.all(storageUpdates);
+
+  return {
+    ...cleanupSummary,
+    metaAccount: account ?? null,
+    telegramGroup: group ?? null,
   } satisfies ProjectDeletionSummary;
 };
 
