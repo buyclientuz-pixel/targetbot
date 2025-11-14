@@ -140,18 +140,75 @@ const OBJECTIVE_METRICS: Record<string, ObjectiveMetricEntry> = {
   },
 };
 
-const resolveObjectiveLabel = (objectiveKey: string): string => {
+const resolveObjectiveKey = (objectiveKey: string): string | null => {
   if (!objectiveKey) {
-    return "Не определено";
+    return null;
   }
-  return OBJECTIVE_METRICS[objectiveKey]?.objectiveLabel ?? "Не определено";
+  if (OBJECTIVE_METRICS[objectiveKey]) {
+    return objectiveKey;
+  }
+  const includes = (needle: string): boolean => objectiveKey.includes(needle);
+  if (includes("LEAD")) {
+    return "LEAD_GENERATION";
+  }
+  if (includes("MESSAGE") || includes("CONVERSATION")) {
+    return "MESSAGES";
+  }
+  if (includes("TRAFFIC") || includes("CLICK")) {
+    return "TRAFFIC";
+  }
+  if (includes("AWARE") || includes("REACH") || includes("BRAND")) {
+    return "AWARENESS";
+  }
+  if (includes("ENGAGEMENT") || includes("INTERACTION") || includes("POST")) {
+    return "ENGAGEMENT";
+  }
+  if (includes("CONVERSION")) {
+    return "CONVERSIONS";
+  }
+  if (includes("SALE") || includes("PURCHASE")) {
+    return "SALES";
+  }
+  if (includes("INSTALL")) {
+    return "APP_INSTALLS";
+  }
+  if (includes("VIDEO") || includes("THRUPLAY") || includes("VIEW")) {
+    return "VIDEO_VIEWS";
+  }
+  return null;
+};
+
+const humanizeObjectiveKey = (objectiveKey: string): string | null => {
+  if (!objectiveKey) {
+    return null;
+  }
+  const cleaned = objectiveKey.replace(/_/g, " ").trim();
+  if (!cleaned) {
+    return null;
+  }
+  return cleaned
+    .toLowerCase()
+    .replace(/(^|\s)([а-яa-z])/g, (match) => match.toUpperCase());
+};
+
+const resolveObjectiveLabel = (objectiveKey: string): string => {
+  const canonical = resolveObjectiveKey(objectiveKey);
+  if (canonical) {
+    return OBJECTIVE_METRICS[canonical]?.objectiveLabel ?? "Не определено";
+  }
+  const humanized = humanizeObjectiveKey(objectiveKey);
+  if (humanized) {
+    return humanized;
+  }
+  return "Не определено";
 };
 
 const deriveCampaignResult = (
   campaign: MetaCampaign,
 ): { objectiveLabel: string; metricLabel: string; metricKey: string; value: number } => {
-  const objectiveKey = normalizeObjectiveKey(campaign.objective);
-  const mapping = OBJECTIVE_METRICS[objectiveKey];
+  const objectiveRaw = normalizeObjectiveKey(campaign.objective);
+  const canonicalKey = resolveObjectiveKey(objectiveRaw);
+  const mapping = canonicalKey ? OBJECTIVE_METRICS[canonicalKey] : undefined;
   const fallbackValue =
     campaign.leads ??
     campaign.conversions ??
@@ -172,7 +229,7 @@ const deriveCampaignResult = (
     };
   }
   return {
-    objectiveLabel: resolveObjectiveLabel(objectiveKey),
+    objectiveLabel: resolveObjectiveLabel(objectiveRaw),
     metricLabel: "Результат",
     metricKey: "result",
     value: fallbackValue ?? 0,

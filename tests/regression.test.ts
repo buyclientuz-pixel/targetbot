@@ -42,6 +42,7 @@ import {
 } from "../src/utils/auto-report-engine";
 import { buildAutoReportDataset } from "../src/utils/reports";
 import { applyKpiSelection } from "../src/utils/kpi";
+import { normalizeCampaigns } from "../src/utils/campaigns";
 import { ensureTelegramUrl, ensureTelegramUrlFromId, resolveChatLink } from "../src/utils/chat-links";
 import { evaluateQaDataset } from "../src/utils/qa";
 import {
@@ -239,6 +240,34 @@ test("applyKpiSelection prioritises override, campaign, project, then auto objec
 
   const unknown = applyKpiSelection({ objective: "UNKNOWN_OBJECTIVE" });
   expect.deepEqual(unknown, []);
+});
+
+test("normalizeCampaign resolves objective labels and metrics from heuristic objectives", () => {
+  const leadCampaign: MetaCampaign = {
+    id: "c1",
+    accountId: "act_1",
+    name: "Test Lead",
+    objective: "OUTCOME_LEADS",
+    spend: 100,
+    spendCurrency: "USD",
+    leads: 12,
+  };
+  const messageCampaign: MetaCampaign = {
+    id: "c2",
+    accountId: "act_1",
+    name: "Test Messages",
+    objective: "OUTCOME_MESSAGES",
+    spend: 50,
+    spendCurrency: "USD",
+    conversations: 8,
+  };
+  const normalized = normalizeCampaigns([leadCampaign, messageCampaign]);
+  expect.equal(normalized[0].objectiveLabel, "Лиды");
+  expect.equal(normalized[0].primaryMetricLabel, "Лиды");
+  expect.equal(normalized[0].primaryMetricValue, 12);
+  expect.equal(normalized[1].objectiveLabel, "Сообщения");
+  expect.equal(normalized[1].primaryMetricLabel, "Сообщения");
+  expect.equal(normalized[1].primaryMetricValue, 8);
 });
 
 test("evaluateAutoReportTrigger detects daily window", () => {
