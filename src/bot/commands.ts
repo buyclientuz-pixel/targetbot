@@ -332,6 +332,23 @@ const resolveClientChatIdFromSummary = (summary: ProjectSummary): string | null 
   return null;
 };
 
+const extractCallbackMessageMeta = (context: BotContext): { chatId: string; messageId: number } | null => {
+  const message = context.update.callback_query?.message as
+    | { message_id?: number; chat?: { id?: number | string } }
+    | undefined;
+  if (!message || typeof message.message_id !== "number") {
+    return null;
+  }
+  const chatIdRaw = message.chat?.id;
+  if (typeof chatIdRaw === "number" && Number.isFinite(chatIdRaw)) {
+    return { chatId: String(chatIdRaw), messageId: message.message_id };
+  }
+  if (typeof chatIdRaw === "string" && chatIdRaw.trim()) {
+    return { chatId: chatIdRaw.trim(), messageId: message.message_id };
+  }
+  return null;
+};
+
 const addMonthsUtc = (value: Date, months: number): Date => {
   const result = new Date(value.getTime());
   const originalDay = result.getUTCDate();
@@ -350,11 +367,11 @@ const formatUzAmount = (value: number): string => {
 };
 
 const buildClientPaymentPromptText = (summary: ProjectSummary): string => {
-  return [
-    `Проект: <b>${escapeHtml(summary.name)}</b>`,
-    "",
-    "Подскажите, в каком формате планируете внести оплату?",
-  ].join("\n");
+  const lines = ["Продлеваем сотрудничество?"];
+  if (summary.name) {
+    lines.push("", `Проект: <b>${escapeHtml(summary.name)}</b>`);
+  }
+  return lines.join("\n");
 };
 
 const sendClientPaymentPrompt = async (
@@ -418,8 +435,9 @@ const buildTransferInstructionText = (summary: ProjectSummary): { text: string; 
 const sendTransferInstructionsToClient = async (
   context: BotContext,
   summary: ProjectSummary,
+  meta?: { chatId: string; messageId: number } | null,
 ): Promise<boolean> => {
-  const chatId = resolveClientChatIdFromSummary(summary);
+  const chatId = meta?.chatId ?? resolveClientChatIdFromSummary(summary);
   if (!chatId) {
     await sendMessage(context, "❌ Не удалось отправить реквизиты: клиентская группа не найдена.");
     return false;
@@ -428,12 +446,21 @@ const sendTransferInstructionsToClient = async (
   const replyMarkup = {
     inline_keyboard: [[{ text: "Готово! Перевели ✅", callback_data: `proj:billing-reminder-transfer-done:${summary.id}` }]],
   };
-  await sendTelegramMessage(context.env, {
-    chatId,
-    threadId: summary.telegramThreadId ?? undefined,
-    text,
-    replyMarkup,
-  });
+  if (meta) {
+    await editTelegramMessage(context.env, {
+      chatId: meta.chatId,
+      messageId: meta.messageId,
+      text,
+      replyMarkup,
+    });
+  } else {
+    await sendTelegramMessage(context.env, {
+      chatId,
+      threadId: summary.telegramThreadId ?? undefined,
+      text,
+      replyMarkup,
+    });
+  }
   return true;
 };
 
@@ -482,6 +509,8 @@ const handlePaymentReminderDecline = async (
   if (!summary) {
     return;
   }
+  const nowIso = new Date().toISOString();
+  await updateProjectRecord(context.env, projectId, { autoOff: true, autoOffAt: nowIso });
   await patchPaymentReminderWithSummary(context, summary, {
     stage: "declined",
     method: null,
@@ -491,10 +520,7 @@ const handlePaymentReminderDecline = async (
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, "Отметили отказ");
   }
-  await sendMessage(
-    context,
-    "Зафиксировано: клиент не продлевает подписку. Обновите дату оплаты при необходимости.",
-  );
+  await sendMessage(context, "Проект отключён. Клиент не продлевает.");
 };
 
 const handlePaymentReminderContinue = async (
@@ -506,6 +532,7 @@ const handlePaymentReminderContinue = async (
     return;
   }
   const nowIso = new Date().toISOString();
+  await updateProjectRecord(context.env, projectId, { autoOff: false, autoOffAt: null });
   await patchPaymentReminderWithSummary(context, summary, {
     stage: "awaiting_client_choice",
     method: null,
@@ -544,13 +571,22 @@ const handlePaymentReminderCash = async (
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, "Передано админу");
   }
-  const chatId = context.chatId ?? resolveClientChatIdFromSummary(summary);
-  if (chatId) {
-    await sendTelegramMessage(context.env, {
-      chatId,
-      threadId: summary.telegramThreadId ?? undefined,
-      text: "Принято! Сообщение передано администратору. Ожидаем подтверждения.",
+  const callbackMeta = extractCallbackMessageMeta(context);
+  if (callbackMeta) {
+    await editTelegramMessage(context.env, {
+      chatId: callbackMeta.chatId,
+      messageId: callbackMeta.messageId,
+      text: "Принято. Оплата будет наличной.",
     });
+  } else {
+    const chatId = context.chatId ?? resolveClientChatIdFromSummary(summary);
+    if (chatId) {
+      await sendTelegramMessage(context.env, {
+        chatId,
+        threadId: summary.telegramThreadId ?? undefined,
+        text: "Принято. Оплата будет наличной.",
+      });
+    }
   }
   await sendAdminPaymentReviewRequest(context, summary, "cash");
 };
@@ -570,7 +606,8 @@ const handlePaymentReminderTransfer = async (
     lastClientPromptAt: nowIso,
     nextFollowUpAt: null,
   });
-  const delivered = await sendTransferInstructionsToClient(context, summary);
+  const callbackMeta = extractCallbackMessageMeta(context);
+  const delivered = await sendTransferInstructionsToClient(context, summary, callbackMeta);
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(
       context.env,
@@ -602,13 +639,22 @@ const handlePaymentReminderTransferDone = async (
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, "Передано админу");
   }
-  const chatId = context.chatId ?? resolveClientChatIdFromSummary(summary);
-  if (chatId) {
-    await sendTelegramMessage(context.env, {
-      chatId,
-      threadId: summary.telegramThreadId ?? undefined,
+  const callbackMeta = extractCallbackMessageMeta(context);
+  if (callbackMeta) {
+    await editTelegramMessage(context.env, {
+      chatId: callbackMeta.chatId,
+      messageId: callbackMeta.messageId,
       text: "Спасибо! Администратор проверит поступление и подтвердит оплату.",
     });
+  } else {
+    const chatId = context.chatId ?? resolveClientChatIdFromSummary(summary);
+    if (chatId) {
+      await sendTelegramMessage(context.env, {
+        chatId,
+        threadId: summary.telegramThreadId ?? undefined,
+        text: "Спасибо! Администратор проверит поступление и подтвердит оплату.",
+      });
+    }
   }
   await sendAdminPaymentReviewRequest(context, summary, "transfer");
 };

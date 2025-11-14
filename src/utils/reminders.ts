@@ -8,6 +8,7 @@ import {
   listSettings,
   saveLeadReminders,
   savePaymentReminders,
+  updateProjectRecord,
 } from "./storage";
 import { sendTelegramMessage, TelegramEnv } from "./telegram";
 import {
@@ -26,6 +27,8 @@ const DAY_MS = 24 * HOUR_MS;
 const DEFAULT_LEAD_THRESHOLD_MINUTES = 60;
 const DEFAULT_PAYMENT_DAYS_BEFORE = 1;
 const DEFAULT_PAYMENT_OVERDUE_HOURS = 24;
+
+const PAYMENT_TRANSFER_RATE = 12_000;
 
 const LEAD_THRESHOLD_ENV_KEYS = ["LEAD_REMINDER_MINUTES", "REMINDERS_LEAD_MINUTES"];
 const PAYMENT_DAYS_ENV_KEYS = ["PAYMENT_REMINDER_DAYS", "REMINDERS_PAYMENT_DAYS"];
@@ -75,6 +78,25 @@ const resolveClientChatId = (project: ProjectRecord): string | null => {
     }
   }
   return null;
+};
+
+const resolveAutoOffDisableAt = (project: ProjectRecord): number | null => {
+  if (!project.autoOff) {
+    return null;
+  }
+  if (project.nextPaymentDate) {
+    const due = Date.parse(project.nextPaymentDate);
+    if (!Number.isNaN(due)) {
+      return due + DAY_MS;
+    }
+  }
+  if (project.autoOffAt) {
+    const flagged = Date.parse(project.autoOffAt);
+    if (!Number.isNaN(flagged)) {
+      return flagged + DAY_MS;
+    }
+  }
+  return 0;
 };
 
 const parseNumber = (value: unknown): number | null => {
@@ -222,6 +244,13 @@ export const formatUsdAmount = (value: number): string => {
   return value % 1 === 0 ? `${value}$` : `${value.toFixed(2)}$`;
 };
 
+const formatUzsAmount = (value: number): string => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "—";
+  }
+  return new Intl.NumberFormat("ru-RU").format(Math.round(value));
+};
+
 export const buildAdminPaymentReminderMessage = (
   project: ProjectRecord,
   status: PaymentReminderStatus,
@@ -236,15 +265,15 @@ export const buildAdminPaymentReminderMessage = (
   if (status === "overdue") {
     lines.push("Статус: просрочено.");
   }
-  lines.push("", "Нужен ответ: продлеваем / не продлеваем.");
+  lines.push("Продлеваем?");
   return lines.join("\n");
 };
 
 export const buildAdminPaymentReminderMarkup = (projectId: string) => ({
   inline_keyboard: [
     [
+      { text: "Продлеваем", callback_data: `proj:billing-reminder-continue:${projectId}` },
       { text: "Не продлеваю", callback_data: `proj:billing-reminder-decline:${projectId}` },
-      { text: "Продолжаем работу", callback_data: `proj:billing-reminder-continue:${projectId}` },
     ],
   ],
 });
@@ -309,13 +338,19 @@ export const buildAdminPaymentReviewMessage = (
   if (method === "transfer") {
     lines.push("Проверь оплату переводом");
   } else if (method === "cash") {
-    lines.push("Проверь оплату наличными");
+    lines.push("Клиент выбрал оплату наличкой. Надо забрать деньги.");
   } else {
     lines.push("Проверь оплату");
   }
   lines.push(`Проект: <b>${escapeHtml(project.name)}</b>`);
   if (project.tariff > 0) {
-    lines.push(`Тариф: ${escapeHtml(formatUsdAmount(project.tariff))}`);
+    const usdLabel = formatUsdAmount(project.tariff);
+    if (method === "transfer") {
+      const uzsLabel = formatUzsAmount(project.tariff * PAYMENT_TRANSFER_RATE);
+      lines.push(`Тариф: ${escapeHtml(`${usdLabel} / ${uzsLabel} сум`)}`);
+    } else {
+      lines.push(`Тариф: ${escapeHtml(usdLabel)}`);
+    }
   }
   if (dueDate) {
     lines.push(`Оплата запланирована: ${escapeHtml(formatDate(dueDate))}`);
@@ -472,6 +507,20 @@ const processPaymentReminders = async (
     const clientChatId = resolveClientChatId(project);
     const dueIso = project.nextPaymentDate;
     if (!adminChatId || !dueIso) {
+      reminderMap.delete(project.id);
+      continue;
+    }
+    const disableAt = resolveAutoOffDisableAt(project);
+    if (disableAt !== null && disableAt <= now) {
+      if (project.billingStatus !== "blocked") {
+        await updateProjectRecord(env, project.id, {
+          autoOff: true,
+          autoOffAt: project.autoOffAt ?? new Date().toISOString(),
+          billingStatus: "blocked",
+        }).catch((error) => {
+          console.warn("Failed to enforce auto-off", project.id, error);
+        });
+      }
       reminderMap.delete(project.id);
       continue;
     }

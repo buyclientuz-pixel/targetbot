@@ -2,17 +2,36 @@ import {
   LeadRecord,
   MetaCampaign,
   PortalMetricKey,
-  PortalMode,
   ProjectBillingSummary,
   ProjectRecord,
 } from "../types";
 import { renderLayout } from "../components/layout";
-import { escapeHtml } from "../utils/html";
+import { escapeAttribute, escapeHtml } from "../utils/html";
 
 interface PortalMetricEntry {
   key: PortalMetricKey;
   label: string;
   value: string;
+}
+
+interface PortalPeriodOption {
+  key: string;
+  label: string;
+  url: string;
+  active: boolean;
+}
+
+interface PortalPagination {
+  page: number;
+  totalPages: number;
+  prevUrl?: string | null;
+  nextUrl?: string | null;
+}
+
+interface PortalStatusCounts {
+  all: number;
+  new: number;
+  done: number;
 }
 
 interface PortalViewProps {
@@ -21,30 +40,53 @@ interface PortalViewProps {
   billing: ProjectBillingSummary;
   campaigns: MetaCampaign[];
   metrics: PortalMetricEntry[];
-  mode: PortalMode;
+  periodOptions: PortalPeriodOption[];
+  periodLabel: string;
+  pagination: PortalPagination;
+  statusCounts: PortalStatusCounts;
+  campaignNames: Record<string, string>;
 }
 
-const statusBadge = (status: LeadRecord["status"]): string => {
-  const meta =
-    status === "done"
-      ? { label: "Завершён", variant: "success" }
-      : { label: "Новый", variant: "warning" };
-  return `<span class="badge ${meta.variant}">${meta.label}</span>`;
+const resolveConversionType = (lead: LeadRecord): string => {
+  return lead.phone ? "Контакт" : "Сообщение";
 };
 
-const leadRow = (lead: LeadRecord): string => {
-  const action =
-    lead.status === "done"
-      ? `<button class="btn btn-secondary" data-action="new" data-id="${lead.id}">↩️</button>`
-      : `<button class="btn btn-primary" data-action="done" data-id="${lead.id}">✔</button>`;
+const shortenLabel = (value: string, limit = 48): string => {
+  if (value.length <= limit) {
+    return value;
+  }
+  return `${value.slice(0, limit - 1)}…`;
+};
+
+const resolveCampaignLabel = (lead: LeadRecord, names: Record<string, string>): string => {
+  if (lead.campaignId && names[lead.campaignId]) {
+    return shortenLabel(names[lead.campaignId]);
+  }
+  if (lead.source && lead.source.trim()) {
+    return shortenLabel(lead.source.trim());
+  }
+  if (lead.formId) {
+    return shortenLabel(`Форма ${lead.formId}`);
+  }
+  return "—";
+};
+
+const formatLeadDate = (value: string): string => {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return "—";
+  }
+  return new Date(timestamp).toLocaleString("ru-RU");
+};
+
+const leadRow = (lead: LeadRecord, conversionType: string, campaignLabel: string): string => {
   return `
     <tr data-status="${lead.status}">
-      <td>${lead.name}</td>
-      <td>${lead.phone || "—"}</td>
-      <td>${lead.source}</td>
-      <td>${new Date(lead.createdAt).toLocaleString("ru-RU")}</td>
-      <td data-role="status">${statusBadge(lead.status)}</td>
-      <td data-role="action">${action}</td>
+      <td>${escapeHtml(lead.name)}</td>
+      <td>${lead.phone ? escapeHtml(lead.phone) : "—"}</td>
+      <td>${escapeHtml(conversionType)}</td>
+      <td>${escapeHtml(formatLeadDate(lead.createdAt))}</td>
+      <td>${escapeHtml(campaignLabel)}</td>
     </tr>
   `;
 };
@@ -84,9 +126,25 @@ const billingSection = (billing: ProjectBillingSummary): string => {
   return `
     <div class="billing-status">
       <span class="${meta.className}">${meta.label}</span>
-      ${lines.length ? `<p class="muted">${lines.map((line) => line).join(" · ")}</p>` : ""}
+      ${lines.length ? `<p class="muted">${lines.join(" · ")}</p>` : ""}
     </div>
   `;
+};
+
+const renderPeriodFilters = (options: PortalPeriodOption[]): string => {
+  if (!options.length) {
+    return "";
+  }
+  const buttons = options
+    .map((option) => {
+      const classes = ["btn", "btn-secondary"];
+      if (option.active) {
+        classes.push("active");
+      }
+      return `<a class="${classes.join(" ")}" href="${escapeAttribute(option.url)}">${escapeHtml(option.label)}</a>`;
+    })
+    .join("");
+  return `<div class="period-filters">${buttons}</div>`;
 };
 
 const renderMetrics = (metrics: PortalMetricEntry[]): string => {
@@ -132,7 +190,8 @@ const renderCampaigns = (campaigns: MetaCampaign[]): string => {
   }
   const rows = campaigns
     .map((campaign) => {
-      const spend = campaign.spendFormatted || (campaign.spend !== undefined ? `${campaign.spend.toFixed(2)} ${campaign.spendCurrency || ""}`.trim() : "—");
+      const spend = campaign.spendFormatted
+        || (campaign.spend !== undefined ? `${campaign.spend.toFixed(2)} ${campaign.spendCurrency || ""}`.trim() : "—");
       const impressions = campaign.impressions !== undefined ? campaign.impressions.toLocaleString("ru-RU") : "—";
       const clicks = campaign.clicks !== undefined ? campaign.clicks.toLocaleString("ru-RU") : "—";
       return `
@@ -165,42 +224,69 @@ const renderCampaigns = (campaigns: MetaCampaign[]): string => {
   `;
 };
 
-const modeLabel = (mode: PortalMode): string => {
-  return mode === "manual" ? "Режим: ручной" : "Режим: автоматический";
+const renderPagination = (pagination: PortalPagination): string => {
+  if (pagination.totalPages <= 1) {
+    return "";
+  }
+  const prev = pagination.prevUrl
+    ? `<a class="btn btn-secondary" href="${escapeAttribute(pagination.prevUrl)}">← Назад</a>`
+    : '<span class="btn btn-secondary disabled">← Назад</span>';
+  const next = pagination.nextUrl
+    ? `<a class="btn btn-secondary" href="${escapeAttribute(pagination.nextUrl)}">Вперёд →</a>`
+    : '<span class="btn btn-secondary disabled">Вперёд →</span>';
+  return `
+    <div class="pagination">
+      ${prev}
+      <span class="muted">Страница ${pagination.page} из ${pagination.totalPages}</span>
+      ${next}
+    </div>
+  `;
 };
 
-export const renderPortal = ({ project, leads, billing, campaigns, metrics, mode }: PortalViewProps): string => {
-  const rows = leads.map(leadRow).join("\n");
-  const newCount = leads.filter((lead) => lead.status === "new").length;
-  const doneCount = leads.filter((lead) => lead.status === "done").length;
+export const renderPortal = ({
+  project,
+  leads,
+  billing,
+  campaigns,
+  metrics,
+  periodOptions,
+  periodLabel,
+  pagination,
+  statusCounts,
+  campaignNames,
+}: PortalViewProps): string => {
+  const rows = leads
+    .map((lead) => leadRow(lead, resolveConversionType(lead), resolveCampaignLabel(lead, campaignNames)))
+    .join("\n");
   const emptyStateClass = leads.length === 0 ? "" : "hidden";
   const metricsBlock = renderMetrics(metrics);
   const campaignBlock = renderCampaigns(campaigns);
+  const periodFilters = renderPeriodFilters(periodOptions);
+  const paginationBlock = renderPagination(pagination);
+
   const body = `
     <section class="card">
-      <h2>${project.name}</h2>
-      <p class="muted">Чат: ${project.telegramLink || project.telegramChatId || "—"}</p>
-      <p class="muted">Рекламный кабинет: ${project.adAccountId || "—"}</p>
-      <p class="muted">${escapeHtml(modeLabel(mode))}</p>
+      <h2>${escapeHtml(project.name)}</h2>
+      ${periodFilters}
+      <p class="muted">Период: ${escapeHtml(periodLabel)}</p>
       ${billingSection(billing)}
     </section>
     ${metricsBlock}
     <section class="card">
       <h2>Лиды</h2>
       <div class="actions" id="leadFilters">
-        <button class="btn btn-secondary active" data-filter="all">Все <span class="count" data-role="count">${leads.length}</span></button>
-        <button class="btn btn-secondary" data-filter="new">Новые <span class="count" data-role="count">${newCount}</span></button>
-        <button class="btn btn-secondary" data-filter="done">Завершённые <span class="count" data-role="count">${doneCount}</span></button>
+        <button class="btn btn-secondary active" data-filter="all">Все <span class="count" data-role="count">${statusCounts.all}</span></button>
+        <button class="btn btn-secondary" data-filter="new">Новые <span class="count" data-role="count">${statusCounts.new}</span></button>
+        <button class="btn btn-secondary" data-filter="done">Завершённые <span class="count" data-role="count">${statusCounts.done}</span></button>
       </div>
       <table id="leadsTable">
         <thead>
           <tr>
             <th>Имя</th>
             <th>Телефон</th>
-            <th>Источник</th>
+            <th>Тип конверсии</th>
             <th>Дата</th>
-            <th>Статус</th>
-            <th>Действие</th>
+            <th>Кампания</th>
           </tr>
         </thead>
         <tbody>
@@ -208,47 +294,17 @@ export const renderPortal = ({ project, leads, billing, campaigns, metrics, mode
         </tbody>
       </table>
       <p id="leadsEmpty" class="empty-state ${emptyStateClass}">Лидов для выбранного фильтра пока нет.</p>
+      ${paginationBlock}
     </section>
     ${campaignBlock}
   `;
 
-  const projectIdLiteral = JSON.stringify(project.id);
-
   const scripts = `
     (function () {
-      const statusMap = {
-        new: { label: 'Новый', badge: 'warning', action: { target: 'done', text: '✔', className: 'btn-primary' } },
-        done: { label: 'Завершён', badge: 'success', action: { target: 'new', text: '↩️', className: 'btn-secondary' } },
-      };
-
       const filters = Array.from(document.querySelectorAll('#leadFilters button'));
       const rows = Array.from(document.querySelectorAll('#leadsTable tbody tr'));
       const emptyState = document.getElementById('leadsEmpty');
-      const countTargets = new Map(filters.map((button) => {
-        const filter = button.getAttribute('data-filter') || 'all';
-        const span = button.querySelector('[data-role="count"]');
-        return [filter, span];
-      }));
       let activeFilter = 'all';
-
-      const recalcCounts = () => {
-        let newCount = 0;
-        let doneCount = 0;
-        rows.forEach((row) => {
-          const status = row.getAttribute('data-status');
-          if (status === 'new') newCount += 1;
-          else if (status === 'done') doneCount += 1;
-        });
-        const setCount = (filter, value) => {
-          const target = countTargets.get(filter);
-          if (target instanceof HTMLElement) {
-            target.textContent = String(value);
-          }
-        };
-        setCount('all', rows.length);
-        setCount('new', newCount);
-        setCount('done', doneCount);
-      };
 
       const applyFilter = () => {
         let visibleCount = 0;
@@ -256,7 +312,9 @@ export const renderPortal = ({ project, leads, billing, campaigns, metrics, mode
           const status = row.getAttribute('data-status');
           const visible = activeFilter === 'all' || status === activeFilter;
           row.style.display = visible ? '' : 'none';
-          if (visible) visibleCount += 1;
+          if (visible) {
+            visibleCount += 1;
+          }
         });
         if (emptyState instanceof HTMLElement) {
           emptyState.classList.toggle('hidden', visibleCount > 0);
@@ -272,57 +330,6 @@ export const renderPortal = ({ project, leads, billing, campaigns, metrics, mode
         });
       });
 
-      const updateRow = (row, status) => {
-        const meta = statusMap[status];
-        if (!meta) return;
-        row.setAttribute('data-status', status);
-        const statusCell = row.querySelector('[data-role="status"]');
-        if (statusCell) {
-          statusCell.innerHTML = '<span class="badge ' + meta.badge + '">' + meta.label + '</span>';
-        }
-        const actionCell = row.querySelector('[data-role="action"]');
-        const button = actionCell ? actionCell.querySelector('button') : null;
-        if (button) {
-          button.classList.remove('btn-primary', 'btn-secondary');
-          button.classList.add(meta.action.className);
-          button.setAttribute('data-action', meta.action.target);
-          button.textContent = meta.action.text;
-        }
-      };
-
-      document.querySelectorAll('#leadsTable button').forEach((button) => {
-        button.addEventListener('click', async (event) => {
-          const target = event.currentTarget;
-          if (!(target instanceof HTMLButtonElement)) return;
-          const row = target.closest('tr');
-          const id = target.getAttribute('data-id');
-          const action = target.getAttribute('data-action');
-          if (!row || !id || !action) return;
-          target.setAttribute('disabled', 'true');
-          try {
-            const response = await fetch('/api/leads/' + id, {
-              method: 'PATCH',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ status: action === 'done' ? 'done' : 'new', projectId: ${projectIdLiteral} }),
-            });
-            const data = await response.json();
-            if (!data.ok || !data.data || (data.data.status !== 'new' && data.data.status !== 'done')) {
-              alert('Ошибка обновления статуса: ' + (data.error || 'неизвестная ошибка'));
-              return;
-            }
-            updateRow(row, data.data.status);
-            recalcCounts();
-            applyFilter();
-          } catch (error) {
-            const message = error && error.message ? error.message : String(error);
-            alert('Ошибка сети: ' + message);
-          } finally {
-            target.removeAttribute('disabled');
-          }
-        });
-      });
-
-      recalcCounts();
       applyFilter();
     })();
   `;
@@ -332,6 +339,11 @@ export const renderPortal = ({ project, leads, billing, campaigns, metrics, mode
     .metric { background: #f8fafc; border: 1px solid #d9e2ec; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
     .metric-label { color: #627d98; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
     .metric-value { font-size: 20px; font-weight: 700; color: #102a43; }
+    .period-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 8px; }
+    .period-filters .btn { padding: 8px 14px; font-size: 13px; }
+    .pagination { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+    .pagination .btn { min-width: 120px; justify-content: center; }
+    .btn.disabled { opacity: 0.6; pointer-events: none; }
   `;
 
   return renderLayout({ title: `Портал — ${project.name}`, body, scripts, styles });

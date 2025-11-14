@@ -669,6 +669,30 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       ? portalSlugSource.trim()
       : derivedSlug;
 
+  const resolveBoolean = (value: unknown): boolean => {
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "number") {
+      return value !== 0;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) {
+        return false;
+      }
+      return ["1", "true", "yes", "on"].includes(normalized);
+    }
+    return false;
+  };
+
+  const autoOff = resolveBoolean(data.autoOff ?? data.auto_off);
+  const autoOffAtSource = data.autoOffAt ?? data.auto_off_at ?? null;
+  const autoOffAt =
+    typeof autoOffAtSource === "string" && autoOffAtSource.trim() && !Number.isNaN(Date.parse(autoOffAtSource))
+      ? new Date(autoOffAtSource).toISOString()
+      : null;
+
   return {
     id,
     name,
@@ -682,6 +706,8 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     updatedAt,
     settings,
     manualKpi,
+    autoOff,
+    autoOffAt,
     userId,
     telegramChatId,
     telegramThreadId,
@@ -1314,12 +1340,36 @@ export const updateProjectRecord = async (
     const sanitized = sanitizeManualKpis(manualPatch);
     manualPatch = sanitized !== null ? sanitized : current.manualKpi;
   }
+  const resolveAutoOff = (): boolean => {
+    if (typeof patch.autoOff === "boolean") {
+      return patch.autoOff;
+    }
+    return current.autoOff ?? false;
+  };
+  const resolveAutoOffAt = (): string | null => {
+    if (patch.autoOffAt === null) {
+      return null;
+    }
+    if (typeof patch.autoOffAt === "string" && patch.autoOffAt.trim()) {
+      const parsed = Date.parse(patch.autoOffAt);
+      if (!Number.isNaN(parsed)) {
+        return new Date(parsed).toISOString();
+      }
+      return current.autoOffAt ?? null;
+    }
+    if (patch.autoOff === false && patch.autoOffAt === undefined) {
+      return null;
+    }
+    return current.autoOffAt ?? null;
+  };
   const updated: ProjectRecord = {
     ...current,
     ...patch,
     id: current.id,
     updatedAt: new Date().toISOString(),
     manualKpi: manualPatch ?? current.manualKpi,
+    autoOff: resolveAutoOff(),
+    autoOffAt: resolveAutoOffAt(),
   };
   projects[index] = updated;
   await saveProjects(env, projects);

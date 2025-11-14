@@ -248,6 +248,8 @@ export interface ProjectRecord {
   updatedAt: string;
   settings: JsonObject;
   manualKpi?: PortalMetricKey[];
+  autoOff?: boolean;
+  autoOffAt?: string | null;
   userId?: string;
   telegramChatId?: string;
   telegramThreadId?: number;

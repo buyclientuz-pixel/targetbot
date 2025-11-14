@@ -9,9 +9,12 @@ import {
   ProjectBillingSummary,
   ProjectLeadStats,
   ProjectSummary,
+  ProjectRecord,
 } from "../types";
 import { EnvBindings, listLeads, listPayments, listProjects } from "./storage";
 import { KPI_LABELS } from "./kpi";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface SummarizeProjectsOptions {
   projectIds?: string[];
@@ -352,4 +355,26 @@ export const projectLeadStats = {
 
 export const projectBilling = {
   summarize: summarizeBilling,
+};
+
+export const isProjectAutoDisabled = (
+  project: ProjectRecord | ProjectSummary,
+  now: Date = new Date(),
+): boolean => {
+  if (!project.autoOff) {
+    return false;
+  }
+  if (project.nextPaymentDate) {
+    const due = Date.parse(project.nextPaymentDate);
+    if (!Number.isNaN(due)) {
+      return now.getTime() >= due + DAY_MS;
+    }
+  }
+  if (project.autoOffAt) {
+    const flagged = Date.parse(project.autoOffAt);
+    if (!Number.isNaN(flagged)) {
+      return now.getTime() >= flagged + DAY_MS;
+    }
+  }
+  return true;
 };

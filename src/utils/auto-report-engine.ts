@@ -6,7 +6,7 @@ import {
   saveMetaAccountLinks,
   saveProjectSettingsRecord,
 } from "./storage";
-import { summarizeProjects } from "./projects";
+import { summarizeProjects, isProjectAutoDisabled } from "./projects";
 import { fetchAdAccounts } from "./meta";
 import { sendTelegramMessage, TelegramEnv } from "./telegram";
 import { generateReport } from "./reports";
@@ -146,7 +146,11 @@ const resolveRoutingContext = (project: ProjectSummary): RoutingContext => {
 const collectTargets = (
   project: ProjectSummary,
   target: ReportRoutingTarget,
+  now?: Date,
 ): string[] => {
+  if (now && isProjectAutoDisabled(project, now)) {
+    return [];
+  }
   const { adminChatId, clientChatId } = resolveRoutingContext(project);
   const chats = new Set<string>();
   if (target === "none") {
@@ -271,7 +275,7 @@ const sendAutoReportForProject = async (
   now: Date,
   fallbackReason?: string | null,
 ): Promise<{ delivered: number; fallback: boolean; reportId?: string }> => {
-  const targets = collectTargets(project, settings.autoReport.sendTarget);
+  const targets = collectTargets(project, settings.autoReport.sendTarget, now);
   if (!targets.length) {
     return { delivered: 0, fallback: false };
   }
@@ -442,7 +446,7 @@ export const runAutoReportEngine = async (
     const linkedAccount = accountByProject.get(project.id);
     const accountDetail = linkedAccount ? accountDetails.get(linkedAccount.accountId) ?? null : null;
 
-    const routing = collectTargets(project, draft.alerts.target);
+    const routing = collectTargets(project, draft.alerts.target, now);
 
     const billingStatus = project.billing?.status ?? "missing";
     const billingDate = project.nextPaymentDate ?? null;

@@ -74,7 +74,7 @@ import {
   migrateProjectsStructure,
 } from "./utils/storage";
 import { fetchAdAccounts, fetchCampaigns, resolveMetaStatus, withMetaSettings } from "./utils/meta";
-import { projectBilling, summarizeProjects, sortProjectSummaries } from "./utils/projects";
+import { projectBilling, summarizeProjects, sortProjectSummaries, isProjectAutoDisabled } from "./utils/projects";
 import { MetaCampaign, PortalMetricKey, ProjectSummary, ProjectRecord } from "./types";
 import { handleTelegramUpdate } from "./bot/router";
 import { handleMetaWebhook } from "./api/meta-webhook";
@@ -101,6 +101,63 @@ const withCors = (response: Response): Response => {
   headers.set("access-control-allow-headers", "content-type");
   headers.set("access-control-allow-methods", "GET,POST,PATCH,DELETE,OPTIONS");
   return new Response(response.body, { ...response, headers });
+};
+
+const PORTAL_PAGE_SIZE = 10;
+
+interface PortalPeriodSelection {
+  key: string;
+  label: string;
+  since: Date | null;
+  until: Date | null;
+  datePreset: string;
+}
+
+const toUtcStart = (value: Date): Date => {
+  const copy = new Date(value);
+  copy.setUTCHours(0, 0, 0, 0);
+  return copy;
+};
+
+const toUtcEnd = (value: Date): Date => {
+  const copy = new Date(value);
+  copy.setUTCHours(23, 59, 59, 999);
+  return copy;
+};
+
+const formatRuDate = (value: Date): string => {
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(value);
+};
+
+const resolvePortalPeriod = (raw: string | null, now: Date): PortalPeriodSelection => {
+  const key = (raw ?? "today").toLowerCase();
+  const todayStart = toUtcStart(now);
+  const todayEnd = toUtcEnd(now);
+
+  switch (key) {
+    case "yesterday": {
+      const start = toUtcStart(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+      return { key: "yesterday", label: "Вчера", since: start, until: toUtcEnd(start), datePreset: "yesterday" };
+    }
+    case "week": {
+      const start = toUtcStart(new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000));
+      return { key: "week", label: "Неделя", since: start, until: todayEnd, datePreset: "last_7d" };
+    }
+    case "month": {
+      const start = toUtcStart(new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000));
+      return { key: "month", label: "Месяц", since: start, until: todayEnd, datePreset: "last_30d" };
+    }
+    case "max": {
+      return { key: "max", label: "Максимум", since: null, until: null, datePreset: "lifetime" };
+    }
+    case "today":
+    default:
+      return { key: "today", label: "Сегодня", since: todayStart, until: todayEnd, datePreset: "today" };
+  }
 };
 
 let projectMigrationRan = false;
@@ -463,14 +520,106 @@ export default {
           );
         }
 
+        const now = new Date();
+        if (isProjectAutoDisabled(project, now)) {
+          return htmlResponse(
+            "<h1>Портал временно отключён</h1><p>Продлите обслуживание у администратора, чтобы вернуть доступ.</p>",
+            { status: 403 },
+          );
+        }
+
+        const periodSelection = resolvePortalPeriod(url.searchParams.get("period"), now);
         await syncProjectLeads(bindings, project.id).catch((error) => {
           console.warn("Failed to sync portal leads", project.id, (error as Error).message);
         });
-        const [leads, payments] = await Promise.all([
+        const [allLeads, payments] = await Promise.all([
           getProjectLeads(bindings, project.id),
           listPayments(bindings),
         ]);
         const billing = projectBilling.summarize(payments.filter((entry) => entry.projectId === project.id));
+
+        const sinceMs = periodSelection.since ? periodSelection.since.getTime() : null;
+        const untilMs = periodSelection.until ? periodSelection.until.getTime() : null;
+        const leads = allLeads.filter((lead) => {
+          const created = Date.parse(lead.createdAt);
+          if (Number.isNaN(created)) {
+            return true;
+          }
+          if (sinceMs !== null && created < sinceMs) {
+            return false;
+          }
+          if (untilMs !== null && created > untilMs) {
+            return false;
+          }
+          return true;
+        });
+
+        const statusCounts = leads.reduce(
+          (acc, lead) => {
+            acc.all += 1;
+            if (lead.status === "done") {
+              acc.done += 1;
+            } else {
+              acc.new += 1;
+            }
+            return acc;
+          },
+          { all: 0, new: 0, done: 0 },
+        );
+
+        const requestedPage = Number(url.searchParams.get("page") ?? "1");
+        const rawPage = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
+        const totalPages = Math.max(1, Math.ceil(leads.length / PORTAL_PAGE_SIZE));
+        const page = Math.min(rawPage, totalPages);
+        const offset = (page - 1) * PORTAL_PAGE_SIZE;
+        const paginatedLeads = leads.slice(offset, offset + PORTAL_PAGE_SIZE);
+
+        const basePath = `/portal/${encodeURIComponent(slug)}`;
+        const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
+          const params = new URLSearchParams();
+          if (periodKey !== "today") {
+            params.set("period", periodKey);
+          }
+          if (pageNumber > 1) {
+            params.set("page", String(pageNumber));
+          }
+          const query = params.toString();
+          return `${basePath}${query ? `?${query}` : ""}`;
+        };
+
+        const periodOptionKeys: Array<PortalPeriodSelection["key"]> = [
+          "today",
+          "yesterday",
+          "week",
+          "month",
+          "max",
+        ];
+
+        const periodOptions = periodOptionKeys.map((key) => {
+          const selection = resolvePortalPeriod(key, now);
+          return {
+            key,
+            label: selection.label,
+            url: buildPortalUrl(key, 1),
+            active: key === periodSelection.key,
+          };
+        });
+
+        const pagination = {
+          page,
+          totalPages,
+          prevUrl: page > 1 ? buildPortalUrl(periodSelection.key, page - 1) : null,
+          nextUrl: page < totalPages ? buildPortalUrl(periodSelection.key, page + 1) : null,
+        };
+
+        let periodLabel = periodSelection.label;
+        if (periodSelection.since && periodSelection.until) {
+          const startLabel = formatRuDate(periodSelection.since);
+          const endLabel = formatRuDate(periodSelection.until);
+          periodLabel = startLabel === endLabel
+            ? `${periodSelection.label} · ${startLabel}`
+            : `${periodSelection.label} · ${startLabel} — ${endLabel}`;
+        }
 
         let campaigns: MetaCampaign[] = [];
         try {
@@ -479,7 +628,7 @@ export default {
             const metaEnv = await withMetaSettings(bindings);
             campaigns = await fetchCampaigns(metaEnv, token, project.adAccountId, {
               limit: portalRecord.mode === "manual" ? Math.max(10, portalRecord.campaignIds.length || 10) : 25,
-              datePreset: "today",
+              datePreset: periodSelection.datePreset,
             });
             await syncCampaignObjectives(bindings, project.id, campaigns);
             try {
@@ -509,9 +658,9 @@ export default {
           return sorted.slice(0, 10);
         })();
 
-        const leadsNew = leads.filter((lead) => lead.status === "new").length;
-        const leadsDone = leads.filter((lead) => lead.status === "done").length;
-        const leadsTotal = leads.length;
+        const leadsNew = statusCounts.new;
+        const leadsDone = statusCounts.done;
+        const leadsTotal = statusCounts.all;
 
         const spendCurrency =
           selectedCampaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency || campaigns[0]?.spendCurrency;
@@ -656,13 +805,24 @@ export default {
           .map((key) => ({ key, label: metricLabels[key], value: metricValues[key] }))
           .filter((entry) => entry.value && entry.value !== "—");
 
+        const campaignNames: Record<string, string> = {};
+        campaigns.forEach((campaign) => {
+          if (campaign.id) {
+            campaignNames[campaign.id] = campaign.name;
+          }
+        });
+
         const html = renderPortal({
           project,
-          leads,
+          leads: paginatedLeads,
           billing,
           campaigns: selectedCampaigns,
           metrics,
-          mode: portalRecord.mode,
+          periodOptions,
+          periodLabel,
+          pagination,
+          statusCounts,
+          campaignNames,
         });
         return htmlResponse(html);
       }
