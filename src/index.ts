@@ -9,6 +9,8 @@ import {
 import {
   handleProjectDelete,
   handleProjectGet,
+  handleProjectCleanup,
+  handleProjectUnlinkChat,
   handleProjectUpdate,
   handleProjectsCreate,
   handleProjectsList,
@@ -240,7 +242,7 @@ export default {
         return withCors(await handleProjectsCreate(request, env));
       }
 
-      const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/);
+      const projectMatch = pathname.match(/^\/(?:api\/)?projects\/([^/]+)$/);
       if (projectMatch) {
         const projectId = decodeURIComponent(projectMatch[1]);
         if (method === "GET") {
@@ -254,7 +256,19 @@ export default {
         }
       }
 
-      const projectLeadsMatch = pathname.match(/^\/api\/projects\/([^/]+)\/leads$/);
+      const projectCleanupMatch = pathname.match(/^\/(?:api\/)?projects\/([^/]+)\/cleanup$/);
+      if (projectCleanupMatch && method === "POST") {
+        const projectId = decodeURIComponent(projectCleanupMatch[1]);
+        return withCors(await handleProjectCleanup(request, env, projectId));
+      }
+
+      const projectUnlinkMatch = pathname.match(/^\/(?:api\/)?projects\/([^/]+)\/unlink-chat$/);
+      if (projectUnlinkMatch && method === "POST") {
+        const projectId = decodeURIComponent(projectUnlinkMatch[1]);
+        return withCors(await handleProjectUnlinkChat(request, env, projectId));
+      }
+
+      const projectLeadsMatch = pathname.match(/^\/(?:api\/)?projects\/([^/]+)\/leads$/);
       if (projectLeadsMatch && method === "GET") {
         const projectId = decodeURIComponent(projectLeadsMatch[1]);
         return withCors(await handleLeadsList(request, env, projectId));
@@ -369,6 +383,11 @@ export default {
         if (method === "DELETE") {
           return withCors(await handleUserDelete(request, env, userId));
         }
+      }
+
+      if (pathname === "/projects" && method === "GET") {
+        const redirectUrl = new URL("/admin", request.url);
+        return new Response(null, { status: 302, headers: { location: redirectUrl.toString() } });
       }
 
       if (pathname === "/admin" && method === "GET") {
