@@ -17,11 +17,13 @@ import {
   listCampaignObjectivesForProject,
   listProjectCampaignKpis,
   listPortals,
+  listProjects,
 } from "./storage";
 import { summarizeProjects, sortProjectSummaries, extractProjectReportPreferences } from "./projects";
 import { createId } from "./ids";
 import { fetchAdAccounts, fetchCampaigns, withMetaSettings } from "./meta";
 import { syncCampaignObjectives, getCampaignKPIs, applyKpiSelection } from "./kpi";
+import { syncProjectLeads } from "./leads";
 
 const GLOBAL_PROJECT_ID = "__multi__";
 const PORTAL_BASE_KEYS = [
@@ -436,6 +438,19 @@ export const generateReport = async (
   options: GenerateReportOptions = {},
 ): Promise<GenerateReportResult> => {
   const filters = resolveFilters(options);
+  const explicitIds = Array.isArray(options.projectIds) ? options.projectIds : null;
+  const targetIds = explicitIds && explicitIds.length
+    ? Array.from(new Set(explicitIds.filter((id) => typeof id === "string" && id.trim()).map((id) => id.trim())))
+    : (await listProjects(env).catch(() => []))
+        .map((project) => project.id)
+        .filter((id) => typeof id === "string" && id);
+  await Promise.all(
+    targetIds.map((projectId) =>
+      syncProjectLeads(env, projectId).catch((error) => {
+        console.warn("Failed to sync leads before report", projectId, (error as Error).message);
+      }),
+    ),
+  );
   const summaries = sortProjectSummaries(await summarizeProjects(env, { projectIds: options.projectIds }));
   const accounts = await accountSpendMap(env, options.includeMeta !== false, filters);
   const overrides = await collectPreferredCampaignSpend(env, summaries, filters);

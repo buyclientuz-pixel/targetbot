@@ -22,7 +22,6 @@ import {
   clearPendingProjectEditOperation,
   listChatRegistrations,
   listMetaAccountLinks,
-  listLeads,
   listPayments,
   listProjects,
   listTelegramGroupLinks,
@@ -59,6 +58,7 @@ import {
   loadPaymentReminderRecord,
   applyPaymentReminderPatch,
 } from "../utils/storage";
+import { syncProjectLeads, getProjectLeads } from "../utils/leads";
 import { createId } from "../utils/ids";
 import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
 import {
@@ -2139,7 +2139,7 @@ const toggleLeadStatus = async (
   projectId: string,
   leadId: string,
 ): Promise<LeadRecord | null> => {
-  const leads = await listLeads(env, projectId).catch(() => [] as LeadRecord[]);
+  const leads = await getProjectLeads(env, projectId).catch(() => [] as LeadRecord[]);
   const index = leads.findIndex((lead) => lead.id === leadId);
   if (index < 0) {
     return null;
@@ -2173,11 +2173,14 @@ const handleProjectLeadToggle = async (
 };
 
 const handleProjectLeads = async (context: BotContext, projectId: string): Promise<void> => {
+  await syncProjectLeads(context.env, projectId).catch((error) => {
+    console.warn("Failed to sync leads for bot view", projectId, (error as Error).message);
+  });
   const summary = await ensureProjectSummary(context, projectId);
   if (!summary) {
     return;
   }
-  const leads = await listLeads(context.env, summary.id).catch(() => [] as LeadRecord[]);
+  const leads = await getProjectLeads(context.env, summary.id).catch(() => [] as LeadRecord[]);
   const sorted = leads.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const preview = sorted.slice(0, 5);
   const lines: string[] = [];
@@ -2241,7 +2244,7 @@ const handleProjectReport = async (
   const accountInfo = await fetchProjectAccountInfo(context, summary, { datePreset: period.datePreset });
   const account = accountInfo.account;
   const spendLabel = account?.spendFormatted ?? formatCurrencyValue(account?.spend, account?.spendCurrency);
-  const leads = await listLeads(context.env, summary.id).catch(() => [] as LeadRecord[]);
+  const leads = await getProjectLeads(context.env, summary.id).catch(() => [] as LeadRecord[]);
   const leadStats = computeLeadStatsForPeriod(leads, period.key as ReportPeriodKey);
   const lines = [
     `📈 Отчёт по рекламе — <b>${escapeHtml(summary.name)}</b>`,
@@ -3518,7 +3521,7 @@ const handleProjectDelete = async (context: BotContext, projectId: string): Prom
 };
 
 const formatProjectDeletionSummary = (summary: ProjectDeletionSummary): string[] => {
-  const lines: string[] = [`✅ Проект удалён — <b>${escapeHtml(summary.project.name)}</b>`, ""];
+  const lines: string[] = ["Проект успешно удалён.", "", `🏗 <b>${escapeHtml(summary.project.name)}</b>`, ""];
   const accountName = summary.metaAccount?.accountName ?? summary.project.metaAccountName;
   if (accountName) {
     lines.push(`🧩 Meta-аккаунт освобождён: <b>${escapeHtml(accountName)}</b>.`);
@@ -3593,6 +3596,7 @@ const handleProjectDeleteConfirm = async (context: BotContext, projectId: string
     ],
   };
   await sendMessage(context, lines.join("\n"), { replyMarkup });
+  await sendMainMenu(context);
 };
 
 const handleProjectDeleteCancel = async (context: BotContext, projectId: string): Promise<void> => {

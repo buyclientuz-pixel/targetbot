@@ -68,14 +68,14 @@ import {
   listUsers,
   loadMetaToken,
   loadProject,
-  listLeads,
   loadPortalById,
   loadPortalByProjectId,
   listProjectCampaignKpis,
+  migrateProjectsStructure,
 } from "./utils/storage";
 import { fetchAdAccounts, fetchCampaigns, resolveMetaStatus, withMetaSettings } from "./utils/meta";
 import { projectBilling, summarizeProjects, sortProjectSummaries } from "./utils/projects";
-import { MetaCampaign, PortalMetricKey, ProjectSummary } from "./types";
+import { MetaCampaign, PortalMetricKey, ProjectSummary, ProjectRecord } from "./types";
 import { handleTelegramUpdate } from "./bot/router";
 import { handleMetaWebhook } from "./api/meta-webhook";
 import { runReminderSweep } from "./utils/reminders";
@@ -84,6 +84,7 @@ import { runAutoReportEngine } from "./utils/auto-report-engine";
 import { TelegramEnv } from "./utils/telegram";
 import { runRegressionChecks } from "./utils/qa";
 import { KPI_LABELS, syncCampaignObjectives, applyKpiSelection, getCampaignKPIs } from "./utils/kpi";
+import { syncProjectLeads, getProjectLeads } from "./utils/leads";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -102,6 +103,8 @@ const withCors = (response: Response): Response => {
   return new Response(response.body, { ...response, headers });
 };
 
+let projectMigrationRan = false;
+
 export default {
   async fetch(request: Request, env: unknown): Promise<Response> {
     const method = request.method.toUpperCase();
@@ -113,6 +116,14 @@ export default {
     const pathname = url.pathname.replace(/\/+/g, "/");
 
     try {
+      if (!projectMigrationRan) {
+        const bindings = ensureEnv(env);
+        await migrateProjectsStructure(bindings).catch((error) => {
+          console.warn("project:migration", (error as Error).message);
+        });
+        projectMigrationRan = true;
+      }
+
       if (pathname === "/bot/webhook" && method === "POST") {
         return await handleTelegramUpdate(request, env);
       }
@@ -432,6 +443,15 @@ export default {
           }
         }
 
+        if (!portalRecord && !project) {
+          const allProjects = await listProjects(bindings).catch(() => [] as ProjectRecord[]);
+          const match = allProjects.find((entry) => entry.portalSlug === slug);
+          if (match) {
+            project = match;
+            portalRecord = await loadPortalByProjectId(bindings, match.id);
+          }
+        }
+
         if (!project) {
           return htmlResponse("<h1>Проект не найден</h1>", { status: 404 });
         }
@@ -443,8 +463,11 @@ export default {
           );
         }
 
+        await syncProjectLeads(bindings, project.id).catch((error) => {
+          console.warn("Failed to sync portal leads", project.id, (error as Error).message);
+        });
         const [leads, payments] = await Promise.all([
-          listLeads(bindings, project.id),
+          getProjectLeads(bindings, project.id),
           listPayments(bindings),
         ]);
         const billing = projectBilling.summarize(payments.filter((entry) => entry.projectId === project.id));
@@ -658,6 +681,12 @@ export default {
   async scheduled(_event: unknown, env: unknown): Promise<void> {
     try {
       const bindings = ensureEnv(env);
+      if (!projectMigrationRan) {
+        await migrateProjectsStructure(bindings).catch((error) => {
+          console.warn("project:migration", (error as Error).message);
+        });
+        projectMigrationRan = true;
+      }
       const extended = bindings as typeof bindings & TelegramEnv & Record<string, unknown>;
       const [autoStats, reminders, reports] = await Promise.all([
         runAutoReportEngine(extended),

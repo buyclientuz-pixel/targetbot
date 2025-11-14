@@ -476,6 +476,54 @@ const syncKvRecords = async <T>({
   await writeKvIndex(env, indexKey, sorted);
 };
 
+const normalizeLeadRecord = (
+  projectId: string,
+  input: LeadRecord | Record<string, unknown>,
+): LeadRecord => {
+  const data = input as Record<string, unknown>;
+  const nowIso = new Date().toISOString();
+  const idSource = data.id ?? data.leadId ?? data.lead_id;
+  const id = typeof idSource === "string" && idSource.trim() ? idSource.trim() : `lead_${createId(10)}`;
+  const nameSource = data.name ?? data.full_name ?? data.fullName ?? `Лид ${id.slice(-6)}`;
+  const name = typeof nameSource === "string" && nameSource.trim() ? nameSource.trim() : `Лид ${id.slice(-6)}`;
+  const phoneSource = data.phone ?? data.phone_number ?? data.phoneNumber ?? null;
+  const phone = typeof phoneSource === "string" && phoneSource.trim() ? phoneSource.trim() : null;
+  const sourceRaw = data.source ?? data.channel ?? data.origin ?? "facebook";
+  const source = typeof sourceRaw === "string" && sourceRaw.trim() ? sourceRaw.trim() : "facebook";
+  const statusRaw = data.status ?? data.state;
+  const status: LeadRecord["status"] = statusRaw === "done" || statusRaw === "processed" ? "done" : "new";
+  const createdSource = data.createdAt ?? data.created_at ?? data.created_time ?? nowIso;
+  const createdAt =
+    typeof createdSource === "string" && createdSource.trim() && !Number.isNaN(Date.parse(createdSource))
+      ? new Date(createdSource).toISOString()
+      : nowIso;
+  const campaignSource = data.campaignId ?? data.campaign_id;
+  const campaignId = typeof campaignSource === "string" && campaignSource.trim() ? campaignSource.trim() : null;
+  const formSource = data.formId ?? data.form_id;
+  const formId = typeof formSource === "string" && formSource.trim() ? formSource.trim() : null;
+  const adSource = data.adId ?? data.ad_id;
+  const adId = typeof adSource === "string" && adSource.trim() ? adSource.trim() : null;
+
+  return {
+    id,
+    projectId,
+    name,
+    phone,
+    source,
+    campaignId,
+    formId,
+    adId,
+    status,
+    createdAt,
+  } satisfies LeadRecord;
+};
+
+const sortLeads = (leads: LeadRecord[]): LeadRecord[] => {
+  return leads
+    .slice()
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id.localeCompare(a.id));
+};
+
 const syncLeadKvRecords = async (
   env: EnvBindings,
   projectId: string,
@@ -499,6 +547,9 @@ const syncLeadKvRecords = async (
           name: lead.name,
           phone: lead.phone ?? null,
           source: lead.source,
+          campaign_id: lead.campaignId ?? null,
+          form_id: lead.formId ?? null,
+          ad_id: lead.adId ?? null,
           created_at: lead.createdAt,
           status: lead.status === "done" ? "processed" : "new",
         }),
@@ -611,6 +662,12 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
   const telegramTitle =
     typeof telegramTitleSource === "string" && telegramTitleSource.trim() ? telegramTitleSource.trim() : undefined;
   const adAccountId = typeof data.adAccountId === "string" ? data.adAccountId : metaAccountId;
+  const portalSlugSource = data.portalSlug ?? data.portal_slug ?? data.slug ?? undefined;
+  const derivedSlug = id.replace(/[^a-zA-Z0-9_-]+/g, "-").toLowerCase() || id;
+  const portalSlug =
+    typeof portalSlugSource === "string" && portalSlugSource.trim()
+      ? portalSlugSource.trim()
+      : derivedSlug;
 
   return {
     id,
@@ -631,6 +688,7 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     telegramLink,
     telegramTitle,
     adAccountId,
+    portalSlug,
   };
 };
 
@@ -824,6 +882,7 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
     telegramThreadId: base.telegramThreadId ?? extra.telegramThreadId,
     telegramLink: base.telegramLink ?? extra.telegramLink,
     telegramTitle: base.telegramTitle ?? extra.telegramTitle,
+    portalSlug: base.portalSlug || extra.portalSlug || base.id,
     updatedAt: latest ?? base.updatedAt ?? extra.updatedAt,
   };
 };
@@ -1153,9 +1212,37 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
         tariff: project.tariff ?? 0,
         created_at: project.createdAt,
         manual_kpi: Array.isArray(project.manualKpi) ? project.manualKpi : [],
+        portal_slug: project.portalSlug ?? project.id,
       };
     },
   });
+};
+
+export const migrateProjectsStructure = async (env: EnvBindings): Promise<void> => {
+  try {
+    const projects = await listProjects(env);
+    if (!projects.length) {
+      return;
+    }
+    const migrated = projects.map((project) => {
+      const chatId = typeof project.chatId === "string" ? project.chatId : String(project.chatId ?? "");
+      const telegramChatId = project.telegramChatId
+        ? typeof project.telegramChatId === "string"
+          ? project.telegramChatId
+          : String(project.telegramChatId)
+        : undefined;
+      return {
+        ...project,
+        chatId,
+        telegramChatId,
+        adAccountId: project.adAccountId || project.metaAccountId,
+        portalSlug: project.portalSlug && project.portalSlug.trim() ? project.portalSlug : project.id,
+      } satisfies ProjectRecord;
+    });
+    await saveProjects(env, migrated);
+  } catch (error) {
+    console.warn("Failed to migrate project structure", error);
+  }
 };
 
 export const loadProject = async (env: EnvBindings, projectId: string): Promise<ProjectRecord | null> => {
@@ -1200,6 +1287,17 @@ export const saveProjectSettingsRecord = async (
   return sanitized;
 };
 
+export const deleteProjectSettingsRecord = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<void> => {
+  await env.DB.delete(projectSettingsKey(projectId));
+  const index = new Set(await readKvIndex(env, PROJECT_SETTINGS_KV_INDEX_KEY));
+  if (index.delete(projectId)) {
+    await writeKvIndex(env, PROJECT_SETTINGS_KV_INDEX_KEY, Array.from(index).sort((a, b) => a.localeCompare(b, "en")));
+  }
+};
+
 export const updateProjectRecord = async (
   env: EnvBindings,
   projectId: string,
@@ -1229,7 +1327,9 @@ export const updateProjectRecord = async (
 };
 
 export const listLeads = async (env: EnvBindings, projectId: string): Promise<LeadRecord[]> => {
-  return readJsonFromR2<LeadRecord[]>(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, []);
+  const stored = await readJsonFromR2<unknown[]>(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, []);
+  const normalized = stored.map((item) => normalizeLeadRecord(projectId, item as Record<string, unknown>));
+  return sortLeads(normalized);
 };
 
 export const saveLeads = async (
@@ -1237,8 +1337,10 @@ export const saveLeads = async (
   projectId: string,
   leads: LeadRecord[],
 ): Promise<void> => {
-  await writeJsonToR2(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, leads);
-  await syncLeadKvRecords(env, projectId, leads);
+  const normalized = leads.map((lead) => normalizeLeadRecord(projectId, lead));
+  const sorted = sortLeads(normalized);
+  await writeJsonToR2(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, sorted);
+  await syncLeadKvRecords(env, projectId, sorted);
 };
 
 export const deleteLeads = async (env: EnvBindings, projectId: string): Promise<void> => {
@@ -1995,6 +2097,27 @@ export const deleteProjectCampaignKpis = async (
   await env.DB.delete(`${CAMPAIGN_KPI_KV_PREFIX}${projectId}:${campaignId}`);
 };
 
+export const deleteAllProjectCampaignKpis = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<void> => {
+  const map = await readCampaignKpis(env, projectId).catch(() => ({} as Record<string, PortalMetricKey[]>));
+  const campaignIds = Object.keys(map);
+  if (campaignIds.length) {
+    await writeCampaignKpis(env, projectId, {});
+  }
+  await Promise.all(
+    campaignIds.map((campaignId) =>
+      env.DB.delete(`${CAMPAIGN_KPI_KV_PREFIX}${projectId}:${campaignId}`).catch((error) => {
+        console.warn("Failed to delete campaign KPI entry", projectId, campaignId, error);
+      }),
+    ),
+  );
+  await env.R2.delete(campaignKpisKey(projectId)).catch((error) => {
+    console.warn("Failed to delete campaign KPI blob", projectId, error);
+  });
+};
+
 export const listSettings = async (env: EnvBindings): Promise<SettingRecord[]> => {
   return readJsonFromR2<SettingRecord[]>(env, SETTINGS_KEY, []);
 };
@@ -2243,6 +2366,12 @@ export const deleteProjectCascade = async (
   const cleanupTasks: Promise<void>[] = [
     deleteLeads(env, projectId).catch((error) => {
       console.warn("Failed to delete project leads", projectId, error);
+    }),
+    deleteAllProjectCampaignKpis(env, projectId).catch((error) => {
+      console.warn("Failed to delete project campaign KPIs", projectId, error);
+    }),
+    deleteProjectSettingsRecord(env, projectId).catch((error) => {
+      console.warn("Failed to delete project settings", projectId, error);
     }),
   ];
 

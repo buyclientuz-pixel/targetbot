@@ -254,6 +254,7 @@ export interface ProjectRecord {
   telegramLink?: string;
   telegramTitle?: string;
   adAccountId?: string;
+  portalSlug?: string;
 }
 
 export interface ProjectDeletionSummary {
@@ -354,8 +355,11 @@ export interface LeadRecord {
   id: string;
   projectId: string;
   name: string;
-  phone?: string;
+  phone?: string | null;
   source: string;
+  campaignId?: string | null;
+  formId?: string | null;
+  adId?: string | null;
   status: "new" | "done";
   createdAt: string;
 }

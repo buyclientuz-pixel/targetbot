@@ -1,8 +1,9 @@
 import { jsonResponse, parseJsonRequest } from "../utils/http";
-import { EnvBindings, listLeads, loadProject, saveLeads, clearLeadReminder } from "../utils/storage";
+import { EnvBindings, loadProject, saveLeads, clearLeadReminder } from "../utils/storage";
 import { ApiError, ApiSuccess, LeadRecord } from "../types";
 import { createId } from "../utils/ids";
 import { sendTelegramMessage } from "../utils/telegram";
+import { getProjectLeads, syncProjectLeads } from "../utils/leads";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -44,7 +45,10 @@ export const handleLeadCreate = async (request: Request, env: unknown): Promise<
     if (!project) {
       return jsonResponse({ ok: false, error: "Project not found" }, { status: 404 });
     }
-    const leads = await listLeads(bindings, body.projectId);
+    await syncProjectLeads(bindings, body.projectId).catch((error) => {
+      console.warn("Failed to sync leads before manual create", body.projectId, (error as Error).message);
+    });
+    const leads = await getProjectLeads(bindings, body.projectId);
     const record: LeadRecord = {
       id: createId(),
       projectId: body.projectId,
@@ -82,7 +86,10 @@ export const handleLeadUpdateStatus = async (
     if (!body.projectId) {
       throw new Error("projectId is required");
     }
-    const leads = await listLeads(bindings, body.projectId);
+    await syncProjectLeads(bindings, body.projectId).catch((error) => {
+      console.warn("Failed to sync leads before status update", body.projectId, (error as Error).message);
+    });
+    const leads = await getProjectLeads(bindings, body.projectId);
     const index = leads.findIndex((lead) => lead.id === leadId);
     if (index === -1) {
       return jsonResponse({ ok: false, error: "Lead not found" }, { status: 404 });
@@ -107,7 +114,10 @@ export const handleLeadsList = async (
 ): Promise<Response> => {
   try {
     const bindings = ensureEnv(env);
-    const leads = await listLeads(bindings, projectId);
+    await syncProjectLeads(bindings, projectId).catch((error) => {
+      console.warn("Failed to sync leads before API fetch", projectId, (error as Error).message);
+    });
+    const leads = await getProjectLeads(bindings, projectId);
     const payload: ApiSuccess<LeadRecord[]> = { ok: true, data: leads };
     return jsonResponse(payload);
   } catch (error) {

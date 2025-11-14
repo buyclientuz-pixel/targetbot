@@ -165,7 +165,10 @@ export const handleProjectDelete = async (
     if (!result) {
       return jsonResponse({ ok: false, error: "Project not found" }, { status: 404 });
     }
-    return jsonResponse({ ok: true, data: result });
+    const payload = { success: true, data: result };
+    return new Response(JSON.stringify(payload, null, 2), {
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
   } catch (error) {
     return jsonResponse({ ok: false, error: (error as Error).message }, { status: 500 });
   }

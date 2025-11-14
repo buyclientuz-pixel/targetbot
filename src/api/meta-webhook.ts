@@ -5,6 +5,7 @@ import {
   EnvBindings,
   listLeads,
   listMetaAccountLinks,
+  listProjects,
   loadMetaToken,
   loadProject,
   saveLeads,
@@ -16,7 +17,14 @@ import {
 } from "../utils/meta";
 import { sendTelegramMessage } from "../utils/telegram";
 import { escapeHtml } from "../utils/html";
-import { JsonObject, JsonValue, LeadRecord, MetaAccountLinkRecord, MetaLeadDetails } from "../types";
+import {
+  JsonObject,
+  JsonValue,
+  LeadRecord,
+  MetaAccountLinkRecord,
+  MetaLeadDetails,
+  ProjectRecord,
+} from "../types";
 
 const ensureBindings = (env: unknown): (EnvBindings & Record<string, unknown>) => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -160,6 +168,31 @@ const resolveProjectByAccount = (
   return accounts.find((record) => normalizeAccountId(record.accountId) === normalized);
 };
 
+const findProjectByIdentifiers = async (
+  env: EnvBindings,
+  cache: Map<string, LeadRecord[]>,
+  projects: ProjectRecord[],
+  identifiers: { formId?: string; adId?: string; campaignId?: string },
+): Promise<ProjectRecord | null> => {
+  const { formId, adId, campaignId } = identifiers;
+  if (!formId && !adId && !campaignId) {
+    return null;
+  }
+  for (const project of projects) {
+    const leads = await ensureLeadStorage(env, cache, project.id);
+    if (formId && leads.some((lead) => lead.formId && lead.formId === formId)) {
+      return project;
+    }
+    if (adId && leads.some((lead) => lead.adId && lead.adId === adId)) {
+      return project;
+    }
+    if (campaignId && leads.some((lead) => lead.campaignId && lead.campaignId === campaignId)) {
+      return project;
+    }
+  }
+  return null;
+};
+
 const ensureLeadStorage = async (
   env: EnvBindings,
   cache: Map<string, LeadRecord[]>,
@@ -261,6 +294,7 @@ export const handleMetaWebhook = async (
   ]);
 
   const leadsCache = new Map<string, LeadRecord[]>();
+  const projects = await listProjects(bindings).catch(() => [] as ProjectRecord[]);
   const results: Array<{ eventId: string; processed: boolean; projectId?: string; leadId?: string; reason?: string }> = [];
 
   for (const entry of body.entry) {
@@ -284,7 +318,36 @@ export const handleMetaWebhook = async (
         new Date().toISOString();
       const payload = toJsonObject(sanitizeJson(change));
 
-      if (!projectLink?.linkedProjectId) {
+      const valueRecord = value as Record<string, unknown>;
+      const formIdCandidate =
+        typeof valueRecord.form_id === "string" && valueRecord.form_id.trim() ? valueRecord.form_id.trim() : undefined;
+      const adIdCandidate =
+        typeof valueRecord.ad_id === "string" && valueRecord.ad_id.trim() ? valueRecord.ad_id.trim() : undefined;
+      const campaignIdCandidate =
+        typeof valueRecord.campaign_id === "string" && valueRecord.campaign_id.trim()
+          ? valueRecord.campaign_id.trim()
+          : undefined;
+
+      let targetProjectId = projectLink?.linkedProjectId ?? null;
+      let project: ProjectRecord | null = null;
+
+      if (targetProjectId) {
+        project = await loadProject(bindings, targetProjectId);
+      }
+
+      if (!targetProjectId) {
+        const fallback = await findProjectByIdentifiers(bindings, leadsCache, projects, {
+          formId: formIdCandidate,
+          adId: adIdCandidate,
+          campaignId: campaignIdCandidate,
+        });
+        if (fallback) {
+          project = fallback;
+          targetProjectId = fallback.id;
+        }
+      }
+
+      if (!targetProjectId) {
         await appendMetaWebhookEvent(bindings, {
           id: eventId,
           object: body.object ?? "",
@@ -309,18 +372,21 @@ export const handleMetaWebhook = async (
           type: value.event ?? value.verb ?? undefined,
           leadId,
           adAccountId,
-          projectId: projectLink.linkedProjectId,
-          projectName: projectLink.accountName,
+          projectId: targetProjectId,
+          projectName: project?.name ?? projectLink?.accountName,
           processed: false,
           createdAt: eventTime,
           updatedAt: new Date().toISOString(),
           payload,
         });
-        results.push({ eventId, processed: false, projectId: projectLink.linkedProjectId, reason: "lead_missing" });
+        results.push({ eventId, processed: false, projectId: targetProjectId, reason: "lead_missing" });
         continue;
       }
 
-      const project = await loadProject(bindings, projectLink.linkedProjectId);
+      if (!project) {
+        project = await loadProject(bindings, targetProjectId);
+      }
+
       if (!project) {
         await appendMetaWebhookEvent(bindings, {
           id: eventId,
@@ -329,19 +395,18 @@ export const handleMetaWebhook = async (
           type: value.event ?? value.verb ?? undefined,
           leadId,
           adAccountId,
-          projectId: projectLink.linkedProjectId,
+          projectId: targetProjectId,
           processed: false,
           createdAt: eventTime,
           updatedAt: new Date().toISOString(),
           payload,
         });
-        results.push({ eventId, processed: false, projectId: projectLink.linkedProjectId, leadId, reason: "project_missing" });
+        results.push({ eventId, processed: false, projectId: targetProjectId, leadId, reason: "project_missing" });
         continue;
       }
 
       const leads = await ensureLeadStorage(bindings, leadsCache, project.id);
       const details = await fetchLeadDetails(metaEnv, tokenRecord, leadId).catch(() => null);
-      const valueRecord = value as Record<string, unknown>;
       const fallbackNameCandidates = [valueRecord.full_name, valueRecord.name, valueRecord.first_name];
       const fallbackName = fallbackNameCandidates
         .map((candidate) => (typeof candidate === "string" && candidate.trim() ? candidate.trim() : undefined))
@@ -353,17 +418,20 @@ export const handleMetaWebhook = async (
         .map((candidate) => (typeof candidate === "string" && candidate.trim() ? candidate.trim() : undefined))
         .find((candidate): candidate is string => Boolean(candidate));
       const phone = details?.phone || fallbackPhone;
-      const formId =
-        details?.formId ||
-        (typeof valueRecord.form_id === "string" && valueRecord.form_id.trim() ? valueRecord.form_id.trim() : undefined);
+      const formId = details?.formId || formIdCandidate;
+      const adId = details?.adId || adIdCandidate;
+      const campaignId = details?.campaignId || campaignIdCandidate;
       const createdAt = details?.createdAt || eventTime;
-      const source = formId ? `Meta Form ${formId}` : "Meta Lead";
+      const source = "facebook";
       const leadRecord: LeadRecord = {
         id: leadId,
         projectId: project.id,
         name: typeof name === "string" && name.trim() ? name.trim() : defaultName,
         phone: typeof phone === "string" && phone.trim() ? phone.trim() : undefined,
         source,
+        campaignId: campaignId ?? null,
+        formId: formId ?? null,
+        adId: adId ?? null,
         status: "new",
         createdAt,
       };
