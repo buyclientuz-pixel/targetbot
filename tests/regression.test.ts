@@ -301,14 +301,14 @@ test("buildAutoReportNotification renders summary text and buttons", () => {
     now: new Date("2025-11-13T12:00:00Z"),
   });
   expect.ok(text.includes("⏰ Отчёт за 13.11.2025 [Чт]"));
-  expect.ok(text.includes("• Project p1 · Client p1"));
-  expect.ok(text.includes("Лиды: 5 (новые 3, завершено 2)"));
-  expect.ok(text.includes("CPA:"));
-  expect.ok(text.includes("Потрачено:"));
-  expect.ok(text.includes("CTR:"));
-  expect.ok(text.includes("CPC:"));
+  expect.ok(text.includes("• Client p1"));
+  expect.ok(text.includes("Лиды: 5"));
+  expect.ok(text.includes("CPA: 1.98$"));
+  expect.ok(text.includes("Расход: 9.92$"));
+  expect.ok(text.includes("CTR: 20.00%"));
+  expect.ok(text.includes("CPC: 0.50$"));
   expect.ok(text.includes("Активные кампании:"));
-  expect.ok(text.includes("• Campaign 1 — Лиды на платформе: 5"));
+  expect.ok(text.includes("Campaign 1"));
   expect.ok(!text.includes("<"), "text should not contain HTML tags");
   expect.ok(replyMarkup && replyMarkup.inline_keyboard.length === 1);
   expect.deepEqual(replyMarkup?.inline_keyboard[0], [

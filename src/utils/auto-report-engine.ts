@@ -143,30 +143,36 @@ const resolveRoutingContext = (project: ProjectSummary): RoutingContext => {
   return { adminChatId, clientChatId };
 };
 
+interface DeliveryTarget {
+  chatId: string;
+  threadId?: number;
+  scope: "admin" | "chat";
+}
+
 const collectTargets = (
   project: ProjectSummary,
   target: ReportRoutingTarget,
   now?: Date,
-): string[] => {
+): DeliveryTarget[] => {
   if (now && isProjectAutoDisabled(project, now)) {
     return [];
   }
   const { adminChatId, clientChatId } = resolveRoutingContext(project);
-  const chats = new Set<string>();
+  const targets: DeliveryTarget[] = [];
   if (target === "none") {
-    return [];
+    return targets;
   }
-  if (target === "admin" || target === "both") {
-    if (adminChatId) {
-      chats.add(adminChatId);
-    }
+  if ((target === "admin" || target === "both") && adminChatId) {
+    targets.push({ chatId: adminChatId, scope: "admin" });
   }
-  if (target === "chat" || target === "both") {
-    if (clientChatId) {
-      chats.add(clientChatId);
-    }
+  if ((target === "chat" || target === "both") && clientChatId) {
+    targets.push({
+      chatId: clientChatId,
+      threadId: typeof project.telegramThreadId === "number" ? project.telegramThreadId : undefined,
+      scope: "chat",
+    });
   }
-  return Array.from(chats);
+  return targets;
 };
 
 const RU_WEEKDAYS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
@@ -209,20 +215,24 @@ export const buildAutoReportNotification = (
 
 const sendMessageToTargets = async (
   env: TelegramEnv,
-  chatIds: string[],
+  targets: DeliveryTarget[],
   text: string,
   replyMarkup?: unknown,
 ): Promise<number> => {
+  if (!targets.length) {
+    return 0;
+  }
   await Promise.all(
-    chatIds.map((chatId) =>
+    targets.map((target) =>
       sendTelegramMessage(env, {
-        chatId,
+        chatId: target.chatId,
+        threadId: target.threadId,
         text,
         replyMarkup,
       }),
     ),
   );
-  return chatIds.length;
+  return targets.length;
 };
 
 const sendAutoReportForProject = async (
@@ -423,7 +433,7 @@ export const runAutoReportEngine = async (
     const evaluation = evaluateAutoReportTrigger(draft.autoReport, now);
 
     if (evaluation.daily) {
-      const sendResult = await sendAutoReportForProject(env, project, draft, "today", now, metaError);
+      const sendResult = await sendAutoReportForProject(env, project, draft, "yesterday", now, metaError);
       if (sendResult.delivered > 0) {
         draft.autoReport.lastSentDaily = now.toISOString();
         settingsChanged = true;

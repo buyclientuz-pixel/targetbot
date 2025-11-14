@@ -838,137 +838,156 @@ export const buildAutoReportDataset = (
 
 const RU_WEEKDAYS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
 
-const formatRuDateLabel = (date: Date): string => {
-  return `${pad2(date.getUTCDate())}.${pad2(date.getUTCMonth() + 1)}.${date.getUTCFullYear()}`;
-};
+const formatRuDateLabel = (date: Date): string =>
+  `${pad2(date.getUTCDate())}.${pad2(date.getUTCMonth() + 1)}.${date.getUTCFullYear()}`;
 
-const formatWeekdayLabel = (date: Date): string => {
-  return RU_WEEKDAYS[date.getUTCDay()] ?? "";
-};
+const formatWeekdayLabel = (date: Date): string => RU_WEEKDAYS[date.getUTCDay()] ?? "";
 
-const formatNumberValue = (value: number | undefined): string => {
-  if (value === undefined || Number.isNaN(value)) {
-    return "—";
+const formatIntegerValue = (value: number | undefined | null): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) {
+    return "0";
   }
-  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(Math.round(value));
+  const rounded = Math.round(value);
+  return rounded.toString();
 };
 
 const formatCurrencyValue = (value: number | undefined | null, currency?: string | null): string => {
-  if (value === undefined || value === null || Number.isNaN(value) || value === 0) {
+  if (value === undefined || value === null || Number.isNaN(value)) {
     return "—";
   }
-  const code = currency && /^[A-Z]{3}$/.test(currency) ? currency : "USD";
-  try {
-    return new Intl.NumberFormat("ru-RU", {
-      style: "currency",
-      currency: code,
-      maximumFractionDigits: 2,
-    }).format(value);
-  } catch (error) {
-    console.warn("Failed to format currency", code, error);
-    return `${value.toFixed(2)} ${code}`;
-  }
+  const amount = Number(value);
+  const digits = amount.toFixed(2);
+  const suffix = currency && currency !== "USD" && /^[A-Z]{3}$/.test(currency) ? ` ${currency}` : "$";
+  return `${digits}${suffix}`;
 };
 
-const formatPercentValue = (value: number | undefined): string => {
-  if (value === undefined || Number.isNaN(value)) {
+const formatPercentValue = (value: number | undefined | null): string => {
+  if (value === undefined || value === null || Number.isNaN(value)) {
     return "—";
   }
   return `${value.toFixed(2)}%`;
 };
 
-const buildCampaignLines = (
-  project: AutoReportProjectEntry,
-  currency: string | null,
-): string[] => {
-  if (!project.report.campaigns.length) {
-    return ["  Активные кампании:", "  • данных нет"];
+const buildCampaignReportName = (name: string): string => {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return "—";
   }
-  const lines: string[] = ["  Активные кампании:"];
+  if (trimmed.length <= 20) {
+    return trimmed;
+  }
+  const firstSpace = trimmed.indexOf(" ");
+  if (firstSpace > 0 && firstSpace <= 20) {
+    return `${trimmed.slice(0, firstSpace)}[...]`;
+  }
+  return `${trimmed.slice(0, 20)}[...]`;
+};
+
+const campaignStatusIcon = (status?: string, effectiveStatus?: string): string => {
+  const normalized = (effectiveStatus || status || "").toUpperCase();
+  if (normalized === "ACTIVE") {
+    return "✅";
+  }
+  if (normalized === "PAUSED" || normalized === "INACTIVE") {
+    return "⏸️";
+  }
+  return "•";
+};
+
+const resolveCampaignCpa = (campaign: CampaignReportBlock): number | undefined => {
+  if (campaign.kpis.cpa !== undefined) {
+    return campaign.kpis.cpa;
+  }
+  if (campaign.kpis.cpl !== undefined) {
+    return campaign.kpis.cpl;
+  }
+  const spend = campaign.kpis.spend ?? campaign.spend;
+  const resultCount = campaign.resultValue ?? campaign.kpis.leads;
+  if (!Number.isFinite(spend) || !Number.isFinite(resultCount) || !resultCount) {
+    return undefined;
+  }
+  return (spend as number) / (resultCount as number);
+};
+
+const formatCampaignMetric = (label: string | undefined, value: number | undefined): string => {
+  if (!label) {
+    return `результаты: ${formatIntegerValue(value ?? 0)}`;
+  }
+  return `${formatIntegerValue(value ?? 0)} ${label.toLowerCase()}`;
+};
+
+const buildCampaignLines = (project: AutoReportProjectEntry, currency: string | null): string[] => {
+  const lines: string[] = ["Активные кампании:"];
+  if (!project.report.campaigns.length) {
+    lines.push("• данных нет");
+    return lines;
+  }
   project.report.campaigns.slice(0, 5).forEach((campaign) => {
-    const resultLabel = campaign.resultLabel ?? "Результат";
-    const resultValue = formatNumberValue(campaign.resultValue ?? campaign.kpis.leads);
-    const spend = campaign.kpis.spend ?? 0;
-    const cpaBase = campaign.kpis.cpa ?? (campaign.kpis.leads && campaign.kpis.leads > 0 ? spend / campaign.kpis.leads : undefined);
-    const cpa = formatCurrencyValue(cpaBase, currency);
-    lines.push(`  • ${campaign.name} — ${resultLabel}: ${resultValue}, CPA ${cpa}`);
+    const icon = campaignStatusIcon(campaign.status, campaign.effectiveStatus);
+    const name = buildCampaignReportName(campaign.name);
+    const metric = formatCampaignMetric(campaign.resultLabel, campaign.resultValue ?? campaign.kpis.leads);
+    const cpaValue = resolveCampaignCpa(campaign);
+    lines.push(`${icon} ${name} — ${metric}, CPA ${formatCurrencyValue(cpaValue, currency)}`);
   });
   return lines;
 };
 
-const buildDailyProjectBlock = (
-  project: AutoReportProjectEntry,
-  currency: string | null,
-): string[] => {
+const buildProjectBlock = (project: AutoReportProjectEntry, currency: string | null): string[] => {
   const lines: string[] = [];
-  const client = project.chatTitle || project.chatLink || project.chatId;
-  lines.push(`• ${project.projectName}${client ? ` · ${client}` : ""}`);
-  lines.push(
-    `  Лиды: ${project.leads.total} (новые ${project.leads.new}, завершено ${project.leads.done})`,
-  );
-  lines.push(`  CPA: ${formatCurrencyValue(project.report.kpis.cpa, currency)}`);
-  const spendSource = project.report.kpis.spend ?? project.spend.amount ?? null;
-  lines.push(`  Потрачено: ${formatCurrencyValue(spendSource, currency)}`);
-  lines.push(`  CTR: ${formatPercentValue(project.report.kpis.ctr)}`);
-  lines.push(`  CPC: ${formatCurrencyValue(project.report.kpis.cpc, currency)}`);
+  const client = project.chatTitle || project.chatLink || project.projectName;
+  lines.push(`• ${client}`);
+  const leadsValue = project.report.kpis.leads ?? project.leads.total ?? 0;
+  lines.push(`Лиды: ${formatIntegerValue(leadsValue)}`);
+  lines.push(`CPA: ${formatCurrencyValue(project.report.kpis.cpa, currency)}`);
+  const spendSource = project.report.kpis.spend ?? project.spend.amount ?? 0;
+  lines.push(`Расход: ${formatCurrencyValue(spendSource, currency)}`);
+  lines.push(`CTR: ${formatPercentValue(project.report.kpis.ctr)}`);
+  lines.push(`CPC: ${formatCurrencyValue(project.report.kpis.cpc, currency)}`);
+  lines.push("");
   lines.push(...buildCampaignLines(project, currency));
   return lines;
 };
 
-const buildWeeklyProjectBlock = (
-  project: AutoReportProjectEntry,
-  currency: string | null,
-): string[] => {
-  const lines: string[] = [];
-  const start = new Date(`${project.report.date_start}T00:00:00Z`);
-  const end = new Date(`${project.report.date_end}T00:00:00Z`);
-  lines.push("📅 Отчёт за неделю");
-  const startLabel = `${formatRuDateLabel(start)} [${formatWeekdayLabel(start)}]`;
-  const endLabel = `${formatRuDateLabel(end)} [${formatWeekdayLabel(end)}]`;
-  lines.push(`Период: ${startLabel} → ${endLabel}`);
-  lines.push("");
-  lines.push(`• ${project.projectName}`);
-  lines.push(`  Всего лидов: ${project.leads.total}`);
-  lines.push(`  Средний CPA: ${formatCurrencyValue(project.report.kpis.cpa, currency)}`);
-  const spendSource = project.report.kpis.spend ?? project.spend.amount ?? null;
-  lines.push(`  Расход: ${formatCurrencyValue(spendSource, currency)}`);
-  lines.push("  Топ кампании:");
-  project.report.campaigns.slice(0, 5).forEach((campaign) => {
-    const leads = formatNumberValue(campaign.kpis.leads);
-    const spend = campaign.kpis.spend ?? 0;
-    const cpaBase = campaign.kpis.cpa ?? (campaign.kpis.leads && campaign.kpis.leads > 0 ? spend / campaign.kpis.leads : undefined);
-    const cpa = formatCurrencyValue(cpaBase, currency);
-    lines.push(`  • ${campaign.name} — ${leads} лидов, CPA ${cpa}`);
-  });
-  return lines;
-};
-
-const buildDatasetText = (
-  dataset: AutoReportDataset,
-  filters: { datePreset?: string },
-): string => {
-  const preset = (filters.datePreset ?? "today").toLowerCase();
+const buildDatasetText = (dataset: AutoReportDataset, filters: { datePreset?: string }): string => {
   if (!dataset.projects.length) {
     return "Нет подключенных проектов. Добавьте проект через Meta-аккаунты.";
   }
-  if (preset === "last_7d") {
-    return dataset.projects
-      .map((project) => {
-        const currency = project.spend.currency ?? "USD";
-        return buildWeeklyProjectBlock(project, currency).join("\n");
-      })
-      .join("\n\n");
+
+  const preset = (filters.datePreset ?? "today").toLowerCase();
+  const reference = dataset.projects[0]?.report;
+  const startDate = reference ? new Date(`${reference.date_start}T00:00:00Z`) : new Date(dataset.generatedAt);
+  const endDate = reference ? new Date(`${reference.date_end}T00:00:00Z`) : new Date(dataset.generatedAt);
+  const sameDay = startDate.getUTCFullYear() === endDate.getUTCFullYear()
+    && startDate.getUTCMonth() === endDate.getUTCMonth()
+    && startDate.getUTCDate() === endDate.getUTCDate();
+
+  const lines: string[] = [];
+
+  if (sameDay) {
+    const dateLabel = formatRuDateLabel(endDate);
+    const weekday = formatWeekdayLabel(endDate);
+    lines.push(`⏰ Отчёт за ${dateLabel}${weekday ? ` [${weekday}]` : ""}`);
+  } else {
+    const startLabel = `${formatRuDateLabel(startDate)} [${formatWeekdayLabel(startDate)}]`;
+    const endLabel = `${formatRuDateLabel(endDate)} [${formatWeekdayLabel(endDate)}]`;
+    if (preset === "last_7d") {
+      lines.push("📅 Отчёт за неделю");
+    } else {
+      lines.push("📅 Отчёт за период");
+    }
+    lines.push(`Период: ${startLabel} → ${endLabel}`);
   }
 
-  const generatedAt = new Date(dataset.generatedAt);
-  const dateLabel = formatRuDateLabel(generatedAt);
-  const weekday = formatWeekdayLabel(generatedAt);
-  const header = `⏰ Отчёт за ${dateLabel}${weekday ? ` [${weekday}]` : ""}`;
-  const blocks = dataset.projects.map((project) => {
+  lines.push("");
+  dataset.projects.forEach((project, index) => {
     const currency = project.spend.currency ?? "USD";
-    return buildDailyProjectBlock(project, currency).join("\n");
+    if (index > 0) {
+      lines.push("");
+    }
+    lines.push(...buildProjectBlock(project, currency));
   });
-  return [header, "", ...blocks].join("\n");
+
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 };
 
 export const composeReportText = (
