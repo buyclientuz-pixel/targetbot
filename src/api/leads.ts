@@ -2,8 +2,8 @@ import { jsonResponse, parseJsonRequest } from "../utils/http";
 import { EnvBindings, loadProject, saveLeads, clearLeadReminder } from "../utils/storage";
 import { ApiError, ApiSuccess, LeadRecord } from "../types";
 import { createId } from "../utils/ids";
-import { sendTelegramMessage } from "../utils/telegram";
 import { getProjectLeads, syncProjectLeads } from "../utils/leads";
+import { leadReceiveHandler } from "../utils/lead-notifications";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
   if (!env || typeof env !== "object" || !("DB" in env) || !("R2" in env)) {
@@ -20,16 +20,6 @@ interface LeadInput {
   phone?: string;
   source?: string;
 }
-
-const leadText = (lead: LeadRecord, projectName?: string): string => {
-  const lines = [`📥 <b>Новый лид</b> по проекту ${projectName || lead.projectId}`, `👤 ${lead.name}`];
-  if (lead.phone) {
-    lines.push(`📞 ${lead.phone}`);
-  }
-  lines.push(`📡 Источник: ${lead.source}`);
-  lines.push(`🕒 ${new Date(lead.createdAt).toLocaleString("ru-RU")}`);
-  return lines.join("\n");
-};
 
 export const handleLeadCreate = async (request: Request, env: unknown): Promise<Response> => {
   try {
@@ -61,13 +51,7 @@ export const handleLeadCreate = async (request: Request, env: unknown): Promise<
     leads.unshift(record);
     await saveLeads(bindings, body.projectId, leads);
 
-    if (project.telegramChatId) {
-      await sendTelegramMessage(bindings, {
-        chatId: project.telegramChatId,
-        threadId: project.telegramThreadId,
-        text: leadText(record, project.name),
-      });
-    }
+    await leadReceiveHandler(bindings, project, record);
 
     return jsonResponse({ ok: true, data: record }, { status: 201 });
   } catch (error) {

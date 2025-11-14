@@ -15,8 +15,7 @@ import {
   resolveMetaWebhookVerifyToken,
   withMetaSettings,
 } from "../utils/meta";
-import { sendTelegramMessage } from "../utils/telegram";
-import { escapeHtml } from "../utils/html";
+import { leadReceiveHandler } from "../utils/lead-notifications";
 import {
   JsonObject,
   JsonValue,
@@ -217,40 +216,6 @@ const upsertLeadRecord = (
     (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt),
   );
   return { next, created: true };
-};
-
-const formatNotification = (
-  projectName: string,
-  lead: LeadRecord,
-  details?: MetaLeadDetails | null,
-): string => {
-  const lines: string[] = ["✨ <b>Новый лид из Meta</b>"];
-  lines.push(`🏗 Проект: <b>${escapeHtml(projectName)}</b>`);
-  lines.push(`👤 ${escapeHtml(lead.name)}`);
-  if (lead.phone) {
-    lines.push(`📞 ${escapeHtml(lead.phone)}`);
-  }
-  if (details?.email) {
-    lines.push(`📧 ${escapeHtml(details.email)}`);
-  }
-  lines.push(`🕒 ${escapeHtml(new Intl.DateTimeFormat("ru-RU", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(lead.createdAt)))}`);
-  return lines.join("\n");
-};
-
-const resolveChatId = (projectChatId: unknown): string | undefined => {
-  if (typeof projectChatId === "number" && Number.isFinite(projectChatId)) {
-    return String(Math.trunc(projectChatId));
-  }
-  if (typeof projectChatId === "string" && projectChatId.trim()) {
-    return projectChatId.trim();
-  }
-  return undefined;
 };
 
 export const handleMetaWebhook = async (
@@ -458,21 +423,7 @@ export const handleMetaWebhook = async (
       });
 
       if (created) {
-        const chatId =
-          resolveChatId(project.telegramChatId ?? project.chatId) ?? resolveChatId(project.chatId);
-        if (chatId !== undefined) {
-          try {
-            await sendTelegramMessage(bindings, {
-              chatId,
-              text: formatNotification(project.name, leadRecord, details),
-              replyMarkup: {
-                inline_keyboard: [[{ text: "💬 Лиды", callback_data: `proj:leads:${project.id}` }]],
-              },
-            });
-          } catch (error) {
-            console.warn("Failed to notify chat about Meta lead", error);
-          }
-        }
+        await leadReceiveHandler(bindings, project, leadRecord, { details, payload });
       }
 
       results.push({ eventId, processed: true, projectId: project.id, leadId, reason: created ? undefined : "duplicate" });
