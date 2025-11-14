@@ -219,7 +219,7 @@ export const renderProjectForm = ({ mode, project, users, accounts }: ProjectFor
           return;
         }
         const deleteProject = async (): Promise<void> => {
-          const response = await fetch(`${projectApiBase}/${projectId}`, { method: 'DELETE' });
+          const response = await fetch(projectApiBase + '/' + projectId, { method: 'DELETE' });
           let data: Record<string, unknown> | null = null;
           try {
             data = await response.json();
@@ -237,7 +237,7 @@ export const renderProjectForm = ({ mode, project, users, accounts }: ProjectFor
             alert(message);
             return;
           }
-          const cleanupResponse = await fetch(`${projectApiBase}/${projectId}/cleanup`, { method: 'POST' });
+          const cleanupResponse = await fetch(projectApiBase + '/' + projectId + '/cleanup', { method: 'POST' });
           let cleanupData: Record<string, unknown> | null = null;
           try {
             cleanupData = await cleanupResponse.json();
@@ -267,7 +267,7 @@ export const renderProjectForm = ({ mode, project, users, accounts }: ProjectFor
           return;
         }
         try {
-          const response = await fetch(`${projectApiBase}/${projectId}/unlink-chat`, { method: 'POST' });
+          const response = await fetch(projectApiBase + '/' + projectId + '/unlink-chat', { method: 'POST' });
           let data: Record<string, unknown> | null = null;
           try {
             data = await response.json();
