@@ -83,6 +83,9 @@ export interface MetaCampaign {
   resultValue?: number;
   resultMetric?: string;
   shortName?: string;
+  objectiveLabel?: string;
+  primaryMetricLabel?: string;
+  primaryMetricValue?: number;
 }
 
 export interface NormalizedCampaign {
@@ -92,6 +95,7 @@ export interface NormalizedCampaign {
   status?: string;
   effectiveStatus?: string;
   objective?: string | null;
+  objectiveLabel: string;
   spend: number;
   spendFormatted?: string;
   spendCurrency?: string;
@@ -101,6 +105,8 @@ export interface NormalizedCampaign {
   resultLabel?: string;
   resultValue?: number;
   resultMetric?: string;
+  primaryMetricLabel: string;
+  primaryMetricValue: number;
   statusOrder: number;
   raw: MetaCampaign;
 }
@@ -175,6 +181,9 @@ export interface CampaignReportBlock {
   resultLabel?: string;
   resultValue?: number;
   resultMetric?: string;
+  objectiveLabel?: string;
+  primaryMetricLabel?: string;
+  primaryMetricValue?: number;
   spend?: number;
   impressions?: number;
   clicks?: number;
@@ -444,6 +453,8 @@ export interface LeadRecord {
   createdAt: string;
   campaignName?: string | null;
   campaignShortName?: string | null;
+  campaignObjective?: string | null;
+  adName?: string | null;
 }
 
 export type LeadReminderStatus = "pending" | "notified" | "resolved";

@@ -765,10 +765,6 @@ export default {
           .filter((entry) => entry.value && entry.value !== "—");
 
         const normalizedCampaigns = normalizeCampaigns(selectedCampaigns);
-        const campaignNames: Record<string, string> = {};
-        normalizedCampaigns.forEach((campaign) => {
-          campaignNames[campaign.id] = campaign.shortName;
-        });
 
         const html = renderPortal({
           project,
@@ -780,7 +776,6 @@ export default {
           periodLabel,
           pagination,
           statusCounts,
-          campaignNames,
         });
         return htmlResponse(html);
       }

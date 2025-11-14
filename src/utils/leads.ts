@@ -29,7 +29,11 @@ interface GraphFormResponse {
 }
 
 interface GraphAdsResponse {
-  data?: Array<{ id?: string }>; 
+  data?: Array<{ id?: string }>;
+}
+
+interface GraphAdLookupResponse {
+  [id: string]: { id?: string; name?: string } | null | undefined;
 }
 
 const MAX_LEAD_PAGES = 5;
@@ -135,6 +139,43 @@ const fetchCampaignAds = async (
   return (response?.data || []).map((item) => (item?.id ? String(item.id) : null)).filter((id): id is string => Boolean(id));
 };
 
+const fetchAdNames = async (
+  env: EnvBindings & Record<string, unknown>,
+  accessToken: string,
+  adIds: string[],
+): Promise<Map<string, string>> => {
+  const unique = Array.from(new Set(adIds.filter((id) => id && id.trim())));
+  const names = new Map<string, string>();
+  if (!unique.length) {
+    return names;
+  }
+  const chunkSize = 50;
+  for (let index = 0; index < unique.length; index += chunkSize) {
+    const chunk = unique.slice(index, index + chunkSize);
+    const response = await callGraph<GraphAdLookupResponse>(env, "", {
+      access_token: accessToken,
+      ids: chunk.join(","),
+      fields: "name",
+    }).catch((error: Error) => {
+      console.warn("Failed to fetch ad names", error.message);
+      return null;
+    });
+    if (!response) {
+      continue;
+    }
+    for (const adId of chunk) {
+      const entry = response[adId];
+      if (!entry) {
+        continue;
+      }
+      const resolvedId = entry.id ? String(entry.id) : adId;
+      const label = typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : "";
+      names.set(resolvedId, label);
+    }
+  }
+  return names;
+};
+
 const resolveLeadRecord = (
   projectId: string,
   node: GraphLeadNode,
@@ -200,8 +241,10 @@ export const syncProjectLeads = async (
     fetchCampaigns(metaEnv, tokenRecord, normalizedAccount, { limit: 50, datePreset: "today" }).catch(() => [] as MetaCampaign[]),
   ]);
   const campaignNameMap = new Map<string, string>();
+  const campaignObjectiveMap = new Map<string, string | null>();
   campaigns.forEach((campaign) => {
     campaignNameMap.set(campaign.id, campaign.name);
+    campaignObjectiveMap.set(campaign.id, campaign.objective ?? null);
   });
   const shortNameMap = mapCampaignShortNames(campaigns);
   const applyCampaignMetadata = (record: LeadRecord): void => {
@@ -215,6 +258,30 @@ export const syncProjectLeads = async (
     const short = shortNameMap[record.campaignId];
     if (short) {
       record.campaignShortName = short;
+    }
+    if (campaignObjectiveMap.has(record.campaignId)) {
+      record.campaignObjective = campaignObjectiveMap.get(record.campaignId) ?? null;
+    }
+  };
+  const reuseLeadMetadata = (target: LeadRecord, previous: LeadRecord | undefined): void => {
+    if (!previous) {
+      return;
+    }
+    target.status = previous.status;
+    if (previous.phone && !target.phone) {
+      target.phone = previous.phone;
+    }
+    if (previous.campaignName && !target.campaignName) {
+      target.campaignName = previous.campaignName;
+    }
+    if (previous.campaignShortName && !target.campaignShortName) {
+      target.campaignShortName = previous.campaignShortName;
+    }
+    if (previous.campaignObjective && !target.campaignObjective) {
+      target.campaignObjective = previous.campaignObjective;
+    }
+    if (previous.adName && !target.adName) {
+      target.adName = previous.adName;
     }
   };
   const adIds = new Set<string>();
@@ -232,10 +299,7 @@ export const syncProjectLeads = async (
       applyCampaignMetadata(record);
       const previous = existingMap.get(record.id);
       if (previous) {
-        record.status = previous.status;
-        if (previous.phone && !record.phone) {
-          record.phone = previous.phone;
-        }
+        reuseLeadMetadata(record, previous);
       }
       collected.set(record.id, record);
       synced += 1;
@@ -256,10 +320,7 @@ export const syncProjectLeads = async (
       applyCampaignMetadata(record);
       const previous = existingMap.get(record.id) || collected.get(record.id);
       if (previous) {
-        record.status = previous.status;
-        if (previous.phone && !record.phone) {
-          record.phone = previous.phone;
-        }
+        reuseLeadMetadata(record, previous);
       }
       collected.set(record.id, record);
       synced += 1;
@@ -276,6 +337,38 @@ export const syncProjectLeads = async (
       return;
     }
     applyCampaignMetadata(lead);
+  });
+  const adNameCache = new Map<string, string>();
+  existing.forEach((lead) => {
+    if (lead.adId && lead.adName) {
+      adNameCache.set(lead.adId, lead.adName);
+    }
+  });
+  next.forEach((lead) => {
+    if (lead.adId && lead.adName) {
+      adNameCache.set(lead.adId, lead.adName);
+    }
+  });
+  const missingAdIds = Array.from(
+    new Set(
+      next
+        .filter((lead) => lead.adId && !adNameCache.has(lead.adId))
+        .map((lead) => lead.adId as string),
+    ),
+  );
+  if (missingAdIds.length) {
+    const fetchedNames = await fetchAdNames(metaEnv, accessToken, missingAdIds);
+    fetchedNames.forEach((name, id) => {
+      adNameCache.set(id, name);
+    });
+  }
+  next.forEach((lead) => {
+    if (lead.adId) {
+      const resolved = adNameCache.get(lead.adId);
+      if (resolved !== undefined) {
+        lead.adName = resolved || null;
+      }
+    }
   });
   const beforeIds = new Set(existing.map((lead) => lead.id));
   const newCount = next.filter((lead) => !beforeIds.has(lead.id)).length;

@@ -503,6 +503,18 @@ const normalizeLeadRecord = (
   const formId = typeof formSource === "string" && formSource.trim() ? formSource.trim() : null;
   const adSource = data.adId ?? data.ad_id;
   const adId = typeof adSource === "string" && adSource.trim() ? adSource.trim() : null;
+  const campaignNameSource = data.campaignName ?? data.campaign_name;
+  const campaignName = typeof campaignNameSource === "string" && campaignNameSource.trim() ? campaignNameSource.trim() : null;
+  const campaignShortSource = data.campaignShortName ?? data.campaign_short_name;
+  const campaignShortName =
+    typeof campaignShortSource === "string" && campaignShortSource.trim() ? campaignShortSource.trim() : null;
+  const campaignObjectiveSource = data.campaignObjective ?? data.campaign_objective ?? data.objective;
+  const campaignObjective =
+    typeof campaignObjectiveSource === "string" && campaignObjectiveSource.trim()
+      ? campaignObjectiveSource.trim()
+      : null;
+  const adNameSource = data.adName ?? data.ad_name;
+  const adName = typeof adNameSource === "string" && adNameSource.trim() ? adNameSource.trim() : null;
 
   return {
     id,
@@ -515,6 +527,10 @@ const normalizeLeadRecord = (
     adId,
     status,
     createdAt,
+    campaignName,
+    campaignShortName,
+    campaignObjective,
+    adName,
   } satisfies LeadRecord;
 };
 
@@ -550,6 +566,10 @@ const syncLeadKvRecords = async (
           campaign_id: lead.campaignId ?? null,
           form_id: lead.formId ?? null,
           ad_id: lead.adId ?? null,
+          ad_name: lead.adName ?? null,
+          campaign_name: lead.campaignName ?? null,
+          campaign_short_name: lead.campaignShortName ?? null,
+          campaign_objective: lead.campaignObjective ?? null,
           created_at: lead.createdAt,
           status: lead.status === "done" ? "processed" : "new",
         }),

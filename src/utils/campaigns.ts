@@ -46,89 +46,112 @@ const normalizeObjectiveKey = (objective: string | null | undefined): string => 
     .replace(/^_|_$/g, "");
 };
 
-interface ResultMappingEntry {
-  label: string;
-  metric: string;
+interface ObjectiveMetricEntry {
+  objectiveLabel: string;
+  metricLabel: string;
+  metricKey: string;
   extract: (campaign: MetaCampaign) => number | undefined;
 }
 
-const RESULT_MAPPING: Record<string, ResultMappingEntry> = {
+const OBJECTIVE_METRICS: Record<string, ObjectiveMetricEntry> = {
   LEAD_GENERATION: {
-    label: "Лиды на платформе",
-    metric: "leads",
+    objectiveLabel: "Лиды",
+    metricLabel: "Лиды",
+    metricKey: "leads",
     extract: (campaign) => campaign.leads,
   },
   CONVERSIONS: {
-    label: "Лиды с сайта",
-    metric: "conversions",
+    objectiveLabel: "Конверсии",
+    metricLabel: "Конверсии",
+    metricKey: "conversions",
     extract: (campaign) => campaign.conversions ?? campaign.leads,
   },
   SALES: {
-    label: "Покупки",
-    metric: "purchases",
+    objectiveLabel: "Продажи",
+    metricLabel: "Покупки",
+    metricKey: "purchases",
     extract: (campaign) => campaign.purchases,
   },
   OUTCOME_SALES: {
-    label: "Покупки",
-    metric: "purchases",
+    objectiveLabel: "Продажи",
+    metricLabel: "Покупки",
+    metricKey: "purchases",
     extract: (campaign) => campaign.purchases,
   },
   MESSAGES: {
-    label: "Сообщения",
-    metric: "messages",
+    objectiveLabel: "Сообщения",
+    metricLabel: "Сообщения",
+    metricKey: "messages",
     extract: (campaign) => campaign.conversations,
   },
   ENGAGEMENT: {
-    label: "Взаимодействия",
-    metric: "engagements",
+    objectiveLabel: "Взаимодействие",
+    metricLabel: "Взаимодействия",
+    metricKey: "engagement",
     extract: (campaign) => campaign.engagements,
   },
   POST_ENGAGEMENT: {
-    label: "Взаимодействия",
-    metric: "engagements",
+    objectiveLabel: "Взаимодействие",
+    metricLabel: "Взаимодействия",
+    metricKey: "engagement",
     extract: (campaign) => campaign.engagements,
   },
   APP_INSTALLS: {
-    label: "Инсталлы",
-    metric: "installs",
+    objectiveLabel: "Инсталлы",
+    metricLabel: "Инсталлы",
+    metricKey: "installs",
     extract: (campaign) => campaign.installs,
   },
   TRAFFIC: {
-    label: "Клики по ссылке",
-    metric: "clicks",
+    objectiveLabel: "Трафик",
+    metricLabel: "Клики",
+    metricKey: "clicks",
     extract: (campaign) => campaign.inlineLinkClicks ?? campaign.clicks,
   },
   OUTCOME_TRAFFIC: {
-    label: "Клики по ссылке",
-    metric: "clicks",
+    objectiveLabel: "Трафик",
+    metricLabel: "Клики",
+    metricKey: "clicks",
     extract: (campaign) => campaign.inlineLinkClicks ?? campaign.clicks,
   },
   AWARENESS: {
-    label: "Охват",
-    metric: "reach",
+    objectiveLabel: "Узнаваемость",
+    metricLabel: "Охват",
+    metricKey: "reach",
     extract: (campaign) => campaign.reach ?? campaign.impressions,
   },
   BRAND_AWARENESS: {
-    label: "Охват",
-    metric: "reach",
+    objectiveLabel: "Узнаваемость",
+    metricLabel: "Охват",
+    metricKey: "reach",
     extract: (campaign) => campaign.reach ?? campaign.impressions,
   },
   VIDEO_VIEWS: {
-    label: "Просмотры",
-    metric: "thruplays",
+    objectiveLabel: "Просмотры",
+    metricLabel: "Просмотры",
+    metricKey: "thruplays",
     extract: (campaign) => campaign.thruplays,
+  },
+  OUTCOME_ENGAGEMENT: {
+    objectiveLabel: "Взаимодействие",
+    metricLabel: "Взаимодействия",
+    metricKey: "engagement",
+    extract: (campaign) => campaign.engagements,
   },
 };
 
-const deriveCampaignResult = (campaign: MetaCampaign): { label: string; metric: string; value: number } | null => {
-  const objectiveKey = normalizeObjectiveKey(campaign.objective);
-  const mapping = RESULT_MAPPING[objectiveKey];
-  if (mapping) {
-    const value = mapping.extract(campaign);
-    if (value !== undefined) {
-      return { label: mapping.label, metric: mapping.metric, value };
-    }
+const resolveObjectiveLabel = (objectiveKey: string): string => {
+  if (!objectiveKey) {
+    return "Не определено";
   }
+  return OBJECTIVE_METRICS[objectiveKey]?.objectiveLabel ?? "Не определено";
+};
+
+const deriveCampaignResult = (
+  campaign: MetaCampaign,
+): { objectiveLabel: string; metricLabel: string; metricKey: string; value: number } => {
+  const objectiveKey = normalizeObjectiveKey(campaign.objective);
+  const mapping = OBJECTIVE_METRICS[objectiveKey];
   const fallbackValue =
     campaign.leads ??
     campaign.conversions ??
@@ -138,20 +161,32 @@ const deriveCampaignResult = (campaign: MetaCampaign): { label: string; metric: 
     campaign.clicks ??
     campaign.reach ??
     0;
+  if (mapping) {
+    const extracted = mapping.extract(campaign);
+    const value = extracted !== undefined ? extracted : fallbackValue ?? 0;
+    return {
+      objectiveLabel: mapping.objectiveLabel,
+      metricLabel: mapping.metricLabel,
+      metricKey: mapping.metricKey,
+      value: value ?? 0,
+    };
+  }
   return {
-    label: "Результат",
-    metric: "result",
+    objectiveLabel: resolveObjectiveLabel(objectiveKey),
+    metricLabel: "Результат",
+    metricKey: "result",
     value: fallbackValue ?? 0,
   };
 };
 
 export const assignCampaignResult = (campaign: MetaCampaign): void => {
   const result = deriveCampaignResult(campaign);
-  if (result) {
-    campaign.resultLabel = result.label;
-    campaign.resultMetric = result.metric;
-    campaign.resultValue = result.value ?? 0;
-  }
+  campaign.resultLabel = result.metricLabel;
+  campaign.resultMetric = result.metricKey;
+  campaign.resultValue = result.value ?? 0;
+  campaign.objectiveLabel = result.objectiveLabel;
+  campaign.primaryMetricLabel = result.metricLabel;
+  campaign.primaryMetricValue = result.value ?? 0;
 };
 
 export const campaignStatusOrder = (campaign: MetaCampaign): number => {
@@ -180,7 +215,13 @@ export const normalizeCampaign = (campaign: MetaCampaign): NormalizedCampaign =>
   if (!campaign.shortName) {
     campaign.shortName = shortName;
   }
-  if (!campaign.resultLabel || campaign.resultValue === undefined) {
+  if (
+    !campaign.resultLabel ||
+    campaign.resultValue === undefined ||
+    !campaign.objectiveLabel ||
+    campaign.primaryMetricLabel === undefined ||
+    campaign.primaryMetricValue === undefined
+  ) {
     assignCampaignResult(campaign);
   }
   return {
@@ -190,6 +231,7 @@ export const normalizeCampaign = (campaign: MetaCampaign): NormalizedCampaign =>
     status: campaign.status,
     effectiveStatus: campaign.effectiveStatus,
     objective: campaign.objective ?? null,
+    objectiveLabel: campaign.objectiveLabel ?? resolveObjectiveLabel(normalizeObjectiveKey(campaign.objective)),
     spend: campaign.spend ?? 0,
     spendFormatted: campaign.spendFormatted,
     spendCurrency: campaign.spendCurrency,
@@ -199,6 +241,8 @@ export const normalizeCampaign = (campaign: MetaCampaign): NormalizedCampaign =>
     resultLabel: campaign.resultLabel,
     resultValue: campaign.resultValue,
     resultMetric: campaign.resultMetric,
+    primaryMetricLabel: campaign.primaryMetricLabel ?? campaign.resultLabel ?? "Результат",
+    primaryMetricValue: campaign.primaryMetricValue ?? campaign.resultValue ?? 0,
     statusOrder,
     raw: campaign,
   };

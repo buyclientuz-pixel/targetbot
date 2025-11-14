@@ -684,6 +684,9 @@ export const buildProjectReportEntry = (
       resultLabel: normalized.resultLabel,
       resultValue: normalized.resultValue,
       resultMetric: normalized.resultMetric,
+      objectiveLabel: normalized.objectiveLabel,
+      primaryMetricLabel: normalized.primaryMetricLabel,
+      primaryMetricValue: normalized.primaryMetricValue,
       spend: campaign.spend,
       impressions: campaign.impressions,
       clicks: campaign.clicks,
@@ -902,7 +905,8 @@ const resolveCampaignCpa = (campaign: CampaignReportBlock): number | undefined =
     return campaign.kpis.cpl;
   }
   const spend = campaign.kpis.spend ?? campaign.spend;
-  const resultCount = campaign.resultValue ?? campaign.kpis.leads;
+  const resultCount =
+    campaign.primaryMetricValue ?? campaign.resultValue ?? campaign.kpis.leads;
   if (!Number.isFinite(spend) || !Number.isFinite(resultCount) || !resultCount) {
     return undefined;
   }
@@ -925,7 +929,10 @@ const buildCampaignLines = (project: AutoReportProjectEntry, currency: string | 
   project.report.campaigns.slice(0, 5).forEach((campaign) => {
     const icon = campaignStatusIcon(campaign.status, campaign.effectiveStatus);
     const name = buildCampaignReportName(campaign.name);
-    const metric = formatCampaignMetric(campaign.resultLabel, campaign.resultValue ?? campaign.kpis.leads);
+    const metric = formatCampaignMetric(
+      campaign.primaryMetricLabel ?? campaign.resultLabel,
+      campaign.primaryMetricValue ?? campaign.resultValue ?? campaign.kpis.leads,
+    );
     const cpaValue = resolveCampaignCpa(campaign);
     lines.push(`${icon} ${name} — ${metric}, CPA ${formatCurrencyValue(cpaValue, currency)}`);
   });

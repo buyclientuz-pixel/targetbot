@@ -1,13 +1,6 @@
-import {
-  LeadRecord,
-  NormalizedCampaign,
-  PortalMetricKey,
-  ProjectBillingSummary,
-  ProjectRecord,
-} from "../types";
+import { LeadRecord, NormalizedCampaign, PortalMetricKey, ProjectBillingSummary, ProjectRecord } from "../types";
 import { renderLayout } from "../components/layout";
 import { escapeAttribute, escapeHtml } from "../utils/html";
-import { buildCampaignShortName } from "../utils/campaigns";
 
 interface PortalMetricEntry {
   key: PortalMetricKey;
@@ -45,30 +38,17 @@ interface PortalViewProps {
   periodLabel: string;
   pagination: PortalPagination;
   statusCounts: PortalStatusCounts;
-  campaignNames: Record<string, string>;
 }
 
 const resolveConversionType = (lead: LeadRecord): string => {
-  return lead.phone ? "Контакт" : "Сообщение";
-};
-
-const resolveCampaignLabel = (lead: LeadRecord, names: Record<string, string>): string => {
-  if (lead.campaignShortName) {
-    return lead.campaignShortName;
+  if (lead.phone && lead.phone.trim()) {
+    return "Контакт";
   }
-  if (lead.campaignId && names[lead.campaignId]) {
-    return names[lead.campaignId];
+  const objective = lead.campaignObjective ? lead.campaignObjective.toUpperCase() : "";
+  if (objective.includes("MESSAGE")) {
+    return "Сообщение";
   }
-  if (lead.campaignName) {
-    return buildCampaignShortName(lead.campaignName);
-  }
-  if (lead.source && lead.source.trim()) {
-    return buildCampaignShortName(lead.source.trim());
-  }
-  if (lead.formId) {
-    return buildCampaignShortName(`Форма ${lead.formId}`);
-  }
-  return "—";
+  return "Сообщение";
 };
 
 const formatLeadDate = (value: string): string => {
@@ -79,14 +59,15 @@ const formatLeadDate = (value: string): string => {
   return new Date(timestamp).toLocaleString("ru-RU");
 };
 
-const leadRow = (lead: LeadRecord, conversionType: string, campaignLabel: string): string => {
+const leadRow = (lead: LeadRecord, conversionType: string): string => {
+  const adLabel = lead.adName && lead.adName.trim() ? lead.adName.trim() : "—";
   return `
     <tr data-status="${lead.status}">
       <td>${escapeHtml(lead.name)}</td>
       <td>${lead.phone ? escapeHtml(lead.phone) : "—"}</td>
       <td>${escapeHtml(conversionType)}</td>
       <td>${escapeHtml(formatLeadDate(lead.createdAt))}</td>
-      <td>${escapeHtml(campaignLabel)}</td>
+      <td>${escapeHtml(adLabel)}</td>
     </tr>
   `;
 };
@@ -213,15 +194,18 @@ const renderCampaigns = (campaigns: NormalizedCampaign[]): string => {
       const clicks = campaign.clicks !== undefined
         ? campaign.clicks.toLocaleString("ru-RU")
         : "—";
-      const resultValue = campaign.resultValue !== undefined ? Math.round(campaign.resultValue).toLocaleString("ru-RU") : "—";
-      const result = campaign.resultLabel
-        ? `${escapeHtml(campaign.resultLabel)} — ${escapeHtml(resultValue)}`
-        : "—";
+      const objectiveLabel = campaign.objectiveLabel || "Не определено";
+      const primaryValue = Number.isFinite(campaign.primaryMetricValue)
+        ? Math.round(campaign.primaryMetricValue).toLocaleString("ru-RU")
+        : "0";
+      const primaryLabel = campaign.primaryMetricLabel || "—";
+      const primary = campaign.primaryMetricLabel ? `${escapeHtml(primaryLabel)} — ${escapeHtml(primaryValue)}` : "—";
       return `
         <tr>
           <td>${escapeHtml(campaign.name)}</td>
           <td>${formatCampaignStatus(campaign)}</td>
-          <td>${result}</td>
+          <td>${escapeHtml(objectiveLabel)}</td>
+          <td>${primary}</td>
           <td>${escapeHtml(spend)}</td>
           <td>${escapeHtml(impressions)}</td>
           <td>${escapeHtml(clicks)}</td>
@@ -235,9 +219,10 @@ const renderCampaigns = (campaigns: NormalizedCampaign[]): string => {
       <table>
         <thead>
           <tr>
-            <th>Название</th>
+            <th>Название кампании</th>
             <th>Статус</th>
-            <th>Результат</th>
+            <th>Цель</th>
+            <th>Показатель</th>
             <th>Расход</th>
             <th>Показы</th>
             <th>Клики</th>
@@ -278,11 +263,8 @@ export const renderPortal = ({
   periodLabel,
   pagination,
   statusCounts,
-  campaignNames,
 }: PortalViewProps): string => {
-  const rows = leads
-    .map((lead) => leadRow(lead, resolveConversionType(lead), resolveCampaignLabel(lead, campaignNames)))
-    .join("\n");
+  const rows = leads.map((lead) => leadRow(lead, resolveConversionType(lead))).join("\n");
   const emptyStateClass = leads.length === 0 ? "" : "hidden";
   const metricsBlock = renderMetrics(metrics);
   const campaignBlock = renderCampaigns(campaigns);
@@ -310,7 +292,7 @@ export const renderPortal = ({
             <th>Телефон</th>
             <th>Тип</th>
             <th>Дата</th>
-            <th>Кампания</th>
+            <th>Реклама</th>
           </tr>
         </thead>
         <tbody>

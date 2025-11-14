@@ -2440,17 +2440,19 @@ const handleProjectCampaigns = async (context: BotContext, projectId: string): P
   ];
   limitedCampaigns.forEach((campaign, index) => {
     const statusLabel = (campaign.effectiveStatus || campaign.status || "UNKNOWN").replace(/_/g, " ");
-    const resultLabel = campaign.resultLabel ?? "Результат";
-    const resultValue = campaign.resultValue !== undefined
-      ? Math.round(campaign.resultValue).toLocaleString("ru-RU")
-      : "—";
+    const objectiveLabel = campaign.objectiveLabel || "Не определено";
+    const resultLabel = campaign.primaryMetricLabel ?? campaign.resultLabel ?? "Показатель";
+    const resultValue = Number.isFinite(campaign.primaryMetricValue)
+      ? Math.round(campaign.primaryMetricValue as number).toLocaleString("ru-RU")
+      : "0";
     const spendLabel = campaign.spendFormatted ?? formatCurrencyValue(campaign.spend, campaign.spendCurrency) ?? "—";
     const impressions = campaign.impressions !== undefined
       ? campaign.impressions.toLocaleString("ru-RU")
       : "—";
     const clicks = campaign.clicks !== undefined ? campaign.clicks.toLocaleString("ru-RU") : "—";
     lines.push(
-      `${index + 1}. ${escapeHtml(campaign.name)} (${escapeHtml(statusLabel)})`,
+      `${index + 1}. ${escapeHtml(campaign.name)}`,
+      `   Статус: ${escapeHtml(statusLabel)} · Цель: ${escapeHtml(objectiveLabel)}`,
       `   ${escapeHtml(resultLabel)}: ${escapeHtml(resultValue)} · Расход: ${escapeHtml(spendLabel)}`,
       `   Показы: ${escapeHtml(impressions)} · Клики: ${escapeHtml(clicks)}`,
       "",
@@ -2601,10 +2603,10 @@ const handleProjectCampaignAction = async (
       const spend = campaign.spendFormatted ?? formatCurrencyValue(campaign.spend, campaign.spendCurrency) ?? "—";
       const impressions = campaign.impressions !== undefined ? campaign.impressions.toLocaleString("ru-RU") : "—";
       const clicks = campaign.clicks !== undefined ? campaign.clicks.toLocaleString("ru-RU") : "—";
-      const resultLabel = campaign.resultLabel ?? "Результат";
-      const resultValue = campaign.resultValue !== undefined
-        ? Math.round(campaign.resultValue).toLocaleString("ru-RU")
-        : "—";
+      const resultLabel = campaign.primaryMetricLabel ?? campaign.resultLabel ?? "Показатель";
+      const resultValue = Number.isFinite(campaign.primaryMetricValue)
+        ? Math.round(campaign.primaryMetricValue as number).toLocaleString("ru-RU")
+        : "0";
       lines.push(
         `${index + 1}. ${escapeHtml(campaign.name)} — ${escapeHtml(resultLabel)}: ${escapeHtml(resultValue)} · Расход: ${escapeHtml(spend)} · Показы: ${escapeHtml(impressions)} · Клики: ${escapeHtml(clicks)}`,
       );
