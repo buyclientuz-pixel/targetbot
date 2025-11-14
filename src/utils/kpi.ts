@@ -10,7 +10,7 @@ import {
 
 export const OBJECTIVE_KPI_MAP: Record<string, PortalMetricKey[]> = {
   LEAD_GENERATION: ["leads", "cpl", "spend"],
-  MESSAGES: ["conversations", "cpc", "cpm"],
+  MESSAGES: ["messages", "cpc", "cpm"],
   TRAFFIC: ["clicks", "cpc", "ctr", "spend"],
   AWARENESS: ["reach", "impressions", "cpm"],
   ENGAGEMENT: ["engagements", "cpe"],
@@ -178,6 +178,19 @@ export const resolveCampaignKpis = async (
   const objective =
     objectiveHint ?? (await getCampaignObjective(env, projectId, campaignId).catch(() => null));
   return applyKpiSelection({ objective, projectManual, campaignManual });
+};
+
+export const getKPIsForCampaign = (
+  project: { manualKpi?: PortalMetricKey[] | null } | null | undefined,
+  campaign: { objective?: string | null; manualKpi?: PortalMetricKey[] | null } | null | undefined,
+  override?: PortalMetricKey[] | null,
+): PortalMetricKey[] => {
+  return applyKpiSelection({
+    objective: campaign?.objective ?? null,
+    projectManual: project?.manualKpi,
+    campaignManual: campaign?.manualKpi,
+    override,
+  });
 };
 
 export const persistCampaignKpis = async (

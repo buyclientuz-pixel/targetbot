@@ -1,9 +1,13 @@
 import {
   AutoReportDataset,
   AutoReportProjectEntry,
+  CampaignReportBlock,
   JsonValue,
+  KPISet,
   MetaAdAccount,
+  MetaCampaign,
   PortalMetricKey,
+  ProjectReport,
   ProjectSummary,
   ReportRecord,
   ReportType,
@@ -22,7 +26,7 @@ import {
 import { summarizeProjects, sortProjectSummaries, extractProjectReportPreferences } from "./projects";
 import { createId } from "./ids";
 import { fetchAdAccounts, fetchCampaigns, withMetaSettings } from "./meta";
-import { syncCampaignObjectives, getCampaignKPIs, applyKpiSelection } from "./kpi";
+import { syncCampaignObjectives, getCampaignKPIs, applyKpiSelection, getKPIsForCampaign } from "./kpi";
 import { syncProjectLeads } from "./leads";
 
 const GLOBAL_PROJECT_ID = "__multi__";
@@ -36,6 +40,16 @@ const PORTAL_BASE_KEYS = [
 const DEFAULT_PORTAL_BASE = "https://th-reports.buyclientuz.workers.dev";
 
 type PortalLinkEntry = { portalId: string | null; portalUrl: string | null };
+
+export type ProjectMetricContextEntry = {
+  objectives: Record<string, string | null>;
+  manual: Record<string, PortalMetricKey[]>;
+};
+
+interface DateRange {
+  start: string;
+  end: string;
+}
 
 const takeEnvString = (env: Record<string, unknown>, key: string): string | null => {
   const raw = env[key];
@@ -77,6 +91,69 @@ const resolvePortalLink = (
     }
   }
   return { portalId: portalId ?? null, portalUrl: null };
+};
+
+const pad2 = (value: number): string => value.toString().padStart(2, "0");
+
+const toDateOnly = (value: Date): string => {
+  return `${value.getUTCFullYear()}-${pad2(value.getUTCMonth() + 1)}-${pad2(value.getUTCDate())}`;
+};
+
+const resolveDateRange = (
+  filters: { datePreset?: string; since?: string; until?: string },
+  generatedAtIso: string,
+): DateRange => {
+  const safeParse = (raw?: string | null): Date | null => {
+    if (!raw) {
+      return null;
+    }
+    const parsed = Date.parse(raw);
+    if (Number.isNaN(parsed)) {
+      return null;
+    }
+    return new Date(parsed);
+  };
+
+  const since = safeParse(filters.since ?? null);
+  const until = safeParse(filters.until ?? null);
+  if (since && until) {
+    return { start: toDateOnly(since), end: toDateOnly(until) };
+  }
+
+  const generatedAt = safeParse(generatedAtIso) ?? new Date();
+  const preset = (filters.datePreset ?? "today").toLowerCase();
+  const makeDate = (date: Date): Date => {
+    const copy = new Date(date.getTime());
+    copy.setUTCHours(0, 0, 0, 0);
+    return copy;
+  };
+
+  const start = makeDate(generatedAt);
+  const end = makeDate(generatedAt);
+
+  switch (preset) {
+    case "yesterday": {
+      start.setUTCDate(start.getUTCDate() - 1);
+      end.setUTCDate(end.getUTCDate() - 1);
+      break;
+    }
+    case "last_7d": {
+      start.setUTCDate(start.getUTCDate() - 6);
+      break;
+    }
+    case "last_30d": {
+      start.setUTCDate(start.getUTCDate() - 29);
+      break;
+    }
+    case "lifetime": {
+      start.setUTCFullYear(2015, 0, 1);
+      break;
+    }
+    default:
+      break;
+  }
+
+  return { start: toDateOnly(start), end: toDateOnly(end) };
 };
 
 export interface GenerateReportOptions {
@@ -265,40 +342,365 @@ const collectPreferredCampaignSpend = async (
   return overrides;
 };
 
-const collectProjectObjectiveMetrics = async (
+export const collectProjectMetricContext = async (
   env: EnvBindings,
   summaries: ProjectSummary[],
-): Promise<Map<string, PortalMetricKey[]>> => {
+): Promise<Map<string, ProjectMetricContextEntry>> => {
   const entries = await Promise.all(
     summaries.map(async (summary) => {
       try {
         const [objectives, campaignKpis] = await Promise.all([
-          listCampaignObjectivesForProject(env, summary.id),
+          listCampaignObjectivesForProject(env, summary.id).catch(() => ({}) as Record<string, string | null>),
           listProjectCampaignKpis(env, summary.id).catch(() => ({} as Record<string, PortalMetricKey[]>)),
         ]);
-        const metrics = new Set<PortalMetricKey>();
-        Object.entries(objectives).forEach(([campaignId, objective]) => {
-          const normalized = typeof objective === "string" && objective.trim() ? objective : null;
-          const selection = applyKpiSelection({
-            objective: normalized,
-            projectManual: summary.manualKpi,
-            campaignManual: campaignKpis[campaignId],
-          });
-          selection.forEach((metric) => metrics.add(metric));
-        });
-        if (!metrics.size) {
-          const fallback = applyKpiSelection({ objective: null, projectManual: summary.manualKpi });
-          fallback.forEach((metric) => metrics.add(metric));
-        }
-        return [summary.id, Array.from(metrics)] as const;
+        return [
+          summary.id,
+          {
+            objectives,
+            manual: campaignKpis,
+          },
+        ] as const;
       } catch (error) {
-        console.warn("Failed to resolve campaign objectives for report", summary.id, error);
-        const fallback = applyKpiSelection({ objective: null, projectManual: summary.manualKpi });
-        return [summary.id, fallback] as const;
+        console.warn("Failed to load campaign context", summary.id, error);
+        return [summary.id, { objectives: {}, manual: {} }] as const;
       }
     }),
   );
   return new Map(entries);
+};
+
+export const collectProjectCampaigns = async (
+  env: EnvBindings & Record<string, unknown>,
+  summaries: ProjectSummary[],
+  filters: { datePreset?: string; since?: string; until?: string },
+): Promise<Map<string, MetaCampaign[]>> => {
+  const result = new Map<string, MetaCampaign[]>();
+  const token = await loadMetaToken(env);
+  if (!token) {
+    return result;
+  }
+  const metaEnv = await withMetaSettings(env);
+  await Promise.all(
+    summaries.map(async (summary) => {
+      if (!summary.adAccountId) {
+        result.set(summary.id, []);
+        return;
+      }
+      try {
+        const campaigns = await fetchCampaigns(metaEnv, token, summary.adAccountId, {
+          limit: 50,
+          datePreset: filters.datePreset,
+          since: filters.since,
+          until: filters.until,
+        });
+        await syncCampaignObjectives(env, summary.id, campaigns);
+        result.set(summary.id, campaigns);
+      } catch (error) {
+        console.warn("Failed to load campaigns for report", summary.id, error);
+        result.set(summary.id, []);
+      }
+    }),
+  );
+  return result;
+};
+
+const selectProjectCampaigns = (
+  campaigns: MetaCampaign[],
+  preferences: { campaignIds: string[] },
+): MetaCampaign[] => {
+  if (!campaigns.length) {
+    return [];
+  }
+  const sorted = campaigns.slice().sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0));
+  if (preferences.campaignIds.length) {
+    const ids = new Set(preferences.campaignIds);
+    const manual = sorted.filter((campaign) => ids.has(campaign.id));
+    if (manual.length) {
+      return manual;
+    }
+  }
+  return sorted.slice(0, 10);
+};
+
+const sumNumbers = (a: number | undefined, b: number | undefined): number => {
+  const first = Number.isFinite(a) ? (a as number) : 0;
+  const second = Number.isFinite(b) ? (b as number) : 0;
+  return first + second;
+};
+
+const aggregateCampaigns = (campaigns: MetaCampaign[]): KPISet => {
+  return campaigns.reduce<KPISet>((acc, campaign) => {
+    acc.spend = sumNumbers(acc.spend, campaign.spend);
+    acc.impressions = sumNumbers(acc.impressions, campaign.impressions);
+    acc.clicks = sumNumbers(acc.clicks, campaign.clicks);
+    acc.reach = sumNumbers(acc.reach, campaign.reach);
+    acc.leads = sumNumbers(acc.leads, campaign.leads);
+    acc.messages = sumNumbers(acc.messages, campaign.conversations);
+    acc.conversations = sumNumbers(acc.conversations, campaign.conversations);
+    acc.purchases = sumNumbers(acc.purchases, campaign.purchases);
+    acc.conversions = sumNumbers(acc.conversions, campaign.conversions);
+    acc.engagements = sumNumbers(acc.engagements, campaign.engagements);
+    acc.thruplays = sumNumbers(acc.thruplays, campaign.thruplays);
+    acc.installs = sumNumbers(acc.installs, campaign.installs);
+    acc.revenue = sumNumbers(acc.revenue, campaign.roasValue);
+    return acc;
+  }, {} as KPISet);
+};
+
+const assignMetricValue = (target: KPISet, key: PortalMetricKey, value: number | undefined): void => {
+  if (value === undefined || Number.isNaN(value)) {
+    return;
+  }
+  (target as Record<string, number>)[key] = value;
+  if (key === "messages" && target.conversations === undefined) {
+    target.conversations = value;
+  }
+  if (key === "conversations" && target.messages === undefined) {
+    target.messages = value;
+  }
+};
+
+const buildDerivedMetrics = (source: KPISet, totals: KPISet, leadsFallback: number): KPISet => {
+  const result: KPISet = {};
+  const spend = source.spend ?? 0;
+  const impressions = source.impressions ?? 0;
+  const clicks = source.clicks ?? 0;
+  const leads = source.leads ?? leadsFallback;
+  const purchases = source.purchases ?? 0;
+  const revenue = source.revenue ?? 0;
+  const reach = source.reach ?? 0;
+  const conversations = source.conversations ?? source.messages ?? 0;
+  const engagements = source.engagements ?? 0;
+  const thruplays = source.thruplays ?? 0;
+  const installs = source.installs ?? 0;
+
+  if (leads > 0 && spend > 0) {
+    result.cpl = spend / leads;
+  }
+  if (purchases > 0 && spend > 0) {
+    result.cpa = spend / purchases;
+    result.cpurchase = spend / purchases;
+  } else if (leads > 0 && spend > 0 && result.cpa === undefined) {
+    result.cpa = spend / leads;
+  }
+  if (impressions > 0 && clicks > 0) {
+    result.ctr = (clicks / impressions) * 100;
+  }
+  if (clicks > 0 && spend > 0) {
+    result.cpc = spend / clicks;
+  }
+  if (impressions > 0 && spend > 0) {
+    result.cpm = (spend / impressions) * 1000;
+  }
+  if (revenue > 0 && spend > 0) {
+    result.roas = revenue / spend;
+  }
+  if (reach > 0 && impressions > 0) {
+    result.freq = impressions / reach;
+  }
+  if (engagements > 0 && spend > 0) {
+    result.cpe = spend / engagements;
+  }
+  if (thruplays > 0 && spend > 0) {
+    result.cpv = spend / thruplays;
+  }
+  if (installs > 0 && spend > 0) {
+    result.cpi = spend / installs;
+  }
+  if (conversations > 0) {
+    result.messages = conversations;
+    result.conversations = conversations;
+  }
+  return result;
+};
+
+const mergeKpiSets = (target: KPISet, source: KPISet): KPISet => {
+  const next: KPISet = { ...target };
+  Object.entries(source).forEach(([key, value]) => {
+    if (value === undefined) {
+      return;
+    }
+    const numeric = value as number;
+    if (Number.isNaN(numeric)) {
+      return;
+    }
+    const current = (next as Record<string, number | undefined>)[key];
+    (next as Record<string, number>)[key] = (current ?? 0) + numeric;
+  });
+  return next;
+};
+
+const buildCampaignKpiSet = (
+  campaign: MetaCampaign,
+  selection: PortalMetricKey[],
+): KPISet => {
+  const kpis: KPISet = {};
+  selection.forEach((metric) => {
+    switch (metric) {
+      case "leads":
+        assignMetricValue(kpis, metric, campaign.leads);
+        break;
+      case "spend":
+        assignMetricValue(kpis, metric, campaign.spend);
+        break;
+      case "impressions":
+        assignMetricValue(kpis, metric, campaign.impressions);
+        break;
+      case "clicks":
+        assignMetricValue(kpis, metric, campaign.clicks);
+        break;
+      case "reach":
+        assignMetricValue(kpis, metric, campaign.reach);
+        break;
+      case "messages":
+      case "conversations":
+        assignMetricValue(kpis, metric, campaign.conversations);
+        break;
+      case "purchases":
+        assignMetricValue(kpis, metric, campaign.purchases);
+        break;
+      case "conversions":
+        assignMetricValue(kpis, metric, campaign.conversions);
+        break;
+      case "engagements":
+        assignMetricValue(kpis, metric, campaign.engagements);
+        break;
+      case "thruplays":
+        assignMetricValue(kpis, metric, campaign.thruplays);
+        break;
+      case "installs":
+        assignMetricValue(kpis, metric, campaign.installs);
+        break;
+      case "ctr":
+        assignMetricValue(kpis, metric, campaign.ctr);
+        break;
+      case "cpc":
+        assignMetricValue(kpis, metric, campaign.cpc);
+        break;
+      case "cpm":
+        assignMetricValue(kpis, metric, campaign.cpm);
+        break;
+      case "cpl":
+        assignMetricValue(kpis, metric, campaign.cpl);
+        break;
+      case "cpa":
+        assignMetricValue(kpis, metric, campaign.cpa);
+        break;
+      case "roas":
+        assignMetricValue(kpis, metric, campaign.roas);
+        break;
+      case "cpe":
+        assignMetricValue(kpis, metric, campaign.cpe);
+        break;
+      case "cpv":
+        assignMetricValue(kpis, metric, campaign.cpv);
+        break;
+      case "cpi":
+        assignMetricValue(kpis, metric, campaign.cpi);
+        break;
+      case "freq": {
+        const freq =
+          campaign.reach && campaign.reach > 0 && campaign.impressions && campaign.impressions > 0
+            ? campaign.impressions / campaign.reach
+            : undefined;
+        assignMetricValue(kpis, metric, freq);
+        break;
+      }
+      case "cpurchase":
+        assignMetricValue(kpis, metric, campaign.cpa);
+        break;
+      default:
+        break;
+    }
+  });
+  return kpis;
+};
+
+const buildProjectKpiSet = (
+  summary: ProjectSummary,
+  aggregated: KPISet,
+  derived: KPISet,
+): KPISet => {
+  const kpis: KPISet = { ...aggregated, ...derived };
+  if (summary.leadStats) {
+    kpis.leads_total = summary.leadStats.total;
+    kpis.leads_new = summary.leadStats.new;
+    kpis.leads_done = summary.leadStats.done;
+  }
+  if ((aggregated.messages ?? aggregated.conversations) && kpis.messages === undefined) {
+    kpis.messages = aggregated.messages ?? aggregated.conversations;
+  }
+  if ((aggregated.conversations ?? aggregated.messages) && kpis.conversations === undefined) {
+    kpis.conversations = aggregated.conversations ?? aggregated.messages;
+  }
+  return kpis;
+};
+
+export const buildProjectReportEntry = (
+  summary: ProjectSummary,
+  campaigns: MetaCampaign[],
+  context: ProjectMetricContextEntry | undefined,
+  preferences: { campaignIds: string[]; metrics: PortalMetricKey[] },
+  dateRange: DateRange,
+): { report: ProjectReport; metrics: PortalMetricKey[]; campaignBlocks: CampaignReportBlock[] } => {
+  const manualMap = context?.manual ?? {};
+  const objectiveMap = context?.objectives ?? {};
+  const decorated = campaigns.map((campaign) => ({
+    ...campaign,
+    manualKpi: manualMap[campaign.id] ?? campaign.manualKpi,
+    objective: campaign.objective ?? objectiveMap[campaign.id] ?? campaign.objective ?? null,
+  }));
+
+  const selected = selectProjectCampaigns(decorated, preferences);
+  const override = preferences.metrics.length ? preferences.metrics : undefined;
+
+  const campaignBlocks: CampaignReportBlock[] = selected.map((campaign) => {
+    const selection = getKPIsForCampaign(summary, campaign, override);
+    if (!selection.length) {
+      selection.push(...getCampaignKPIs(campaign.objective ?? null));
+    }
+    const kpis = buildCampaignKpiSet(campaign, selection);
+    if (campaign.spend !== undefined && kpis.spend === undefined) {
+      assignMetricValue(kpis, "spend", campaign.spend);
+    }
+    if (campaign.leads !== undefined && kpis.leads === undefined) {
+      assignMetricValue(kpis, "leads", campaign.leads);
+    }
+    if (campaign.cpa !== undefined && kpis.cpa === undefined) {
+      assignMetricValue(kpis, "cpa", campaign.cpa);
+    }
+    if (campaign.cpl !== undefined && kpis.cpl === undefined) {
+      assignMetricValue(kpis, "cpl", campaign.cpl);
+    }
+    return { name: campaign.name, kpis };
+  });
+
+  const aggregated = aggregateCampaigns(selected);
+  const derived = buildDerivedMetrics(aggregated, aggregated, summary.leadStats?.total ?? 0);
+  const projectKpis = buildProjectKpiSet(summary, aggregated, derived);
+
+  const report: ProjectReport = {
+    date_start: dateRange.start,
+    date_end: dateRange.end,
+    kpis: projectKpis,
+    campaigns: campaignBlocks,
+  };
+
+  const metricSet = new Set<PortalMetricKey>();
+  campaignBlocks.forEach((block) => {
+    Object.keys(block.kpis).forEach((key) => metricSet.add(key as PortalMetricKey));
+  });
+  if (override?.length) {
+    override.forEach((metric) => metricSet.add(metric));
+  }
+  if (!metricSet.size && summary.manualKpi?.length) {
+    summary.manualKpi.forEach((metric) => metricSet.add(metric));
+  }
+  if (!metricSet.size) {
+    getCampaignKPIs("LEAD_GENERATION").forEach((metric) => metricSet.add(metric));
+  }
+
+  return { report, metrics: Array.from(metricSet), campaignBlocks };
 };
 
 const billingLabel = (summary: ProjectSummary): string => {
@@ -336,27 +738,38 @@ export const buildAutoReportDataset = (
   summaries: ProjectSummary[],
   accounts: Map<string, MetaAdAccount>,
   overrides: Map<string, CampaignSpendOverride>,
-  objectiveMetrics: Map<string, PortalMetricKey[]>,
+  contextMap: Map<string, ProjectMetricContextEntry>,
+  campaignMap: Map<string, MetaCampaign[]>,
   portals: Map<string, PortalLinkEntry>,
   periodLabel: string,
   generatedAt: string,
   filters: { datePreset?: string; since?: string; until?: string },
 ): AutoReportDataset => {
+  const dateRange = resolveDateRange(filters, generatedAt);
+  let datasetKpis: KPISet = {};
+
   const projects: AutoReportProjectEntry[] = summaries.map((summary) => {
     const account = summary.adAccountId ? accounts.get(summary.adAccountId) : undefined;
     const override = overrides.get(summary.id);
-    const storedMetrics = objectiveMetrics.get(summary.id) ?? [];
-    const derivedMetrics = storedMetrics.length
-      ? storedMetrics
-      : applyKpiSelection({ objective: null, projectManual: summary.manualKpi });
-    const metrics = derivedMetrics.length ? derivedMetrics : getCampaignKPIs("LEAD_GENERATION");
     const portal = portals.get(summary.id);
+    const preferences = extractProjectReportPreferences(summary.settings);
+    const campaigns = campaignMap.get(summary.id) ?? [];
+    const context = contextMap.get(summary.id);
+    const { report, metrics } = buildProjectReportEntry(summary, campaigns, context, preferences, dateRange);
+
+    datasetKpis = mergeKpiSets(datasetKpis, report.kpis);
+
     const spendAmount =
-      override?.spend ??
+      override?.spend ?? report.kpis.spend ??
       (typeof account?.spend === "number" && Number.isFinite(account.spend) ? account.spend : null);
-    const spendCurrency = override?.currency ?? account?.spendCurrency ?? account?.currency ?? null;
+    const spendCurrency =
+      override?.currency ??
+      campaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency ??
+      account?.spendCurrency ??
+      account?.currency ??
+      null;
     const spendPeriod = override?.period ?? account?.spendPeriod ?? filters.datePreset ?? null;
-    const spendLabel = override?.label ?? formatSpend(account) ?? "—";
+    const spendLabel = override?.label ?? formatSpend(account) ?? (spendAmount !== null ? formatCurrencyAmount(spendAmount, spendCurrency ?? undefined) : "—");
 
     return {
       projectId: summary.id,
@@ -383,6 +796,7 @@ export const buildAutoReportDataset = (
         period: spendPeriod,
       },
       metrics,
+      report,
     };
   });
 
@@ -401,37 +815,149 @@ export const buildAutoReportDataset = (
     periodLabel,
     generatedAt,
     totals,
+    kpis: datasetKpis,
     projects,
   };
 };
 
-const buildPlainText = (
-  title: string,
-  period: string,
-  rows: {
-    name: string;
-    leads: { total: number; new: number; done: number };
-    billing: string;
-    spend?: string;
-  }[],
-): string => {
-  const lines: string[] = [];
-  lines.push(`${title}`);
-  lines.push(`Период: ${period}`);
-  lines.push("");
-  if (!rows.length) {
-    lines.push("Нет проектов для отчёта.");
-  } else {
-    for (const row of rows) {
-      lines.push(`• ${row.name}`);
-      lines.push(`  Лиды: ${row.leads.total} (новые ${row.leads.new}, завершено ${row.leads.done})`);
-      lines.push(`  Биллинг: ${row.billing}`);
-      lines.push(`  Расход: ${row.spend ?? "—"}`);
-      lines.push("");
-    }
-  }
-  return lines.join("\n");
+const RU_WEEKDAYS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
+
+const formatRuDateLabel = (date: Date): string => {
+  return `${pad2(date.getUTCDate())}.${pad2(date.getUTCMonth() + 1)}.${date.getUTCFullYear()}`;
 };
+
+const formatWeekdayLabel = (date: Date): string => {
+  return RU_WEEKDAYS[date.getUTCDay()] ?? "";
+};
+
+const formatNumberValue = (value: number | undefined): string => {
+  if (value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(Math.round(value));
+};
+
+const formatCurrencyValue = (value: number | undefined | null, currency?: string | null): string => {
+  if (value === undefined || value === null || Number.isNaN(value) || value === 0) {
+    return "—";
+  }
+  const code = currency && /^[A-Z]{3}$/.test(currency) ? currency : "USD";
+  try {
+    return new Intl.NumberFormat("ru-RU", {
+      style: "currency",
+      currency: code,
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch (error) {
+    console.warn("Failed to format currency", code, error);
+    return `${value.toFixed(2)} ${code}`;
+  }
+};
+
+const formatPercentValue = (value: number | undefined): string => {
+  if (value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  return `${value.toFixed(2)}%`;
+};
+
+const buildCampaignLines = (
+  project: AutoReportProjectEntry,
+  currency: string | null,
+): string[] => {
+  if (!project.report.campaigns.length) {
+    return ["  Активные кампании:", "  • данных нет"];
+  }
+  const lines: string[] = ["  Активные кампании:"];
+  project.report.campaigns.slice(0, 5).forEach((campaign) => {
+    const leads = formatNumberValue(campaign.kpis.leads);
+    const spend = campaign.kpis.spend ?? 0;
+    const cpaBase = campaign.kpis.cpa ?? (campaign.kpis.leads && campaign.kpis.leads > 0 ? spend / campaign.kpis.leads : undefined);
+    const cpa = formatCurrencyValue(cpaBase, currency);
+    lines.push(`  • ${campaign.name} — ${leads} лидов, CPA ${cpa}`);
+  });
+  return lines;
+};
+
+const buildDailyProjectBlock = (
+  project: AutoReportProjectEntry,
+  currency: string | null,
+): string[] => {
+  const lines: string[] = [];
+  const client = project.chatTitle || project.chatLink || project.chatId;
+  lines.push(`• ${project.projectName}${client ? ` · ${client}` : ""}`);
+  lines.push(
+    `  Лиды: ${project.leads.total} (новые ${project.leads.new}, завершено ${project.leads.done})`,
+  );
+  lines.push(`  CPA: ${formatCurrencyValue(project.report.kpis.cpa, currency)}`);
+  const spendSource = project.report.kpis.spend ?? project.spend.amount ?? null;
+  lines.push(`  Потрачено: ${formatCurrencyValue(spendSource, currency)}`);
+  lines.push(`  CTR: ${formatPercentValue(project.report.kpis.ctr)}`);
+  lines.push(`  CPC: ${formatCurrencyValue(project.report.kpis.cpc, currency)}`);
+  lines.push(...buildCampaignLines(project, currency));
+  return lines;
+};
+
+const buildWeeklyProjectBlock = (
+  project: AutoReportProjectEntry,
+  currency: string | null,
+): string[] => {
+  const lines: string[] = [];
+  const start = new Date(`${project.report.date_start}T00:00:00Z`);
+  const end = new Date(`${project.report.date_end}T00:00:00Z`);
+  lines.push("📅 Отчёт за неделю");
+  const startLabel = `${formatRuDateLabel(start)} [${formatWeekdayLabel(start)}]`;
+  const endLabel = `${formatRuDateLabel(end)} [${formatWeekdayLabel(end)}]`;
+  lines.push(`Период: ${startLabel} → ${endLabel}`);
+  lines.push("");
+  lines.push(`• ${project.projectName}`);
+  lines.push(`  Всего лидов: ${project.leads.total}`);
+  lines.push(`  Средний CPA: ${formatCurrencyValue(project.report.kpis.cpa, currency)}`);
+  const spendSource = project.report.kpis.spend ?? project.spend.amount ?? null;
+  lines.push(`  Расход: ${formatCurrencyValue(spendSource, currency)}`);
+  lines.push("  Топ кампании:");
+  project.report.campaigns.slice(0, 5).forEach((campaign) => {
+    const leads = formatNumberValue(campaign.kpis.leads);
+    const spend = campaign.kpis.spend ?? 0;
+    const cpaBase = campaign.kpis.cpa ?? (campaign.kpis.leads && campaign.kpis.leads > 0 ? spend / campaign.kpis.leads : undefined);
+    const cpa = formatCurrencyValue(cpaBase, currency);
+    lines.push(`  • ${campaign.name} — ${leads} лидов, CPA ${cpa}`);
+  });
+  return lines;
+};
+
+const buildDatasetText = (
+  dataset: AutoReportDataset,
+  filters: { datePreset?: string },
+): string => {
+  const preset = (filters.datePreset ?? "today").toLowerCase();
+  if (!dataset.projects.length) {
+    return "Нет подключенных проектов. Добавьте проект через Meta-аккаунты.";
+  }
+  if (preset === "last_7d") {
+    return dataset.projects
+      .map((project) => {
+        const currency = project.spend.currency ?? "USD";
+        return buildWeeklyProjectBlock(project, currency).join("\n");
+      })
+      .join("\n\n");
+  }
+
+  const generatedAt = new Date(dataset.generatedAt);
+  const dateLabel = formatRuDateLabel(generatedAt);
+  const weekday = formatWeekdayLabel(generatedAt);
+  const header = `⏰ Отчёт за ${dateLabel}${weekday ? ` [${weekday}]` : ""}`;
+  const blocks = dataset.projects.map((project) => {
+    const currency = project.spend.currency ?? "USD";
+    return buildDailyProjectBlock(project, currency).join("\n");
+  });
+  return [header, "", ...blocks].join("\n");
+};
+
+export const composeReportText = (
+  dataset: AutoReportDataset,
+  filters: { datePreset?: string },
+): string => buildDatasetText(dataset, filters);
 
 export const generateReport = async (
   env: EnvBindings & Record<string, unknown>,
@@ -454,7 +980,8 @@ export const generateReport = async (
   const summaries = sortProjectSummaries(await summarizeProjects(env, { projectIds: options.projectIds }));
   const accounts = await accountSpendMap(env, options.includeMeta !== false, filters);
   const overrides = await collectPreferredCampaignSpend(env, summaries, filters);
-  const objectiveMetrics = await collectProjectObjectiveMetrics(env, summaries);
+  const contextMap = await collectProjectMetricContext(env, summaries);
+  const campaignMap = await collectProjectCampaigns(env, summaries, filters);
   const portalRecords = await listPortals(env);
   const portalLookup = new Map<string, PortalLinkEntry>();
   for (const record of portalRecords) {
@@ -472,7 +999,8 @@ export const generateReport = async (
     summaries,
     accounts,
     overrides,
-    objectiveMetrics,
+    contextMap,
+    campaignMap,
     portalLookup,
     periodLabel,
     generatedAtIso,
@@ -482,17 +1010,10 @@ export const generateReport = async (
     dataset.projects.map((project) => [project.projectId, project.metrics]),
   ) as Record<string, PortalMetricKey[]>;
 
-  const displayRows = dataset.projects.map((project) => ({
-    name: project.projectName,
-    leads: project.leads,
-    billing: project.billing.label,
-    spend: project.spend.label === "—" ? undefined : project.spend.label,
-  }));
-
   const defaultTitle = options.type === "detailed" ? "Автоотчёт по проектам" : "Сводка по проектам";
   const title = options.title || `${defaultTitle} (${periodLabel})`;
   const format = options.format || "text";
-  const plain = buildPlainText(title, periodLabel, displayRows);
+  const plain = composeReportText(dataset, filters);
 
   const projectIds = summaries.map((summary) => summary.id);
   const id = createId();

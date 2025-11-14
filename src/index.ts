@@ -70,12 +70,18 @@ import {
   loadProject,
   loadPortalById,
   loadPortalByProjectId,
-  listProjectCampaignKpis,
   migrateProjectsStructure,
 } from "./utils/storage";
 import { fetchAdAccounts, fetchCampaigns, resolveMetaStatus, withMetaSettings } from "./utils/meta";
-import { projectBilling, summarizeProjects, sortProjectSummaries, isProjectAutoDisabled } from "./utils/projects";
+import {
+  projectBilling,
+  summarizeProjects,
+  sortProjectSummaries,
+  isProjectAutoDisabled,
+  extractProjectReportPreferences,
+} from "./utils/projects";
 import { MetaCampaign, PortalMetricKey, ProjectSummary, ProjectRecord } from "./types";
+import { collectProjectMetricContext, buildProjectReportEntry } from "./utils/reports";
 import { handleTelegramUpdate } from "./bot/router";
 import { handleMetaWebhook } from "./api/meta-webhook";
 import { runReminderSweep } from "./utils/reminders";
@@ -83,7 +89,7 @@ import { runReportSchedules } from "./utils/report-scheduler";
 import { runAutoReportEngine } from "./utils/auto-report-engine";
 import { TelegramEnv } from "./utils/telegram";
 import { runRegressionChecks } from "./utils/qa";
-import { KPI_LABELS, syncCampaignObjectives, applyKpiSelection, getCampaignKPIs } from "./utils/kpi";
+import { KPI_LABELS, syncCampaignObjectives } from "./utils/kpi";
 import { syncProjectLeads, getProjectLeads } from "./utils/leads";
 
 const ensureEnv = (env: unknown): EnvBindings & Record<string, unknown> => {
@@ -631,15 +637,6 @@ export default {
               datePreset: periodSelection.datePreset,
             });
             await syncCampaignObjectives(bindings, project.id, campaigns);
-            try {
-              const storedKpis = await listProjectCampaignKpis(bindings, project.id);
-              campaigns.forEach((campaign) => {
-                const metrics = storedKpis[campaign.id];
-                campaign.manualKpi = metrics && metrics.length ? metrics : undefined;
-              });
-            } catch (error) {
-              console.warn("Failed to load portal campaign KPIs", project.id, error);
-            }
           }
         } catch (error) {
           console.warn("Failed to load portal campaigns", project.id, (error as Error).message);
@@ -658,151 +655,109 @@ export default {
           return sorted.slice(0, 10);
         })();
 
-        const leadsNew = statusCounts.new;
-        const leadsDone = statusCounts.done;
-        const leadsTotal = statusCounts.all;
+        const toIsoDate = (value: Date | null): string => {
+          if (!value) {
+            const today = new Date(now.getTime());
+            today.setUTCHours(0, 0, 0, 0);
+            return today.toISOString().slice(0, 10);
+          }
+          const copy = new Date(value.getTime());
+          copy.setUTCHours(0, 0, 0, 0);
+          return copy.toISOString().slice(0, 10);
+        };
+
+        const latestLeadTimestamp = leads.reduce((acc, lead) => {
+          const created = Date.parse(lead.createdAt);
+          if (!Number.isNaN(created) && created > acc) {
+            return created;
+          }
+          return acc;
+        }, 0);
+
+        const summary: ProjectSummary = {
+          ...project,
+          leadStats: {
+            total: statusCounts.all,
+            new: statusCounts.new,
+            done: statusCounts.done,
+            latestAt: latestLeadTimestamp ? new Date(latestLeadTimestamp).toISOString() : undefined,
+          },
+          billing,
+        };
+
+        const preferences = extractProjectReportPreferences(project.settings ?? {});
+        const preferenceInput = {
+          campaignIds:
+            portalRecord.mode === "manual" && portalRecord.campaignIds.length
+              ? portalRecord.campaignIds
+              : preferences.campaignIds,
+          metrics: portalRecord.metrics.length ? portalRecord.metrics : preferences.metrics,
+        };
+
+        const contextMap = await collectProjectMetricContext(bindings, [summary]);
+        const context = contextMap.get(project.id);
+        const { report, metrics: metricKeys } = buildProjectReportEntry(
+          summary,
+          selectedCampaigns,
+          context,
+          preferenceInput,
+          { start: toIsoDate(periodSelection.since), end: toIsoDate(periodSelection.until) },
+        );
 
         const spendCurrency =
-          selectedCampaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency || campaigns[0]?.spendCurrency;
-        const spendTotal = selectedCampaigns.reduce((total, campaign) => total + (campaign.spend ?? 0), 0);
-        const impressionsTotal = selectedCampaigns.reduce((total, campaign) => total + (campaign.impressions ?? 0), 0);
-        const clicksTotal = selectedCampaigns.reduce((total, campaign) => total + (campaign.clicks ?? 0), 0);
+          selectedCampaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency || campaigns[0]?.spendCurrency || "USD";
 
-        const formatNumber = (value: number): string => new Intl.NumberFormat("ru-RU").format(value);
-        const formatCurrency = (value: number): string => {
-          if (!Number.isFinite(value) || value === 0) {
+        const formatNumber = (value: number): string => new Intl.NumberFormat("ru-RU").format(Math.round(value));
+        const formatCurrency = (value: number | undefined): string => {
+          if (value === undefined || Number.isNaN(value)) {
+            return "—";
+          }
+          if (value === 0) {
             return "—";
           }
           try {
             return new Intl.NumberFormat("ru-RU", {
               style: "currency",
-              currency: spendCurrency || "USD",
+              currency: spendCurrency,
               maximumFractionDigits: 2,
             }).format(value);
           } catch {
-            return `${value.toFixed(2)} ${spendCurrency || "USD"}`;
+            return `${value.toFixed(2)} ${spendCurrency}`;
           }
         };
 
-        const aggregates = selectedCampaigns.reduce(
-          (acc, campaign) => ({
-            spend: acc.spend + (campaign.spend ?? 0),
-            impressions: acc.impressions + (campaign.impressions ?? 0),
-            clicks: acc.clicks + (campaign.clicks ?? 0),
-            reach: acc.reach + (campaign.reach ?? 0),
-            leads: acc.leads + (campaign.leads ?? 0),
-            conversations: acc.conversations + (campaign.conversations ?? 0),
-            purchases: acc.purchases + (campaign.purchases ?? 0),
-            conversions: acc.conversions + (campaign.conversions ?? 0),
-            engagements: acc.engagements + (campaign.engagements ?? 0),
-            thruplays: acc.thruplays + (campaign.thruplays ?? 0),
-            installs: acc.installs + (campaign.installs ?? 0),
-            revenue: acc.revenue + (campaign.roasValue ?? 0),
-          }),
-          {
-            spend: 0,
-            impressions: 0,
-            clicks: 0,
-            reach: 0,
-            leads: 0,
-            conversations: 0,
-            purchases: 0,
-            conversions: 0,
-            engagements: 0,
-            thruplays: 0,
-            installs: 0,
-            revenue: 0,
-          },
-        );
-
         const metricLabels = KPI_LABELS;
-
-        const metricValues: Record<PortalMetricKey, string> = {
-          leads_total: formatNumber(leadsTotal),
-          leads_new: formatNumber(leadsNew),
-          leads_done: formatNumber(leadsDone),
-          spend: spendTotal > 0 ? formatCurrency(spendTotal) : "—",
-          impressions: impressionsTotal > 0 ? formatNumber(impressionsTotal) : "—",
-          clicks: clicksTotal > 0 ? formatNumber(clicksTotal) : "—",
-          leads: aggregates.leads > 0 ? formatNumber(Math.round(aggregates.leads)) : formatNumber(leadsTotal),
-          cpl:
-            aggregates.leads > 0 && spendTotal > 0 ? formatCurrency(spendTotal / aggregates.leads) : "—",
-          ctr:
-            impressionsTotal > 0 && clicksTotal > 0
-              ? `${((clicksTotal / impressionsTotal) * 100).toFixed(2)}%`
-              : "—",
-          cpc:
-            clicksTotal > 0 && spendTotal > 0 ? formatCurrency(spendTotal / clicksTotal) : "—",
-          reach: aggregates.reach > 0 ? formatNumber(Math.round(aggregates.reach)) : "—",
-          messages:
-            aggregates.conversations > 0 ? formatNumber(Math.round(aggregates.conversations)) : "—",
-          conversations:
-            aggregates.conversations > 0 ? formatNumber(Math.round(aggregates.conversations)) : "—",
-          cpm:
-            impressionsTotal > 0 && spendTotal > 0 ? formatCurrency((spendTotal / impressionsTotal) * 1000) : "—",
-          purchases: aggregates.purchases > 0 ? formatNumber(Math.round(aggregates.purchases)) : "—",
-          cpa:
-            aggregates.purchases > 0 && spendTotal > 0
-              ? formatCurrency(spendTotal / aggregates.purchases)
-              : "—",
-          roas:
-            aggregates.revenue > 0 && spendTotal > 0
-              ? `${(aggregates.revenue / spendTotal).toFixed(2)}x`
-              : "—",
-          engagements:
-            aggregates.engagements > 0 ? formatNumber(Math.round(aggregates.engagements)) : "—",
-          cpe:
-            aggregates.engagements > 0 && spendTotal > 0
-              ? formatCurrency(spendTotal / aggregates.engagements)
-              : "—",
-          thruplays:
-            aggregates.thruplays > 0 ? formatNumber(Math.round(aggregates.thruplays)) : "—",
-          cpv:
-            aggregates.thruplays > 0 && spendTotal > 0
-              ? formatCurrency(spendTotal / aggregates.thruplays)
-              : "—",
-          installs: aggregates.installs > 0 ? formatNumber(Math.round(aggregates.installs)) : "—",
-          cpi:
-            aggregates.installs > 0 && spendTotal > 0
-              ? formatCurrency(spendTotal / aggregates.installs)
-              : "—",
-          conversions:
-            aggregates.conversions > 0 ? formatNumber(Math.round(aggregates.conversions)) : "—",
-          freq:
-            aggregates.reach > 0 && impressionsTotal > 0
-              ? (impressionsTotal / aggregates.reach).toFixed(2)
-              : "—",
-          cpurchase:
-            aggregates.purchases > 0 && spendTotal > 0
-              ? formatCurrency(spendTotal / aggregates.purchases)
-              : "—",
-        } as Record<PortalMetricKey, string>;
-
-        const portalOverride = portalRecord.metrics.length ? portalRecord.metrics : undefined;
-        const manualProject = Array.isArray(project.manualKpi) ? project.manualKpi : undefined;
-        const metricSet = new Set<PortalMetricKey>();
-        selectedCampaigns.forEach((campaign) => {
-          const selection = applyKpiSelection({
-            objective: campaign.objective ?? null,
-            projectManual: manualProject,
-            campaignManual: campaign.manualKpi,
-            override: portalOverride,
-          });
-          selection.forEach((metric) => metricSet.add(metric));
-        });
-        if (!metricSet.size && portalOverride?.length) {
-          portalOverride.forEach((metric) => metricSet.add(metric));
-        }
-        if (!metricSet.size && manualProject?.length) {
-          manualProject.forEach((metric) => metricSet.add(metric));
-        }
-        if (!metricSet.size) {
-          getCampaignKPIs("LEAD_GENERATION").forEach((metric) => metricSet.add(metric));
-        }
-        const preferredMetrics = Array.from(metricSet);
-
-        const metrics = preferredMetrics
-          .map((key) => ({ key, label: metricLabels[key], value: metricValues[key] }))
+        const metrics = metricKeys
+          .map((key) => {
+            const raw = (report.kpis as Record<PortalMetricKey, number | undefined>)[key];
+            let value: string;
+            switch (key) {
+              case "spend":
+              case "cpl":
+              case "cpa":
+              case "cpc":
+              case "cpm":
+              case "cpe":
+              case "cpv":
+              case "cpi":
+              case "cpurchase":
+                value = formatCurrency(raw);
+                break;
+              case "ctr":
+                value = raw !== undefined ? `${raw.toFixed(2)}%` : "—";
+                break;
+              case "roas":
+                value = raw !== undefined ? `${raw.toFixed(2)}x` : "—";
+                break;
+              case "freq":
+                value = raw !== undefined ? raw.toFixed(2) : "—";
+                break;
+              default:
+                value = raw !== undefined ? formatNumber(raw) : "—";
+                break;
+            }
+            return { key, label: metricLabels[key], value };
+          })
           .filter((entry) => entry.value && entry.value !== "—");
 
         const campaignNames: Record<string, string> = {};

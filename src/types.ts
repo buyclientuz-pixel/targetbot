@@ -110,6 +110,48 @@ export type PortalMetricKey =
   | "freq"
   | "cpurchase";
 
+export type KPISet = {
+  leads_total?: number;
+  leads_new?: number;
+  leads_done?: number;
+  leads?: number;
+  spend?: number;
+  impressions?: number;
+  clicks?: number;
+  reach?: number;
+  messages?: number;
+  conversations?: number;
+  purchases?: number;
+  conversions?: number;
+  engagements?: number;
+  thruplays?: number;
+  installs?: number;
+  revenue?: number;
+  ctr?: number;
+  cpc?: number;
+  cpm?: number;
+  cpl?: number;
+  cpa?: number;
+  roas?: number;
+  cpe?: number;
+  cpv?: number;
+  cpi?: number;
+  freq?: number;
+  cpurchase?: number;
+};
+
+export interface CampaignReportBlock {
+  name: string;
+  kpis: KPISet;
+}
+
+export interface ProjectReport {
+  date_start: string;
+  date_end: string;
+  kpis: KPISet;
+  campaigns: CampaignReportBlock[];
+}
+
 export type ReportRoutingTarget = "chat" | "admin" | "both" | "none";
 
 export interface ProjectAutoReportSettings {
@@ -475,12 +517,14 @@ export interface AutoReportProjectEntry {
   billing: AutoReportProjectBilling;
   spend: AutoReportProjectSpend;
   metrics: PortalMetricKey[];
+  report: ProjectReport;
 }
 
 export interface AutoReportDataset {
   periodLabel: string;
   generatedAt: string;
   totals: ReportTotals;
+  kpis: KPISet;
   projects: AutoReportProjectEntry[];
 }
 

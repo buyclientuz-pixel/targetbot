@@ -9,7 +9,7 @@ import {
 import { summarizeProjects, isProjectAutoDisabled } from "./projects";
 import { fetchAdAccounts } from "./meta";
 import { sendTelegramMessage, TelegramEnv } from "./telegram";
-import { generateReport } from "./reports";
+import { generateReport, composeReportText } from "./reports";
 import { detectSpendAnomalies, mergeMetaAccountLinks } from "./meta-accounts";
 import {
   AutoReportDataset,
@@ -187,53 +187,11 @@ const formatWeekday = (date: Date): string => {
   return RU_WEEKDAYS[date.getUTCDay()] ?? "";
 };
 
-const formatAutoReportPeriod = (datePreset: string, dataset: AutoReportDataset, now: Date): string => {
-  const generatedAt = new Date(dataset.generatedAt);
-  if (datePreset === "today") {
-    const weekday = formatWeekday(generatedAt);
-    return `${formatRuDate(generatedAt)}${weekday ? ` [${weekday}]` : ""}`;
-  }
-  if (datePreset === "last_7d") {
-    const end = new Date(now.getTime());
-    end.setUTCDate(end.getUTCDate() - 1);
-    const start = new Date(end.getTime());
-    start.setUTCDate(start.getUTCDate() - 6);
-    const weekday = formatWeekday(now);
-    return `Неделя ${formatRuDate(start)} — ${formatRuDate(end)}${weekday ? ` [${weekday}]` : ""}`;
-  }
-  return dataset.periodLabel;
-};
-
 export const buildAutoReportNotification = (
   dataset: AutoReportDataset,
   options: { datePreset: string; now: Date; fallbackReason?: string | null },
 ): { text: string; replyMarkup?: { inline_keyboard: { text: string; url: string }[][] } } => {
-  const period = formatAutoReportPeriod(options.datePreset, dataset, options.now);
-  const lines: string[] = [];
-  lines.push("👀 Сводка по проектам");
-  lines.push(`Период: ${escapeHtml(period)}`);
-  lines.push("");
-
-  if (!dataset.projects.length) {
-    lines.push("Нет подключенных проектов. Добавьте проект через Meta-аккаунты.");
-  } else {
-    dataset.projects.forEach((project) => {
-      const chatLabel = project.chatTitle || project.chatLink || project.chatId;
-      if (chatLabel) {
-        lines.push(`• ${escapeHtml(project.projectName)} · ${escapeHtml(chatLabel)}`);
-      } else {
-        lines.push(`• ${escapeHtml(project.projectName)}`);
-      }
-      lines.push(
-        `  Лиды: ${project.leads.total} (новые ${project.leads.new}, завершено ${project.leads.done})`,
-      );
-      lines.push(`  Биллинг: ${escapeHtml(project.billing.label || "—")}`);
-      lines.push(`  Расход: ${escapeHtml(project.spend.label || "—")}`);
-      lines.push("");
-    });
-  }
-
-  let text = lines.join("\n");
+  let text = composeReportText(dataset, { datePreset: options.datePreset });
   if (options.fallbackReason) {
     text = `⚠️ ${escapeHtml(options.fallbackReason)}\n\n${text}`;
   }

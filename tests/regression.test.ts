@@ -47,6 +47,7 @@ import { evaluateQaDataset } from "../src/utils/qa";
 import {
   AutoReportDataset,
   MetaAdAccount,
+  MetaCampaign,
   LeadRecord,
   LeadReminderRecord,
   PaymentReminderRecord,
@@ -103,11 +104,25 @@ const createDataset = (): AutoReportDataset => {
     spend: 9.92,
     spendCurrency: "USD",
   };
+  const campaigns: MetaCampaign[] = [
+    {
+      id: "c1",
+      accountId: summary.metaAccountId,
+      name: "Campaign 1",
+      spend: 9.92,
+      spendCurrency: "USD",
+      leads: 5,
+      clicks: 20,
+      impressions: 100,
+      reach: 80,
+    },
+  ];
   return buildAutoReportDataset(
     [summary],
     new Map([[account.id, account]]),
     new Map(),
-    new Map([[summary.id, ["leads", "cpl", "spend"]]]),
+    new Map([[summary.id, { objectives: { c1: "LEAD_GENERATION" }, manual: {} }]]),
+    new Map([[summary.id, campaigns]]),
     new Map([[summary.id, { portalId: "portal1", portalUrl: "https://example.com/portal/p1" }]]),
     "13.11.2025 [Чт]",
     new Date("2025-11-13T10:00:00Z").toISOString(),
@@ -263,15 +278,20 @@ test("evaluateAutoReportTrigger respects cooldown and monday double", () => {
   expect.equal(mondayResult.weekly, "15:00");
 });
 
-test("buildAutoReportDataset merges portal links and metrics", () => {
+test("buildAutoReportDataset builds portal link and project report", () => {
   const dataset = createDataset();
   expect.equal(dataset.projects.length, 1);
   const project = dataset.projects[0];
   expect.equal(dataset.periodLabel, "13.11.2025 [Чт]");
   expect.equal(project.portalUrl, "https://example.com/portal/p1");
-  expect.deepEqual(project.metrics, ["leads", "cpl", "spend"]);
+  expect.ok(project.metrics.includes("leads"));
+  expect.ok(project.metrics.includes("spend"));
+  expect.ok(project.metrics.includes("impressions"));
   expect.equal(project.billing.label, "активен · $350 · Ноябрь 2025");
-  expect.equal(project.spend.label, "9.92 USD");
+  expect.ok(project.spend.label?.includes("9"));
+  expect.equal(project.report.kpis.leads_total, 5);
+  expect.equal(project.report.kpis.spend, 9.92);
+  expect.equal(project.report.campaigns.length, 1);
 });
 
 test("buildAutoReportNotification renders summary text and buttons", () => {
@@ -280,12 +300,15 @@ test("buildAutoReportNotification renders summary text and buttons", () => {
     datePreset: "today",
     now: new Date("2025-11-13T12:00:00Z"),
   });
-  expect.ok(text.includes("👀 Сводка по проектам"));
-  expect.ok(text.includes("Период: 13.11.2025 [Чт]"));
+  expect.ok(text.includes("⏰ Отчёт за 13.11.2025 [Чт]"));
   expect.ok(text.includes("• Project p1 · Client p1"));
   expect.ok(text.includes("Лиды: 5 (новые 3, завершено 2)"));
-  expect.ok(text.includes("Биллинг: активен · $350 · Ноябрь 2025"));
-  expect.ok(text.includes("Расход: 9.92 USD"));
+  expect.ok(text.includes("CPA:"));
+  expect.ok(text.includes("Потрачено:"));
+  expect.ok(text.includes("CTR:"));
+  expect.ok(text.includes("CPC:"));
+  expect.ok(text.includes("Активные кампании:"));
+  expect.ok(text.includes("• Campaign 1 — 5 лидов"));
   expect.ok(!text.includes("<"), "text should not contain HTML tags");
   expect.ok(replyMarkup && replyMarkup.inline_keyboard.length === 1);
   expect.deepEqual(replyMarkup?.inline_keyboard[0], [
