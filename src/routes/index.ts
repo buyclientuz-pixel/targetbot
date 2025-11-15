@@ -1,5 +1,6 @@
-import { jsonResponse, notImplemented } from "../http/responses";
+import { jsonResponse } from "../http/responses";
 import type { Router } from "../worker/router";
+import { registerMetaRoutes } from "./meta";
 import { registerProjectRoutes } from "./projects";
 
 export const registerCoreRoutes = (router: Router): void => {
@@ -7,9 +8,6 @@ export const registerCoreRoutes = (router: Router): void => {
     return jsonResponse({ status: "ok", uptime: Date.now() });
   });
 
-  router.on("GET", "/api/meta/status", async () => {
-    return notImplemented("Meta status endpoint is not yet available");
-  });
-
   registerProjectRoutes(router);
+  registerMetaRoutes(router);
 };

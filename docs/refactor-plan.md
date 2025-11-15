@@ -18,10 +18,10 @@
 - Подготовить миграционные helper’ы и индексы.
 - Документировать доменную схему (`docs/data-model.md`).
 
-## Итерация 4 — Meta API + кэширование
-- Обновить прокси-роуты Meta API.
-- Реализовать KV-кеш meta-cache:* с TTL 60 секунд и ежедневной очисткой.
-- Добавить конфиг для access/refresh токенов meta-token:{fbUserId}.
+## Итерация 4 — Meta API + кэширование ✅
+- Реализовать прокси-роуты `/api/meta/projects/:id/summary` и `/api/meta/projects/:id/campaigns` с обращением к Graph API.
+- Добавить KV-кеш `meta-cache:{projectId}:{scope}` для insights/summary/campaigns (TTL 60 секунд).
+- Поддержать CRUD `meta-token:{fbUserId}` и endpoint `PUT /api/meta/tokens/:facebookUserId` для хранения токенов.
 
 ## Итерация 5 — Webhook Meta → лиды в R2
 - Создать endpoint /api/meta/webhook.
