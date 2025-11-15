@@ -16,6 +16,7 @@
 - Реализовать CRUD для project, project-settings, users, portal-session.
 - Настроить R2-bucket для leads, payments, campaign-stats, logs.
 - Подготовить миграционные helper’ы и индексы.
+- Документировать доменную схему (`docs/data-model.md`).
 
 ## Итерация 4 — Meta API + кэширование
 - Обновить прокси-роуты Meta API.
