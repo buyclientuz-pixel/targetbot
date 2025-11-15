@@ -11,6 +11,7 @@ import {
   applyProjectReportPreferencesPatch,
   DEFAULT_PROJECT_SETTINGS,
 } from "../utils/projects";
+import { appendProjectPayment, updateLatestProjectPayment } from "../utils/payments";
 import {
   appendCommandLog,
   clearPendingBillingOperation,
@@ -94,6 +95,7 @@ import {
   PaymentReminderRecord,
   PaymentReminderMethod,
   PaymentReminderStage,
+  PaymentStatus,
   ProjectDeletionSummary,
   ProjectRecord,
   ProjectSummary,
@@ -2981,17 +2983,25 @@ const handleProjectBilling = async (context: BotContext, projectId: string): Pro
     summary.paymentEnabled ??
     summary.billingEnabled ??
     false;
+  const billingStatusKey = summary.billing.status;
+  const statusLabel =
+    billingStatusKey === "missing"
+      ? "не настроен"
+      : BILLING_STATUS_LABELS[billingStatusKey as ProjectBillingState] ?? billingStatusKey;
 
   const lines = [
     `📄 Оплата — <b>${escapeHtml(summary.name)}</b>`,
     "",
     `💵 Тариф: ${escapeHtml(planLabel)}`,
+    `📊 Статус: ${escapeHtml(statusLabel)}`,
     `📅 Следующий платёж: ${escapeHtml(nextPaymentLabel)}`,
     `🤖 Автобиллинг: ${autoEnabled ? "включен" : "выключен"}`,
     "",
-    "Платежи ещё не зафиксированы.",
-    "Настройте тариф и дату следующего платежа кнопками ниже.",
   ];
+  if (summary.billing.status === "missing") {
+    lines.push("Платежи ещё не зафиксированы.");
+  }
+  lines.push("Настройте тариф и дату следующего платежа кнопками ниже.");
 
   await sendMessage(context, lines.join("\n"), { replyMarkup: buildBillingKeyboard(projectId) });
 };
@@ -3002,15 +3012,19 @@ const handleBillingExtend = async (context: BotContext, projectId: string, days:
     return;
   }
   const nextDate = extendDateByDays(summary.nextPaymentDate ?? null, days);
-  const updated = await updateProjectRecord(context.env, projectId, {
-    nextPaymentDate: nextDate,
-    paymentEnabled: true,
-    billingEnabled: true,
+  const planAmount =
+    resolvePlanAmount(summary) ?? summary.billing.amount ?? (typeof summary.tariff === "number" ? summary.tariff : 0);
+  const currency = summary.billing.currency ?? "USD";
+  const dueTimestamp = Date.parse(`${nextDate}T00:00:00Z`);
+  const status: PaymentStatus = Number.isNaN(dueTimestamp) ? "pending" : dueTimestamp < Date.now() ? "overdue" : "pending";
+  await appendProjectPayment(context.env, projectId, {
+    amount: planAmount,
+    currency,
+    periodStart: summary.nextPaymentDate ?? null,
+    periodEnd: nextDate,
+    status,
+    paidAt: null,
   });
-  if (!updated) {
-    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
-    return;
-  }
   await clearPaymentReminder(context.env, projectId).catch(() => undefined);
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, "Дата обновлена");
@@ -3019,6 +3033,10 @@ const handleBillingExtend = async (context: BotContext, projectId: string, days:
 };
 
 const handleBillingSetPlan = async (context: BotContext, projectId: string, amount: number): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
   const plan = Math.abs(amount - 350) < 0.01 ? "350" : Math.abs(amount - 500) < 0.01 ? "500" : "custom";
   const updated = await updateProjectRecord(context.env, projectId, {
     paymentPlan: amount,
@@ -3032,6 +3050,10 @@ const handleBillingSetPlan = async (context: BotContext, projectId: string, amou
     await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
     return;
   }
+  const currency = summary.billing.currency ?? "USD";
+  await updateLatestProjectPayment(context.env, projectId, { amount, currency }).catch((error) => {
+    console.warn("Failed to update latest payment after plan change", projectId, error);
+  });
   await clearPaymentReminder(context.env, projectId).catch(() => undefined);
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id, `Тариф ${amount}$`);
@@ -3099,15 +3121,28 @@ export const handlePendingBillingInput = async (context: BotContext): Promise<bo
       await sendMessage(context, "❌ Не удалось распознать дату. Используйте формат YYYY-MM-DD или DD.MM.YYYY.");
       return true;
     }
-    const updated = await updateProjectRecord(context.env, pending.projectId, {
-      nextPaymentDate: iso,
-      paymentEnabled: true,
-      billingEnabled: true,
-    });
-    if (!updated) {
+    const summary = await loadProjectSummaryById(context, pending.projectId);
+    if (!summary) {
       await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
       return true;
     }
+    const planAmount =
+      resolvePlanAmount(summary) ?? summary.billing.amount ?? (typeof summary.tariff === "number" ? summary.tariff : 0);
+    const currency = summary.billing.currency ?? "USD";
+    const dueTimestamp = Date.parse(`${iso}T00:00:00Z`);
+    let status: PaymentStatus = "pending";
+    if (!Number.isNaN(dueTimestamp) && dueTimestamp < Date.now()) {
+      status = "overdue";
+    }
+    await appendProjectPayment(context.env, pending.projectId, {
+      amount: planAmount,
+      currency,
+      periodStart: summary.nextPaymentDate ?? null,
+      periodEnd: iso,
+      status,
+      paidAt: null,
+    });
+    await clearPaymentReminder(context.env, pending.projectId).catch(() => undefined);
     await clearPendingBillingOperation(context.env, adminId).catch(() => undefined);
     await sendMessage(context, `✅ Следующая оплата сохранена: ${escapeHtml(formatBillingDate(iso))}.`);
     await handleProjectBilling(context, pending.projectId);

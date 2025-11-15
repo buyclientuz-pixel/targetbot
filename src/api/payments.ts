@@ -1,5 +1,6 @@
 import { jsonResponse } from "../utils/http";
 import { createId } from "../utils/ids";
+import { syncProjectPayments } from "../utils/payments";
 import { EnvBindings, listPayments, savePayments, clearPaymentReminder } from "../utils/storage";
 import { ApiError, ApiSuccess, PaymentRecord, PaymentStatus } from "../types";
 
@@ -113,6 +114,9 @@ export const handlePaymentsCreate = async (request: Request, env: unknown): Prom
     }
     payments.push(payment);
     await savePaymentCollection(bindings, payments);
+    await syncProjectPayments(bindings, payment.projectId, payments).catch((error) => {
+      console.warn("Failed to sync project after payment create", payment.projectId, error);
+    });
     await clearPaymentReminder(bindings, payment.projectId).catch((error) => {
       console.warn("Failed to refresh payment reminder", payment.projectId, error);
     });
@@ -162,6 +166,9 @@ export const handlePaymentUpdate = async (
     };
     payments[index] = updated;
     await savePaymentCollection(bindings, payments);
+    await syncProjectPayments(bindings, updated.projectId, payments).catch((error) => {
+      console.warn("Failed to sync project after payment update", updated.projectId, error);
+    });
     await clearPaymentReminder(bindings, updated.projectId).catch((error) => {
       console.warn("Failed to refresh payment reminder", updated.projectId, error);
     });
@@ -187,6 +194,9 @@ export const handlePaymentDelete = async (
     }
     const filtered = payments.filter((entry) => entry.id !== paymentId);
     await savePaymentCollection(bindings, filtered);
+    await syncProjectPayments(bindings, target.projectId, filtered).catch((error) => {
+      console.warn("Failed to sync project after payment delete", target.projectId, error);
+    });
     await clearPaymentReminder(bindings, target.projectId).catch((error) => {
       console.warn("Failed to refresh payment reminder", target.projectId, error);
     });
