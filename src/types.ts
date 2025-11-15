@@ -333,6 +333,7 @@ export interface ProjectRecord {
   nextPaymentDate: string | null;
   tariff: number;
   billingEnabled?: boolean;
+  autoBillingEnabled?: boolean;
   billingPlan?: "350" | "500" | "custom" | null;
   billingAmountUsd?: number | null;
   lastPaymentDate?: string | null;

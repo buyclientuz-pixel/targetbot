@@ -968,7 +968,7 @@ const ALERT_TOGGLE_CONFIG: Record<AlertToggleKey, { label: string; accessor: (se
   setter: (settings: ProjectSettingsRecord, next: boolean) => void;
 }> = {
   payment: {
-    label: "Оплата",
+    label: "Автобиллинг",
     accessor: (settings) => settings.alerts.payment,
     setter: (settings, next) => {
       settings.alerts.payment = next;
@@ -1585,11 +1585,24 @@ const handleAlertToggle = async (
     await handleAutoReportMenu(context, projectId, { status: "❌ Опция не найдена" });
     return;
   }
+  let nextValue: boolean | null = null;
   await mutateProjectSettings(context, projectId, (draft) => {
     const current = config.accessor(draft);
-    config.setter(draft, !current);
-    return `${config.label}: ${!current ? "включено" : "выключено"}`;
+    const toggled = !current;
+    config.setter(draft, toggled);
+    nextValue = toggled;
+    return `${config.label}: ${toggled ? "включено" : "выключено"}`;
   });
+  if (key === "payment" && nextValue !== null) {
+    await updateProjectRecord(context.env, projectId, { autoBillingEnabled: nextValue }).catch((error) => {
+      console.warn("Failed to update project auto billing flag", projectId, error);
+    });
+    if (!nextValue) {
+      await clearPaymentReminder(context.env, projectId).catch((error) => {
+        console.warn("Failed to clear payment reminders when disabling autobilling", projectId, error);
+      });
+    }
+  }
 };
 
 const handleAlertRoute = async (
@@ -2136,6 +2149,7 @@ const handleProjectView = async (
   );
   lines.push(describeBillingStatus(summary));
   lines.push(describePaymentSchedule(summary));
+  lines.push(summary.autoBillingEnabled === false ? "🤖 Автобиллинг: выключен" : "🤖 Автобиллинг: включен");
   try {
     const settings = await loadProjectSettingsRecord(context.env, summary.id);
     const auto = settings.autoReport;
@@ -3190,6 +3204,7 @@ const handleProjectBilling = async (context: BotContext, projectId: string): Pro
   lines.push(`💳 Оплата — <b>${escapeHtml(summary.name)}</b>`);
   lines.push(describeBillingStatus(summary));
   lines.push(describePaymentSchedule(summary));
+  lines.push(summary.autoBillingEnabled === false ? "🤖 Автобиллинг: выключен" : "🤖 Автобиллинг: включен");
   if (billing.notes) {
     lines.push("Заметка:");
     lines.push(escapeHtml(billing.notes));

@@ -510,6 +510,10 @@ const processPaymentReminders = async (
   const settingsCache = new Map<string, ProjectSettingsRecord | null>();
 
   for (const project of projects) {
+    if (project.autoBillingEnabled === false) {
+      reminderMap.delete(project.id);
+      continue;
+    }
     if (!settingsCache.has(project.id)) {
       const settings = await loadProjectSettingsRecord(env, project.id).catch((error) => {
         console.warn("Failed to load project settings for payment reminders", project.id, error);

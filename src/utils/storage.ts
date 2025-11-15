@@ -762,6 +762,18 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       : Boolean(nextPaymentDate || (typeof billingAmount === "number" && billingAmount > 0));
   const billingAmountUsd = typeof billingAmount === "number" ? billingAmount : null;
 
+  const autoBillingSource =
+    data.autoBillingEnabled ??
+    data.auto_billing_enabled ??
+    data.billingAutomationEnabled ??
+    data.billing_automation_enabled ??
+    data.billingAutomation ??
+    null;
+  const autoBillingEnabled =
+    autoBillingSource !== null && autoBillingSource !== undefined
+      ? resolveBoolean(autoBillingSource)
+      : billingEnabled;
+
   return {
     id,
     name,
@@ -772,6 +784,7 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     nextPaymentDate,
     tariff,
     billingEnabled,
+    autoBillingEnabled,
     billingPlan,
     billingAmountUsd,
     lastPaymentDate,
@@ -1347,6 +1360,8 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
         next_payment_date: project.nextPaymentDate ?? null,
         tariff: project.tariff ?? 0,
         billing_enabled: project.billingEnabled ?? null,
+        auto_billing_enabled:
+          project.autoBillingEnabled !== undefined ? Boolean(project.autoBillingEnabled) : null,
         billing_plan: project.billingPlan ?? null,
         billing_amount_usd:
           project.billingAmountUsd !== undefined && project.billingAmountUsd !== null
@@ -1524,6 +1539,11 @@ export const updateProjectRecord = async (
     billingEnabledPatch = Boolean(patch.billingEnabled);
   }
 
+  let autoBillingEnabledPatch: boolean | undefined;
+  if (patch.autoBillingEnabled !== undefined) {
+    autoBillingEnabledPatch = Boolean(patch.autoBillingEnabled);
+  }
+
   const resolvedBillingAmount =
     billingAmountPatch !== undefined
       ? billingAmountPatch
@@ -1570,6 +1590,19 @@ export const updateProjectRecord = async (
     }
     return null;
   };
+
+  const resolveAutoBillingEnabled = (): boolean => {
+    if (autoBillingEnabledPatch !== undefined) {
+      return autoBillingEnabledPatch;
+    }
+    if (billingEnabledPatch === false) {
+      return false;
+    }
+    if (typeof current.autoBillingEnabled === "boolean") {
+      return current.autoBillingEnabled;
+    }
+    return resolveBillingEnabled();
+  };
   const resolveAutoOff = (): boolean => {
     if (typeof patch.autoOff === "boolean") {
       return patch.autoOff;
@@ -1607,6 +1640,7 @@ export const updateProjectRecord = async (
           : current.billingAmountUsd ?? null,
     billingPlan: resolveBillingPlan(),
     billingEnabled: resolveBillingEnabled(),
+    autoBillingEnabled: resolveAutoBillingEnabled(),
     autoOff: resolveAutoOff(),
     autoOffAt: resolveAutoOffAt(),
   };
