@@ -147,3 +147,33 @@ test("Meta webhook route persists leads and dispatches Telegram alerts", async (
   assert.match(notification.text, /🔔 Новый лид/);
   assert.equal(notification.chatId, -1003269756488);
 });
+
+test("Meta webhook GET handshake enforces verify token", async () => {
+  const kvNamespace = new MemoryKVNamespace();
+  const r2Bucket = new MemoryR2Bucket();
+  const env = {
+    KV: kvNamespace,
+    R2: r2Bucket,
+    META_WEBHOOK_VERIFY_TOKEN: "VERIFY_SECRET",
+  } satisfies import("../../src/worker/types.ts").TargetBotEnv;
+
+  const router = createRouter();
+  registerMetaRoutes(router);
+
+  const execution = new TestExecutionContext();
+  const okRequest = new Request(
+    "https://example.com/api/meta/webhook?hub.mode=subscribe&hub.challenge=12345&hub.verify_token=VERIFY_SECRET",
+  );
+  const okResponse = await router.dispatch(okRequest, env, execution);
+  await execution.flush();
+
+  assert.equal(okResponse.status, 200);
+  assert.equal(await okResponse.text(), "12345");
+
+  const forbiddenRequest = new Request(
+    "https://example.com/api/meta/webhook?hub.mode=subscribe&hub.challenge=67890&hub.verify_token=WRONG",
+  );
+  const forbiddenResponse = await router.dispatch(forbiddenRequest, env, new TestExecutionContext());
+  assert.equal(forbiddenResponse.status, 403);
+  assert.equal(await forbiddenResponse.text(), "forbidden");
+});
