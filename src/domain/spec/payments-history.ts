@@ -85,3 +85,16 @@ export const putPaymentsHistoryDocument = async (
     })),
   });
 };
+
+export const appendPaymentRecord = async (
+  r2: R2Client,
+  projectId: string,
+  record: PaymentRecord,
+): Promise<PaymentsHistoryDocument> => {
+  const existing = (await getPaymentsHistoryDocument(r2, projectId)) ?? { payments: [] };
+  const updated: PaymentsHistoryDocument = {
+    payments: [record, ...existing.payments],
+  };
+  await putPaymentsHistoryDocument(r2, projectId, updated);
+  return updated;
+};

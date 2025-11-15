@@ -1,62 +1,75 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildProjectCardMessage } from "../../src/bot/messages.ts";
-import { createDefaultProjectSettings } from "../../src/domain/project-settings.ts";
-import type { Project } from "../../src/domain/projects.ts";
-import type { MetaSummaryMetrics } from "../../src/domain/meta-summary.ts";
+import type { ProjectBundle } from "../../src/bot/data.ts";
 
 test("buildProjectCardMessage renders project snapshot", () => {
-  const project: Project = {
-    id: "birlash",
-    name: "birlash",
-    adsAccountId: "act_813372877848888",
-    ownerTelegramId: 123456789,
-    createdAt: "2025-11-01T10:00:00.000Z",
-    updatedAt: "2025-11-15T10:00:00.000Z",
+  const bundle: ProjectBundle = {
+    project: {
+      id: "proj_a",
+      name: "BirLash",
+      ownerId: 1,
+      adAccountId: "act_123",
+      chatId: -100123,
+      portalUrl: "https://example.test/p/proj_a",
+      settings: {
+        currency: "USD",
+        timezone: "Asia/Tashkent",
+        kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
+      },
+    },
+    billing: { tariff: 500, currency: "USD", nextPaymentDate: "2025-12-15", autobilling: true },
+    alerts: {
+      enabled: true,
+      channel: "both",
+      types: { leadInQueue: true, pause24h: true, paymentReminder: true },
+      leadQueueThresholdHours: 1,
+      pauseThresholdHours: 24,
+      paymentReminderDays: [7, 1],
+    },
+    autoreports: { enabled: true, time: "10:00", mode: "yesterday_plus_week", sendTo: "both" },
+    leads: {
+      stats: { total: 168, today: 2 },
+      leads: [
+        {
+          id: "lead_1",
+          name: "Sharofat",
+          phone: "+998",
+          createdAt: new Date().toISOString(),
+          source: "facebook",
+          campaignName: "Test",
+          status: "new",
+          type: null,
+        },
+      ],
+    },
+    campaigns: {
+      period: { from: "2025-11-14", to: "2025-11-14" },
+      summary: { spend: 16.15, impressions: 1000, clicks: 120, leads: 2, messages: 0 },
+      campaigns: [
+        {
+          id: "c1",
+          name: "Lead Ads",
+          objective: "LEAD_GENERATION",
+          kpiType: "LEAD",
+          spend: 16.15,
+          impressions: 1000,
+          clicks: 120,
+          leads: 2,
+          messages: 0,
+        },
+      ],
+    },
+    payments: { payments: [] },
   };
 
-  const metrics: MetaSummaryMetrics = {
-    spend: 16.15,
-    impressions: 1000,
-    clicks: 120,
-    leads: 5,
-    leadsToday: 2,
-    leadsTotal: 168,
-    cpa: 3.23,
-    spendToday: 16.15,
-    cpaToday: 1.33,
-  };
-
-  const settings = createDefaultProjectSettings(project.id);
-  settings.billing = {
-    tariff: 500,
-    currency: "USD",
-    nextPaymentDate: "2025-12-15",
-    autobillingEnabled: true,
-  };
-  settings.reports = {
-    autoReportsEnabled: true,
-    timeSlots: ["10:00"],
-    mode: "yesterday+week",
-  };
-  settings.alerts = {
-    leadNotifications: true,
-    billingAlerts: true,
-    budgetAlerts: true,
-    metaApiAlerts: true,
-    pauseAlerts: true,
-    route: "CHAT",
-  };
-  settings.chatId = -1003269756488;
-  settings.topicId = 123;
-
-  const message = buildProjectCardMessage(project, settings, metrics);
-  assert.match(message, /Проект: birlash/);
-  assert.match(message, /Meta: подключено — birlash \(act_813372877848888\)/);
-  assert.match(message, /Лиды: сегодня 2 \| всего 168/);
-  assert.match(message, /Автобиллинг: включен/);
-  assert.match(message, /Автоотчёты: 10:00 \(вкл, режим: yesterday\+week\)/);
-  assert.match(message, /Алерты: включены \(в чат\)/);
-  assert.match(message, /Чат-группа: Перейти \(ID: -1003269756488, тема 123\)/);
-  assert.match(message, /Портал: Открыть клиентский портал/);
+  const message = buildProjectCardMessage(bundle);
+  assert.match(message, /🏗 Проект: <b>BirLash<\/b>/);
+  assert.match(message, /🧩 Meta: подключено — <b>BirLash \(act_123\)<\/b>/);
+  assert.match(message, /💬 Лиды: <b>2<\/b> \(сегодня\) \| <b>168<\/b> \(всего\)/);
+  assert.match(message, /🤖 Автобиллинг: включен/);
+  assert.match(message, /🕒 Автоотчёты: <b>10:00<\/b> \(вкл, режим: вчера \+ неделя/);
+  assert.match(message, /🚨 Алерты: включены \(в чат и админу\)/);
+  assert.match(message, /Чат-группа: <a href="https:\/\/t\.me\/c\/100123">Перейти<\/a> \(ID: -100123\)/);
+  assert.match(message, /🌐 Портал: <a href="https:\/\/example\.test\/p\/proj_a">/);
 });

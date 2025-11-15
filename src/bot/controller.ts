@@ -1,21 +1,35 @@
-import { loadProjectTodayMetrics } from "./metrics";
-import { buildBillingKeyboard, buildMainMenuKeyboard, buildProjectListKeyboard } from "./keyboards";
-import { buildMenuMessage, buildProjectCardMessage, buildProjectsListMessage } from "./messages";
-import type { TelegramUpdate } from "./types";
-import { parseDateInput, addDaysIso, todayIsoDate } from "./dates";
 import { parseManualBillingInput } from "./amounts";
-import { clearBotSession, getBotSession, saveBotSession } from "../domain/bot-sessions";
+import { loadProjectBundle, loadUserProjects } from "./data";
 import {
-  ensureProjectSettings,
-  parseProjectSettings,
-  upsertProjectSettings,
-  type ProjectSettings,
-} from "../domain/project-settings";
-import { getProject, listProjects, touchProjectUpdatedAt, type Project } from "../domain/projects";
-import { createPayment, savePayment } from "../domain/payments";
+  buildBillingKeyboard,
+  buildExportKeyboard,
+  buildLeadsFilterKeyboard,
+  buildMainMenuKeyboard,
+  buildProjectActionsKeyboard,
+  buildProjectListKeyboard,
+} from "./keyboards";
+import {
+  buildBillingScreenMessage,
+  buildCampaignsMessage,
+  buildLeadsMessage,
+  buildMenuMessage,
+  buildPortalMessage,
+  buildProjectCardMessage,
+  buildProjectsListMessage,
+  buildReportMessage,
+  type ProjectListItem,
+} from "./messages";
+import { addDaysIso, parseDateInput, todayIsoDate } from "./dates";
+import type { TelegramUpdate } from "./types";
+
+import { clearBotSession, getBotSession, saveBotSession } from "../domain/bot-sessions";
+import { appendPaymentRecord, type PaymentRecord } from "../domain/spec/payments-history";
+import { putBillingRecord } from "../domain/spec/billing";
+import { getFbAuthRecord } from "../domain/spec/fb-auth";
+import { getMetaCampaignsDocument } from "../domain/spec/meta-campaigns";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
-import { sendTelegramMessage, answerCallbackQuery } from "../services/telegram";
+import { answerCallbackQuery, sendTelegramMessage } from "../services/telegram";
 
 interface BotContext {
   kv: KvClient;
@@ -23,12 +37,28 @@ interface BotContext {
   token: string;
 }
 
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
 const extractUserId = (update: TelegramUpdate): number | null => {
   if (update.message?.from?.id) {
     return update.message.from.id;
   }
   if (update.callback_query?.from?.id) {
     return update.callback_query.from.id;
+  }
+  return null;
+};
+
+const extractChatId = (update: TelegramUpdate): number | null => {
+  if (update.message?.chat?.id) {
+    return update.message.chat.id;
+  }
+  if (update.callback_query?.message?.chat?.id) {
+    return update.callback_query.message.chat.id;
   }
   return null;
 };
@@ -41,92 +71,99 @@ const sendMenu = async (ctx: BotContext, chatId: number): Promise<void> => {
   });
 };
 
-const sendProjectsList = async (ctx: BotContext, chatId: number): Promise<void> => {
-  const projects = await listProjects(ctx.kv);
+const buildProjectListItems = async (
+  ctx: BotContext,
+  userId: number,
+): Promise<ProjectListItem[]> => {
+  const projects = await loadUserProjects(ctx.kv, userId);
+  const items = await Promise.all(
+    projects.map(async (project) => {
+      const campaigns = await getMetaCampaignsDocument(ctx.r2, project.id);
+      return {
+        id: project.id,
+        name: project.name,
+        spend: campaigns?.summary?.spend ?? null,
+        currency: project.settings.currency,
+      } satisfies ProjectListItem;
+    }),
+  );
+  return items;
+};
+
+const sendProjectsList = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  const projects = await buildProjectListItems(ctx, userId);
   await sendTelegramMessage(ctx.token, {
     chatId,
-    text: buildProjectsListMessage(projects.length),
+    text: buildProjectsListMessage(projects),
     replyMarkup: projects.length > 0 ? buildProjectListKeyboard(projects) : undefined,
   });
 };
 
-const loadProjectAndSettings = async (
-  ctx: BotContext,
-  projectId: string,
-): Promise<{ project: Project; settings: ProjectSettings }> => {
-  const project = await getProject(ctx.kv, projectId);
-  const settings = await ensureProjectSettings(ctx.kv, projectId);
-  return { project, settings };
-};
-
-const persistSettings = async (
-  ctx: BotContext,
-  settings: ProjectSettings,
-): Promise<ProjectSettings> => {
-  const updated = parseProjectSettings(settings, settings.projectId);
-  await upsertProjectSettings(ctx.kv, updated);
-  await touchProjectUpdatedAt(ctx.kv, settings.projectId);
-  return updated;
-};
-
-const sendProjectCard = async (
-  ctx: BotContext,
-  chatId: number,
-  project: Project,
-  settings: ProjectSettings,
-): Promise<void> => {
-  const metrics = await loadProjectTodayMetrics(ctx.kv, project.id);
+const sendProjectCard = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   await sendTelegramMessage(ctx.token, {
     chatId,
-    text: buildProjectCardMessage(project, settings, metrics ?? undefined),
-    replyMarkup: buildBillingKeyboard(project.id),
+    text: buildProjectCardMessage(bundle),
+    replyMarkup: buildProjectActionsKeyboard(projectId),
   });
 };
 
-const createPlannedPayment = async (
-  ctx: BotContext,
-  project: Project,
-  settings: ProjectSettings,
-  amount: number,
-  periodStart: string,
-  periodEnd: string,
-  createdBy: number,
-): Promise<void> => {
-  if (!amount || amount <= 0) {
-    return;
-  }
-  const payment = createPayment({
-    projectId: project.id,
-    amount,
-    currency: settings.billing.currency,
-    periodStart,
-    periodEnd,
-    status: "PLANNED",
-    createdBy,
+const sendBillingView = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildBillingScreenMessage(bundle.project, bundle.billing, bundle.payments),
+    replyMarkup: buildBillingKeyboard(projectId),
   });
-  await savePayment(ctx.r2, payment);
+};
+
+const createPaymentRecord = (
+  billing: { amount: number; currency: string },
+  periodFrom: string,
+  periodTo: string,
+  status: PaymentRecord["status"],
+): PaymentRecord => ({
+  id: `pay_${Date.now()}`,
+  amount: billing.amount,
+  currency: billing.currency,
+  periodFrom,
+  periodTo,
+  paidAt: status === "paid" ? new Date().toISOString() : null,
+  status,
+  comment: null,
+});
+
+const notifyBillingChange = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  message: string,
+): Promise<void> => {
+  await sendTelegramMessage(ctx.token, { chatId, text: message });
+  await sendProjectCard(ctx, chatId, projectId);
 };
 
 const handleBillingAdd30 = async (
   ctx: BotContext,
   chatId: number,
-  userId: number,
   projectId: string,
 ): Promise<void> => {
-  const { project, settings } = await loadProjectAndSettings(ctx, projectId);
-  const baseDate = settings.billing.nextPaymentDate ?? todayIsoDate();
-  const newDate = addDaysIso(baseDate, 30);
-  const updated: ProjectSettings = {
-    ...settings,
-    billing: {
-      ...settings.billing,
-      nextPaymentDate: newDate,
-    },
-    updatedAt: new Date().toISOString(),
-  };
-  const saved = await persistSettings(ctx, updated);
-  await createPlannedPayment(ctx, project, saved, saved.billing.tariff, baseDate, newDate, userId);
-  await sendProjectCard(ctx, chatId, project, saved);
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const baseDate = bundle.billing.nextPaymentDate || todayIsoDate();
+  const nextDate = addDaysIso(baseDate, 30);
+  const updated = { ...bundle.billing, nextPaymentDate: nextDate };
+  await putBillingRecord(ctx.kv, projectId, updated);
+  await appendPaymentRecord(
+    ctx.r2,
+    projectId,
+    createPaymentRecord(
+      { amount: bundle.billing.tariff, currency: bundle.billing.currency },
+      baseDate,
+      nextDate,
+      "planned",
+    ),
+  );
+  await notifyBillingChange(ctx, chatId, projectId, `✅ Дата следующего платежа обновлена: ${nextDate}`);
 };
 
 const handleBillingTariff = async (
@@ -135,219 +172,332 @@ const handleBillingTariff = async (
   projectId: string,
   tariff: number,
 ): Promise<void> => {
-  const { project, settings } = await loadProjectAndSettings(ctx, projectId);
-  const updated: ProjectSettings = {
-    ...settings,
-    billing: {
-      ...settings.billing,
-      tariff,
-    },
-    updatedAt: new Date().toISOString(),
-  };
-  const saved = await persistSettings(ctx, updated);
-  await sendProjectCard(ctx, chatId, project, saved);
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const updated = { ...bundle.billing, tariff };
+  await putBillingRecord(ctx.kv, projectId, updated);
+  await notifyBillingChange(
+    ctx,
+    chatId,
+    projectId,
+    `✅ Тариф обновлён: ${new Intl.NumberFormat("ru-RU", {
+      style: "currency",
+      currency: bundle.billing.currency,
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    }).format(tariff)}`,
+  );
 };
 
-const handleBillingDatePrompt = async (
+const handleBillingDateInput = async (
   ctx: BotContext,
   chatId: number,
-  userId: number,
   projectId: string,
-  mode: "billing:set-date" | "billing:manual",
+  dateInput: string,
 ): Promise<void> => {
-  const message =
-    mode === "billing:set-date"
-      ? "Введите дату оплаты в формате YYYY-MM-DD или DD.MM.YYYY"
-      : "Введите сумму и дату через пробел. Пример: 450 2025-12-15";
-  await saveBotSession(ctx.kv, { userId, state: { type: mode, projectId }, updatedAt: new Date().toISOString() });
+  const parsed = parseDateInput(dateInput);
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const updated = { ...bundle.billing, nextPaymentDate: parsed };
+  await putBillingRecord(ctx.kv, projectId, updated);
+  await appendPaymentRecord(
+    ctx.r2,
+    projectId,
+    createPaymentRecord(
+      { amount: bundle.billing.tariff, currency: bundle.billing.currency },
+      parsed,
+      parsed,
+      "planned",
+    ),
+  );
+  await notifyBillingChange(ctx, chatId, projectId, `✅ Дата следующего платежа обновлена: ${parsed}`);
+};
+
+const handleBillingManualInput = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  input: string,
+): Promise<void> => {
+  const { amount, date } = parseManualBillingInput(input);
+  const parsedDate = parseDateInput(date);
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const updated = { ...bundle.billing, tariff: amount, nextPaymentDate: parsedDate };
+  await putBillingRecord(ctx.kv, projectId, updated);
+  await appendPaymentRecord(
+    ctx.r2,
+    projectId,
+    createPaymentRecord({ amount, currency: bundle.billing.currency }, parsedDate, parsedDate, "paid"),
+  );
+  await notifyBillingChange(ctx, chatId, projectId, `✅ Оплата обновлена: ${parsedDate}`);
+};
+
+const sendLeadsSection = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  status: "new" | "processing" | "done" | "trash",
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   await sendTelegramMessage(ctx.token, {
     chatId,
-    text: message,
+    text: buildLeadsMessage(bundle.project, bundle.leads, status),
+    replyMarkup: buildLeadsFilterKeyboard(projectId),
   });
 };
 
-const handleDateSubmission = async (
+const sendReport = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildReportMessage(bundle.project, bundle.campaigns),
+    replyMarkup: buildProjectActionsKeyboard(projectId),
+  });
+};
+
+const sendCampaigns = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildCampaignsMessage(bundle.project, bundle.campaigns),
+    replyMarkup: buildProjectActionsKeyboard(projectId),
+  });
+};
+
+const sendPortalLink = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildPortalMessage(bundle.project),
+    replyMarkup: buildProjectActionsKeyboard(projectId),
+  });
+};
+
+const sendExportMenu = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: "Экспорт данных проекта. Выберите формат:",
+    replyMarkup: buildExportKeyboard(projectId),
+  });
+};
+
+const buildCsv = (rows: string[][]): string =>
+  rows
+    .map((row) =>
+      row
+        .map((cell) => {
+          if (cell.includes(",") || cell.includes("\"")) {
+            return `"${cell.replace(/"/g, '""')}"`;
+          }
+          return cell;
+        })
+        .join(","),
+    )
+    .join("\n");
+
+const sendCsvExport = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  type: "leads" | "campaigns" | "payments",
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  let csv = "";
+  switch (type) {
+    case "leads": {
+      csv = buildCsv([
+        ["id", "name", "phone", "created_at", "status", "campaign"],
+        ...bundle.leads.leads.map((lead) => [
+          lead.id,
+          lead.name,
+          lead.phone,
+          lead.createdAt,
+          lead.status,
+          lead.campaignName,
+        ]),
+      ]);
+      break;
+    }
+    case "campaigns": {
+      csv = buildCsv([
+        ["id", "name", "objective", "spend", "impressions", "clicks", "leads"],
+        ...bundle.campaigns.campaigns.map((campaign) => [
+          campaign.id,
+          campaign.name,
+          campaign.objective,
+          String(campaign.spend),
+          String(campaign.impressions),
+          String(campaign.clicks),
+          String(campaign.leads),
+        ]),
+      ]);
+      break;
+    }
+    case "payments": {
+      csv = buildCsv([
+        ["id", "amount", "currency", "period_from", "period_to", "status", "paid_at"],
+        ...bundle.payments.payments.map((payment) => [
+          payment.id,
+          String(payment.amount),
+          payment.currency,
+          payment.periodFrom,
+          payment.periodTo,
+          payment.status,
+          payment.paidAt ?? "",
+        ]),
+      ]);
+      break;
+    }
+  }
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: `Экспорт (${type.toUpperCase()}):\n<pre>${escapeHtml(csv)}</pre>`,
+    replyMarkup: buildProjectActionsKeyboard(projectId),
+  });
+};
+
+const handleSessionInput = async (
   ctx: BotContext,
   chatId: number,
   userId: number,
-  projectId: string,
   text: string,
-): Promise<void> => {
-  const { project, settings } = await loadProjectAndSettings(ctx, projectId);
-  let isoDate: string;
-  try {
-    isoDate = parseDateInput(text);
-  } catch (error) {
-    await sendTelegramMessage(ctx.token, {
-      chatId,
-      text: `Не удалось обработать дату: ${(error as Error).message}`,
-    });
-    return;
+  sessionState: Awaited<ReturnType<typeof getBotSession>>,
+): Promise<boolean> => {
+  switch (sessionState.state.type) {
+    case "billing:set-date":
+      await handleBillingDateInput(ctx, chatId, sessionState.state.projectId, text);
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    case "billing:manual":
+      await handleBillingManualInput(ctx, chatId, sessionState.state.projectId, text);
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    default:
+      return false;
   }
-  const updated: ProjectSettings = {
-    ...settings,
-    billing: {
-      ...settings.billing,
-      nextPaymentDate: isoDate,
-    },
-    updatedAt: new Date().toISOString(),
-  };
-  const saved = await persistSettings(ctx, updated);
-  await createPlannedPayment(ctx, project, saved, saved.billing.tariff, isoDate, isoDate, userId);
-  await clearBotSession(ctx.kv, userId);
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: "Дата оплаты обновлена",
-  });
-  await sendProjectCard(ctx, chatId, project, saved);
 };
 
-const handleManualSubmission = async (
-  ctx: BotContext,
-  chatId: number,
-  userId: number,
-  projectId: string,
-  text: string,
-): Promise<void> => {
-  let amount: number;
-  let date: string;
-  try {
-    ({ amount, date } = parseManualBillingInput(text));
-  } catch (error) {
+const handleFacebookAuth = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  const record = await getFbAuthRecord(ctx.kv, userId);
+  if (!record) {
     await sendTelegramMessage(ctx.token, {
       chatId,
-      text: `Ошибка: ${(error as Error).message}`,
+      text:
+        "👣 Шаг 1. Авторизация Facebook\nПерейдите по ссылке ниже, авторизуйтесь и пришлите сюда полученный код.\n\n" +
+        "Если у вас уже есть токен — просто отправьте его сообщением.",
     });
     return;
   }
-
-  let isoDate: string;
-  try {
-    isoDate = parseDateInput(date);
-  } catch (error) {
-    await sendTelegramMessage(ctx.token, {
-      chatId,
-      text: `Не удалось обработать дату: ${(error as Error).message}`,
-    });
-    return;
-  }
-  const { project, settings } = await loadProjectAndSettings(ctx, projectId);
-  const updated: ProjectSettings = {
-    ...settings,
-    billing: {
-      ...settings.billing,
-      tariff: amount,
-      nextPaymentDate: isoDate,
-    },
-    updatedAt: new Date().toISOString(),
-  };
-  const saved = await persistSettings(ctx, updated);
-  await createPlannedPayment(ctx, project, saved, amount, isoDate, isoDate, userId);
-  await clearBotSession(ctx.kv, userId);
   await sendTelegramMessage(ctx.token, {
     chatId,
-    text: "Тариф и дата оплаты обновлены",
+    text:
+      `✅ Facebook уже подключён.\nАккаунт: <b>${record.userId}</b>\n` +
+      `Токен действителен до: <b>${record.expiresAt}</b>\n` +
+      "Используйте кнопки ниже для обновления или проверки подключения.",
+    replyMarkup: buildMainMenuKeyboard(),
   });
-  await sendProjectCard(ctx, chatId, project, saved);
 };
 
-export class TelegramBotController {
-  constructor(private readonly context: BotContext) {}
-
-  async handleUpdate(update: TelegramUpdate): Promise<void> {
+const createTelegramBotController = (ctx: BotContext) => ({
+  handleUpdate: async (update: TelegramUpdate): Promise<void> => {
     const userId = extractUserId(update);
-    if (!userId) {
-      return;
-    }
-    if (update.message) {
-      await this.handleMessage(update.message.chat.id, userId, update.message.text ?? "");
-    } else if (update.callback_query) {
-      await this.handleCallback(update.callback_query, userId);
-    }
-  }
-
-  private async handleMessage(chatId: number, userId: number, text: string): Promise<void> {
-    const trimmed = text.trim();
-    if (!trimmed) {
+    const chatId = extractChatId(update);
+    if (userId == null || chatId == null) {
       return;
     }
 
-    const session = await getBotSession(this.context.kv, userId);
-    if (session.state.type === "billing:set-date") {
-      await handleDateSubmission(this.context, chatId, userId, session.state.projectId, trimmed);
-      return;
-    }
-    if (session.state.type === "billing:manual") {
-      await handleManualSubmission(this.context, chatId, userId, session.state.projectId, trimmed);
-      return;
-    }
-
-    if (trimmed === "/start" || trimmed.toLowerCase() === "меню") {
-      await sendMenu(this.context, chatId);
-      return;
-    }
-
-    switch (trimmed.toLowerCase()) {
-      case "проекты":
-        await sendProjectsList(this.context, chatId);
+    if (update.message?.text) {
+      const session = await getBotSession(ctx.kv, userId);
+      if (await handleSessionInput(ctx, chatId, userId, update.message.text, session)) {
         return;
-      case "финансы":
-        await sendTelegramMessage(this.context.token, {
-          chatId,
-          text: "Выберите проект, чтобы управлять оплатой",
-        });
+      }
+
+      const text = update.message.text.trim();
+      if (text === "/start" || text === "Меню") {
+        await sendMenu(ctx, chatId);
         return;
-      default:
-        await sendMenu(this.context, chatId);
+      }
+      if (text === "Авторизация Facebook") {
+        await handleFacebookAuth(ctx, chatId, userId);
         return;
-    }
-  }
-
-  private async handleCallback(query: TelegramUpdate["callback_query"], userId: number): Promise<void> {
-    const callback = query;
-    if (!callback?.data || !callback.message) {
-      return;
-    }
-    const chatId = callback.message.chat.id;
-    const data = callback.data;
-
-    const [namespace, action, projectId, extra] = data.split(":");
-
-    if (namespace === "project" && action) {
-      await answerCallbackQuery(this.context.token, { id: callback.id });
-      const { project, settings } = await loadProjectAndSettings(this.context, action);
-      await sendProjectCard(this.context, chatId, project, settings);
-      await clearBotSession(this.context.kv, userId);
+      }
+      if (text === "Проекты") {
+        await sendProjectsList(ctx, chatId, userId);
+        return;
+      }
+      // default fallback
+      await sendMenu(ctx, chatId);
       return;
     }
 
-    if (namespace === "billing" && projectId) {
-      await answerCallbackQuery(this.context.token, { id: callback.id });
-      switch (action) {
-        case "add30":
-          await handleBillingAdd30(this.context, chatId, userId, projectId);
-          break;
-        case "tariff": {
-          const amount = Number.parseFloat(extra ?? "0");
-          if (!Number.isNaN(amount) && amount > 0) {
-            await handleBillingTariff(this.context, chatId, projectId, amount);
+    if (update.callback_query?.data) {
+      const parts = update.callback_query.data.split(":");
+      const scope = parts[0];
+      switch (scope) {
+        case "project": {
+          const action = parts[1];
+          const projectId = parts[2];
+          if (!action) {
+            break;
+          }
+          if (action === "card" && projectId) {
+            await sendProjectCard(ctx, chatId, projectId);
+          } else if (action === "list") {
+            await sendProjectsList(ctx, chatId, userId);
+          } else if (action === "menu") {
+            await sendMenu(ctx, chatId);
+          } else if (action === "billing" && projectId) {
+            await sendBillingView(ctx, chatId, projectId);
+          } else if (action === "leads" && parts[2] && parts[3]) {
+            await sendLeadsSection(ctx, chatId, parts[3], parts[2] as "new" | "processing" | "done" | "trash");
+          } else if (action === "report" && projectId) {
+            await sendReport(ctx, chatId, projectId);
+          } else if (action === "campaigns" && projectId) {
+            await sendCampaigns(ctx, chatId, projectId);
+          } else if (action === "portal" && projectId) {
+            await sendPortalLink(ctx, chatId, projectId);
+          } else if (action === "export" && projectId) {
+            await sendExportMenu(ctx, chatId, projectId);
+          } else if (action === "export-leads" && projectId) {
+            await sendCsvExport(ctx, chatId, projectId, "leads");
+          } else if (action === "export-campaigns" && projectId) {
+            await sendCsvExport(ctx, chatId, projectId, "campaigns");
+          } else if (action === "export-payments" && projectId) {
+            await sendCsvExport(ctx, chatId, projectId, "payments");
           }
           break;
         }
-        case "set-date":
-          await handleBillingDatePrompt(this.context, chatId, userId, projectId, "billing:set-date");
+        case "billing": {
+          const action = parts[1];
+          const projectId = parts[2];
+          if (!projectId) {
+            break;
+          }
+          if (action === "add30") {
+            await handleBillingAdd30(ctx, chatId, projectId);
+          } else if (action === "tariff" && parts[3]) {
+            await handleBillingTariff(ctx, chatId, projectId, Number(parts[3]));
+          } else if (action === "set-date") {
+            await saveBotSession(ctx.kv, { userId, state: { type: "billing:set-date", projectId }, updatedAt: new Date().toISOString() });
+            await sendTelegramMessage(ctx.token, {
+              chatId,
+              text: "Введите дату оплаты в формате YYYY-MM-DD или DD.MM.YYYY",
+            });
+          } else if (action === "manual") {
+            await saveBotSession(ctx.kv, { userId, state: { type: "billing:manual", projectId }, updatedAt: new Date().toISOString() });
+            await sendTelegramMessage(ctx.token, {
+              chatId,
+              text: "Введите сумму и дату в формате '500 2025-12-15'",
+            });
+          }
           break;
-        case "manual":
-          await handleBillingDatePrompt(this.context, chatId, userId, projectId, "billing:manual");
+        }
+        default:
           break;
       }
-      return;
+      if (update.callback_query.id) {
+        await answerCallbackQuery(ctx.token, { id: update.callback_query.id });
+      }
     }
+  },
+});
 
-    await answerCallbackQuery(this.context.token, { id: callback.id, text: "Команда не поддерживается" });
-  }
-}
-
-export const createTelegramBotController = (context: BotContext): TelegramBotController => {
-  return new TelegramBotController(context);
-};
+export { createTelegramBotController };
