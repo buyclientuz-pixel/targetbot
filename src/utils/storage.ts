@@ -8,6 +8,7 @@ import {
   MetaTokenRecord,
   MetaTokenStatus,
   MetaWebhookEventRecord,
+  MetaCampaign,
   JsonObject,
   PaymentReminderRecord,
   PaymentRecord,
@@ -95,6 +96,18 @@ const CAMPAIGN_OBJECTIVE_KV_PREFIX = "campaign_objective:";
 const CAMPAIGN_KPI_KV_PREFIX = "project_campaign_kpis:";
 const KPI_PENDING_PREFIX = "kpi/pending/";
 const PROJECT_SETTINGS_KV_PREFIX = "project_settings:";
+const PORTAL_REPORT_CACHE_PREFIX = "reports:";
+
+interface PortalReportCacheEntry {
+  campaigns: MetaCampaign[];
+  fetchedAt: string;
+  period: {
+    key: string;
+    since?: string | null;
+    until?: string | null;
+    datePreset?: string | null;
+  };
+}
 
 const PORTAL_ALLOWED_METRICS: PortalMetricKey[] = [
   "leads_total",
@@ -167,12 +180,17 @@ const DEFAULT_PROJECT_SETTINGS: ProjectSettingsRecord = {
     lastSentMonday: null,
   },
   alerts: {
+    enabled: true,
+    route: "chat",
     payment: true,
     budget: true,
     metaApi: true,
     pause: true,
-    target: "admin",
   },
+  autobilling: { enabled: true, route: "chat" },
+  budget: { enabled: true, route: "chat" },
+  metaApi: { enabled: true, route: "chat" },
+  pause: { enabled: true, route: "chat" },
   kpi: {
     default: ["spend", "leads", "cpa"],
     perCampaign: {},
@@ -293,11 +311,56 @@ const sanitizeProjectSettingsRecord = (raw: unknown): ProjectSettingsRecord => {
     autoSource.alerts_target ?? autoSource.alertsTarget ?? alertsSource.route,
     fallback.autoReport.alertsTarget,
   );
+  const alertsEnabled = sanitizeBoolean(
+    alertsSource.enabled ?? alertsSource.payment ?? alertsSource.enabled_flag,
+    fallback.alerts.enabled,
+  );
   const paymentAlert = sanitizeBoolean(alertsSource.payment, fallback.alerts.payment);
   const budgetAlert = sanitizeBoolean(alertsSource.budget, fallback.alerts.budget);
   const metaAlert = sanitizeBoolean(alertsSource.meta_api ?? alertsSource.metaApi, fallback.alerts.metaApi);
   const pauseAlert = sanitizeBoolean(alertsSource.pause, fallback.alerts.pause);
-  const alertsRoute = sanitizeRoutingTarget(alertsSource.route ?? alertsTarget, fallback.alerts.target);
+  const alertsRoute = sanitizeRoutingTarget(
+    alertsSource.route ?? alertsSource.target ?? alertsTarget,
+    fallback.alerts.route,
+  );
+
+  const autobillingSource = (source.autobilling ?? source.payment ?? {}) as Record<string, unknown>;
+  const budgetSource = (source.budget ?? {}) as Record<string, unknown>;
+  const metaRouteSource = (source.meta_api ?? source.metaApiSettings ?? {}) as Record<string, unknown>;
+  const pauseSource = (source.pause ?? {}) as Record<string, unknown>;
+
+  const autobillingEnabled = sanitizeBoolean(
+    autobillingSource.enabled ?? alertsSource.payment,
+    fallback.autobilling.enabled,
+  );
+  const autobillingRoute = sanitizeRoutingTarget(
+    autobillingSource.route ?? alertsRoute,
+    fallback.autobilling.route,
+  );
+  const budgetEnabled = sanitizeBoolean(
+    budgetSource.enabled ?? alertsSource.budget,
+    fallback.budget.enabled,
+  );
+  const budgetRoute = sanitizeRoutingTarget(
+    budgetSource.route ?? alertsRoute,
+    fallback.budget.route,
+  );
+  const metaEnabled = sanitizeBoolean(
+    metaRouteSource.enabled ?? alertsSource.meta_api ?? alertsSource.metaApi,
+    fallback.metaApi.enabled,
+  );
+  const metaRoute = sanitizeRoutingTarget(
+    metaRouteSource.route ?? alertsRoute,
+    fallback.metaApi.route,
+  );
+  const pauseEnabled = sanitizeBoolean(
+    pauseSource.enabled ?? alertsSource.pause,
+    fallback.pause.enabled,
+  );
+  const pauseRoute = sanitizeRoutingTarget(
+    pauseSource.route ?? alertsRoute,
+    fallback.pause.route,
+  );
   const defaultMetrics = sanitizeMetricList(kpiSource.default, fallback.kpi.default);
   const perCampaign = sanitizePerCampaignMetrics(kpiSource.per_campaign ?? kpiSource.perCampaign);
 
@@ -323,11 +386,28 @@ const sanitizeProjectSettingsRecord = (raw: unknown): ProjectSettingsRecord => {
       lastSentMonday: lastMonday,
     },
     alerts: {
+      enabled: alertsEnabled,
+      route: alertsRoute,
       payment: paymentAlert,
       budget: budgetAlert,
       metaApi: metaAlert,
       pause: pauseAlert,
-      target: alertsRoute,
+    },
+    autobilling: {
+      enabled: alertsEnabled && paymentAlert && autobillingEnabled,
+      route: autobillingRoute,
+    },
+    budget: {
+      enabled: alertsEnabled && budgetAlert && budgetEnabled,
+      route: budgetRoute,
+    },
+    metaApi: {
+      enabled: alertsEnabled && metaAlert && metaEnabled,
+      route: metaRoute,
+    },
+    pause: {
+      enabled: alertsEnabled && pauseAlert && pauseEnabled,
+      route: pauseRoute,
     },
     kpi: {
       default: defaultMetrics,
@@ -358,11 +438,28 @@ const serializeProjectSettingsRecord = (record: ProjectSettingsRecord): JsonObje
       last_sent_monday: record.autoReport.lastSentMonday ?? null,
     },
     alerts: {
+      enabled: record.alerts.enabled,
+      route: record.alerts.route,
       payment: record.alerts.payment,
       budget: record.alerts.budget,
       meta_api: record.alerts.metaApi,
       pause: record.alerts.pause,
-      route: record.alerts.target,
+    },
+    autobilling: {
+      enabled: record.autobilling.enabled,
+      route: record.autobilling.route,
+    },
+    budget: {
+      enabled: record.budget.enabled,
+      route: record.budget.route,
+    },
+    meta_api: {
+      enabled: record.metaApi.enabled,
+      route: record.metaApi.route,
+    },
+    pause: {
+      enabled: record.pause.enabled,
+      route: record.pause.route,
     },
     kpi: {
       default: record.kpi.default,
@@ -750,11 +847,29 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       ? new Date(autoOffAtSource).toISOString()
       : null;
 
+  const lastPaymentSource = data.lastPaymentDate ?? data.last_payment_date ?? null;
+  const lastPaymentDate =
+    typeof lastPaymentSource === "string" && lastPaymentSource.trim() && !Number.isNaN(Date.parse(lastPaymentSource))
+      ? new Date(lastPaymentSource).toISOString()
+      : null;
+
   const billingEnabled =
     billingEnabledExplicit !== undefined
       ? billingEnabledExplicit
       : Boolean(nextPaymentDate || (typeof billingAmount === "number" && billingAmount > 0));
   const billingAmountUsd = typeof billingAmount === "number" ? billingAmount : null;
+
+  const autoBillingSource =
+    data.autoBillingEnabled ??
+    data.auto_billing_enabled ??
+    data.billingAutomationEnabled ??
+    data.billing_automation_enabled ??
+    data.billingAutomation ??
+    null;
+  const autoBillingEnabled =
+    autoBillingSource !== null && autoBillingSource !== undefined
+      ? resolveBoolean(autoBillingSource)
+      : billingEnabled;
 
   return {
     id,
@@ -766,8 +881,10 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     nextPaymentDate,
     tariff,
     billingEnabled,
+    autoBillingEnabled,
     billingPlan,
     billingAmountUsd,
+    lastPaymentDate,
     createdAt,
     updatedAt,
     settings,
@@ -911,6 +1028,15 @@ const normalizeTelegramGroupLinkRecord = (
   const updatedAt =
     typeof updatedCandidate === "string" && updatedCandidate.trim() ? updatedCandidate.trim() : undefined;
 
+  const threadCandidate =
+    data.threadId ?? data.thread_id ?? data.messageThreadId ?? data.message_thread_id ?? data.topicId ?? data.topic_id;
+  const threadId =
+    typeof threadCandidate === "number" && Number.isFinite(threadCandidate)
+      ? threadCandidate
+      : typeof threadCandidate === "string" && threadCandidate.trim() && !Number.isNaN(Number(threadCandidate))
+        ? Number(threadCandidate)
+        : null;
+
   return {
     chatId,
     title,
@@ -918,6 +1044,7 @@ const normalizeTelegramGroupLinkRecord = (
     registered,
     linkedProjectId,
     updatedAt,
+    threadId,
   };
 };
 
@@ -987,6 +1114,7 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
     billingAmountUsd: billingAmount,
     billingPlan,
     billingEnabled,
+    lastPaymentDate: coalesce(base.lastPaymentDate, extra.lastPaymentDate, null) ?? null,
     settings: { ...extra.settings, ...base.settings },
     manualKpi:
       base.manualKpi && base.manualKpi.length
@@ -1035,6 +1163,7 @@ const mergeTelegramGroupRecords = (
     members: base.members ?? extra.members ?? null,
     registered: base.registered || extra.registered,
     linkedProjectId: base.linkedProjectId ?? extra.linkedProjectId ?? null,
+    threadId: base.threadId ?? extra.threadId ?? null,
     updatedAt: latest ?? base.updatedAt ?? extra.updatedAt,
   };
 };
@@ -1328,11 +1457,14 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
         next_payment_date: project.nextPaymentDate ?? null,
         tariff: project.tariff ?? 0,
         billing_enabled: project.billingEnabled ?? null,
+        auto_billing_enabled:
+          project.autoBillingEnabled !== undefined ? Boolean(project.autoBillingEnabled) : null,
         billing_plan: project.billingPlan ?? null,
         billing_amount_usd:
           project.billingAmountUsd !== undefined && project.billingAmountUsd !== null
             ? Number(project.billingAmountUsd.toFixed(2))
             : null,
+        last_payment_date: project.lastPaymentDate ?? null,
         created_at: project.createdAt,
         manual_kpi: Array.isArray(project.manualKpi) ? project.manualKpi : [],
         portal_slug: project.portalSlug ?? project.id,
@@ -1504,6 +1636,11 @@ export const updateProjectRecord = async (
     billingEnabledPatch = Boolean(patch.billingEnabled);
   }
 
+  let autoBillingEnabledPatch: boolean | undefined;
+  if (patch.autoBillingEnabled !== undefined) {
+    autoBillingEnabledPatch = Boolean(patch.autoBillingEnabled);
+  }
+
   const resolvedBillingAmount =
     billingAmountPatch !== undefined
       ? billingAmountPatch
@@ -1550,6 +1687,19 @@ export const updateProjectRecord = async (
     }
     return null;
   };
+
+  const resolveAutoBillingEnabled = (): boolean => {
+    if (autoBillingEnabledPatch !== undefined) {
+      return autoBillingEnabledPatch;
+    }
+    if (billingEnabledPatch === false) {
+      return false;
+    }
+    if (typeof current.autoBillingEnabled === "boolean") {
+      return current.autoBillingEnabled;
+    }
+    return resolveBillingEnabled();
+  };
   const resolveAutoOff = (): boolean => {
     if (typeof patch.autoOff === "boolean") {
       return patch.autoOff;
@@ -1587,6 +1737,7 @@ export const updateProjectRecord = async (
           : current.billingAmountUsd ?? null,
     billingPlan: resolveBillingPlan(),
     billingEnabled: resolveBillingEnabled(),
+    autoBillingEnabled: resolveAutoBillingEnabled(),
     autoOff: resolveAutoOff(),
     autoOffAt: resolveAutoOffAt(),
   };
@@ -1771,6 +1922,24 @@ const normalizePaymentReminderRecord = (
       : clientPromptSource === null
         ? null
         : undefined;
+  const exchangeRateSource = data.exchangeRate ?? data.exchange_rate ?? data.rate;
+  const exchangeRateCandidate =
+    typeof exchangeRateSource === "number" && Number.isFinite(exchangeRateSource) && exchangeRateSource > 0
+      ? exchangeRateSource
+      : typeof exchangeRateSource === "string" && exchangeRateSource.trim()
+        ? Number(exchangeRateSource)
+        : null;
+  const exchangeRate =
+    exchangeRateCandidate !== null && Number.isFinite(exchangeRateCandidate) && exchangeRateCandidate > 0
+      ? Number(exchangeRateCandidate)
+      : null;
+  const nextPlannedSource = data.nextPaymentPlannedAt ?? data.next_payment_planned_at ?? data.nextPlannedPaymentAt;
+  const nextPaymentPlannedAt =
+    typeof nextPlannedSource === "string" && nextPlannedSource.trim() && !Number.isNaN(Date.parse(nextPlannedSource))
+      ? new Date(nextPlannedSource).toISOString()
+      : nextPlannedSource === null
+        ? null
+        : undefined;
   return {
     id,
     projectId,
@@ -1786,6 +1955,8 @@ const normalizePaymentReminderRecord = (
     adminChatId,
     clientChatId,
     lastClientPromptAt,
+    exchangeRate: exchangeRate ?? null,
+    nextPaymentPlannedAt: nextPaymentPlannedAt ?? null,
   };
 };
 
@@ -1892,6 +2063,8 @@ export const savePaymentReminders = async (
       admin_chat_id: record.adminChatId ?? null,
       client_chat_id: record.clientChatId ?? null,
       last_client_prompt_at: record.lastClientPromptAt ?? null,
+      exchange_rate: record.exchangeRate ?? null,
+      next_payment_planned_at: record.nextPaymentPlannedAt ?? null,
       created_at: record.createdAt,
       updated_at: record.updatedAt,
     }),
@@ -2221,6 +2394,62 @@ export const savePortals = async (env: EnvBindings, portals: ProjectPortalRecord
   });
 };
 
+const normalizePeriodSegment = (value: string): string => {
+  return value.replace(/[^0-9a-zA-Z_-]/g, "-");
+};
+
+const portalReportCacheKey = (
+  accountId: string,
+  period: PortalReportCacheEntry["period"],
+): string => {
+  const base = normalizePeriodSegment(period.key || "current");
+  const preset = period.datePreset ? normalizePeriodSegment(period.datePreset) : base;
+  const since = period.since ? normalizePeriodSegment(period.since) : "none";
+  const until = period.until ? normalizePeriodSegment(period.until) : "none";
+  return `${PORTAL_REPORT_CACHE_PREFIX}${accountId}:${preset}:${since}:${until}`;
+};
+
+export const readPortalReportCache = async (
+  env: EnvBindings,
+  accountId: string,
+  period: PortalReportCacheEntry["period"],
+): Promise<PortalReportCacheEntry | null> => {
+  const key = portalReportCacheKey(accountId, period);
+  const stored = await env.DB.get(key);
+  if (!stored) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(stored) as PortalReportCacheEntry;
+    if (!Array.isArray(parsed.campaigns)) {
+      throw new Error("Invalid campaigns payload");
+    }
+    return parsed;
+  } catch (error) {
+    console.warn("Failed to parse portal report cache", { key, error });
+    await env.DB.delete(key).catch(() => undefined);
+    return null;
+  }
+};
+
+export const writePortalReportCache = async (
+  env: EnvBindings,
+  accountId: string,
+  period: PortalReportCacheEntry["period"],
+  campaigns: MetaCampaign[],
+  ttlSeconds = 300,
+): Promise<void> => {
+  const key = portalReportCacheKey(accountId, period);
+  const entry: PortalReportCacheEntry = {
+    campaigns,
+    fetchedAt: new Date().toISOString(),
+    period,
+  };
+  await env.DB.put(key, JSON.stringify(entry, null, 0), {
+    expirationTtl: Math.max(60, ttlSeconds),
+  });
+};
+
 export const loadPortalById = async (
   env: EnvBindings,
   portalId: string,
@@ -2492,6 +2721,7 @@ export const saveTelegramGroupLinks = async (
       members: record.members ?? null,
       registered: Boolean(record.registered),
       linked_project_id: record.linkedProjectId ?? null,
+      thread_id: record.threadId ?? null,
     }),
   });
 };

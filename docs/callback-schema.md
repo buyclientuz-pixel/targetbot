@@ -56,13 +56,13 @@
 | `payments:set_plan_500:{projectId}` | Установить тариф 500 $ и включить биллинг. |
 | `payments:ask_date_picker:{projectId}` | Запросить у администратора дату следующего платежа (ручной ввод). |
 | `payments:ask_date_manual:{projectId}` | Альтернативный callback для ручного ввода даты платежа. |
-| `proj:billing-reminder-decline:{projectId}` | Администратор фиксирует отказ клиента от продления. |
-| `proj:billing-reminder-continue:{projectId}` | Администратор отправляет запрос формата оплаты в клиентскую группу. |
-| `proj:billing-reminder-cash:{projectId}` | Клиент выбирает оплату наличными. |
-| `proj:billing-reminder-transfer:{projectId}` | Клиент запрашивает реквизиты для перевода. |
-| `proj:billing-reminder-transfer-done:{projectId}` | Клиент подтверждает перевод средств. |
-| `proj:billing-reminder-confirm:{projectId}` | Администратор подтверждает поступление оплаты. |
-| `proj:billing-reminder-error:{projectId}` | Администратор отмечает ошибку и сбрасывает напоминание. |
+| `payments:renew_no:{projectId}` | Администратор фиксирует отказ клиента от продления. |
+| `payments:renew_yes:{projectId}` | Администратор отправляет запрос формата оплаты в клиентскую группу. |
+| `payments:pay_cash:{projectId}:{messageId}` | Клиент выбирает оплату наличными. |
+| `payments:pay_card:{projectId}:{messageId}` | Клиент запрашивает реквизиты для перевода. |
+| `payments:pay_done:{projectId}:{messageId}` | Клиент подтверждает перевод средств. |
+| `payments:confirm:{projectId}` | Администратор подтверждает поступление оплаты. |
+| `payments:error:{projectId}` | Администратор отмечает ошибку и сбрасывает напоминание. |
 
 ## KPI (`PROJECT_KPI_*`, `CAMPAIGN_KPI_*`, `KPI_*`)
 
@@ -76,7 +76,7 @@
 | `KPI_SAVE_DEFAULT:{projectId}:{campaignId}` | Сохранить выбранные KPI кампании как дефолтные (используются во всех отчётах). |
 | `KPI_SAVE_ONCE:{projectId}` | Использовать выбранные KPI проекта один раз (без сохранения). |
 | `KPI_SAVE_ONCE:{projectId}:{campaignId}` | Использовать выбранные KPI кампании один раз для текущего отчёта. |
-| `proj:billing-reminder-wait:{projectId}` | Администратор откладывает подтверждение (следующий follow-up через час). |
+| `payments:wait:{projectId}` | Администратор откладывает подтверждение (следующий follow-up через час). |
 | `proj:edit:{projectId}` | Управление основными данными проекта (переименование, быстрые ссылки). |
 | `proj:edit-name:{projectId}` | Запустить ввод нового названия проекта. |
 | `proj:edit-cancel:{projectId}` | Отменить операцию редактирования проекта. |
@@ -193,7 +193,7 @@
 - 2025-02-24 — Нормализация ссылок Telegram для `proj:view`/`proj:chat` не потребовала новых callback'ов: используются прежние `proj:*` шаблоны, а URL формируются на лету.
 - 2025-02-24 — Новых callback'ов не добавлено: портал теперь формирует ссылку через fallback-домен, но использует прежние `proj:portal-*` шаблоны.
 - 2025-02-25 — `payments:{add_30_days|set_plan_350|set_plan_500|ask_date_*}` заменили старые `proj:billing-next/tariff*`; legacy callbacks оставлены для обратной совместимости.
-- 2025-02-24 — Добавлены сценарии напоминаний оплаты: `proj:billing-reminder-{decline|continue|cash|transfer|transfer-done|confirm|error|wait}`.
+- 2025-02-24 — Добавлены сценарии напоминаний оплаты: `payments:{renew_no|renew_yes|pay_cash|pay_card|pay_done|confirm|error|wait}`.
 - 2025-02-23 — Регрессионный QA-раннер `npm run qa` не добавил новых callback'ов; актуальная схема подтверждена и использует те же пространства `cmd`, `proj`, `meta`, `user`, `analytics`, `report`.
 - 2025-02-21 — Добавлены callback'и управления порталом (`proj:portal-*`), пресеты отчётных периодов (`proj:report-period`, `proj:report-send`), мультивыбор кампаний (`proj:campaign-*`).
 - 2025-02-22 — Сохранение кампаний через `proj:campaign-action:*:save` синхронизирует портал и автоотчёты; `proj:portal-metric-toggle` и `proj:portal-campaign-*` обновляют общий набор метрик/кампаний для отчётов и портала.
