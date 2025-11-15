@@ -64,12 +64,13 @@ const installFetchStub = (
 const createController = (
   kv: InstanceType<typeof KvClient>,
   r2: InstanceType<typeof R2Client>,
+  overrides?: { workerUrl?: string },
 ) =>
   createTelegramBotController({
     kv,
     r2,
     token: "test-token",
-    workerUrl: "th-reports.buyclientuz.workers.dev",
+    workerUrl: overrides?.workerUrl ?? "th-reports.buyclientuz.workers.dev",
     telegramSecret: "secret",
     defaultTimezone: "Asia/Tashkent",
     adminIds: [999999],
@@ -163,6 +164,12 @@ test("Telegram bot controller serves menu and project list", async () => {
 
     assert.ok(stub.requests.length >= 1);
     assert.ok(String(stub.requests[0]?.body.text).includes("Главное меню"));
+    const menuKeyboard = stub.requests[0]?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; url?: string; callback_data?: string }>>;
+    };
+    assert.ok(menuKeyboard);
+    assert.equal(menuKeyboard.inline_keyboard[0]?.[0]?.url, "https://th-reports.buyclientuz.workers.dev/fb-auth");
+    assert.equal(menuKeyboard.inline_keyboard[0]?.[1]?.callback_data, "cmd:meta");
 
     stub.requests.length = 0;
 
@@ -221,6 +228,74 @@ test("Telegram bot controller shows project card and handles +30 billing", async
     const payments = await getPaymentsHistoryDocument(r2, "proj_a");
     assert.equal(payments?.payments.length, 1);
     assert.equal(payments?.payments[0]?.periodTo, "2025-01-31");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("cmd:meta shows stored ad accounts", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await putFbAuthRecord(kv, {
+    userId: 100,
+    accessToken: "token",
+    expiresAt: "2026-01-01T00:00:00.000Z",
+    adAccounts: [
+      { id: "act_1", name: "BirLash", currency: "USD" },
+      { id: "act_2", name: "Test", currency: "USD" },
+    ],
+  });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-meta",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "cmd:meta",
+      },
+    } as unknown as TelegramUpdate);
+
+    const lastMessage = findLastSendMessage(stub.requests);
+    assert.ok(lastMessage);
+    assert.ok(String(lastMessage.body.text).includes("Доступные рекламные аккаунты"));
+    assert.ok(String(lastMessage.body.text).includes("BirLash"));
+  } finally {
+    stub.restore();
+  }
+});
+
+test("cmd:webhooks normalises worker URL", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+
+  const controller = createController(kv, r2, {
+    workerUrl: "https://th-reports.buyclientuz.workers.dev/",
+  });
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-webhook",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "cmd:webhooks",
+      },
+    } as unknown as TelegramUpdate);
+
+    const lastMessage = findLastSendMessage(stub.requests);
+    assert.ok(lastMessage);
+    assert.ok(
+      String(lastMessage.body.text).includes(
+        "https://th-reports.buyclientuz.workers.dev/tg-webhook?secret=secret",
+      ),
+    );
+    assert.ok(!String(lastMessage.body.text).includes("https://https://"));
   } finally {
     stub.restore();
   }

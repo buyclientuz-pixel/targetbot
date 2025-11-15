@@ -5,7 +5,7 @@ import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { ChatRegistryEntry } from "../domain/chat-registry";
 
 import type { ProjectListItem } from "./messages";
-import type { InlineKeyboardMarkup, ReplyKeyboardMarkup } from "./types";
+import type { InlineKeyboardMarkup } from "./types";
 
 const formatMoney = (value: number | null, currency: string): string => {
   if (value == null) {
@@ -19,24 +19,32 @@ const formatMoney = (value: number | null, currency: string): string => {
   }).format(value);
 };
 
-export const buildMainMenuKeyboard = (): ReplyKeyboardMarkup => ({
-  resize_keyboard: true,
-  keyboard: [
-    [
-      { text: "Авторизация Facebook" },
-      { text: "Проекты" },
+interface MainMenuKeyboardOptions {
+  facebookAuthUrl?: string | null;
+}
+
+export const buildMainMenuKeyboard = (options: MainMenuKeyboardOptions): InlineKeyboardMarkup => {
+  const facebookButton = options.facebookAuthUrl
+    ? { text: "Авторизация Facebook", url: options.facebookAuthUrl }
+    : { text: "Авторизация Facebook", callback_data: "cmd:auth" };
+  return {
+    inline_keyboard: [
+      [facebookButton, { text: "Meta-аккаунты", callback_data: "cmd:meta" }],
+      [
+        { text: "Проекты", callback_data: "cmd:projects" },
+        { text: "Аналитика", callback_data: "cmd:analytics" },
+      ],
+      [
+        { text: "Пользователи", callback_data: "cmd:users" },
+        { text: "Финансы", callback_data: "cmd:finance" },
+      ],
+      [
+        { text: "Настройки", callback_data: "cmd:settings" },
+        { text: "Вебхуки Telegram", callback_data: "cmd:webhooks" },
+      ],
     ],
-    [
-      { text: "Аналитика" },
-      { text: "Пользователи" },
-    ],
-    [
-      { text: "Финансы" },
-      { text: "Вебхуки Telegram" },
-    ],
-    [{ text: "Настройки" }],
-  ],
-});
+  };
+};
 
 export const buildProjectListKeyboard = (projects: ProjectListItem[]): InlineKeyboardMarkup => ({
   inline_keyboard: projects.map((project, index) => [

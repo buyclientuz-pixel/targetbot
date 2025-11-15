@@ -75,8 +75,21 @@ import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
 import { answerCallbackQuery, getTelegramChatInfo, getWebhookInfo, sendTelegramMessage } from "../services/telegram";
 import { fetchFacebookAdAccounts } from "../services/facebook-auth";
+import { normaliseBaseUrl } from "../utils/url";
 
 interface BotContext {
+  kv: KvClient;
+  r2: R2Client;
+  token: string;
+  workerBaseUrl: string;
+  facebookAuthUrl: string | null;
+  telegramSecret: string;
+  defaultTimezone: string;
+  adminIds: number[];
+  menuKeyboard: ReturnType<typeof buildMainMenuKeyboard>;
+}
+
+interface CreateTelegramBotControllerOptions {
   kv: KvClient;
   r2: R2Client;
   token: string;
@@ -85,6 +98,9 @@ interface BotContext {
   defaultTimezone: string;
   adminIds: number[];
 }
+
+const DEFAULT_WORKER_DOMAIN = "th-reports.buyclientuz.workers.dev";
+const FACEBOOK_AUTH_GUIDE_FALLBACK = "https://developers.facebook.com/tools/explorer/";
 
 const escapeHtml = (value: string): string =>
   value
@@ -120,11 +136,12 @@ const recordChatFromUpdate = async (ctx: BotContext, update: TelegramUpdate): Pr
   await recordKnownChat(ctx.kv, { id: chat.id, title: chat.title, type: chat.type });
 };
 
-const sendMenu = async (ctx: BotContext, chatId: number): Promise<void> => {
+const sendMenu = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  const fbAuth = await getFbAuthRecord(ctx.kv, userId);
   await sendTelegramMessage(ctx.token, {
     chatId,
-    text: buildMenuMessage(),
-    replyMarkup: buildMainMenuKeyboard(),
+    text: buildMenuMessage({ fbAuth }),
+    replyMarkup: ctx.menuKeyboard,
   });
 };
 
@@ -435,7 +452,7 @@ const sendAnalyticsOverview = async (ctx: BotContext, chatId: number, userId: nu
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildAnalyticsOverviewMessage(overview),
-    replyMarkup: buildMainMenuKeyboard(),
+    replyMarkup: ctx.menuKeyboard,
   });
 };
 
@@ -444,7 +461,7 @@ const sendUsersOverview = async (ctx: BotContext, chatId: number, userId: number
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildUsersMessage(projects, ctx.adminIds, userId),
-    replyMarkup: buildMainMenuKeyboard(),
+    replyMarkup: ctx.menuKeyboard,
   });
 };
 
@@ -453,15 +470,14 @@ const sendFinanceOverview = async (ctx: BotContext, chatId: number, userId: numb
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildFinanceOverviewMessage(finance),
-    replyMarkup: buildMainMenuKeyboard(),
+    replyMarkup: ctx.menuKeyboard,
   });
 };
 
 const sendWebhookStatus = async (ctx: BotContext, chatId: number): Promise<void> => {
   const info = await getWebhookInfo(ctx.token);
-  const expectedUrl = ctx.telegramSecret
-    ? `https://${ctx.workerUrl}/tg-webhook?secret=${ctx.telegramSecret}`
-    : `https://${ctx.workerUrl}/tg-webhook`;
+  const suffix = ctx.telegramSecret ? `?secret=${ctx.telegramSecret}` : "";
+  const expectedUrl = ctx.workerBaseUrl ? `${ctx.workerBaseUrl}/tg-webhook${suffix}` : `/tg-webhook${suffix}`;
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildWebhookStatusMessage({
@@ -473,7 +489,7 @@ const sendWebhookStatus = async (ctx: BotContext, chatId: number): Promise<void>
         ? new Date(info.last_error_date * 1000).toISOString()
         : null,
     }),
-    replyMarkup: buildMainMenuKeyboard(),
+    replyMarkup: ctx.menuKeyboard,
   });
 };
 
@@ -591,6 +607,23 @@ const formatAdAccounts = (accounts: FbAuthRecord["adAccounts"]): string => {
   ].join("\n");
 };
 
+const sendMetaAccountsList = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  const record = await getFbAuthRecord(ctx.kv, userId);
+  if (!record) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: "⚠️ Facebook не подключён. Нажмите «Авторизация Facebook», чтобы получить токен.",
+      replyMarkup: ctx.menuKeyboard,
+    });
+    return;
+  }
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: formatAdAccounts(record.adAccounts),
+    replyMarkup: ctx.menuKeyboard,
+  });
+};
+
 const handleFacebookAuth = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
   const record = await getFbAuthRecord(ctx.kv, userId);
   if (!record) {
@@ -639,7 +672,7 @@ const handleFacebookTokenInput = async (
       text:
         "✅ Facebook подключён. Аккаунт сохранён, можно возвращаться к проектам." +
         accountLines.join("\n"),
-      replyMarkup: buildMainMenuKeyboard(),
+      replyMarkup: ctx.menuKeyboard,
     });
   } catch (error) {
     await sendTelegramMessage(ctx.token, {
@@ -931,10 +964,13 @@ const handleTextCommand = async (
   switch (text) {
     case "/start":
     case "Меню":
-      await sendMenu(ctx, chatId);
+      await sendMenu(ctx, chatId, userId);
       return;
     case "Авторизация Facebook":
       await handleFacebookAuth(ctx, chatId, userId);
+      return;
+    case "Meta-аккаунты":
+      await sendMetaAccountsList(ctx, chatId, userId);
       return;
     case "Проекты":
       await sendProjectsList(ctx, chatId, userId);
@@ -955,7 +991,7 @@ const handleTextCommand = async (
       await sendSettingsScreen(ctx, chatId, userId);
       return;
     default:
-      await sendMenu(ctx, chatId);
+      await sendMenu(ctx, chatId, userId);
   }
 };
 
@@ -978,7 +1014,7 @@ const handleCallback = async (
           await sendProjectsList(ctx, chatId, userId);
           break;
         case "menu":
-          await sendMenu(ctx, chatId);
+          await sendMenu(ctx, chatId, userId);
           break;
         case "billing":
           await sendBillingView(ctx, chatId, parts[2]!);
@@ -1210,37 +1246,84 @@ const handleCallback = async (
       }
       break;
     }
+    case "cmd": {
+      const action = parts[1];
+      switch (action) {
+        case "menu":
+          await sendMenu(ctx, chatId, userId);
+          break;
+        case "auth":
+          await handleFacebookAuth(ctx, chatId, userId);
+          break;
+        case "projects":
+          await sendProjectsList(ctx, chatId, userId);
+          break;
+        case "analytics":
+          await sendAnalyticsOverview(ctx, chatId, userId);
+          break;
+        case "users":
+          await sendUsersOverview(ctx, chatId, userId);
+          break;
+        case "finance":
+          await sendFinanceOverview(ctx, chatId, userId);
+          break;
+        case "settings":
+          await sendSettingsScreen(ctx, chatId, userId);
+          break;
+        case "meta":
+          await sendMetaAccountsList(ctx, chatId, userId);
+          break;
+        case "webhooks":
+          await sendWebhookStatus(ctx, chatId);
+          break;
+        default:
+          await sendMenu(ctx, chatId, userId);
+          break;
+      }
+      break;
+    }
     default:
       break;
   }
 };
 
-const createTelegramBotController = (ctx: BotContext) => ({
-  handleUpdate: async (update: TelegramUpdate): Promise<void> => {
-    const userId = extractUserId(update);
-    const chatId = extractChatId(update);
-    if (userId == null || chatId == null) {
-      return;
-    }
-    await recordChatFromUpdate(ctx, update);
+const createTelegramBotController = (options: CreateTelegramBotControllerOptions) => {
+  const workerBaseUrl = normaliseBaseUrl(options.workerUrl, DEFAULT_WORKER_DOMAIN);
+  const facebookAuthUrl = workerBaseUrl ? `${workerBaseUrl}/fb-auth` : FACEBOOK_AUTH_GUIDE_FALLBACK;
+  const ctx: BotContext = {
+    ...options,
+    workerBaseUrl,
+    facebookAuthUrl,
+    menuKeyboard: buildMainMenuKeyboard({ facebookAuthUrl }),
+  };
 
-    if (update.message?.text) {
-      const session = await getBotSession(ctx.kv, userId);
-      if (await handleSessionInput(ctx, chatId, userId, update.message.text, session)) {
+  return {
+    handleUpdate: async (update: TelegramUpdate): Promise<void> => {
+      const userId = extractUserId(update);
+      const chatId = extractChatId(update);
+      if (userId == null || chatId == null) {
         return;
       }
-      await handleTextCommand(ctx, chatId, userId, update.message.text.trim());
-      return;
-    }
+      await recordChatFromUpdate(ctx, update);
 
-    if (update.callback_query?.data) {
-      await handleCallback(ctx, chatId, userId, update.callback_query.data);
-      if (update.callback_query.id) {
-        await answerCallbackQuery(ctx.token, { id: update.callback_query.id });
+      if (update.message?.text) {
+        const session = await getBotSession(ctx.kv, userId);
+        if (await handleSessionInput(ctx, chatId, userId, update.message.text, session)) {
+          return;
+        }
+        await handleTextCommand(ctx, chatId, userId, update.message.text.trim());
+        return;
       }
-    }
-  },
-});
+
+      if (update.callback_query?.data) {
+        await handleCallback(ctx, chatId, userId, update.callback_query.data);
+        if (update.callback_query.id) {
+          await answerCallbackQuery(ctx.token, { id: update.callback_query.id });
+        }
+      }
+    },
+  };
+};
 
 export { createTelegramBotController };
 

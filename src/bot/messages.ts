@@ -7,6 +7,7 @@ import type { MetaCampaignsDocument } from "../domain/spec/meta-campaigns";
 import type { PaymentsHistoryDocument } from "../domain/spec/payments-history";
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { ChatRegistryEntry } from "../domain/chat-registry";
+import type { FbAuthRecord } from "../domain/spec/fb-auth";
 
 import type { AnalyticsOverview, FinanceOverview, ProjectBundle } from "./data";
 
@@ -51,6 +52,22 @@ const formatDate = (value: string | null | undefined): string => {
   const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
   const year = date.getUTCFullYear();
   return `${day}.${month}.${year}`;
+};
+
+const formatDateTime = (value: string | null | undefined): string => {
+  if (!value) {
+    return "—";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return escapeHtml(value);
+  }
+  const day = `${date.getUTCDate()}`.padStart(2, "0");
+  const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
+  const year = date.getUTCFullYear();
+  const hours = `${date.getUTCHours()}`.padStart(2, "0");
+  const minutes = `${date.getUTCMinutes()}`.padStart(2, "0");
+  return `${day}.${month}.${year}, ${hours}:${minutes}`;
 };
 
 const formatBoolean = (value: boolean, labels: { true: string; false: string }): string =>
@@ -136,11 +153,23 @@ export interface ProjectListItem {
   currency: string;
 }
 
-export const buildMenuMessage = (): string =>
-  [
-    "Главное меню",
-    "Выберите раздел: авторизация, проекты, аналитика или финансовые настройки.",
-  ].join("\n");
+export const buildMenuMessage = (options: { fbAuth: FbAuthRecord | null }): string => {
+  const lines: string[] = [];
+  if (options.fbAuth) {
+    lines.push("Facebook: ✅ Подключено");
+    lines.push(`Аккаунт: <b>${options.fbAuth.userId}</b>`);
+    lines.push(`Токен действителен до: <b>${formatDateTime(options.fbAuth.expiresAt)}</b>`);
+    lines.push("Все разделы доступны через кнопки ниже.");
+  } else {
+    lines.push("Facebook: ⚠️ Не подключено");
+    lines.push("Нажмите «Авторизация Facebook», чтобы подключить рекламный кабинет.");
+    lines.push("После получения токена пришлите его в этот чат.");
+  }
+  lines.push("");
+  lines.push("Главное меню");
+  lines.push("Выберите раздел: авторизация, проекты, аналитика или финансовые настройки.");
+  return lines.join("\n");
+};
 
 export const buildProjectsListMessage = (projects: ProjectListItem[]): string => {
   if (projects.length === 0) {

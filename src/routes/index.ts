@@ -5,6 +5,7 @@ import { registerProjectRoutes } from "./projects";
 import { registerTelegramRoutes } from "./telegram";
 import { registerPortalRoutes } from "./portal";
 import { registerAdminRoutes } from "./admin";
+import { registerAuthRoutes } from "./auth";
 
 export const registerCoreRoutes = (router: Router): void => {
   router.on("GET", "/healthz", async () => {
@@ -16,4 +17,5 @@ export const registerCoreRoutes = (router: Router): void => {
   registerPortalRoutes(router);
   registerTelegramRoutes(router);
   registerAdminRoutes(router);
+  registerAuthRoutes(router);
 };
