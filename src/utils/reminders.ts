@@ -219,25 +219,17 @@ const buildLeadReminderMessage = (
 ): string => {
   const lines = [
     "⏰ <b>Напоминание по лиду</b>",
-    `Проект: <b>${escapeHtml(project.name)}</b>`,
-    `Заявка: <b>${escapeHtml(lead.name)}</b>`,
+    `<b>${escapeHtml(lead.name)}</b>`,
+    `Команда проекта — <b>${escapeHtml(project.name)}</b>`,
   ];
   if (lead.phone) {
     lines.push(`Телефон: <code>${escapeHtml(lead.phone)}</code>`);
   }
-  lines.push(`Источник: ${escapeHtml(lead.source)}`);
-  lines.push(`Создан: ${escapeHtml(formatDateTime(lead.createdAt))}`);
-  lines.push(`Ожидает: ${escapeHtml(formatDurationMinutes(waitMinutes))}`);
-  lines.push("", "Обновите статус лида, чтобы снять напоминание.");
+  lines.push(`Получен ${escapeHtml(formatDateTime(lead.createdAt))}`);
+  lines.push(`В очереди уже ${escapeHtml(formatDurationMinutes(waitMinutes))}`);
+  lines.push("", "Откройте список лидов в боте, чтобы обновить статус.");
   return lines.join("\n");
 };
-
-const buildLeadReminderMarkup = (projectId: string) => ({
-  inline_keyboard: [
-    [{ text: "💬 Обработать лиды", callback_data: `proj:leads:${projectId}` }],
-    [{ text: "🏗 Карточка проекта", callback_data: `proj:view:${projectId}` }],
-  ],
-});
 
 export const formatUsdAmount = (value: number): string => {
   if (!Number.isFinite(value) || value <= 0) {
@@ -294,7 +286,6 @@ const sendLeadReminder = async (
       chatId,
       threadId: project.telegramThreadId,
       text: buildLeadReminderMessage(project, lead, waitMinutes),
-      replyMarkup: buildLeadReminderMarkup(project.id),
     });
     return true;
   } catch (error) {
