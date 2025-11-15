@@ -50,7 +50,6 @@ import {
   MetaAdAccount,
   MetaCampaign,
   LeadRecord,
-  LeadReminderRecord,
   PaymentReminderRecord,
   ProjectRecord,
   ProjectSummary,
@@ -159,17 +158,6 @@ const createSchedule = (overrides: Partial<ReportScheduleRecord> = {}): ReportSc
 test("evaluateQaDataset flags missing references and reschedules schedules", () => {
   const projects = [createProject("p1")];
   const leads: LeadRecord[] = [createLead("l1", "p1")];
-  const leadReminders: LeadReminderRecord[] = [
-    {
-      id: "lr1",
-      leadId: "missing",
-      projectId: "p1",
-      status: "pending",
-      notifiedCount: 0,
-      createdAt: new Date("2025-02-21T10:00:00Z").toISOString(),
-      updatedAt: new Date("2025-02-21T10:00:00Z").toISOString(),
-    },
-  ];
   const paymentReminders: PaymentReminderRecord[] = [
     {
       id: "pr1",
@@ -196,7 +184,6 @@ test("evaluateQaDataset flags missing references and reschedules schedules", () 
   const evaluation = evaluateQaDataset({
     projects,
     leads,
-    leadReminders,
     paymentReminders,
     schedules,
     now: new Date("2025-02-22T12:00:00Z"),
@@ -204,7 +191,6 @@ test("evaluateQaDataset flags missing references and reschedules schedules", () 
 
   expect.equal(evaluation.scheduleIssues, 1);
   expect.equal(evaluation.scheduleRescheduled, 1);
-  expect.equal(evaluation.leadReminderIssues, 1);
   expect.equal(evaluation.paymentReminderIssues, 1);
   expect.ok(evaluation.projectIssueIds.includes("p-missing"));
   expect.ok(evaluation.issues.some((issue) => issue.type === "schedule"));
@@ -372,17 +358,6 @@ test("resolveChatLink prefers explicit link but falls back to chat id", () => {
 test("evaluateQaDataset keeps clean dataset untouched", () => {
   const projects = [createProject("p1")];
   const leads = [createLead("l1", "p1")];
-  const leadReminders: LeadReminderRecord[] = [
-    {
-      id: "lr1",
-      leadId: "l1",
-      projectId: "p1",
-      status: "pending",
-      notifiedCount: 0,
-      createdAt: new Date("2025-02-21T10:00:00Z").toISOString(),
-      updatedAt: new Date("2025-02-21T10:00:00Z").toISOString(),
-    },
-  ];
   const paymentReminders: PaymentReminderRecord[] = [
     {
       id: "pr1",
@@ -409,7 +384,6 @@ test("evaluateQaDataset keeps clean dataset untouched", () => {
   const evaluation = evaluateQaDataset({
     projects,
     leads,
-    leadReminders,
     paymentReminders,
     schedules,
     now: new Date("2025-02-22T12:00:00Z"),
@@ -417,7 +391,6 @@ test("evaluateQaDataset keeps clean dataset untouched", () => {
 
   expect.equal(evaluation.scheduleIssues, 0);
   expect.equal(evaluation.scheduleRescheduled, 0);
-  expect.equal(evaluation.leadReminderIssues, 0);
   expect.equal(evaluation.paymentReminderIssues, 0);
   expect.deepEqual(evaluation.projectIssueIds, []);
   expect.equal(

@@ -8,7 +8,7 @@ export const jsonResponse = <T>(
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json; charset=utf-8");
   }
-  return new Response(JSON.stringify(payload, null, 2), { ...init, headers });
+  return new Response(JSON.stringify(payload), { ...init, headers });
 };
 
 export const htmlResponse = (html: string, init: ResponseInit = {}): Response => {

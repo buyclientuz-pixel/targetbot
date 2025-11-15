@@ -2,12 +2,12 @@ import {
   ChatRegistrationRecord,
   CommandLogRecord,
   LeadRecord,
-  LeadReminderRecord,
   MetaAccountLinkRecord,
   MetaProjectLinkRecord,
   MetaTokenRecord,
   MetaTokenStatus,
   MetaWebhookEventRecord,
+  MetaCampaign,
   JsonObject,
   PaymentReminderRecord,
   PaymentRecord,
@@ -16,6 +16,9 @@ import {
   PendingPortalOperation,
   PendingProjectEditOperation,
   PortalMetricKey,
+  PortalSnapshotCacheDescriptor,
+  PortalSnapshotCacheEntry,
+  PortalComputationResult,
   ProjectBillingState,
   ProjectDeletionSummary,
   ProjectPortalRecord,
@@ -46,7 +49,6 @@ const SETTINGS_KEY = "settings/index.json";
 const COMMAND_LOG_KEY = "logs/commands.json";
 const REPORT_SESSION_PREFIX = "reports/session/";
 const REPORT_ASSET_PREFIX = "reports/assets/";
-const LEAD_REMINDER_INDEX_KEY = "reminders/leads.json";
 const PAYMENT_REMINDER_INDEX_KEY = "reminders/payments.json";
 const CHAT_REGISTRY_KEY = "chats/index.json";
 const META_ACCOUNTS_KEY = "meta/accounts.json";
@@ -67,7 +69,6 @@ const PROJECT_KV_INDEX_KEY = "projects:index";
 const META_KV_INDEX_KEY = "meta:index";
 const LEAD_KV_INDEX_PREFIX = "leads:index:";
 const META_WEBHOOK_KV_INDEX_KEY = "meta:webhook:index";
-const LEAD_REMINDER_KV_INDEX_KEY = "reminders:lead:index";
 const PAYMENT_REMINDER_KV_INDEX_KEY = "reminders:payment:index";
 const REPORT_SCHEDULE_KV_INDEX_KEY = "reports:schedule:index";
 const REPORT_DELIVERY_KV_INDEX_KEY = "reports:delivery:index";
@@ -79,7 +80,6 @@ const PROJECT_KV_PREFIX = "project:";
 const META_KV_PREFIX = "meta:";
 const LEAD_KV_PREFIX = "leads:";
 const META_WEBHOOK_KV_PREFIX = "meta:webhook:event:";
-const LEAD_REMINDER_KV_PREFIX = "reminders:lead:";
 const PAYMENT_REMINDER_KV_PREFIX = "reminders:payment:";
 const REPORT_SCHEDULE_KV_PREFIX = "reports:schedule:";
 const REPORT_DELIVERY_KV_PREFIX = "reports:delivery:";
@@ -95,6 +95,20 @@ const CAMPAIGN_OBJECTIVE_KV_PREFIX = "campaign_objective:";
 const CAMPAIGN_KPI_KV_PREFIX = "project_campaign_kpis:";
 const KPI_PENDING_PREFIX = "kpi/pending/";
 const PROJECT_SETTINGS_KV_PREFIX = "project_settings:";
+const PORTAL_REPORT_CACHE_PREFIX = "reports:";
+const PORTAL_SNAPSHOT_CACHE_PREFIX = "portal_snapshot:";
+const LEAD_NOTIFICATION_INDEX_PREFIX = "lead_notifications:";
+
+interface PortalReportCacheEntry {
+  campaigns: MetaCampaign[];
+  fetchedAt: string;
+  period: {
+    key: string;
+    since?: string | null;
+    until?: string | null;
+    datePreset?: string | null;
+  };
+}
 
 const PORTAL_ALLOWED_METRICS: PortalMetricKey[] = [
   "leads_total",
@@ -167,12 +181,17 @@ const DEFAULT_PROJECT_SETTINGS: ProjectSettingsRecord = {
     lastSentMonday: null,
   },
   alerts: {
+    enabled: true,
+    route: "chat",
     payment: true,
     budget: true,
     metaApi: true,
     pause: true,
-    target: "admin",
   },
+  autobilling: { enabled: true, route: "chat" },
+  budget: { enabled: true, route: "chat" },
+  metaApi: { enabled: true, route: "chat" },
+  pause: { enabled: true, route: "chat" },
   kpi: {
     default: ["spend", "leads", "cpa"],
     perCampaign: {},
@@ -293,11 +312,56 @@ const sanitizeProjectSettingsRecord = (raw: unknown): ProjectSettingsRecord => {
     autoSource.alerts_target ?? autoSource.alertsTarget ?? alertsSource.route,
     fallback.autoReport.alertsTarget,
   );
+  const alertsEnabled = sanitizeBoolean(
+    alertsSource.enabled ?? alertsSource.payment ?? alertsSource.enabled_flag,
+    fallback.alerts.enabled,
+  );
   const paymentAlert = sanitizeBoolean(alertsSource.payment, fallback.alerts.payment);
   const budgetAlert = sanitizeBoolean(alertsSource.budget, fallback.alerts.budget);
   const metaAlert = sanitizeBoolean(alertsSource.meta_api ?? alertsSource.metaApi, fallback.alerts.metaApi);
   const pauseAlert = sanitizeBoolean(alertsSource.pause, fallback.alerts.pause);
-  const alertsRoute = sanitizeRoutingTarget(alertsSource.route ?? alertsTarget, fallback.alerts.target);
+  const alertsRoute = sanitizeRoutingTarget(
+    alertsSource.route ?? alertsSource.target ?? alertsTarget,
+    fallback.alerts.route,
+  );
+
+  const autobillingSource = (source.autobilling ?? source.payment ?? {}) as Record<string, unknown>;
+  const budgetSource = (source.budget ?? {}) as Record<string, unknown>;
+  const metaRouteSource = (source.meta_api ?? source.metaApiSettings ?? {}) as Record<string, unknown>;
+  const pauseSource = (source.pause ?? {}) as Record<string, unknown>;
+
+  const autobillingEnabled = sanitizeBoolean(
+    autobillingSource.enabled ?? alertsSource.payment,
+    fallback.autobilling.enabled,
+  );
+  const autobillingRoute = sanitizeRoutingTarget(
+    autobillingSource.route ?? alertsRoute,
+    fallback.autobilling.route,
+  );
+  const budgetEnabled = sanitizeBoolean(
+    budgetSource.enabled ?? alertsSource.budget,
+    fallback.budget.enabled,
+  );
+  const budgetRoute = sanitizeRoutingTarget(
+    budgetSource.route ?? alertsRoute,
+    fallback.budget.route,
+  );
+  const metaEnabled = sanitizeBoolean(
+    metaRouteSource.enabled ?? alertsSource.meta_api ?? alertsSource.metaApi,
+    fallback.metaApi.enabled,
+  );
+  const metaRoute = sanitizeRoutingTarget(
+    metaRouteSource.route ?? alertsRoute,
+    fallback.metaApi.route,
+  );
+  const pauseEnabled = sanitizeBoolean(
+    pauseSource.enabled ?? alertsSource.pause,
+    fallback.pause.enabled,
+  );
+  const pauseRoute = sanitizeRoutingTarget(
+    pauseSource.route ?? alertsRoute,
+    fallback.pause.route,
+  );
   const defaultMetrics = sanitizeMetricList(kpiSource.default, fallback.kpi.default);
   const perCampaign = sanitizePerCampaignMetrics(kpiSource.per_campaign ?? kpiSource.perCampaign);
 
@@ -323,11 +387,28 @@ const sanitizeProjectSettingsRecord = (raw: unknown): ProjectSettingsRecord => {
       lastSentMonday: lastMonday,
     },
     alerts: {
+      enabled: alertsEnabled,
+      route: alertsRoute,
       payment: paymentAlert,
       budget: budgetAlert,
       metaApi: metaAlert,
       pause: pauseAlert,
-      target: alertsRoute,
+    },
+    autobilling: {
+      enabled: alertsEnabled && paymentAlert && autobillingEnabled,
+      route: autobillingRoute,
+    },
+    budget: {
+      enabled: alertsEnabled && budgetAlert && budgetEnabled,
+      route: budgetRoute,
+    },
+    metaApi: {
+      enabled: alertsEnabled && metaAlert && metaEnabled,
+      route: metaRoute,
+    },
+    pause: {
+      enabled: alertsEnabled && pauseAlert && pauseEnabled,
+      route: pauseRoute,
     },
     kpi: {
       default: defaultMetrics,
@@ -358,11 +439,28 @@ const serializeProjectSettingsRecord = (record: ProjectSettingsRecord): JsonObje
       last_sent_monday: record.autoReport.lastSentMonday ?? null,
     },
     alerts: {
+      enabled: record.alerts.enabled,
+      route: record.alerts.route,
       payment: record.alerts.payment,
       budget: record.alerts.budget,
       meta_api: record.alerts.metaApi,
       pause: record.alerts.pause,
-      route: record.alerts.target,
+    },
+    autobilling: {
+      enabled: record.autobilling.enabled,
+      route: record.autobilling.route,
+    },
+    budget: {
+      enabled: record.budget.enabled,
+      route: record.budget.route,
+    },
+    meta_api: {
+      enabled: record.metaApi.enabled,
+      route: record.metaApi.route,
+    },
+    pause: {
+      enabled: record.pause.enabled,
+      route: record.pause.route,
     },
     kpi: {
       default: record.kpi.default,
@@ -534,6 +632,46 @@ const normalizeLeadRecord = (
   } satisfies LeadRecord;
 };
 
+const isBlank = (value: string | null | undefined): boolean => {
+  return typeof value !== "string" || value.trim().length === 0;
+};
+
+const mergeLeadRecords = (first: LeadRecord, second: LeadRecord): LeadRecord => {
+  const { latest, winner } = chooseLatest(first.createdAt, second.createdAt);
+  const base = winner === 2 ? second : first;
+  const extra = winner === 2 ? first : second;
+
+  const pickString = (primary: string | null | undefined, fallback: string | null | undefined): string | null => {
+    if (!isBlank(primary)) {
+      return primary as string;
+    }
+    if (!isBlank(fallback)) {
+      return fallback as string;
+    }
+    return null;
+  };
+
+  const pickNullable = <T>(primary: T | null | undefined, fallback: T | null | undefined): T | null => {
+    return primary ?? fallback ?? null;
+  };
+
+  return {
+    ...base,
+    projectId: base.projectId || extra.projectId,
+    createdAt: latest ?? base.createdAt ?? extra.createdAt,
+    name: pickString(base.name, extra.name) ?? base.name ?? extra.name,
+    phone: pickString(base.phone ?? null, extra.phone ?? null),
+    campaignId: pickNullable(base.campaignId ?? null, extra.campaignId ?? null),
+    formId: pickNullable(base.formId ?? null, extra.formId ?? null),
+    adId: pickNullable(base.adId ?? null, extra.adId ?? null),
+    campaignName: pickString(base.campaignName ?? null, extra.campaignName ?? null),
+    campaignShortName: pickString(base.campaignShortName ?? null, extra.campaignShortName ?? null),
+    campaignObjective: pickString(base.campaignObjective ?? null, extra.campaignObjective ?? null),
+    adName: pickString(base.adName ?? null, extra.adName ?? null),
+    status: base.status === "done" || extra.status === "done" ? "done" : "new",
+  } satisfies LeadRecord;
+};
+
 const sortLeads = (leads: LeadRecord[]): LeadRecord[] => {
   return leads
     .slice()
@@ -604,12 +742,12 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       : name;
 
   const chatCandidate = data.chatId ?? data.chat_id ?? data.telegramChatId ?? data.chatID;
-  const chatId =
-    typeof chatCandidate === "string" && chatCandidate.trim()
-      ? chatCandidate.trim()
-      : typeof chatCandidate === "number"
-        ? chatCandidate.toString()
-        : "";
+  let chatId: string | null = null;
+  if (typeof chatCandidate === "string" && chatCandidate.trim()) {
+    chatId = chatCandidate.trim();
+  } else if (typeof chatCandidate === "number" && Number.isFinite(chatCandidate)) {
+    chatId = chatCandidate.toString();
+  }
 
   const billingCandidate = (data.billingStatus ?? data.billing_status) as string | undefined;
   const allowedBilling: ProjectBillingState[] = ["active", "overdue", "blocked", "pending"];
@@ -629,14 +767,35 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
         ? Number(tariffCandidate)
         : undefined;
 
+  const paymentPlanCandidate = data.paymentPlan ?? data.payment_plan ?? null;
+  const parsedPaymentPlan = (() => {
+    if (paymentPlanCandidate === null) {
+      return null;
+    }
+    if (typeof paymentPlanCandidate === "number" && Number.isFinite(paymentPlanCandidate)) {
+      return Number(paymentPlanCandidate.toFixed(2));
+    }
+    if (typeof paymentPlanCandidate === "string" && paymentPlanCandidate.trim()) {
+      const numeric = Number(paymentPlanCandidate);
+      if (!Number.isNaN(numeric)) {
+        return Number(numeric.toFixed(2));
+      }
+    }
+    return undefined;
+  })();
+
   const billingAmountCandidate =
     data.billingAmountUsd ?? data.billing_amount_usd ?? data.billingAmountUSD ?? tariffValue ?? null;
-  const billingAmount =
+  let billingAmount =
     typeof billingAmountCandidate === "number" && Number.isFinite(billingAmountCandidate)
       ? Number(billingAmountCandidate.toFixed(2))
       : typeof billingAmountCandidate === "string" && billingAmountCandidate.trim() && !Number.isNaN(Number(billingAmountCandidate))
         ? Number(Number(billingAmountCandidate).toFixed(2))
         : tariffValue ?? null;
+
+  if (parsedPaymentPlan !== undefined) {
+    billingAmount = parsedPaymentPlan;
+  }
 
   const planCandidate = (data.billingPlan ?? data.billing_plan ?? null) as string | null;
   const normalizedPlan = typeof planCandidate === "string" ? planCandidate.trim().toLowerCase() : null;
@@ -660,6 +819,17 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
 
   const tariff = typeof billingAmount === "number" ? billingAmount : tariffValue ?? 0;
 
+  const paymentPlan =
+    parsedPaymentPlan !== undefined
+      ? parsedPaymentPlan
+      : billingAmount !== null && typeof billingAmount === "number"
+        ? Math.abs(billingAmount - 350) < 0.01
+          ? 350
+          : Math.abs(billingAmount - 500) < 0.01
+            ? 500
+            : null
+        : null;
+
   const resolveBoolean = (value: unknown): boolean => {
     if (typeof value === "boolean") {
       return value;
@@ -677,10 +847,16 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     return false;
   };
 
-  const billingEnabledSource = data.billingEnabled ?? data.billing_enabled ?? null;
+  const paymentEnabledSource = data.paymentEnabled ?? data.payment_enabled ?? null;
+  const billingEnabledSource = data.billingEnabled ?? data.billing_enabled ?? paymentEnabledSource ?? null;
   const billingEnabledExplicit =
     billingEnabledSource !== null && billingEnabledSource !== undefined
       ? resolveBoolean(billingEnabledSource)
+      : undefined;
+
+  const paymentEnabledExplicit =
+    paymentEnabledSource !== null && paymentEnabledSource !== undefined
+      ? resolveBoolean(paymentEnabledSource)
       : undefined;
 
   const createdCandidate = data.createdAt ?? data.created_at;
@@ -750,11 +926,32 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       ? new Date(autoOffAtSource).toISOString()
       : null;
 
+  const lastPaymentSource = data.lastPaymentDate ?? data.last_payment_date ?? null;
+  const lastPaymentDate =
+    typeof lastPaymentSource === "string" && lastPaymentSource.trim() && !Number.isNaN(Date.parse(lastPaymentSource))
+      ? new Date(lastPaymentSource).toISOString()
+      : null;
+
   const billingEnabled =
     billingEnabledExplicit !== undefined
       ? billingEnabledExplicit
       : Boolean(nextPaymentDate || (typeof billingAmount === "number" && billingAmount > 0));
+  const paymentEnabled =
+    paymentEnabledExplicit !== undefined ? paymentEnabledExplicit : billingEnabled;
   const billingAmountUsd = typeof billingAmount === "number" ? billingAmount : null;
+
+  const autoBillingSource =
+    data.autobilling ??
+    data.autoBillingEnabled ??
+    data.auto_billing_enabled ??
+    data.billingAutomationEnabled ??
+    data.billing_automation_enabled ??
+    data.billingAutomation ??
+    null;
+  const autoBillingEnabled =
+    autoBillingSource !== null && autoBillingSource !== undefined
+      ? resolveBoolean(autoBillingSource)
+      : billingEnabled;
 
   return {
     id,
@@ -765,9 +962,14 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     billingStatus,
     nextPaymentDate,
     tariff,
+    paymentEnabled,
+    paymentPlan,
     billingEnabled,
+    autoBillingEnabled,
+    autobilling: autoBillingEnabled,
     billingPlan,
     billingAmountUsd,
+    lastPaymentDate,
     createdAt,
     updatedAt,
     settings,
@@ -911,6 +1113,15 @@ const normalizeTelegramGroupLinkRecord = (
   const updatedAt =
     typeof updatedCandidate === "string" && updatedCandidate.trim() ? updatedCandidate.trim() : undefined;
 
+  const threadCandidate =
+    data.threadId ?? data.thread_id ?? data.messageThreadId ?? data.message_thread_id ?? data.topicId ?? data.topic_id;
+  const threadId =
+    typeof threadCandidate === "number" && Number.isFinite(threadCandidate)
+      ? threadCandidate
+      : typeof threadCandidate === "string" && threadCandidate.trim() && !Number.isNaN(Number(threadCandidate))
+        ? Number(threadCandidate)
+        : null;
+
   return {
     chatId,
     title,
@@ -918,6 +1129,7 @@ const normalizeTelegramGroupLinkRecord = (
     registered,
     linkedProjectId,
     updatedAt,
+    threadId,
   };
 };
 
@@ -975,6 +1187,28 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
     base.billingEnabled ??
     extra.billingEnabled ??
     Boolean(base.nextPaymentDate || extra.nextPaymentDate || (billingAmount ?? 0) > 0);
+  const paymentPlan =
+    base.paymentPlan !== undefined
+      ? base.paymentPlan
+      : extra.paymentPlan !== undefined
+        ? extra.paymentPlan
+        : billingPlan === "350"
+          ? 350
+          : billingPlan === "500"
+            ? 500
+            : null;
+  const paymentEnabled =
+    base.paymentEnabled ??
+    extra.paymentEnabled ??
+    base.billingEnabled ??
+    extra.billingEnabled ??
+    Boolean(base.nextPaymentDate || extra.nextPaymentDate || (billingAmount ?? 0) > 0);
+  const autobilling =
+    base.autobilling ??
+    extra.autobilling ??
+    base.autoBillingEnabled ??
+    extra.autoBillingEnabled ??
+    paymentEnabled;
   return {
     ...base,
     metaAccountId: base.metaAccountId || extra.metaAccountId,
@@ -984,9 +1218,14 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
     billingStatus: base.billingStatus || extra.billingStatus,
     nextPaymentDate: coalesce(base.nextPaymentDate, extra.nextPaymentDate, null) ?? null,
     tariff,
+    paymentEnabled,
+    paymentPlan,
     billingAmountUsd: billingAmount,
     billingPlan,
     billingEnabled,
+    autoBillingEnabled: base.autoBillingEnabled ?? extra.autoBillingEnabled ?? autobilling,
+    autobilling,
+    lastPaymentDate: coalesce(base.lastPaymentDate, extra.lastPaymentDate, null) ?? null,
     settings: { ...extra.settings, ...base.settings },
     manualKpi:
       base.manualKpi && base.manualKpi.length
@@ -1035,6 +1274,7 @@ const mergeTelegramGroupRecords = (
     members: base.members ?? extra.members ?? null,
     registered: base.registered || extra.registered,
     linkedProjectId: base.linkedProjectId ?? extra.linkedProjectId ?? null,
+    threadId: base.threadId ?? extra.threadId ?? null,
     updatedAt: latest ?? base.updatedAt ?? extra.updatedAt,
   };
 };
@@ -1327,12 +1567,37 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
         billing_status: project.billingStatus ?? "pending",
         next_payment_date: project.nextPaymentDate ?? null,
         tariff: project.tariff ?? 0,
+        payment_enabled:
+          project.paymentEnabled !== undefined
+            ? project.paymentEnabled
+            : project.billingEnabled !== undefined
+              ? project.billingEnabled
+              : null,
+        payment_plan:
+          project.paymentPlan !== undefined
+            ? project.paymentPlan
+            : project.billingPlan === "350"
+              ? 350
+              : project.billingPlan === "500"
+                ? 500
+                : project.billingAmountUsd !== undefined && project.billingAmountUsd !== null
+                  ? Number(project.billingAmountUsd.toFixed(2))
+                  : null,
         billing_enabled: project.billingEnabled ?? null,
+        auto_billing_enabled:
+          project.autoBillingEnabled !== undefined ? Boolean(project.autoBillingEnabled) : null,
+        autobilling:
+          project.autobilling !== undefined
+            ? Boolean(project.autobilling)
+            : project.autoBillingEnabled !== undefined
+              ? Boolean(project.autoBillingEnabled)
+              : null,
         billing_plan: project.billingPlan ?? null,
         billing_amount_usd:
           project.billingAmountUsd !== undefined && project.billingAmountUsd !== null
             ? Number(project.billingAmountUsd.toFixed(2))
             : null,
+        last_payment_date: project.lastPaymentDate ?? null,
         created_at: project.createdAt,
         manual_kpi: Array.isArray(project.manualKpi) ? project.manualKpi : [],
         portal_slug: project.portalSlug ?? project.id,
@@ -1470,9 +1735,27 @@ export const updateProjectRecord = async (
     return undefined;
   };
 
+  let paymentPlanPatch: number | null | undefined;
+
   let billingAmountPatch = sanitizeBillingAmount(patch.billingAmountUsd);
   if (billingAmountPatch === undefined && patch.tariff !== undefined) {
     billingAmountPatch = sanitizeBillingAmount(patch.tariff);
+  }
+
+  const rawPaymentPlan = (patch as { paymentPlan?: unknown }).paymentPlan;
+
+  if (rawPaymentPlan !== undefined) {
+    if (rawPaymentPlan === null) {
+      paymentPlanPatch = null;
+      billingAmountPatch = null;
+    } else if (typeof rawPaymentPlan === "number" && Number.isFinite(rawPaymentPlan)) {
+      paymentPlanPatch = Number(rawPaymentPlan.toFixed(2));
+      billingAmountPatch = paymentPlanPatch;
+    } else if (typeof rawPaymentPlan === "string" && rawPaymentPlan.trim() && !Number.isNaN(Number(rawPaymentPlan))) {
+      const parsed = Number(Number(rawPaymentPlan).toFixed(2));
+      paymentPlanPatch = parsed;
+      billingAmountPatch = parsed;
+    }
   }
 
   let billingPlanPatch = sanitizeBillingPlan(patch.billingPlan);
@@ -1485,6 +1768,18 @@ export const updateProjectRecord = async (
     } else if (Math.abs(billingAmountPatch - 500) < 0.01) {
       billingPlanPatch = "500";
     } else if (billingAmountPatch > 0) {
+      billingPlanPatch = "custom";
+    }
+  }
+
+  if (paymentPlanPatch !== undefined) {
+    if (paymentPlanPatch === null) {
+      billingPlanPatch = null;
+    } else if (Math.abs(paymentPlanPatch - 350) < 0.01) {
+      billingPlanPatch = "350";
+    } else if (Math.abs(paymentPlanPatch - 500) < 0.01) {
+      billingPlanPatch = "500";
+    } else if (paymentPlanPatch > 0) {
       billingPlanPatch = "custom";
     }
   }
@@ -1502,6 +1797,17 @@ export const updateProjectRecord = async (
   let billingEnabledPatch: boolean | undefined;
   if (patch.billingEnabled !== undefined) {
     billingEnabledPatch = Boolean(patch.billingEnabled);
+  }
+  if (patch.paymentEnabled !== undefined) {
+    billingEnabledPatch = Boolean(patch.paymentEnabled);
+  }
+
+  let autoBillingEnabledPatch: boolean | undefined;
+  if (patch.autoBillingEnabled !== undefined) {
+    autoBillingEnabledPatch = Boolean(patch.autoBillingEnabled);
+  }
+  if (patch.autobilling !== undefined) {
+    autoBillingEnabledPatch = Boolean(patch.autobilling);
   }
 
   const resolvedBillingAmount =
@@ -1550,6 +1856,45 @@ export const updateProjectRecord = async (
     }
     return null;
   };
+
+  const resolvePaymentPlanValue = (): number | null => {
+    if (paymentPlanPatch !== undefined) {
+      return paymentPlanPatch;
+    }
+    const billingPlanValue = billingPlanPatch !== undefined ? billingPlanPatch : resolveBillingPlan();
+    if (billingPlanValue === null) {
+      return null;
+    }
+    if (billingPlanValue === "350") {
+      return 350;
+    }
+    if (billingPlanValue === "500") {
+      return 500;
+    }
+    if (typeof resolvedBillingAmount === "number") {
+      if (Math.abs(resolvedBillingAmount - 350) < 0.01) {
+        return 350;
+      }
+      if (Math.abs(resolvedBillingAmount - 500) < 0.01) {
+        return 500;
+      }
+      return resolvedBillingAmount;
+    }
+    return current.paymentPlan ?? null;
+  };
+
+  const resolveAutoBillingEnabled = (): boolean => {
+    if (autoBillingEnabledPatch !== undefined) {
+      return autoBillingEnabledPatch;
+    }
+    if (billingEnabledPatch === false) {
+      return false;
+    }
+    if (typeof current.autoBillingEnabled === "boolean") {
+      return current.autoBillingEnabled;
+    }
+    return resolveBillingEnabled();
+  };
   const resolveAutoOff = (): boolean => {
     if (typeof patch.autoOff === "boolean") {
       return patch.autoOff;
@@ -1572,6 +1917,13 @@ export const updateProjectRecord = async (
     }
     return current.autoOffAt ?? null;
   };
+  const resolvePaymentEnabled = (): boolean => {
+    if (patch.paymentEnabled !== undefined) {
+      return Boolean(patch.paymentEnabled);
+    }
+    return resolveBillingEnabled();
+  };
+
   const updated: ProjectRecord = {
     ...current,
     ...patch,
@@ -1587,6 +1939,10 @@ export const updateProjectRecord = async (
           : current.billingAmountUsd ?? null,
     billingPlan: resolveBillingPlan(),
     billingEnabled: resolveBillingEnabled(),
+    paymentEnabled: resolvePaymentEnabled(),
+    paymentPlan: resolvePaymentPlanValue(),
+    autoBillingEnabled: resolveAutoBillingEnabled(),
+    autobilling: resolveAutoBillingEnabled(),
     autoOff: resolveAutoOff(),
     autoOffAt: resolveAutoOffAt(),
   };
@@ -1595,10 +1951,246 @@ export const updateProjectRecord = async (
   return normalizeProjectRecord(updated);
 };
 
+const syncProjectChatIndexes = async (
+  env: EnvBindings,
+  previous: ProjectRecord,
+  next: ProjectRecord,
+): Promise<void> => {
+  const prevChatId = previous.telegramChatId ?? previous.chatId ?? null;
+  const nextChatId = next.telegramChatId ?? next.chatId ?? null;
+  const nextThreadId = typeof next.telegramThreadId === "number" ? next.telegramThreadId : null;
+  const nextTitle = next.telegramTitle ?? null;
+  const now = new Date().toISOString();
+
+  try {
+    const groups = await listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]);
+    let groupsChanged = false;
+    const updatedGroups = groups.map((entry) => {
+      if (prevChatId && entry.chatId === prevChatId && prevChatId !== nextChatId) {
+        groupsChanged = true;
+        return { ...entry, linkedProjectId: null, threadId: null, updatedAt: now } satisfies TelegramGroupLinkRecord;
+      }
+      if (nextChatId && entry.chatId === nextChatId) {
+        const desiredThread = nextThreadId ?? entry.threadId ?? null;
+        const desiredTitle = nextTitle ?? entry.title ?? null;
+        if (
+          entry.linkedProjectId !== next.id ||
+          entry.threadId !== desiredThread ||
+          entry.title !== desiredTitle ||
+          !entry.registered
+        ) {
+          groupsChanged = true;
+          return {
+            ...entry,
+            linkedProjectId: next.id,
+            threadId: desiredThread,
+            title: desiredTitle,
+            registered: true,
+            updatedAt: now,
+          } satisfies TelegramGroupLinkRecord;
+        }
+      }
+      return entry;
+    });
+    if (nextChatId && !updatedGroups.some((entry) => entry.chatId === nextChatId)) {
+      updatedGroups.push({
+        chatId: nextChatId,
+        title: nextTitle,
+        members: null,
+        registered: true,
+        linkedProjectId: next.id,
+        threadId: nextThreadId,
+        updatedAt: now,
+      });
+      groupsChanged = true;
+    }
+    if (groupsChanged) {
+      await saveTelegramGroupLinks(env, updatedGroups);
+    }
+  } catch (error) {
+    console.warn("Failed to sync telegram group bindings", next.id, error);
+  }
+
+  try {
+    const registrations = await listChatRegistrations(env).catch(() => [] as ChatRegistrationRecord[]);
+    let registrationsChanged = false;
+    const updatedRegistrations: ChatRegistrationRecord[] = registrations.slice();
+    registrations.forEach((entry, index) => {
+      if (prevChatId && entry.chatId === prevChatId && prevChatId !== nextChatId) {
+        registrationsChanged = true;
+        updatedRegistrations[index] = {
+          ...entry,
+          linkedProjectId: null,
+          status: "pending",
+          updatedAt: now,
+        } as ChatRegistrationRecord;
+        return;
+      }
+      if (nextChatId && entry.chatId === nextChatId) {
+        const desiredThread = nextThreadId ?? entry.threadId ?? null;
+        const desiredTitle = nextTitle ?? entry.chatTitle ?? null;
+        if (
+          entry.linkedProjectId !== next.id ||
+          entry.threadId !== desiredThread ||
+          entry.chatTitle !== desiredTitle ||
+          entry.status !== "linked"
+        ) {
+          registrationsChanged = true;
+          updatedRegistrations[index] = {
+            ...entry,
+            linkedProjectId: next.id,
+            threadId: desiredThread,
+            chatTitle: desiredTitle ?? undefined,
+            status: "linked",
+            updatedAt: now,
+          } as ChatRegistrationRecord;
+        }
+      }
+    });
+    if (nextChatId && !updatedRegistrations.some((entry) => entry.chatId === nextChatId)) {
+      updatedRegistrations.push({
+        id: createId(),
+        chatId: nextChatId,
+        chatTitle: nextTitle ?? undefined,
+        status: "linked",
+        linkedProjectId: next.id,
+        threadId: nextThreadId,
+        createdAt: now,
+        updatedAt: now,
+      } as ChatRegistrationRecord);
+      registrationsChanged = true;
+    }
+    if (registrationsChanged) {
+      await saveChatRegistrations(env, updatedRegistrations as ChatRegistrationRecord[]);
+    }
+  } catch (error) {
+    console.warn("Failed to sync chat registrations", next.id, error);
+  }
+
+  try {
+    const metaProjects = await listMetaProjectLinks(env).catch(() => [] as MetaProjectLinkRecord[]);
+    let metaChanged = false;
+    const updatedMeta = metaProjects.map((entry) => {
+      if (entry.projectId !== next.id) {
+        return entry;
+      }
+      metaChanged = true;
+      return {
+        ...entry,
+        chatId: nextChatId ?? "",
+        chatTitle: nextTitle,
+      } satisfies MetaProjectLinkRecord;
+    });
+    if (metaChanged) {
+      await saveMetaProjectLinks(env, updatedMeta);
+    }
+  } catch (error) {
+    console.warn("Failed to sync meta project link", next.id, error);
+  }
+};
+
+export const updateProjectChatBinding = async (
+  env: EnvBindings,
+  projectId: string,
+  binding: { chatId: string; threadId: number | null; chatLink?: string | null; chatTitle?: string | null },
+): Promise<ProjectRecord | null> => {
+  const projects = await listProjects(env);
+  const index = projects.findIndex((project) => project.id === projectId);
+  if (index === -1) {
+    return null;
+  }
+  const previous = projects[index];
+  const normalizedChatId = binding.chatId.toString();
+  const now = new Date().toISOString();
+  const next: ProjectRecord = {
+    ...previous,
+    chatId: normalizedChatId,
+    telegramChatId: normalizedChatId,
+    telegramThreadId: binding.threadId ?? undefined,
+    telegramLink: binding.chatLink ?? undefined,
+    telegramTitle: binding.chatTitle ?? undefined,
+    updatedAt: now,
+  };
+  projects[index] = next;
+  await saveProjects(env, projects);
+  await syncProjectChatIndexes(env, previous, next);
+  return normalizeProjectRecord(next);
+};
+
+export const unlinkProjectChatBinding = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<ProjectRecord | null> => {
+  const projects = await listProjects(env);
+  const index = projects.findIndex((project) => project.id === projectId);
+  if (index === -1) {
+    return null;
+  }
+  const previous = projects[index];
+  const now = new Date().toISOString();
+  const next: ProjectRecord = {
+    ...previous,
+    chatId: null,
+    telegramChatId: undefined,
+    telegramThreadId: undefined,
+    telegramLink: undefined,
+    telegramTitle: undefined,
+    updatedAt: now,
+  };
+  projects[index] = next;
+  await saveProjects(env, projects);
+  await syncProjectChatIndexes(env, previous, next);
+  return normalizeProjectRecord(next);
+};
+
+const readLeadsFromKv = async (env: EnvBindings, projectId: string): Promise<LeadRecord[]> => {
+  const indexKey = `${LEAD_KV_INDEX_PREFIX}${projectId}`;
+  const ids = await readKvIndex(env, indexKey);
+  if (!ids.length) {
+    return [];
+  }
+
+  const records = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const stored = await env.DB.get(`${LEAD_KV_PREFIX}${projectId}:${id}`);
+        if (!stored) {
+          return null;
+        }
+        const parsed = JSON.parse(stored) as Record<string, unknown>;
+        return normalizeLeadRecord(projectId, parsed);
+      } catch (error) {
+        console.error("[storage] failed to read lead from KV", {
+          projectId,
+          leadId: id,
+          message: (error as Error).message,
+        });
+        return null;
+      }
+    }),
+  );
+
+  return records.filter((entry): entry is LeadRecord => Boolean(entry));
+};
+
 export const listLeads = async (env: EnvBindings, projectId: string): Promise<LeadRecord[]> => {
-  const stored = await readJsonFromR2<unknown[]>(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, []);
-  const normalized = stored.map((item) => normalizeLeadRecord(projectId, item as Record<string, unknown>));
-  return sortLeads(normalized);
+  const [r2Leads, kvLeads] = await Promise.all([
+    readJsonFromR2<unknown[]>(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, []).catch(() => []),
+    readLeadsFromKv(env, projectId).catch(() => [] as LeadRecord[]),
+  ]);
+
+  const combined = new Map<string, LeadRecord>();
+  const upsert = (record: LeadRecord) => {
+    const existing = combined.get(record.id);
+    combined.set(record.id, existing ? mergeLeadRecords(existing, record) : record);
+  };
+
+  kvLeads.forEach(upsert);
+
+  const normalizedR2 = r2Leads.map((item) => normalizeLeadRecord(projectId, item as Record<string, unknown>));
+  normalizedR2.forEach(upsert);
+
+  return sortLeads(Array.from(combined.values()));
 };
 
 export const saveLeads = async (
@@ -1620,65 +2212,49 @@ export const deleteLeads = async (env: EnvBindings, projectId: string): Promise<
   await writeKvIndex(env, indexKey, []);
 };
 
-const normalizeLeadReminderRecord = (
-  input: LeadReminderRecord | Record<string, unknown>,
-): LeadReminderRecord => {
-  const data = input as Record<string, unknown>;
-  const nowIso = new Date().toISOString();
-  const leadSource = data.leadId ?? data.lead_id ?? data.leadID ?? data.id;
-  const leadId =
-    typeof leadSource === "string" && leadSource.trim()
-      ? leadSource.trim()
-      : leadSource !== undefined
-        ? String(leadSource)
-        : "";
-  const projectSource = data.projectId ?? data.project_id;
-  const projectId =
-    typeof projectSource === "string" && projectSource.trim()
-      ? projectSource.trim()
-      : projectSource !== undefined
-        ? String(projectSource)
-        : "";
-  const idSource = data.id ?? leadId;
-  const id =
-    typeof idSource === "string" && idSource.trim()
-      ? idSource.trim()
-      : `leadrem_${createId(8)}`;
-  const statusSource = data.status;
-  const status: LeadReminderRecord["status"] =
-    statusSource === "notified" || statusSource === "resolved" ? statusSource : "pending";
-  const notifiedSource = data.notifiedCount ?? data.notified_count ?? data.count;
-  const notifiedCount =
-    typeof notifiedSource === "number" && Number.isFinite(notifiedSource)
-      ? Math.max(0, Math.floor(notifiedSource))
-      : 0;
-  const createdSource = data.createdAt ?? data.created_at;
-  const createdAt =
-    typeof createdSource === "string" && createdSource.trim() && !Number.isNaN(Date.parse(createdSource))
-      ? new Date(createdSource).toISOString()
-      : nowIso;
-  const updatedSource = data.updatedAt ?? data.updated_at;
-  const updatedAt =
-    typeof updatedSource === "string" && updatedSource.trim() && !Number.isNaN(Date.parse(updatedSource))
-      ? new Date(updatedSource).toISOString()
-      : nowIso;
-  const lastSource = data.lastNotifiedAt ?? data.last_notified_at;
-  const lastNotifiedAt =
-    typeof lastSource === "string" && lastSource.trim() && !Number.isNaN(Date.parse(lastSource))
-      ? new Date(lastSource).toISOString()
-      : lastSource === null
-        ? null
-        : undefined;
-  return {
-    id,
-    leadId,
-    projectId,
-    status,
-    notifiedCount,
-    createdAt,
-    updatedAt,
-    lastNotifiedAt,
-  };
+const leadNotificationKey = (projectId: string) => `${LEAD_NOTIFICATION_INDEX_PREFIX}${projectId}.json`;
+const LEAD_NOTIFICATION_HISTORY_LIMIT = 500;
+
+export const hasLeadNotificationBeenSent = async (
+  env: EnvBindings,
+  projectId: string,
+  leadId: string,
+): Promise<boolean> => {
+  if (!projectId || !leadId) {
+    return false;
+  }
+  const history = await readJsonFromR2<string[]>(env, leadNotificationKey(projectId), []);
+  return history.includes(leadId);
+};
+
+export const markLeadNotificationSent = async (
+  env: EnvBindings,
+  projectId: string,
+  leadId: string,
+): Promise<void> => {
+  if (!projectId || !leadId) {
+    return;
+  }
+  const key = leadNotificationKey(projectId);
+  const history = await readJsonFromR2<string[]>(env, key, []);
+  if (history.includes(leadId)) {
+    return;
+  }
+  history.push(leadId);
+  const trimmed = history.length > LEAD_NOTIFICATION_HISTORY_LIMIT
+    ? history.slice(history.length - LEAD_NOTIFICATION_HISTORY_LIMIT)
+    : history;
+  await writeJsonToR2(env, key, trimmed);
+};
+
+export const clearLeadNotificationHistory = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<void> => {
+  if (!projectId) {
+    return;
+  }
+  await env.R2.delete(leadNotificationKey(projectId));
 };
 
 const normalizePaymentReminderRecord = (
@@ -1771,6 +2347,24 @@ const normalizePaymentReminderRecord = (
       : clientPromptSource === null
         ? null
         : undefined;
+  const exchangeRateSource = data.exchangeRate ?? data.exchange_rate ?? data.rate;
+  const exchangeRateCandidate =
+    typeof exchangeRateSource === "number" && Number.isFinite(exchangeRateSource) && exchangeRateSource > 0
+      ? exchangeRateSource
+      : typeof exchangeRateSource === "string" && exchangeRateSource.trim()
+        ? Number(exchangeRateSource)
+        : null;
+  const exchangeRate =
+    exchangeRateCandidate !== null && Number.isFinite(exchangeRateCandidate) && exchangeRateCandidate > 0
+      ? Number(exchangeRateCandidate)
+      : null;
+  const nextPlannedSource = data.nextPaymentPlannedAt ?? data.next_payment_planned_at ?? data.nextPlannedPaymentAt;
+  const nextPaymentPlannedAt =
+    typeof nextPlannedSource === "string" && nextPlannedSource.trim() && !Number.isNaN(Date.parse(nextPlannedSource))
+      ? new Date(nextPlannedSource).toISOString()
+      : nextPlannedSource === null
+        ? null
+        : undefined;
   return {
     id,
     projectId,
@@ -1786,72 +2380,9 @@ const normalizePaymentReminderRecord = (
     adminChatId,
     clientChatId,
     lastClientPromptAt,
+    exchangeRate: exchangeRate ?? null,
+    nextPaymentPlannedAt: nextPaymentPlannedAt ?? null,
   };
-};
-
-export const listLeadReminders = async (env: EnvBindings): Promise<LeadReminderRecord[]> => {
-  const stored = await readJsonFromR2<LeadReminderRecord[] | Record<string, unknown>[]>(
-    env,
-    LEAD_REMINDER_INDEX_KEY,
-    [],
-  );
-  return stored
-    .map((record) => normalizeLeadReminderRecord(record))
-    .filter((record) => record.leadId && record.projectId);
-};
-
-export const saveLeadReminders = async (
-  env: EnvBindings,
-  reminders: LeadReminderRecord[],
-): Promise<void> => {
-  const normalized = reminders
-    .map((record) => normalizeLeadReminderRecord(record))
-    .filter((record) => record.leadId && record.projectId);
-  await writeJsonToR2(env, LEAD_REMINDER_INDEX_KEY, normalized);
-  await syncKvRecords({
-    env,
-    indexKey: LEAD_REMINDER_KV_INDEX_KEY,
-    prefix: LEAD_REMINDER_KV_PREFIX,
-    items: normalized,
-    getId: (record) => record.id,
-    serialize: (record) => ({
-      id: record.id,
-      lead_id: record.leadId,
-      project_id: record.projectId,
-      status: record.status,
-      notified_count: record.notifiedCount,
-      last_notified_at: record.lastNotifiedAt ?? null,
-      created_at: record.createdAt,
-      updated_at: record.updatedAt,
-    }),
-  });
-};
-
-export const clearLeadReminder = async (env: EnvBindings, leadId: string): Promise<void> => {
-  if (!leadId) {
-    return;
-  }
-  const reminders = await listLeadReminders(env);
-  const filtered = reminders.filter((record) => record.leadId !== leadId);
-  if (filtered.length === reminders.length) {
-    return;
-  }
-  await saveLeadReminders(env, filtered);
-};
-
-export const clearLeadRemindersByProject = async (
-  env: EnvBindings,
-  projectId: string,
-): Promise<void> => {
-  if (!projectId) {
-    return;
-  }
-  const reminders = await listLeadReminders(env);
-  const filtered = reminders.filter((record) => record.projectId !== projectId);
-  if (filtered.length === reminders.length) {
-    return;
-  }
-  await saveLeadReminders(env, filtered);
 };
 
 export const listPaymentReminders = async (env: EnvBindings): Promise<PaymentReminderRecord[]> => {
@@ -1892,6 +2423,8 @@ export const savePaymentReminders = async (
       admin_chat_id: record.adminChatId ?? null,
       client_chat_id: record.clientChatId ?? null,
       last_client_prompt_at: record.lastClientPromptAt ?? null,
+      exchange_rate: record.exchangeRate ?? null,
+      next_payment_planned_at: record.nextPaymentPlannedAt ?? null,
       created_at: record.createdAt,
       updated_at: record.updatedAt,
     }),
@@ -2189,13 +2722,82 @@ const normalizePortalRecord = (input: ProjectPortalRecord | Record<string, unkno
   } satisfies ProjectPortalRecord;
 };
 
-export const listPortals = async (env: EnvBindings): Promise<ProjectPortalRecord[]> => {
-  const stored = await readJsonFromR2<ProjectPortalRecord[] | Record<string, unknown>[] | null>(
-    env,
-    PORTAL_INDEX_KEY,
-    [],
+const mergePortalRecords = (first: ProjectPortalRecord, second: ProjectPortalRecord): ProjectPortalRecord => {
+  const { latest, winner } = chooseLatest(first.updatedAt, second.updatedAt);
+  const base = winner === 2 ? second : first;
+  const extra = winner === 2 ? first : second;
+
+  const combinedCampaignIds = Array.from(new Set([...extra.campaignIds, ...base.campaignIds]));
+  const combinedMetrics = sanitizePortalMetrics([...extra.metrics, ...base.metrics]);
+
+  const chooseDate = (a?: string | null, b?: string | null): string | null => {
+    const { latest } = chooseLatest(a ?? undefined, b ?? undefined);
+    return latest ?? a ?? b ?? null;
+  };
+
+  return {
+    portalId: base.portalId || extra.portalId,
+    projectId: base.projectId || extra.projectId,
+    mode: base.mode === "manual" || extra.mode === "manual" ? "manual" : "auto",
+    campaignIds: combinedCampaignIds,
+    metrics: combinedMetrics,
+    createdAt: chooseDate(base.createdAt, extra.createdAt) ?? new Date().toISOString(),
+    updatedAt: latest ?? base.updatedAt ?? extra.updatedAt ?? new Date().toISOString(),
+    lastRegeneratedAt: chooseDate(base.lastRegeneratedAt, extra.lastRegeneratedAt),
+    lastSharedAt: chooseDate(base.lastSharedAt, extra.lastSharedAt),
+    lastReportId: base.lastReportId ?? extra.lastReportId ?? null,
+  } satisfies ProjectPortalRecord;
+};
+
+const readPortalsFromKv = async (env: EnvBindings): Promise<ProjectPortalRecord[]> => {
+  const ids = await readKvIndex(env, PORTAL_KV_INDEX_KEY);
+  if (!ids.length) {
+    return [];
+  }
+  const records = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const stored = await env.DB.get(`${PORTAL_KV_PREFIX}${id}`);
+        if (!stored) {
+          return null;
+        }
+        const parsed = JSON.parse(stored) as Record<string, unknown>;
+        return normalizePortalRecord({ portalId: id, ...parsed });
+      } catch (error) {
+        console.warn("Failed to read portal from KV", id, error);
+        return null;
+      }
+    }),
   );
-  return (stored ?? []).map(normalizePortalRecord);
+  return records.filter((record): record is ProjectPortalRecord => Boolean(record));
+};
+
+export const listPortals = async (env: EnvBindings): Promise<ProjectPortalRecord[]> => {
+  const [r2Records, kvRecords] = await Promise.all([
+    readJsonFromR2<ProjectPortalRecord[] | Record<string, unknown>[] | null>(env, PORTAL_INDEX_KEY, []).catch(() => []),
+    readPortalsFromKv(env).catch(() => [] as ProjectPortalRecord[]),
+  ]);
+
+  const map = new Map<string, ProjectPortalRecord>();
+
+  kvRecords.forEach((record) => {
+    if (!record.portalId || !record.projectId) {
+      return;
+    }
+    map.set(record.portalId, record);
+  });
+
+  r2Records
+    .map((record) => normalizePortalRecord(record))
+    .forEach((record) => {
+      if (!record.portalId || !record.projectId) {
+        return;
+      }
+      const existing = map.get(record.portalId);
+      map.set(record.portalId, existing ? mergePortalRecords(existing, record) : record);
+    });
+
+  return Array.from(map.values());
 };
 
 export const savePortals = async (env: EnvBindings, portals: ProjectPortalRecord[]): Promise<void> => {
@@ -2218,6 +2820,116 @@ export const savePortals = async (env: EnvBindings, portals: ProjectPortalRecord
       last_shared_at: portal.lastSharedAt ?? null,
       last_report_id: portal.lastReportId ?? null,
     }),
+  });
+};
+
+const normalizePeriodSegment = (value: string): string => {
+  return value.replace(/[^0-9a-zA-Z_-]/g, "-");
+};
+
+const portalReportCacheKey = (
+  accountId: string,
+  period: PortalReportCacheEntry["period"],
+): string => {
+  const base = normalizePeriodSegment(period.key || "current");
+  const preset = period.datePreset ? normalizePeriodSegment(period.datePreset) : base;
+  const since = period.since ? normalizePeriodSegment(period.since) : "none";
+  const until = period.until ? normalizePeriodSegment(period.until) : "none";
+  return `${PORTAL_REPORT_CACHE_PREFIX}${accountId}:${preset}:${since}:${until}`;
+};
+
+export const readPortalReportCache = async (
+  env: EnvBindings,
+  accountId: string,
+  period: PortalReportCacheEntry["period"],
+): Promise<PortalReportCacheEntry | null> => {
+  const key = portalReportCacheKey(accountId, period);
+  const stored = await env.DB.get(key);
+  if (!stored) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(stored) as PortalReportCacheEntry;
+    if (!Array.isArray(parsed.campaigns)) {
+      throw new Error("Invalid campaigns payload");
+    }
+    return parsed;
+  } catch (error) {
+    console.warn("Failed to parse portal report cache", { key, error });
+    await env.DB.delete(key).catch(() => undefined);
+    return null;
+  }
+};
+
+export const writePortalReportCache = async (
+  env: EnvBindings,
+  accountId: string,
+  period: PortalReportCacheEntry["period"],
+  campaigns: MetaCampaign[],
+  ttlSeconds = 300,
+): Promise<void> => {
+  const key = portalReportCacheKey(accountId, period);
+  const entry: PortalReportCacheEntry = {
+    campaigns,
+    fetchedAt: new Date().toISOString(),
+    period,
+  };
+  await env.DB.put(key, JSON.stringify(entry, null, 0), {
+    expirationTtl: Math.max(60, ttlSeconds),
+  });
+};
+
+const portalSnapshotCacheKey = (
+  projectId: string,
+  descriptor: PortalSnapshotCacheDescriptor,
+): string => {
+  const base = normalizePeriodSegment(descriptor.key || "current");
+  const preset = descriptor.datePreset ? normalizePeriodSegment(descriptor.datePreset) : base;
+  const since = descriptor.since ? normalizePeriodSegment(descriptor.since) : "none";
+  const until = descriptor.until ? normalizePeriodSegment(descriptor.until) : "none";
+  const page = Number.isFinite(descriptor.page) && descriptor.page > 0 ? Math.floor(descriptor.page) : 1;
+  return `${PORTAL_SNAPSHOT_CACHE_PREFIX}${projectId}:${base}:${preset}:${since}:${until}:p${page}`;
+};
+
+export const readPortalSnapshotCache = async (
+  env: EnvBindings,
+  projectId: string,
+  descriptor: PortalSnapshotCacheDescriptor,
+): Promise<PortalSnapshotCacheEntry | null> => {
+  const key = portalSnapshotCacheKey(projectId, descriptor);
+  const stored = await env.DB.get(key);
+  if (!stored) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(stored) as PortalSnapshotCacheEntry;
+    if (!parsed?.data || typeof parsed.fetchedAt !== "string") {
+      throw new Error("Invalid portal snapshot cache payload");
+    }
+    return parsed;
+  } catch (error) {
+    console.warn("Failed to parse portal snapshot cache", { key, error });
+    await env.DB.delete(key).catch(() => undefined);
+    return null;
+  }
+};
+
+export const writePortalSnapshotCache = async (
+  env: EnvBindings,
+  projectId: string,
+  descriptor: PortalSnapshotCacheDescriptor,
+  data: PortalComputationResult,
+  ttlSeconds = 120,
+): Promise<void> => {
+  const key = portalSnapshotCacheKey(projectId, descriptor);
+  const entry: PortalSnapshotCacheEntry = {
+    fetchedAt: new Date().toISOString(),
+    projectId,
+    descriptor,
+    data,
+  };
+  await env.DB.put(key, JSON.stringify(entry, null, 0), {
+    expirationTtl: Math.max(60, ttlSeconds),
   });
 };
 
@@ -2492,6 +3204,7 @@ export const saveTelegramGroupLinks = async (
       members: record.members ?? null,
       registered: Boolean(record.registered),
       linked_project_id: record.linkedProjectId ?? null,
+      thread_id: record.threadId ?? null,
     }),
   });
 };
@@ -2515,21 +3228,23 @@ export const deleteProjectCascade = async (
     telegramGroups,
     leads,
     payments,
-    leadReminders,
     paymentReminders,
     schedules,
     reports,
     portals,
+    chatRegistrations,
+    metaProjectLinks,
   ] = await Promise.all([
     listMetaAccountLinks(env).catch(() => [] as MetaAccountLinkRecord[]),
     listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]),
     listLeads(env, projectId).catch(() => [] as LeadRecord[]),
     listPayments(env).catch(() => [] as PaymentRecord[]),
-    listLeadReminders(env).catch(() => [] as LeadReminderRecord[]),
     listPaymentReminders(env).catch(() => [] as PaymentReminderRecord[]),
     listReportSchedules(env).catch(() => [] as ReportScheduleRecord[]),
     listReports(env).catch(() => [] as ReportRecord[]),
     listPortals(env).catch(() => [] as ProjectPortalRecord[]),
+    listChatRegistrations(env).catch(() => [] as ChatRegistrationRecord[]),
+    listMetaProjectLinks(env).catch(() => [] as MetaProjectLinkRecord[]),
   ]);
 
   const account = metaAccounts.find(
@@ -2548,15 +3263,25 @@ export const deleteProjectCascade = async (
     : metaAccounts;
   const updatedGroups = group
     ? telegramGroups.map((entry) =>
-        entry.chatId === group.chatId ? { ...entry, linkedProjectId: null, updatedAt: now } : entry,
+        entry.chatId === group.chatId
+          ? { ...entry, linkedProjectId: null, threadId: null, updatedAt: now }
+          : entry,
       )
     : telegramGroups;
 
+  const updatedRegistrations = chatRegistrations.map<ChatRegistrationRecord>((entry) => {
+    if (entry.linkedProjectId === projectId || entry.chatId === projectChatId) {
+      return { ...entry, linkedProjectId: null, status: "pending", updatedAt: now };
+    }
+    return entry;
+  });
+  const registrationsChanged = updatedRegistrations.some((entry, index) => entry !== chatRegistrations[index]);
+
+  const remainingMetaProjects = metaProjectLinks.filter((entry) => entry.projectId !== projectId);
+  const metaProjectsChanged = remainingMetaProjects.length !== metaProjectLinks.length;
+
   const paymentsRemaining = payments.filter((payment) => payment.projectId !== projectId);
   const removedPayments = payments.length - paymentsRemaining.length;
-
-  const leadRemindersRemaining = leadReminders.filter((record) => record.projectId !== projectId);
-  const removedLeadReminders = leadReminders.length - leadRemindersRemaining.length;
 
   const paymentRemindersRemaining = paymentReminders.filter((record) => record.projectId !== projectId);
   const removedPaymentReminders = paymentReminders.length - paymentRemindersRemaining.length;
@@ -2611,11 +3336,11 @@ export const deleteProjectCascade = async (
   if (group) {
     storageUpdates.push(saveTelegramGroupLinks(env, updatedGroups));
   }
+  if (registrationsChanged) {
+    storageUpdates.push(saveChatRegistrations(env, updatedRegistrations));
+  }
   if (removedPayments > 0) {
     storageUpdates.push(savePayments(env, paymentsRemaining));
-  }
-  if (removedLeadReminders > 0) {
-    storageUpdates.push(saveLeadReminders(env, leadRemindersRemaining));
   }
   if (removedPaymentReminders > 0) {
     storageUpdates.push(savePaymentReminders(env, paymentRemindersRemaining));
@@ -2629,12 +3354,18 @@ export const deleteProjectCascade = async (
   if (removedPortal) {
     storageUpdates.push(savePortals(env, portalsRemaining));
   }
+  if (metaProjectsChanged) {
+    storageUpdates.push(saveMetaProjectLinks(env, remainingMetaProjects));
+  }
 
   await Promise.all(storageUpdates);
 
   const cleanupTasks: Promise<void>[] = [
     deleteLeads(env, projectId).catch((error) => {
       console.warn("Failed to delete project leads", projectId, error);
+    }),
+    clearLeadNotificationHistory(env, projectId).catch((error) => {
+      console.warn("Failed to clear lead notification history", projectId, error);
     }),
     deleteAllProjectCampaignKpis(env, projectId).catch((error) => {
       console.warn("Failed to delete project campaign KPIs", projectId, error);
@@ -2665,7 +3396,6 @@ export const deleteProjectCascade = async (
     removedLeads: leads.length,
     removedPayments,
     removedReports: reportPartition.removed.length,
-    clearedLeadReminders: removedLeadReminders,
     clearedPaymentReminders: removedPaymentReminders,
     updatedSchedules: updatedSchedulesCount,
     portalRemoved: removedPortal,
@@ -2883,7 +3613,7 @@ export interface PendingMetaLinkState {
   flow?: MetaLinkFlow;
 }
 
-export type PendingBillingAction = "set-next-payment" | "set-tariff";
+export type PendingBillingAction = "manual-date" | "set-next-payment" | "set-tariff";
 
 export interface PendingBillingOperation {
   action: PendingBillingAction;
