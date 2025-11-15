@@ -65,6 +65,7 @@ import {
   savePortals,
   saveProjects,
   writePortalSnapshotCache,
+  writePortalReportCache,
   getReportAsset,
 } from "../src/utils/storage";
 import {
@@ -85,7 +86,7 @@ import {
   PortalSnapshotPayload,
   ReportScheduleRecord,
 } from "../src/types";
-import {
+import worker, {
   testBuildPortalApiPayload,
   testResolvePortalRequestForProject,
 } from "../src/index";
@@ -517,11 +518,15 @@ test("listLeads merges KV overlays and preserves processed status", async () => 
 
 test("portal snapshot cache roundtrip retains partial data source", async () => {
   const env = createTestEnv();
+  const snapshotNow = new Date();
+  const startOfDay = new Date(snapshotNow);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const dayIso = startOfDay.toISOString().slice(0, 10);
   const descriptor: PortalSnapshotCacheDescriptor = {
     key: "today",
     datePreset: "today",
-    since: null,
-    until: null,
+    since: dayIso,
+    until: dayIso,
     page: 1,
   };
 
@@ -893,6 +898,25 @@ test("resolvePortalRequestForProject serves cached snapshot", async () => {
   project.portalSlug = portal.portalId;
   await saveProjects(env, [project]);
   await savePortals(env, [portal]);
+  await saveLeads(env, project.id, [
+    {
+      ...createLead("lead-api-1", project.id),
+      name: "Portal API Lead",
+      phone: "+998901112299",
+      createdAt: "2025-02-22T09:30:00.000Z",
+    },
+    {
+      ...createLead("lead-api-2", project.id),
+      name: "Portal API Lead 2",
+      createdAt: "2025-02-21T11:00:00.000Z",
+    },
+    {
+      ...createLead("lead-api-3", project.id),
+      name: "Portal API Closed",
+      status: "done",
+      createdAt: "2025-02-20T08:00:00.000Z",
+    },
+  ]);
 
   const descriptor: PortalSnapshotCacheDescriptor = {
     key: "today",
@@ -990,6 +1014,150 @@ test("renderPortal embeds loader overlay and retry control", () => {
   expect.ok(html.includes('data-role="loader-retry"'));
   expect.ok(html.includes("Готовим данные…"));
   expect.ok(html.includes("window.__portalSnapshot"));
+});
+
+test("portal API endpoints return cached snapshot payloads", async () => {
+  const env = createTestEnv();
+  const project = { ...createProject("portal-api-fetch") };
+  project.metaAccountId = "";
+  (project as { adAccountId?: string | null }).adAccountId = null;
+  const portal = createPortalRecord(project);
+  project.portalSlug = portal.portalId;
+  await saveProjects(env, [project]);
+  await savePortals(env, [portal]);
+
+  const snapshotNow = new Date();
+  const startOfDay = new Date(snapshotNow);
+  startOfDay.setUTCHours(0, 0, 0, 0);
+  const dayIso = startOfDay.toISOString().slice(0, 10);
+  const descriptor: PortalSnapshotCacheDescriptor = {
+    key: "today",
+    datePreset: "today",
+    since: dayIso,
+    until: dayIso,
+    page: 1,
+  };
+  const snapshot: PortalComputationResult = {
+    billing: createBillingSummary({ amountFormatted: "$510" }),
+    statusCounts: { all: 3, new: 2, done: 1 },
+    page: 1,
+    totalPages: 1,
+    leads: [
+      {
+        id: "lead-api-1",
+        name: "Portal API Lead",
+        phone: "+998901112299",
+        status: "new",
+        createdAt: "2025-02-22T09:30:00.000Z",
+        adLabel: "API Ad",
+        type: "Контакт",
+      },
+      {
+        id: "lead-api-2",
+        name: "Portal API Lead 2",
+        phone: null,
+        status: "new",
+        createdAt: "2025-02-21T11:00:00.000Z",
+        adLabel: "API Ad",
+        type: "Сообщение",
+      },
+      {
+        id: "lead-api-3",
+        name: "Portal API Closed",
+        phone: null,
+        status: "done",
+        createdAt: "2025-02-20T08:00:00.000Z",
+        adLabel: "API Ad",
+        type: "Контакт",
+      },
+    ],
+    metrics: [
+      { key: "spend", label: "Расход", value: "15.00 $" },
+      { key: "leads", label: "Лиды", value: "3" },
+    ],
+    campaigns: [
+      {
+        id: "cmp-api",
+        name: "API Campaign",
+        status: "ACTIVE",
+        objectiveLabel: "Лиды",
+        primaryMetricLabel: "Лиды",
+        primaryMetricValue: 3,
+        spend: 15,
+        spendCurrency: "USD",
+        impressions: 1200,
+        clicks: 45,
+      },
+    ],
+    periodLabel: "Сегодня",
+    updatedAt: snapshotNow.toISOString(),
+    partial: false,
+    dataSource: "cache",
+  } satisfies PortalComputationResult;
+
+  await writePortalSnapshotCache(env, project.id, descriptor, snapshot, 120);
+  await writePortalReportCache(
+    env,
+    project.metaAccountId,
+    { key: "today", datePreset: "today", since: dayIso, until: dayIso },
+    snapshot.campaigns as unknown as MetaCampaign[],
+  );
+
+  const baseUrl = "https://example.dev";
+  const statsResponse = await worker.fetch(
+    new Request(`${baseUrl}/api/meta/stats?project=${project.id}`),
+    env,
+  );
+  expect.equal(statsResponse.status, 200);
+  const statsBody = (await statsResponse.json()) as ApiSuccess<{
+    metrics: PortalComputationResult["metrics"];
+    metricsMap: Record<string, string>;
+    statusCounts: PortalComputationResult["statusCounts"];
+    periodLabel: string;
+    updatedAt: string | null | undefined;
+    billing: PortalComputationResult["billing"];
+    partial: boolean;
+    dataSource: string;
+  }>;
+  expect.ok(statsBody.ok);
+  expect.ok(Object.prototype.hasOwnProperty.call(statsBody.data.metricsMap, "leads_total"));
+  expect.ok(statsBody.data.billing === null || typeof statsBody.data.billing === "object");
+
+  const leadsResponse = await worker.fetch(
+    new Request(`${baseUrl}/api/meta/leads?project=${project.id}&page=1`),
+    env,
+  );
+  expect.equal(leadsResponse.status, 200);
+  const leadsBody = (await leadsResponse.json()) as ApiSuccess<{
+    leads: PortalComputationResult["leads"];
+    statusCounts: PortalComputationResult["statusCounts"];
+    pagination: ReturnType<typeof testBuildPortalApiPayload>["pagination"];
+    updatedAt: string | null | undefined;
+    partial: boolean;
+    dataSource: string;
+  }>;
+  expect.ok(leadsBody.ok);
+  expect.ok(Array.isArray(leadsBody.data.leads));
+  expect.equal(leadsBody.data.pagination.page, 1);
+
+  const campaignsResponse = await worker.fetch(
+    new Request(`${baseUrl}/api/meta/campaigns?project=${project.id}`),
+    env,
+  );
+  expect.equal(campaignsResponse.status, 200);
+  const campaignsBody = (await campaignsResponse.json()) as ApiSuccess<{
+    campaigns: PortalComputationResult["campaigns"];
+    updatedAt: string | null | undefined;
+    partial: boolean;
+    dataSource: string;
+  }>;
+  expect.ok(campaignsBody.ok);
+  expect.ok(Array.isArray(campaignsBody.data.campaigns));
+  expect.equal(typeof campaignsBody.data.partial, "boolean");
+
+  expect.deepEqual(leadsBody.data.statusCounts, statsBody.data.statusCounts);
+  expect.equal(leadsBody.data.dataSource, statsBody.data.dataSource);
+  expect.equal(campaignsBody.data.dataSource, statsBody.data.dataSource);
 });
 
 (async () => {
