@@ -2103,10 +2103,53 @@ export const unlinkProjectChatBinding = async (
   return normalizeProjectRecord(next);
 };
 
+const readLeadsFromKv = async (env: EnvBindings, projectId: string): Promise<LeadRecord[]> => {
+  const indexKey = `${LEAD_KV_INDEX_PREFIX}${projectId}`;
+  const ids = await readKvIndex(env, indexKey);
+  if (!ids.length) {
+    return [];
+  }
+
+  const records = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const stored = await env.DB.get(`${LEAD_KV_PREFIX}${projectId}:${id}`);
+        if (!stored) {
+          return null;
+        }
+        const parsed = JSON.parse(stored) as Record<string, unknown>;
+        return normalizeLeadRecord(projectId, parsed);
+      } catch (error) {
+        console.error("[storage] failed to read lead from KV", {
+          projectId,
+          leadId: id,
+          message: (error as Error).message,
+        });
+        return null;
+      }
+    }),
+  );
+
+  return records.filter((entry): entry is LeadRecord => Boolean(entry));
+};
+
 export const listLeads = async (env: EnvBindings, projectId: string): Promise<LeadRecord[]> => {
-  const stored = await readJsonFromR2<unknown[]>(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, []);
-  const normalized = stored.map((item) => normalizeLeadRecord(projectId, item as Record<string, unknown>));
-  return sortLeads(normalized);
+  const [r2Leads, kvLeads] = await Promise.all([
+    readJsonFromR2<unknown[]>(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, []).catch(() => []),
+    readLeadsFromKv(env, projectId).catch(() => [] as LeadRecord[]),
+  ]);
+
+  const combined = new Map<string, LeadRecord>();
+  for (const entry of kvLeads) {
+    combined.set(entry.id, entry);
+  }
+
+  const normalizedR2 = r2Leads.map((item) => normalizeLeadRecord(projectId, item as Record<string, unknown>));
+  for (const entry of normalizedR2) {
+    combined.set(entry.id, entry);
+  }
+
+  return sortLeads(Array.from(combined.values()));
 };
 
 export const saveLeads = async (
