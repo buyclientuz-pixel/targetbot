@@ -7,6 +7,7 @@ import { jsonResponse } from "../http/responses";
 import { loadProjectCampaigns, loadProjectSummary } from "../services/project-insights";
 import { parseMetaWebhookPayload } from "../services/meta-webhook";
 import { dispatchProjectMessage } from "../services/project-messaging";
+import { resolveTelegramToken } from "../config/telegram";
 import type { Router } from "../worker/router";
 import type { KvClient } from "../infra/kv";
 
@@ -202,7 +203,7 @@ export const registerMetaRoutes = (
       if (!duplicate) {
         notificationsDispatched = await dispatchLeadNotifications(
           context.kv,
-          context.env.TELEGRAM_BOT_TOKEN,
+          resolveTelegramToken(context.env),
           project,
           settings,
           lead,

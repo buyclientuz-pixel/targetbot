@@ -22,7 +22,7 @@
    main = "dist/index.mjs"
 
    [vars]
-   TELEGRAM_BOT_TOKEN = "..."
+   TELEGRAM_BOT_TOKEN = "..." # или используйте BOT_TOKEN для обратной совместимости
    TELEGRAM_ADMIN_ID = "123456789"
 
    [[kv_namespaces]]
@@ -35,7 +35,10 @@
    ```
 3. Добавьте защищённые секреты:
    ```bash
+   # основной вариант
    npx wrangler secret put TELEGRAM_BOT_TOKEN
+   # если в текущем продакшене используется старое имя
+   npx wrangler secret put BOT_TOKEN
    npx wrangler secret put META_APP_ID
    npx wrangler secret put META_APP_SECRET
    npx wrangler secret put META_APP_SYSTEM_USER_TOKEN

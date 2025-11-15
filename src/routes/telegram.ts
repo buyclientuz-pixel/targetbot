@@ -1,13 +1,17 @@
 import { createTelegramBotController } from "../bot/controller";
 import type { TelegramUpdate } from "../bot/types";
 import { jsonResponse } from "../http/responses";
+import { resolveTelegramToken } from "../config/telegram";
 import type { RouteHandler, Router } from "../worker/router";
 
 const createWebhookHandler = (): RouteHandler => {
   return async (context) => {
-    const token = context.env.TELEGRAM_BOT_TOKEN;
+    const token = resolveTelegramToken(context.env);
     if (!token) {
-      return jsonResponse({ error: "TELEGRAM_BOT_TOKEN is not configured" }, { status: 500 });
+      return jsonResponse(
+        { error: "Telegram bot token is not configured (set TELEGRAM_BOT_TOKEN or BOT_TOKEN)" },
+        { status: 500 },
+      );
     }
 
     let update: TelegramUpdate;

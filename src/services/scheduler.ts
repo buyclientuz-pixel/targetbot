@@ -4,6 +4,7 @@ import { runAlerts } from "./alerts";
 import { runMaintenance } from "./maintenance";
 import type { TargetBotEnv } from "../worker/types";
 import { R2Client } from "../infra/r2";
+import { resolveTelegramToken } from "../config/telegram";
 
 export const runScheduledTasks = async (
   event: ScheduledEvent,
@@ -16,8 +17,9 @@ export const runScheduledTasks = async (
 
   executionCtx.waitUntil(
     (async () => {
-      await runAutoReports(kv, env.TELEGRAM_BOT_TOKEN, now);
-      await runAlerts(kv, env.TELEGRAM_BOT_TOKEN, now);
+      const token = resolveTelegramToken(env);
+      await runAutoReports(kv, token, now);
+      await runAlerts(kv, token, now);
       await runMaintenance(kv, r2, now);
     })(),
   );
