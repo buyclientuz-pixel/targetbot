@@ -5,6 +5,7 @@ export interface TargetBotEnv {
   META_APP_SECRET?: string;
   META_REDIRECT_URI?: string;
   TELEGRAM_BOT_TOKEN?: string;
+  META_WEBHOOK_VERIFY_TOKEN?: string;
 }
 
 export type TargetBotBindings = TargetBotEnv;

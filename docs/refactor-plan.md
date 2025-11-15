@@ -23,7 +23,7 @@
 - Добавить KV-кеш `meta-cache:{projectId}:{scope}` для insights/summary/campaigns (TTL 60 секунд).
 - Поддержать CRUD `meta-token:{fbUserId}` и endpoint `PUT /api/meta/tokens/:facebookUserId` для хранения токенов.
 
-## Итерация 5 — Webhook Meta → лиды в R2
+## Итерация 5 — Webhook Meta → лиды в R2 ✅
 - Создать endpoint /api/meta/webhook.
 - Импортировать лиды в leads/{projectId}/{leadId}.json.
 - Настроить отправку уведомлений в Telegram согласно project-settings.alerts.

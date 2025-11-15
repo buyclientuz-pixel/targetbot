@@ -126,6 +126,29 @@
 * `isMetaCacheEntryFresh` проверяет свежесть без повторной десериализации.
 * Ключевые scope’ы: `insights:{period}` (сырые данные Graph API) и `summary:{period}`/`campaigns:{period}` для подготовленных ответов портала.
 
+## Lead (R2: `leads/{projectId}/{leadId}.json`)
+
+```json
+{
+  "id": "343782",
+  "projectId": "birlash",
+  "name": "Sharofat Ona",
+  "phone": "+998902867999",
+  "source": "facebook",
+  "campaign": "Лиды - тест",
+  "adset": "Женщины 25-45",
+  "ad": "Креатив №3",
+  "createdAt": "2025-11-14T21:54:26.000Z",
+  "status": "NEW",
+  "lastStatusUpdate": "2025-11-14T21:54:26.000Z",
+  "metaRaw": { "leadgen_id": "343782", "campaign_name": "Лиды - тест" }
+}
+```
+
+* `parseMetaWebhookPayload` извлекает projectId, имя, телефон и UTM-поля из webhook Meta, дедуплицируя лиды по `leadgen_id`.
+* `createLead` заполняет обязательные поля, нормализует имя/телефон и выставляет `status = "NEW"`, `lastStatusUpdate = createdAt`.
+* `saveLead` складывает JSON в R2, а `/api/meta/webhook` вызывает `dispatchLeadNotifications` для отправки уведомлений в Telegram.
+
 ## REST API поверхности
 
 | Method & Path                          | Описание                                        |
@@ -136,5 +159,6 @@
 | `PUT /api/meta/tokens/:facebookUserId` | Сохраняет access/refresh токены Meta Ads        |
 | `GET /api/meta/projects/:projectId/summary` | Возвращает кешированный summary по показателям |
 | `GET /api/meta/projects/:projectId/campaigns` | Отдаёт сырые данные кампаний (level=campaign) |
+| `POST /api/meta/webhook` | Принимает webhook Meta Ads, импортирует лиды и запускает уведомления |
 
 Эти роуты подключены в `registerCoreRoutes`: проектные операции обслуживает `registerProjectRoutes`, а Meta-прокси — `registerMetaRoutes` с общей обвязкой валидации и кеширования.
