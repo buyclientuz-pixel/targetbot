@@ -21,6 +21,9 @@ interface PortalViewProps {
   periodOptions: PortalPeriodOption[];
   snapshot: PortalSnapshotPayload;
   snapshotUrl: string;
+  statsUrl: string;
+  leadsUrl: string;
+  campaignsUrl: string;
   periodKey: string;
 }
 
@@ -130,6 +133,9 @@ export const renderPortal = ({
   periodOptions,
   snapshot,
   snapshotUrl,
+  statsUrl,
+  leadsUrl,
+  campaignsUrl,
   periodKey: _periodKey,
 }: PortalViewProps): string => {
   const periodFilters = renderPeriodFilters(periodOptions);
@@ -139,6 +145,12 @@ export const renderPortal = ({
   const campaignsSkeletonClass = snapshot.campaigns.length ? " hidden" : "";
 
   const body = `
+    <div class="portal-loader" data-role="portal-loader">
+      <div class="portal-loader__content">
+        <div class="portal-loader__spinner"></div>
+        <p>Готовим данные…<br>Это может занять 3–5 секунд.</p>
+      </div>
+    </div>
     <section class="card card-compact portal-header">
       <h2>${escapeHtml(project.name)}</h2>
       ${periodFilters}
@@ -205,10 +217,17 @@ export const renderPortal = ({
 
   const script = `
     (function () {
-      const snapshotUrl = ${toScriptData(snapshotUrl)};
+      const statsUrl = ${toScriptData(statsUrl)};
+      const leadsUrl = ${toScriptData(leadsUrl)};
+      const campaignsUrl = ${toScriptData(campaignsUrl)};
       const initialSnapshot = ${toScriptData(snapshot)};
       const state = {
-        snapshot: initialSnapshot,
+        metrics: Array.isArray(initialSnapshot.metrics) ? initialSnapshot.metrics : [],
+        leads: Array.isArray(initialSnapshot.leads) ? initialSnapshot.leads : [],
+        campaigns: Array.isArray(initialSnapshot.campaigns) ? initialSnapshot.campaigns : [],
+        statusCounts: initialSnapshot.statusCounts || { all: 0, new: 0, done: 0 },
+        pagination: initialSnapshot.pagination || { page: 1, totalPages: 1, prevUrl: null, nextUrl: null },
+        periodLabel: initialSnapshot.periodLabel || '',
         filter: 'all',
       };
       window.__portalSnapshot = initialSnapshot;
@@ -225,6 +244,21 @@ export const renderPortal = ({
       const metricsEmpty = document.querySelector('[data-role="metrics-empty"]');
       const countAll = document.querySelector('[data-role="count-all"]');
       const countNew = document.querySelector('[data-role="count-new"]');
+      const loaderOverlay = document.querySelector('[data-role="portal-loader"]');
+      const loadState = { stats: false, leads: false, campaigns: false };
+
+      const markLoaded = (key) => {
+        loadState[key] = true;
+        if (loadState.stats && loadState.leads && loadState.campaigns) {
+          if (loaderOverlay instanceof HTMLElement) {
+            loaderOverlay.classList.add('hidden');
+          }
+        }
+      };
+
+      if (loaderOverlay instanceof HTMLElement) {
+        loaderOverlay.classList.remove('hidden');
+      }
 
       const formatDate = (value) => {
         const timestamp = Date.parse(value);
@@ -325,11 +359,11 @@ export const renderPortal = ({
       };
 
       const renderMetrics = () => {
-        if (!metricsGrid || !state.snapshot) {
+        if (!(metricsGrid instanceof HTMLElement)) {
           return;
         }
         metricsGrid.innerHTML = '';
-        const metrics = Array.isArray(state.snapshot.metrics) ? state.snapshot.metrics : [];
+        const metrics = Array.isArray(state.metrics) ? state.metrics : [];
         metrics.forEach((metric) => {
           const card = document.createElement('div');
           card.className = 'kpi-card';
@@ -350,11 +384,11 @@ export const renderPortal = ({
       };
 
       const renderLeads = () => {
-        if (!(leadsTableBody instanceof HTMLElement) || !state.snapshot) {
+        if (!(leadsTableBody instanceof HTMLElement)) {
           return;
         }
         leadsTableBody.innerHTML = '';
-        const leads = (state.snapshot.leads || []).filter((lead) => {
+        const leads = (state.leads || []).filter((lead) => {
           return state.filter === 'all' || lead.status === state.filter;
         });
         if (leadsEmpty instanceof HTMLElement) {
@@ -400,11 +434,11 @@ export const renderPortal = ({
       };
 
       const renderCampaigns = () => {
-        if (!(campaignsTableBody instanceof HTMLElement) || !state.snapshot) {
+        if (!(campaignsTableBody instanceof HTMLElement)) {
           return;
         }
         campaignsTableBody.innerHTML = '';
-        const campaigns = Array.isArray(state.snapshot.campaigns) ? state.snapshot.campaigns : [];
+        const campaigns = Array.isArray(state.campaigns) ? state.campaigns : [];
         if (campaignsEmpty instanceof HTMLElement) {
           campaignsEmpty.classList.toggle('hidden', campaigns.length > 0);
         }
@@ -506,11 +540,11 @@ export const renderPortal = ({
       };
 
       const renderPagination = () => {
-        if (!(paginationContainer instanceof HTMLElement) || !state.snapshot) {
+        if (!(paginationContainer instanceof HTMLElement)) {
           return;
         }
         paginationContainer.innerHTML = '';
-        const pagination = state.snapshot.pagination;
+        const pagination = state.pagination;
         if (!pagination || pagination.totalPages <= 1) {
           return;
         }
@@ -540,32 +574,69 @@ export const renderPortal = ({
       };
 
       const updateCounts = () => {
-        if (!state.snapshot) {
-          return;
-        }
         if (countAll instanceof HTMLElement) {
-          countAll.textContent = String(state.snapshot.statusCounts?.all ?? 0);
+          countAll.textContent = String(state.statusCounts?.all ?? 0);
         }
         if (countNew instanceof HTMLElement) {
-          countNew.textContent = String(state.snapshot.statusCounts?.new ?? 0);
+          countNew.textContent = String(state.statusCounts?.new ?? 0);
         }
       };
 
-      const applySnapshot = (data) => {
+      const updatePeriodLabel = () => {
+        if (periodLabel instanceof HTMLElement) {
+          periodLabel.textContent = state.periodLabel || '';
+        }
+      };
+
+      const applyMetrics = (data) => {
         if (!data) {
           return;
         }
-        state.snapshot = data;
-        window.__portalSnapshot = data;
+        if (Array.isArray(data.metrics)) {
+          state.metrics = data.metrics;
+        }
+        if (data.statusCounts) {
+          state.statusCounts = data.statusCounts;
+        }
+        if (typeof data.periodLabel === 'string') {
+          state.periodLabel = data.periodLabel;
+        }
         renderMetrics();
+        updateCounts();
+        updatePeriodLabel();
+      };
+
+      const applyLeads = (data) => {
+        if (!data) {
+          return;
+        }
+        if (Array.isArray(data.leads)) {
+          state.leads = data.leads;
+        }
+        if (data.pagination) {
+          state.pagination = data.pagination;
+        }
+        if (data.statusCounts) {
+          state.statusCounts = data.statusCounts;
+        }
+        if (typeof data.periodLabel === 'string') {
+          state.periodLabel = data.periodLabel;
+        }
         renderLeads();
-        renderCampaigns();
         renderPagination();
         updateCounts();
-        if (periodLabel instanceof HTMLElement) {
-          periodLabel.textContent = data.periodLabel || '';
-        }
+        updatePeriodLabel();
         toggleSkeleton(leadsSkeleton, false);
+      };
+
+      const applyCampaigns = (data) => {
+        if (!data) {
+          return;
+        }
+        if (Array.isArray(data.campaigns)) {
+          state.campaigns = data.campaigns;
+        }
+        renderCampaigns();
         toggleSkeleton(campaignsSkeleton, false);
       };
 
@@ -589,36 +660,76 @@ export const renderPortal = ({
         }
       });
 
-      const fetchSnapshot = async (withSkeleton) => {
-        if (withSkeleton) {
-          toggleSkeleton(leadsSkeleton, true);
-          toggleSkeleton(campaignsSkeleton, true);
-        }
+      const fetchStats = async () => {
         try {
-          const response = await fetch(snapshotUrl, { headers: { Accept: 'application/json' } });
+          const response = await fetch(statsUrl, { headers: { Accept: 'application/json' } });
           if (!response.ok) {
             throw new Error('HTTP ' + response.status);
           }
           const payload = await response.json();
           if (payload && payload.ok && payload.data) {
-            applySnapshot(payload.data);
+            applyMetrics(payload.data);
           } else if (payload && payload.error) {
-            console.warn('portal:snapshot:error', payload.error);
+            console.warn('portal:stats:error', payload.error);
           }
         } catch (error) {
-          console.warn('portal:snapshot:fetch_failed', error);
+          console.warn('portal:stats:fetch_failed', error);
+        }
+        markLoaded('stats');
+      };
+
+      const fetchLeads = async () => {
+        toggleSkeleton(leadsSkeleton, true);
+        try {
+          const response = await fetch(leadsUrl, { headers: { Accept: 'application/json' } });
+          if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+          }
+          const payload = await response.json();
+          if (payload && payload.ok && payload.data) {
+            applyLeads(payload.data);
+          } else if (payload && payload.error) {
+            console.warn('portal:leads:error', payload.error);
+          }
+        } catch (error) {
+          console.warn('portal:leads:fetch_failed', error);
         } finally {
           toggleSkeleton(leadsSkeleton, false);
-          toggleSkeleton(campaignsSkeleton, false);
+          markLoaded('leads');
         }
       };
 
-      if (state.snapshot) {
-        applySnapshot(state.snapshot);
-        fetchSnapshot(false);
-      } else {
-        fetchSnapshot(true);
-      }
+      const fetchCampaigns = async () => {
+        toggleSkeleton(campaignsSkeleton, true);
+        try {
+          const response = await fetch(campaignsUrl, { headers: { Accept: 'application/json' } });
+          if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+          }
+          const payload = await response.json();
+          if (payload && payload.ok && payload.data) {
+            applyCampaigns(payload.data);
+          } else if (payload && payload.error) {
+            console.warn('portal:campaigns:error', payload.error);
+          }
+        } catch (error) {
+          console.warn('portal:campaigns:fetch_failed', error);
+        } finally {
+          toggleSkeleton(campaignsSkeleton, false);
+          markLoaded('campaigns');
+        }
+      };
+
+      renderMetrics();
+      renderLeads();
+      renderCampaigns();
+      renderPagination();
+      updateCounts();
+      updatePeriodLabel();
+
+      fetchStats();
+      fetchLeads();
+      fetchCampaigns();
     })();
   `;
 
@@ -638,6 +749,11 @@ export const renderPortal = ({
     .table-wrapper table { position: relative; z-index: 1; background: transparent; }
     .table-row { transition: background-color 0.2s ease; }
     .table-row.open { background-color: rgba(31, 117, 254, 0.05); }
+    .portal-loader { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(4px); z-index: 200; transition: opacity 0.25s ease, visibility 0.25s ease; }
+    .portal-loader.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+    .portal-loader__content { background: rgba(255, 255, 255, 0.95); padding: 24px 32px; border-radius: 18px; box-shadow: 0 24px 48px rgba(15, 23, 42, 0.28); max-width: 320px; text-align: center; font-size: 15px; line-height: 1.4; color: #102a43; }
+    .portal-loader__spinner { width: 36px; height: 36px; margin: 0 auto 14px; border-radius: 50%; border: 4px solid rgba(31, 117, 254, 0.2); border-top-color: #1f75fe; animation: portal-spin 0.9s linear infinite; }
+    @keyframes portal-spin { to { transform: rotate(360deg); } }
     .table-row .extra-data { display: none; font-size: 13px; color: #334e68; }
     .table-row.open .extra-data { display: block; margin-top: 8px; }
     .table-row .extra-line { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }

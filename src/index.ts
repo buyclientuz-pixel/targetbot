@@ -336,8 +336,10 @@ const buildPortalSnapshotPayload = async (
   let campaigns: MetaCampaign[] = [];
   let campaignsUpdatedAt = new Date().toISOString();
 
-  if (project.adAccountId) {
-    const cached = await readPortalReportCache(bindings, project.adAccountId, periodDescriptor).catch(() => null);
+  const accountId = project.adAccountId || project.metaAccountId || null;
+
+  if (accountId) {
+    const cached = await readPortalReportCache(bindings, accountId, periodDescriptor).catch(() => null);
     if (cached?.campaigns?.length) {
       campaigns = cached.campaigns as MetaCampaign[];
       campaignsUpdatedAt = cached.fetchedAt;
@@ -347,7 +349,7 @@ const buildPortalSnapshotPayload = async (
       try {
         const token = await loadMetaToken(bindings);
         const metaEnv = await withMetaSettings(extendedEnv);
-        campaigns = await fetchCampaigns(metaEnv, token, project.adAccountId, {
+        campaigns = await fetchCampaigns(metaEnv, token, accountId, {
           limit:
             portalRecord.mode === "manual"
               ? Math.max(10, portalRecord.campaignIds.length || 10)
@@ -356,7 +358,7 @@ const buildPortalSnapshotPayload = async (
           since: periodDescriptor.since || undefined,
           until: periodDescriptor.until || undefined,
         });
-        await writePortalReportCache(bindings, project.adAccountId, periodDescriptor, campaigns).catch((error) => {
+        await writePortalReportCache(bindings, accountId, periodDescriptor, campaigns).catch((error) => {
           console.warn("Failed to cache portal campaigns", project.id, (error as Error).message);
         });
         await syncCampaignObjectives(bindings, project.id, campaigns);
@@ -493,6 +495,95 @@ const loadPortalContext = async (
   }
 
   return { project, portal: portalRecord };
+};
+
+type PortalRouteFailureCode = "project_missing" | "portal_missing" | "portal_disabled";
+
+interface PortalRouteFailure {
+  ok: false;
+  status: number;
+  code: PortalRouteFailureCode;
+  title: string;
+  message: string;
+}
+
+interface PortalRouteSuccess {
+  ok: true;
+  project: ProjectRecord;
+  portal: ProjectPortalRecord;
+  periodSelection: PortalPeriodSelection;
+  snapshot: PortalComputationResult;
+  slug: string;
+  basePath: string;
+}
+
+const resolvePortalRequest = async (
+  bindings: EnvBindings,
+  slug: string,
+  searchParams: URLSearchParams,
+  now: Date,
+): Promise<PortalRouteSuccess | PortalRouteFailure> => {
+  const context = await loadPortalContext(bindings, slug);
+  const project = context.project;
+  if (!project) {
+    return {
+      ok: false,
+      status: 404,
+      code: "project_missing",
+      title: "Проект не найден",
+      message: "Запрошенный проект отсутствует или был удалён.",
+    };
+  }
+
+  const portalRecord = context.portal;
+  if (!portalRecord) {
+    return {
+      ok: false,
+      status: 404,
+      code: "portal_missing",
+      title: "Портал не настроен",
+      message: "Администратор ещё не создал портал для этого проекта. Обратитесь в поддержку TargetBot.",
+    };
+  }
+
+  if (isProjectAutoDisabled(project, now)) {
+    return {
+      ok: false,
+      status: 403,
+      code: "portal_disabled",
+      title: "Портал временно отключён",
+      message: "Продлите обслуживание у администратора, чтобы вернуть доступ к порталу.",
+    };
+  }
+
+  const periodSelection = resolvePortalPeriod(searchParams.get("period"), now);
+  const requestedPage = Number(searchParams.get("page") ?? "1");
+  const pageNumber = Number.isFinite(requestedPage) ? requestedPage : 1;
+
+  const snapshot = await buildPortalSnapshotPayload(
+    bindings,
+    project,
+    portalRecord,
+    periodSelection,
+    pageNumber,
+    now,
+  );
+
+  return {
+    ok: true,
+    project,
+    portal: portalRecord,
+    periodSelection,
+    snapshot,
+    slug,
+    basePath: `/portal/${encodeURIComponent(slug)}`,
+  };
+};
+
+const isPortalFailure = (
+  value: PortalRouteSuccess | PortalRouteFailure,
+): value is PortalRouteFailure => {
+  return value.ok === false;
 };
 
 let projectMigrationRan = false;
@@ -842,41 +933,15 @@ export default {
       if (portalMatch && method === "GET") {
         const slug = decodeURIComponent(portalMatch[1]);
         const bindings = ensureEnv(env);
-        const context = await loadPortalContext(bindings, slug);
-        const project = context.project;
-        const portalRecord = context.portal;
-
-        if (!project) {
-          return htmlResponse("<h1>Проект не найден</h1>", { status: 404 });
-        }
-
-        if (!portalRecord) {
-          return htmlResponse(
-            "<h1>Портал не настроен</h1><p>Администратор ещё не создал портал для этого проекта. Обратитесь к команде поддержки TargetBot.</p>",
-            { status: 404 },
-          );
-        }
-
         const now = new Date();
-        if (isProjectAutoDisabled(project, now)) {
-          return htmlResponse(
-            "<h1>Портал временно отключён</h1><p>Продлите обслуживание у администратора, чтобы вернуть доступ.</p>",
-            { status: 403 },
-          );
+        const resolution = await resolvePortalRequest(bindings, slug, url.searchParams, now);
+        if (isPortalFailure(resolution)) {
+          const { title, message, status } = resolution;
+          return htmlResponse(`<h1>${title}</h1><p>${message}</p>`, { status });
         }
 
-        const periodSelection = resolvePortalPeriod(url.searchParams.get("period"), now);
-        const requestedPage = Number(url.searchParams.get("page") ?? "1");
-        const portalState = await buildPortalSnapshotPayload(
-          bindings,
-          project,
-          portalRecord,
-          periodSelection,
-          Number.isFinite(requestedPage) ? requestedPage : 1,
-          now,
-        );
+        const { project, periodSelection, snapshot: portalSnapshot, basePath } = resolution;
 
-        const basePath = `/portal/${encodeURIComponent(slug)}`;
         const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
           const params = new URLSearchParams();
           if (periodKey !== "today") {
@@ -908,40 +973,47 @@ export default {
         });
 
         const pagination: PortalPagination = {
-          page: portalState.page,
-          totalPages: portalState.totalPages,
-          prevUrl: portalState.page > 1 ? buildPortalUrl(periodSelection.key, portalState.page - 1) : null,
+          page: portalSnapshot.page,
+          totalPages: portalSnapshot.totalPages,
+          prevUrl: portalSnapshot.page > 1 ? buildPortalUrl(periodSelection.key, portalSnapshot.page - 1) : null,
           nextUrl:
-            portalState.page < portalState.totalPages
-              ? buildPortalUrl(periodSelection.key, portalState.page + 1)
+            portalSnapshot.page < portalSnapshot.totalPages
+              ? buildPortalUrl(periodSelection.key, portalSnapshot.page + 1)
               : null,
         };
 
-        const snapshot: PortalSnapshotPayload = {
-          metrics: portalState.metrics,
-          campaigns: portalState.campaigns,
-          leads: portalState.leads,
-          statusCounts: portalState.statusCounts,
+        const snapshotPayload: PortalSnapshotPayload = {
+          metrics: portalSnapshot.metrics,
+          campaigns: portalSnapshot.campaigns,
+          leads: portalSnapshot.leads,
+          statusCounts: portalSnapshot.statusCounts,
           pagination,
-          periodLabel: portalState.periodLabel,
-          updatedAt: portalState.updatedAt,
+          periodLabel: portalSnapshot.periodLabel,
+          updatedAt: portalSnapshot.updatedAt,
         };
 
         const params = new URLSearchParams();
         if (periodSelection.key !== "today") {
           params.set("period", periodSelection.key);
         }
-        if (portalState.page > 1) {
-          params.set("page", String(portalState.page));
+        if (portalSnapshot.page > 1) {
+          params.set("page", String(portalSnapshot.page));
         }
-        const snapshotUrl = `${basePath}/snapshot${params.toString() ? `?${params.toString()}` : ""}`;
+        const suffix = params.toString() ? `?${params.toString()}` : "";
+        const snapshotUrl = `${basePath}/snapshot${suffix}`;
+        const statsUrl = `${basePath}/stats${suffix}`;
+        const leadsUrl = `${basePath}/leads${suffix}`;
+        const campaignsUrl = `${basePath}/campaigns${suffix}`;
 
         const html = renderPortal({
           project,
-          billing: portalState.billing,
+          billing: portalSnapshot.billing,
           periodOptions,
-          snapshot,
+          snapshot: snapshotPayload,
           snapshotUrl,
+          statsUrl,
+          leadsUrl,
+          campaignsUrl,
           periodKey: periodSelection.key,
         });
         return htmlResponse(html);
@@ -951,31 +1023,14 @@ export default {
       if (portalSnapshotMatch && method === "GET") {
         const slug = decodeURIComponent(portalSnapshotMatch[1]);
         const bindings = ensureEnv(env);
-        const context = await loadPortalContext(bindings, slug);
-        const project = context.project;
-        const portalRecord = context.portal;
-
-        if (!project || !portalRecord) {
-          return jsonResponse({ ok: false, error: "Портал не найден" }, { status: 404 });
-        }
-
         const now = new Date();
-        if (isProjectAutoDisabled(project, now)) {
-          return jsonResponse({ ok: false, error: "Портал временно отключён" }, { status: 403 });
+        const resolution = await resolvePortalRequest(bindings, slug, url.searchParams, now);
+        if (isPortalFailure(resolution)) {
+          const { message, status, code } = resolution;
+          return jsonResponse({ ok: false, error: message, details: { code } }, { status });
         }
 
-        const periodSelection = resolvePortalPeriod(url.searchParams.get("period"), now);
-        const requestedPage = Number(url.searchParams.get("page") ?? "1");
-        const portalState = await buildPortalSnapshotPayload(
-          bindings,
-          project,
-          portalRecord,
-          periodSelection,
-          Number.isFinite(requestedPage) ? requestedPage : 1,
-          now,
-        );
-
-        const basePath = `/portal/${encodeURIComponent(slug)}`;
+        const { periodSelection, snapshot: portalSnapshot } = resolution;
         const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
           const params = new URLSearchParams();
           if (periodKey !== "today") {
@@ -985,30 +1040,115 @@ export default {
             params.set("page", String(pageNumber));
           }
           const query = params.toString();
-          return `${basePath}${query ? `?${query}` : ""}`;
+          return `${resolution.basePath}${query ? `?${query}` : ""}`;
         };
 
         const pagination: PortalPagination = {
-          page: portalState.page,
-          totalPages: portalState.totalPages,
-          prevUrl: portalState.page > 1 ? buildPortalUrl(periodSelection.key, portalState.page - 1) : null,
+          page: portalSnapshot.page,
+          totalPages: portalSnapshot.totalPages,
+          prevUrl: portalSnapshot.page > 1 ? buildPortalUrl(periodSelection.key, portalSnapshot.page - 1) : null,
           nextUrl:
-            portalState.page < portalState.totalPages
-              ? buildPortalUrl(periodSelection.key, portalState.page + 1)
+            portalSnapshot.page < portalSnapshot.totalPages
+              ? buildPortalUrl(periodSelection.key, portalSnapshot.page + 1)
               : null,
         };
 
-        const snapshot: PortalSnapshotPayload = {
-          metrics: portalState.metrics,
-          campaigns: portalState.campaigns,
-          leads: portalState.leads,
-          statusCounts: portalState.statusCounts,
+        const payload: PortalSnapshotPayload = {
+          metrics: portalSnapshot.metrics,
+          campaigns: portalSnapshot.campaigns,
+          leads: portalSnapshot.leads,
+          statusCounts: portalSnapshot.statusCounts,
           pagination,
-          periodLabel: portalState.periodLabel,
-          updatedAt: portalState.updatedAt,
+          periodLabel: portalSnapshot.periodLabel,
+          updatedAt: portalSnapshot.updatedAt,
         };
 
-        return jsonResponse({ ok: true, data: snapshot });
+        return jsonResponse({ ok: true, data: payload });
+      }
+
+      const portalStatsMatch = pathname.match(/^\/portal\/([^/]+)\/stats$/);
+      if (portalStatsMatch && method === "GET") {
+        const slug = decodeURIComponent(portalStatsMatch[1]);
+        const bindings = ensureEnv(env);
+        const now = new Date();
+        const resolution = await resolvePortalRequest(bindings, slug, url.searchParams, now);
+        if (isPortalFailure(resolution)) {
+          const { message, status, code } = resolution;
+          return jsonResponse({ ok: false, error: message, details: { code } }, { status });
+        }
+        const { snapshot: portalSnapshot } = resolution;
+        return jsonResponse({
+          ok: true,
+          data: {
+            metrics: portalSnapshot.metrics,
+            periodLabel: portalSnapshot.periodLabel,
+            updatedAt: portalSnapshot.updatedAt,
+            statusCounts: portalSnapshot.statusCounts,
+            billing: portalSnapshot.billing,
+          },
+        });
+      }
+
+      const portalLeadsMatch = pathname.match(/^\/portal\/([^/]+)\/leads$/);
+      if (portalLeadsMatch && method === "GET") {
+        const slug = decodeURIComponent(portalLeadsMatch[1]);
+        const bindings = ensureEnv(env);
+        const now = new Date();
+        const resolution = await resolvePortalRequest(bindings, slug, url.searchParams, now);
+        if (isPortalFailure(resolution)) {
+          const { message, status, code } = resolution;
+          return jsonResponse({ ok: false, error: message, details: { code } }, { status });
+        }
+        const { snapshot: portalSnapshot, periodSelection } = resolution;
+        const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
+          const params = new URLSearchParams();
+          if (periodKey !== "today") {
+            params.set("period", periodKey);
+          }
+          if (pageNumber > 1) {
+            params.set("page", String(pageNumber));
+          }
+          const query = params.toString();
+          return `${resolution.basePath}${query ? `?${query}` : ""}`;
+        };
+        const pagination: PortalPagination = {
+          page: portalSnapshot.page,
+          totalPages: portalSnapshot.totalPages,
+          prevUrl: portalSnapshot.page > 1 ? buildPortalUrl(periodSelection.key, portalSnapshot.page - 1) : null,
+          nextUrl:
+            portalSnapshot.page < portalSnapshot.totalPages
+              ? buildPortalUrl(periodSelection.key, portalSnapshot.page + 1)
+              : null,
+        };
+        return jsonResponse({
+          ok: true,
+          data: {
+            leads: portalSnapshot.leads,
+            pagination,
+            statusCounts: portalSnapshot.statusCounts,
+            periodLabel: portalSnapshot.periodLabel,
+          },
+        });
+      }
+
+      const portalCampaignsMatch = pathname.match(/^\/portal\/([^/]+)\/campaigns$/);
+      if (portalCampaignsMatch && method === "GET") {
+        const slug = decodeURIComponent(portalCampaignsMatch[1]);
+        const bindings = ensureEnv(env);
+        const now = new Date();
+        const resolution = await resolvePortalRequest(bindings, slug, url.searchParams, now);
+        if (isPortalFailure(resolution)) {
+          const { message, status, code } = resolution;
+          return jsonResponse({ ok: false, error: message, details: { code } }, { status });
+        }
+        const { snapshot: portalSnapshot } = resolution;
+        return jsonResponse({
+          ok: true,
+          data: {
+            campaigns: portalSnapshot.campaigns,
+            updatedAt: portalSnapshot.updatedAt,
+          },
+        });
       }
 
       if (pathname.startsWith("/manage/telegram/webhook") && method === "GET") {
