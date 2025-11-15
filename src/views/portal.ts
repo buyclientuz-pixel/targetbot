@@ -145,13 +145,7 @@ export const renderPortal = ({
   const campaignsSkeletonClass = snapshot.campaigns.length ? " hidden" : "";
 
   const body = `
-    <div class="portal-loader" data-role="portal-loader">
-      <div class="portal-loader__content">
-        <div class="portal-loader__spinner"></div>
-        <p class="portal-loader__message" data-role="loader-message">Готовим данные…<br>Это может занять 3–5 секунд.</p>
-        <button type="button" class="btn btn-primary portal-loader__retry hidden" data-role="loader-retry">🔄 Обновить вручную</button>
-      </div>
-    </div>
+    <div class="portal-alert hidden" data-role="portal-alert"></div>
     <section class="card card-compact portal-header">
       <h2>${escapeHtml(project.name)}</h2>
       ${periodFilters}
@@ -245,12 +239,7 @@ export const renderPortal = ({
       const metricsEmpty = document.querySelector('[data-role="metrics-empty"]');
       const countAll = document.querySelector('[data-role="count-all"]');
       const countNew = document.querySelector('[data-role="count-new"]');
-      const loaderOverlay = document.querySelector('[data-role="portal-loader"]');
-      const loaderMessage = document.querySelector('[data-role="loader-message"]');
-      const loaderRetry = document.querySelector('[data-role="loader-retry"]');
-      const loaderInitialMessage = 'Готовим данные…<br>Это может занять 3–5 секунд.';
-      const loadState = { stats: false, leads: false, campaigns: false };
-      let loaderTimeoutId = 0;
+      const portalAlert = document.querySelector('[data-role="portal-alert"]');
       let scheduledRefreshId = 0;
 
       const clearScheduledRefresh = () => {
@@ -288,7 +277,7 @@ export const renderPortal = ({
         }
         scheduledRefreshId = window.setTimeout(() => {
           scheduledRefreshId = 0;
-          restartLoading();
+          fetchSnapshot();
         }, 4000);
       };
 
@@ -300,53 +289,29 @@ export const renderPortal = ({
         }
       };
 
-      const resetLoaderOverlay = () => {
-        if (loaderMessage instanceof HTMLElement) {
-          loaderMessage.innerHTML = loaderInitialMessage;
+      const hideAlert = () => {
+        if (!(portalAlert instanceof HTMLElement)) {
+          return;
         }
-        if (loaderRetry instanceof HTMLElement) {
-          loaderRetry.classList.add('hidden');
-        }
+        portalAlert.classList.add('hidden');
+        portalAlert.textContent = '';
+        portalAlert.classList.remove('portal-alert--error', 'portal-alert--info');
       };
 
-      const startLoaderTimer = () => {
-        window.clearTimeout(loaderTimeoutId);
-        loaderTimeoutId = window.setTimeout(() => {
-          if (loadState.stats && loadState.leads && loadState.campaigns) {
-            return;
-          }
-          if (loaderMessage instanceof HTMLElement) {
-            loaderMessage.innerHTML = '❗ Мы используем Meta API — иногда ответ задерживается.<br>Обновляем данные…';
-          }
-          if (loaderRetry instanceof HTMLElement) {
-            loaderRetry.classList.remove('hidden');
-          }
-        }, 5000);
-      };
-
-      const markLoaded = (key) => {
-        loadState[key] = true;
-        if (loadState.stats && loadState.leads && loadState.campaigns) {
-          window.clearTimeout(loaderTimeoutId);
-          resetLoaderOverlay();
-          if (loaderOverlay instanceof HTMLElement) {
-            loaderOverlay.classList.add('hidden');
-          }
-          maybeScheduleRefresh();
+      const showAlert = (message, tone = 'error') => {
+        if (!(portalAlert instanceof HTMLElement)) {
+          return;
+        }
+        portalAlert.textContent = message;
+        portalAlert.classList.remove('hidden');
+        portalAlert.classList.toggle('portal-alert--info', tone === 'info');
+        portalAlert.classList.toggle('portal-alert--error', tone !== 'info');
+        if (tone !== 'info') {
+          state.partial = true;
+          state.dataSource = 'error';
+          scheduleRefresh();
         }
       };
-
-      const markAllLoaded = () => {
-        markLoaded('stats');
-        markLoaded('leads');
-        markLoaded('campaigns');
-      };
-
-      if (loaderOverlay instanceof HTMLElement) {
-        loaderOverlay.classList.remove('hidden');
-      }
-      resetLoaderOverlay();
-      startLoaderTimer();
 
       const formatDate = (value) => {
         const timestamp = Date.parse(value);
@@ -753,44 +718,22 @@ export const renderPortal = ({
           }
           const payload = await response.json();
           if (payload && payload.ok && payload.data) {
+            hideAlert();
             applySnapshot(payload.data);
           } else if (payload && payload.error) {
             console.warn('portal:snapshot:error', payload.error);
+            showAlert('Не удалось обновить данные портала. Попробуйте позже.');
+          } else {
+            showAlert('Ответ портала не содержит данных.');
           }
         } catch (error) {
           console.warn('portal:snapshot:fetch_failed', error);
+          showAlert('Не удалось обновить данные портала. Попробуйте позже.');
         } finally {
           toggleSkeleton(leadsSkeleton, false);
           toggleSkeleton(campaignsSkeleton, false);
-          markAllLoaded();
         }
       };
-
-      const restartLoading = () => {
-        loadState.stats = false;
-        loadState.leads = false;
-        loadState.campaigns = false;
-        if (loaderOverlay instanceof HTMLElement) {
-          loaderOverlay.classList.remove('hidden');
-        }
-        if (loaderMessage instanceof HTMLElement) {
-          loaderMessage.innerHTML = 'Обновляем данные…';
-        }
-        if (loaderRetry instanceof HTMLElement) {
-          loaderRetry.classList.add('hidden');
-        }
-        clearScheduledRefresh();
-        state.partial = false;
-        state.dataSource = null;
-        startLoaderTimer();
-        fetchSnapshot();
-      };
-
-      if (loaderRetry instanceof HTMLElement) {
-        loaderRetry.addEventListener('click', () => {
-          restartLoading();
-        });
-      }
 
       renderMetrics();
       renderLeads();
@@ -820,14 +763,10 @@ export const renderPortal = ({
     .table-wrapper table { position: relative; z-index: 1; background: transparent; }
     .table-row { transition: background-color 0.2s ease; }
     .table-row.open { background-color: rgba(31, 117, 254, 0.05); }
-    .portal-loader { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(4px); z-index: 200; transition: opacity 0.25s ease, visibility 0.25s ease; }
-    .portal-loader.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
-    .portal-loader__content { background: rgba(255, 255, 255, 0.95); padding: 24px 32px; border-radius: 18px; box-shadow: 0 24px 48px rgba(15, 23, 42, 0.28); max-width: 320px; text-align: center; font-size: 15px; line-height: 1.4; color: #102a43; }
-    .portal-loader__spinner { width: 36px; height: 36px; margin: 0 auto 14px; border-radius: 50%; border: 4px solid rgba(31, 117, 254, 0.2); border-top-color: #1f75fe; animation: portal-spin 0.9s linear infinite; }
-    .portal-loader__message { margin: 0; }
-    .portal-loader__retry { margin-top: 12px; width: 100%; font-size: 14px; }
-    .portal-loader__retry.hidden { display: none; }
-    @keyframes portal-spin { to { transform: rotate(360deg); } }
+    .portal-alert { border-radius: 14px; padding: 12px 16px; font-size: 14px; line-height: 1.4; margin-bottom: 16px; border: 1px solid transparent; }
+    .portal-alert.hidden { display: none; }
+    .portal-alert.portal-alert--error { background: #fee2e2; border-color: #fecaca; color: #7f1d1d; }
+    .portal-alert.portal-alert--info { background: #e0f2fe; border-color: #bae6fd; color: #0c4a6e; }
     .table-row .extra-data { display: none; font-size: 13px; color: #334e68; }
     .table-row.open .extra-data { display: block; margin-top: 8px; }
     .table-row .extra-line { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }

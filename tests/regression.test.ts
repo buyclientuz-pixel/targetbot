@@ -982,7 +982,7 @@ test("createSlaReport persists CSV asset and report record", async () => {
   expect.ok(csvText.includes("lead_id"));
 });
 
-test("renderPortal embeds loader overlay and retry control", () => {
+test("renderPortal embeds alert container and script bootstrap", () => {
   const project = createProject("portal-view");
   const billing = createBillingSummary();
   const snapshot: PortalSnapshotPayload = {
@@ -1010,9 +1010,9 @@ test("renderPortal embeds loader overlay and retry control", () => {
     periodKey: "today",
   });
 
-  expect.ok(html.includes('data-role="portal-loader"'));
-  expect.ok(html.includes('data-role="loader-retry"'));
-  expect.ok(html.includes("Готовим данные…"));
+  expect.ok(html.includes('data-role="portal-alert"'));
+  expect.ok(!html.includes('data-role="portal-loader"'));
+  expect.ok(html.includes("portal-alert"));
   expect.ok(html.includes("window.__portalSnapshot"));
 });
 
