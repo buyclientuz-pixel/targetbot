@@ -749,6 +749,46 @@ const buildSnapshotDescriptor = (
   page,
 });
 
+const buildSafeFallbackSnapshot = async (
+  bindings: EnvBindings,
+  project: ProjectRecord,
+  portalRecord: ProjectPortalRecord,
+  periodSelection: PortalPeriodSelection,
+  requestedPage: number,
+  now: Date,
+  logger?: PortalLogger,
+): Promise<PortalComputationResult> => {
+  try {
+    return await buildPortalFallbackSnapshot(
+      bindings,
+      project,
+      portalRecord,
+      periodSelection,
+      requestedPage,
+      now,
+      logger,
+    );
+  } catch (error) {
+    logger?.("snapshot_fallback_unhandled", {
+      projectId: project.id,
+      message: (error as Error).message,
+    });
+    return {
+      billing: projectBilling.summarize([]),
+      statusCounts: { all: 0, new: 0, done: 0 },
+      page: 1,
+      totalPages: 1,
+      leads: [],
+      metrics: [],
+      campaigns: [],
+      periodLabel: formatPeriodLabel(periodSelection),
+      updatedAt: new Date(now.getTime()).toISOString(),
+      partial: true,
+      dataSource: "fallback",
+    } satisfies PortalComputationResult;
+  }
+};
+
 const loadPortalSnapshot = async (
   bindings: EnvBindings,
   project: ProjectRecord,
@@ -888,7 +928,7 @@ const loadPortalSnapshot = async (
         }
         return { snapshot: cached.data, source: "stale-cache" };
       }
-      const fallbackSnapshot = await buildPortalFallbackSnapshot(
+      const fallbackSnapshot = await buildSafeFallbackSnapshot(
         bindings,
         project,
         portalRecord,
@@ -941,7 +981,7 @@ const loadPortalSnapshot = async (
       }
       return { snapshot: cached.data, source: "stale-cache" };
     }
-    const fallbackSnapshot = await buildPortalFallbackSnapshot(
+    const fallbackSnapshot = await buildSafeFallbackSnapshot(
       bindings,
       project,
       portalRecord,
@@ -1053,15 +1093,33 @@ const resolvePortalRequest = async (
   const requestedPage = Number(searchParams.get("page") ?? "1");
   const pageNumber = Number.isFinite(requestedPage) ? requestedPage : 1;
 
-  const snapshotResult = await loadPortalSnapshot(
-    bindings,
-    project,
-    portalRecord,
-    periodSelection,
-    pageNumber,
-    now,
-    options,
-  );
+  let snapshotResult;
+  try {
+    snapshotResult = await loadPortalSnapshot(
+      bindings,
+      project,
+      portalRecord,
+      periodSelection,
+      pageNumber,
+      now,
+      options,
+    );
+  } catch (error) {
+    options.logger?.("snapshot_unhandled_error", {
+      projectId: project.id,
+      message: (error as Error).message,
+    });
+    const fallbackSnapshot = await buildSafeFallbackSnapshot(
+      bindings,
+      project,
+      portalRecord,
+      periodSelection,
+      pageNumber,
+      now,
+      options.logger,
+    );
+    snapshotResult = { snapshot: fallbackSnapshot, source: "fallback" };
+  }
 
   options.logger?.("snapshot_source", {
     projectId: project.id,

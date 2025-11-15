@@ -750,9 +750,21 @@ export const renderPortal = ({
         }
       });
 
+      const fetchWithTimeout = async (url, options, timeoutMs) => {
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => {
+          controller.abort('timeout');
+        }, typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 7000);
+        try {
+          return await fetch(url, { ...options, signal: controller.signal });
+        } finally {
+          window.clearTimeout(timeout);
+        }
+      };
+
       const fetchStats = async () => {
         try {
-          const response = await fetch(statsUrl, { headers: { Accept: 'application/json' } });
+          const response = await fetchWithTimeout(statsUrl, { headers: { Accept: 'application/json' } }, 7000);
           if (!response.ok) {
             throw new Error('HTTP ' + response.status);
           }
@@ -771,7 +783,7 @@ export const renderPortal = ({
       const fetchLeads = async () => {
         toggleSkeleton(leadsSkeleton, true);
         try {
-          const response = await fetch(leadsUrl, { headers: { Accept: 'application/json' } });
+          const response = await fetchWithTimeout(leadsUrl, { headers: { Accept: 'application/json' } }, 7000);
           if (!response.ok) {
             throw new Error('HTTP ' + response.status);
           }
@@ -792,7 +804,7 @@ export const renderPortal = ({
       const fetchCampaigns = async () => {
         toggleSkeleton(campaignsSkeleton, true);
         try {
-          const response = await fetch(campaignsUrl, { headers: { Accept: 'application/json' } });
+          const response = await fetchWithTimeout(campaignsUrl, { headers: { Accept: 'application/json' } }, 7000);
           if (!response.ok) {
             throw new Error('HTTP ' + response.status);
           }
