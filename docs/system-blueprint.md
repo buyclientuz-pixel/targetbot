@@ -79,6 +79,12 @@ The following phases bring the system back to a fully working state. Each phase 
 
 Each phase should conclude with README updates ("Выполнено" + "Следующее"), Git commits, and where applicable documentation cross-links (deployment guide, webhook guide, etc.).
 
+## Rollout Progress
+
+- ✅ **Phase 1 — Admin Foundations.** `/api/admin/*` маршруты задействованы, интеграционные тесты `tests/integration/admin-routes.test.ts` подтверждают CRUD-поток.
+- ✅ **Phase 2 — Telegram Bot Validation.** Интеграционные тесты `tests/integration/telegram-bot-controller.test.ts` покрывают меню, карточки проектов и сценарии биллинга (включая +30 дней и ручной ввод дат).
+- ⏭️ **Phase 3 — Portal Restoration.** Следующим шагом восстанавливаем портал (`/portal/:projectId`) и проверяем API summary/leads/campaigns вместе с платежами.
+
 ## 4. Verification Checklist
 
 Before marking the system fully restored we must:
