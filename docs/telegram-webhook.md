@@ -56,13 +56,17 @@ Webhook получает стандартные Telegram updates. Пример �
 
 ### 3.2 Указать URL вебхука
 
-Выполните запрос `setWebhook`, указав публичный URL воркера:
+1. Определите фактический публичный адрес воркера:
+   - Зайдите в Cloudflare → **Workers & Pages** → выберите нужный Worker.
+   - На вкладке **Settings → Domains & Routes** найдите домен вида `https://<worker-name>.<account>.workers.dev`.
+   - Если заданы дополнительные кастомные домены/роуты, используйте тот, на который приходит трафик из Telegram.
+2. Подставьте найденный домен в команду `setWebhook`:
 
 ```bash
-curl "https://api.telegram.org/bot<token>/setWebhook?url=https://targetbot-worker.buyclientuz.workers.dev/tg-webhook"
+curl "https://api.telegram.org/bot<token>/setWebhook?url=https://<worker-host>/tg-webhook"
 ```
 
-> Если используется иное доменное имя, замените `https://targetbot-worker.buyclientuz.workers.dev` на фактический хост.
+> Пример: если в Cloudflare указан домен `https://th-reports.buyclientuz.workers.dev`, команда станет `https://api.telegram.org/bot<token>/setWebhook?url=https://th-reports.buyclientuz.workers.dev/tg-webhook`.
 
 ### 3.3 Ожидаемый ответ Telegram
 
@@ -86,7 +90,7 @@ curl "https://api.telegram.org/bot<token>/setWebhook?url=https://targetbot-worke
    curl "https://api.telegram.org/bot<token>/getWebhookInfo"
    ```
 
-2. В ответе поле `url` должно совпадать с `https://targetbot-worker.buyclientuz.workers.dev/tg-webhook`, а `last_error_message` быть пустым.
+2. В ответе поле `url` должно совпадать с адресом из предыдущего шага (`https://<worker-host>/tg-webhook`), а `last_error_message` быть пустым.
 
 3. Дополнительно отправьте сообщение боту и убедитесь, что в логах Cloudflare Worker (или через `wrangler tail`) появляются события без ошибок `Invalid Telegram payload`. Если бот не отвечает, проверьте, что `wrangler secret list` показывает `TELEGRAM_BOT_TOKEN` или `BOT_TOKEN` и что значение соответствует тому, что использовалось при вызове `setWebhook`.
 
