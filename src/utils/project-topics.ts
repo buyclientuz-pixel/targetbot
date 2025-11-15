@@ -1,8 +1,9 @@
 import { ProjectRecord } from "../types";
 import { EnvBindings, loadProject, updateProjectRecord } from "./storage";
-import { TelegramEnv, listTelegramForumTopics } from "./telegram";
+import { TelegramEnv, createTelegramForumTopic, listTelegramForumTopics } from "./telegram";
 
-const TARGET_TOPIC_NAME = "таргет";
+const TARGET_TOPIC_LABEL = "Таргет";
+const TARGET_TOPIC_NAME = TARGET_TOPIC_LABEL.toLowerCase();
 
 const ensureChatId = (value: unknown): string | null => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -31,6 +32,22 @@ export interface ProjectTopicRoute {
   threadId: number;
   project: ProjectRecord;
 }
+
+export const ensureTargetTopicId = async (
+  env: EnvBindings & TelegramEnv,
+  chatId: string,
+): Promise<number | null> => {
+  const topics = await listTelegramForumTopics(env, chatId);
+  const match = topics.find((topic) => topic.name?.trim().toLowerCase() === TARGET_TOPIC_NAME);
+  if (match) {
+    return match.messageThreadId;
+  }
+  const created = await createTelegramForumTopic(env, chatId, TARGET_TOPIC_LABEL);
+  if (typeof created === "number" && Number.isFinite(created)) {
+    return created;
+  }
+  return null;
+};
 
 const updateProjectThread = async (
   env: EnvBindings,
@@ -80,23 +97,16 @@ export const ensureProjectTopicRoute = async (
   }
 
   if (threadId === null) {
-    const topics = await listTelegramForumTopics(env, chatId);
-    if (!topics.length) {
-      console.warn("Forum topics not available for chat", chatId, project.id);
+    const topicId = await ensureTargetTopicId(env, chatId);
+    if (!topicId) {
+      console.warn("Target forum topic unavailable", chatId, project.id);
       return null;
     }
-    const match = topics.find(
-      (topic) => topic.name && topic.name.trim().toLowerCase() === TARGET_TOPIC_NAME,
-    );
-    if (!match) {
-      console.warn("Target forum topic not found", chatId, project.id, topics.map((topic) => topic.name));
-      return null;
-    }
-    const updated = await updateProjectThread(env, current.id, match.messageThreadId);
+    const updated = await updateProjectThread(env, current.id, topicId);
     if (updated) {
       current = updated;
     }
-    threadId = match.messageThreadId;
+    threadId = topicId;
   }
 
   if (threadId === null) {

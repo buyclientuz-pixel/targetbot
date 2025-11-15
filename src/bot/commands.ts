@@ -52,6 +52,8 @@ import {
   MetaLinkFlow,
   PendingMetaLinkState,
   updateProjectRecord,
+  updateProjectChatBinding,
+  unlinkProjectChatBinding,
   clearPaymentReminder,
   loadProjectSettingsRecord,
   saveProjectSettingsRecord,
@@ -60,7 +62,12 @@ import {
 } from "../utils/storage";
 import { syncProjectLeads, getProjectLeads } from "../utils/leads";
 import { createId } from "../utils/ids";
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
+import {
+  answerCallbackQuery,
+  editTelegramMessage,
+  sendTelegramMessage,
+  getTelegramChatInfo,
+} from "../utils/telegram";
 import {
   fetchAdAccounts,
   fetchCampaigns,
@@ -70,7 +77,7 @@ import {
 } from "../utils/meta";
 import { generateReport } from "../utils/reports";
 import { KPI_LABELS, syncCampaignObjectives } from "../utils/kpi";
-import { resolveChatLink } from "../utils/chat-links";
+import { parseTelegramChatIdentifier, resolveChatLink, ensureTelegramUrl } from "../utils/chat-links";
 import { mergeMetaAccountLinks } from "../utils/meta-accounts";
 import { normalizeCampaigns, buildCampaignShortName } from "../utils/campaigns";
 import { buildAdminPaymentReviewMarkup, buildAdminPaymentReviewMessage, formatUsdAmount } from "../utils/reminders";
@@ -101,6 +108,7 @@ import {
   UserRecord,
   UserRole,
 } from "../types";
+import { ensureTargetTopicId } from "../utils/project-topics";
 import { calculateLeadAnalytics } from "../utils/analytics";
 import { createSlaReport } from "../utils/sla";
 
@@ -1479,6 +1487,10 @@ const buildProjectActionsMarkup = (summary: ProjectSummary) => {
         chatUrl
           ? { text: "📲 Чат-группа", url: chatUrl }
           : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
+      ],
+      [
+        { text: "🔁 Изменить чат-группу", callback_data: `proj:chat-change:${summary.id}` },
+        { text: "🚫 Отвязать чат", callback_data: `proj:chat-unlink:${summary.id}` },
       ],
       [
         { text: "💬 Лиды", callback_data: `proj:leads:${summary.id}` },
@@ -3539,14 +3551,79 @@ export const handlePendingProjectEditInput = async (context: BotContext): Promis
   if (!pending) {
     return false;
   }
-  const text = context.text?.trim();
-  if (!text) {
+  const textRaw = context.text?.trim() ?? "";
+  if (pending.action === "change-chat") {
+    if (!textRaw) {
+      await sendMessage(context, "ℹ️ Пришлите ссылку на чат-группу (https://t.me/...) или @username.", {
+        replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
+      });
+      return true;
+    }
+    const normalizedLink = ensureTelegramUrl(textRaw);
+    const identifier =
+      parseTelegramChatIdentifier(textRaw) ??
+      (normalizedLink ? parseTelegramChatIdentifier(normalizedLink) : null);
+    const candidates = [identifier, normalizedLink, textRaw].filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+    let chatInfo: Awaited<ReturnType<typeof getTelegramChatInfo>> = null;
+    for (const candidate of candidates) {
+      chatInfo = await getTelegramChatInfo(context.env, candidate);
+      if (chatInfo) {
+        break;
+      }
+    }
+    if (!chatInfo) {
+      await sendMessage(
+        context,
+        "❌ Не удалось получить данные чата. Убедитесь, что бот добавлен в группу и отправьте корректную ссылку.",
+        {
+          replyMarkup: {
+            inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]],
+          },
+        },
+      );
+      return true;
+    }
+    const threadId = await ensureTargetTopicId(context.env, chatInfo.id);
+    if (threadId === null) {
+      await sendMessage(
+        context,
+        "❌ Не удалось найти или создать тему «Таргет». Проверьте права бота в чате и попробуйте снова.",
+        {
+          replyMarkup: {
+            inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]],
+          },
+        },
+      );
+      return true;
+    }
+    const updated = await updateProjectChatBinding(context.env, pending.projectId, {
+      chatId: chatInfo.id,
+      threadId,
+      chatLink: normalizedLink ?? undefined,
+      chatTitle: chatInfo.title ?? undefined,
+    });
+    if (!updated) {
+      await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+      await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+      return true;
+    }
+    await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+    const chatLabel = chatInfo.title ?? `ID ${chatInfo.id}`;
+    await handleProjectView(context, pending.projectId, {
+      prefix: `✅ Чат-группа обновлена: <b>${escapeHtml(chatLabel)}</b>.`,
+    });
+    return true;
+  }
+  if (!textRaw) {
     await sendMessage(context, "ℹ️ Отправьте новое название текстом (до 80 символов).", {
       replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
     });
     return true;
   }
   if (pending.action === "rename") {
+    const text = textRaw;
     if (text.length < 3) {
       await sendMessage(context, "❌ Название должно содержать не менее 3 символов.", {
         replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
@@ -3662,6 +3739,84 @@ const handleProjectEditCancel = async (context: BotContext, projectId: string): 
     await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
   }
   await handleProjectEdit(context, projectId);
+};
+
+const handleProjectChatChangePrompt = async (context: BotContext, projectId: string): Promise<void> => {
+  const adminId = context.userId;
+  if (!adminId) {
+    await sendMessage(context, "❌ Отправьте команду в личном чате с ботом, чтобы изменить группу.");
+    return;
+  }
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  await savePendingProjectEditOperation(context.env, adminId, { action: "change-chat", projectId });
+  const chatUrl = resolveProjectChatUrl(summary);
+  const lines: string[] = [
+    `🔁 Изменить чат-группу — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+  ];
+  if (chatUrl) {
+    lines.push(`Текущий чат: <a href="${escapeAttribute(chatUrl)}">перейти</a>.`);
+  } else if (summary.telegramChatId) {
+    lines.push(`Текущий чат: <code>${escapeHtml(summary.telegramChatId)}</code>`);
+  } else {
+    lines.push("Текущий чат: не привязан.");
+  }
+  lines.push(
+    "",
+    "Пришлите ссылку на чат (https://t.me/...), @username или ID, где бот уже добавлен администратором.",
+    "Бот автоматически найдёт тему «Таргет» или создаст её, а затем обновит привязку.",
+  );
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: {
+      inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${projectId}` }]],
+    },
+  });
+};
+
+const handleProjectChatUnlinkPrompt = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const lines = [
+    `🚫 Отвязать чат — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    "Вы уверены? Это полностью отключит отправку отчётов и уведомлений.",
+  ];
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: {
+      inline_keyboard: [
+        [
+          { text: "✅ Да, отвязать", callback_data: `proj:chat-unlink-confirm:${projectId}` },
+          { text: "↩️ Отмена", callback_data: `proj:view:${projectId}` },
+        ],
+      ],
+    },
+  });
+};
+
+const handleProjectChatUnlinkConfirm = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  if (!summary.telegramChatId && !summary.chatId) {
+    await handleProjectView(context, projectId, {
+      prefix: "ℹ️ Чат уже не привязан к проекту.",
+    });
+    return;
+  }
+  const updated = await unlinkProjectChatBinding(context.env, projectId);
+  if (!updated) {
+    await sendMessage(context, "❌ Не удалось обновить проект. Попробуйте позже.");
+    return;
+  }
+  await handleProjectView(context, projectId, {
+    prefix: "🚫 Чат-группа отвязана. Отчёты и уведомления отключены.",
+  });
 };
 
 const formatProjectSettingsLines = (
@@ -5237,6 +5392,27 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
         return ensureId();
       }
       await handleProjectChat(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "chat-change":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectChatChangePrompt(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "chat-unlink":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectChatUnlinkPrompt(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "chat-unlink-confirm":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectChatUnlinkConfirm(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
     case "leads":

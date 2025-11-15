@@ -377,7 +377,7 @@ export interface ProjectRecord {
   name: string;
   metaAccountId: string;
   metaAccountName: string;
-  chatId: string;
+  chatId: string | null;
   billingStatus: ProjectBillingState;
   nextPaymentDate: string | null;
   tariff: number;
@@ -475,7 +475,7 @@ export interface PendingPortalOperation {
   updatedAt: string;
 }
 
-export type PendingProjectEditAction = "rename";
+export type PendingProjectEditAction = "rename" | "change-chat";
 
 export interface PendingProjectEditOperation {
   action: PendingProjectEditAction;

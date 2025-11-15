@@ -701,12 +701,12 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       : name;
 
   const chatCandidate = data.chatId ?? data.chat_id ?? data.telegramChatId ?? data.chatID;
-  const chatId =
-    typeof chatCandidate === "string" && chatCandidate.trim()
-      ? chatCandidate.trim()
-      : typeof chatCandidate === "number"
-        ? chatCandidate.toString()
-        : "";
+  let chatId: string | null = null;
+  if (typeof chatCandidate === "string" && chatCandidate.trim()) {
+    chatId = chatCandidate.trim();
+  } else if (typeof chatCandidate === "number" && Number.isFinite(chatCandidate)) {
+    chatId = chatCandidate.toString();
+  }
 
   const billingCandidate = (data.billingStatus ?? data.billing_status) as string | undefined;
   const allowedBilling: ProjectBillingState[] = ["active", "overdue", "blocked", "pending"];
@@ -1746,6 +1746,198 @@ export const updateProjectRecord = async (
   return normalizeProjectRecord(updated);
 };
 
+const syncProjectChatIndexes = async (
+  env: EnvBindings,
+  previous: ProjectRecord,
+  next: ProjectRecord,
+): Promise<void> => {
+  const prevChatId = previous.telegramChatId ?? previous.chatId ?? null;
+  const nextChatId = next.telegramChatId ?? next.chatId ?? null;
+  const nextThreadId = typeof next.telegramThreadId === "number" ? next.telegramThreadId : null;
+  const nextTitle = next.telegramTitle ?? null;
+  const now = new Date().toISOString();
+
+  try {
+    const groups = await listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]);
+    let groupsChanged = false;
+    const updatedGroups = groups.map((entry) => {
+      if (prevChatId && entry.chatId === prevChatId && prevChatId !== nextChatId) {
+        groupsChanged = true;
+        return { ...entry, linkedProjectId: null, threadId: null, updatedAt: now } satisfies TelegramGroupLinkRecord;
+      }
+      if (nextChatId && entry.chatId === nextChatId) {
+        const desiredThread = nextThreadId ?? entry.threadId ?? null;
+        const desiredTitle = nextTitle ?? entry.title ?? null;
+        if (
+          entry.linkedProjectId !== next.id ||
+          entry.threadId !== desiredThread ||
+          entry.title !== desiredTitle ||
+          !entry.registered
+        ) {
+          groupsChanged = true;
+          return {
+            ...entry,
+            linkedProjectId: next.id,
+            threadId: desiredThread,
+            title: desiredTitle,
+            registered: true,
+            updatedAt: now,
+          } satisfies TelegramGroupLinkRecord;
+        }
+      }
+      return entry;
+    });
+    if (nextChatId && !updatedGroups.some((entry) => entry.chatId === nextChatId)) {
+      updatedGroups.push({
+        chatId: nextChatId,
+        title: nextTitle,
+        members: null,
+        registered: true,
+        linkedProjectId: next.id,
+        threadId: nextThreadId,
+        updatedAt: now,
+      });
+      groupsChanged = true;
+    }
+    if (groupsChanged) {
+      await saveTelegramGroupLinks(env, updatedGroups);
+    }
+  } catch (error) {
+    console.warn("Failed to sync telegram group bindings", next.id, error);
+  }
+
+  try {
+    const registrations = await listChatRegistrations(env).catch(() => [] as ChatRegistrationRecord[]);
+    let registrationsChanged = false;
+    const updatedRegistrations: ChatRegistrationRecord[] = registrations.slice();
+    registrations.forEach((entry, index) => {
+      if (prevChatId && entry.chatId === prevChatId && prevChatId !== nextChatId) {
+        registrationsChanged = true;
+        updatedRegistrations[index] = {
+          ...entry,
+          linkedProjectId: null,
+          status: "pending",
+          updatedAt: now,
+        } as ChatRegistrationRecord;
+        return;
+      }
+      if (nextChatId && entry.chatId === nextChatId) {
+        const desiredThread = nextThreadId ?? entry.threadId ?? null;
+        const desiredTitle = nextTitle ?? entry.chatTitle ?? null;
+        if (
+          entry.linkedProjectId !== next.id ||
+          entry.threadId !== desiredThread ||
+          entry.chatTitle !== desiredTitle ||
+          entry.status !== "linked"
+        ) {
+          registrationsChanged = true;
+          updatedRegistrations[index] = {
+            ...entry,
+            linkedProjectId: next.id,
+            threadId: desiredThread,
+            chatTitle: desiredTitle ?? undefined,
+            status: "linked",
+            updatedAt: now,
+          } as ChatRegistrationRecord;
+        }
+      }
+    });
+    if (nextChatId && !updatedRegistrations.some((entry) => entry.chatId === nextChatId)) {
+      updatedRegistrations.push({
+        id: createId(),
+        chatId: nextChatId,
+        chatTitle: nextTitle ?? undefined,
+        status: "linked",
+        linkedProjectId: next.id,
+        threadId: nextThreadId,
+        createdAt: now,
+        updatedAt: now,
+      } as ChatRegistrationRecord);
+      registrationsChanged = true;
+    }
+    if (registrationsChanged) {
+      await saveChatRegistrations(env, updatedRegistrations as ChatRegistrationRecord[]);
+    }
+  } catch (error) {
+    console.warn("Failed to sync chat registrations", next.id, error);
+  }
+
+  try {
+    const metaProjects = await listMetaProjectLinks(env).catch(() => [] as MetaProjectLinkRecord[]);
+    let metaChanged = false;
+    const updatedMeta = metaProjects.map((entry) => {
+      if (entry.projectId !== next.id) {
+        return entry;
+      }
+      metaChanged = true;
+      return {
+        ...entry,
+        chatId: nextChatId ?? "",
+        chatTitle: nextTitle,
+      } satisfies MetaProjectLinkRecord;
+    });
+    if (metaChanged) {
+      await saveMetaProjectLinks(env, updatedMeta);
+    }
+  } catch (error) {
+    console.warn("Failed to sync meta project link", next.id, error);
+  }
+};
+
+export const updateProjectChatBinding = async (
+  env: EnvBindings,
+  projectId: string,
+  binding: { chatId: string; threadId: number | null; chatLink?: string | null; chatTitle?: string | null },
+): Promise<ProjectRecord | null> => {
+  const projects = await listProjects(env);
+  const index = projects.findIndex((project) => project.id === projectId);
+  if (index === -1) {
+    return null;
+  }
+  const previous = projects[index];
+  const normalizedChatId = binding.chatId.toString();
+  const now = new Date().toISOString();
+  const next: ProjectRecord = {
+    ...previous,
+    chatId: normalizedChatId,
+    telegramChatId: normalizedChatId,
+    telegramThreadId: binding.threadId ?? undefined,
+    telegramLink: binding.chatLink ?? undefined,
+    telegramTitle: binding.chatTitle ?? undefined,
+    updatedAt: now,
+  };
+  projects[index] = next;
+  await saveProjects(env, projects);
+  await syncProjectChatIndexes(env, previous, next);
+  return normalizeProjectRecord(next);
+};
+
+export const unlinkProjectChatBinding = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<ProjectRecord | null> => {
+  const projects = await listProjects(env);
+  const index = projects.findIndex((project) => project.id === projectId);
+  if (index === -1) {
+    return null;
+  }
+  const previous = projects[index];
+  const now = new Date().toISOString();
+  const next: ProjectRecord = {
+    ...previous,
+    chatId: null,
+    telegramChatId: undefined,
+    telegramThreadId: undefined,
+    telegramLink: undefined,
+    telegramTitle: undefined,
+    updatedAt: now,
+  };
+  projects[index] = next;
+  await saveProjects(env, projects);
+  await syncProjectChatIndexes(env, previous, next);
+  return normalizeProjectRecord(next);
+};
+
 export const listLeads = async (env: EnvBindings, projectId: string): Promise<LeadRecord[]> => {
   const stored = await readJsonFromR2<unknown[]>(env, `${LEAD_INDEX_PREFIX}${projectId}.json`, []);
   const normalized = stored.map((item) => normalizeLeadRecord(projectId, item as Record<string, unknown>));
@@ -2750,6 +2942,8 @@ export const deleteProjectCascade = async (
     schedules,
     reports,
     portals,
+    chatRegistrations,
+    metaProjectLinks,
   ] = await Promise.all([
     listMetaAccountLinks(env).catch(() => [] as MetaAccountLinkRecord[]),
     listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]),
@@ -2760,6 +2954,8 @@ export const deleteProjectCascade = async (
     listReportSchedules(env).catch(() => [] as ReportScheduleRecord[]),
     listReports(env).catch(() => [] as ReportRecord[]),
     listPortals(env).catch(() => [] as ProjectPortalRecord[]),
+    listChatRegistrations(env).catch(() => [] as ChatRegistrationRecord[]),
+    listMetaProjectLinks(env).catch(() => [] as MetaProjectLinkRecord[]),
   ]);
 
   const account = metaAccounts.find(
@@ -2778,9 +2974,22 @@ export const deleteProjectCascade = async (
     : metaAccounts;
   const updatedGroups = group
     ? telegramGroups.map((entry) =>
-        entry.chatId === group.chatId ? { ...entry, linkedProjectId: null, updatedAt: now } : entry,
+        entry.chatId === group.chatId
+          ? { ...entry, linkedProjectId: null, threadId: null, updatedAt: now }
+          : entry,
       )
     : telegramGroups;
+
+  const updatedRegistrations = chatRegistrations.map<ChatRegistrationRecord>((entry) => {
+    if (entry.linkedProjectId === projectId || entry.chatId === projectChatId) {
+      return { ...entry, linkedProjectId: null, status: "pending", updatedAt: now };
+    }
+    return entry;
+  });
+  const registrationsChanged = updatedRegistrations.some((entry, index) => entry !== chatRegistrations[index]);
+
+  const remainingMetaProjects = metaProjectLinks.filter((entry) => entry.projectId !== projectId);
+  const metaProjectsChanged = remainingMetaProjects.length !== metaProjectLinks.length;
 
   const paymentsRemaining = payments.filter((payment) => payment.projectId !== projectId);
   const removedPayments = payments.length - paymentsRemaining.length;
@@ -2841,6 +3050,9 @@ export const deleteProjectCascade = async (
   if (group) {
     storageUpdates.push(saveTelegramGroupLinks(env, updatedGroups));
   }
+  if (registrationsChanged) {
+    storageUpdates.push(saveChatRegistrations(env, updatedRegistrations));
+  }
   if (removedPayments > 0) {
     storageUpdates.push(savePayments(env, paymentsRemaining));
   }
@@ -2858,6 +3070,9 @@ export const deleteProjectCascade = async (
   }
   if (removedPortal) {
     storageUpdates.push(savePortals(env, portalsRemaining));
+  }
+  if (metaProjectsChanged) {
+    storageUpdates.push(saveMetaProjectLinks(env, remainingMetaProjects));
   }
 
   await Promise.all(storageUpdates);

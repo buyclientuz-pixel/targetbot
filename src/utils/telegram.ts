@@ -29,6 +29,14 @@ export interface TelegramEditMessageOptions {
   replyMarkup?: unknown;
 }
 
+export interface TelegramChatInfo {
+  id: string;
+  type?: string | null;
+  title?: string | null;
+  username?: string | null;
+  inviteLink?: string | null;
+}
+
 export const sendTelegramMessage = async (
   env: TelegramEnv,
   options: TelegramMessageOptions,
@@ -76,6 +84,58 @@ export interface TelegramForumTopic {
   name?: string;
 }
 
+export const getTelegramChatInfo = async (
+  env: TelegramEnv,
+  chatId: string,
+): Promise<TelegramChatInfo | null> => {
+  const token = resolveToken(env);
+  if (!token) {
+    console.warn("Telegram token is missing");
+    return null;
+  }
+  if (!chatId || !chatId.trim()) {
+    return null;
+  }
+  const url = new URL(`${TELEGRAM_BASE}/bot${token}/getChat`);
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId }),
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => null);
+    console.warn("Failed to load chat info", chatId, errorText ?? response.statusText);
+    return null;
+  }
+  try {
+    const data = (await response.json()) as {
+      ok?: boolean;
+      result?: {
+        id?: number | string;
+        type?: string;
+        title?: string;
+        username?: string;
+        invite_link?: string;
+      };
+    };
+    if (!data?.ok || !data.result?.id) {
+      return null;
+    }
+    const result = data.result;
+    const idValue = typeof result.id === "number" ? result.id.toString() : String(result.id);
+    return {
+      id: idValue,
+      type: result.type ?? null,
+      title: result.title ?? null,
+      username: result.username ?? null,
+      inviteLink: result.invite_link ?? null,
+    } satisfies TelegramChatInfo;
+  } catch (error) {
+    console.warn("Failed to parse getChat response", chatId, error);
+    return null;
+  }
+};
+
 export const listTelegramForumTopics = async (
   env: TelegramEnv,
   chatId: string,
@@ -119,6 +179,45 @@ export const listTelegramForumTopics = async (
     console.warn("Failed to parse forum topic response", chatId, error);
   }
   return [];
+};
+
+export const createTelegramForumTopic = async (
+  env: TelegramEnv,
+  chatId: string,
+  name: string,
+): Promise<number | null> => {
+  const token = resolveToken(env);
+  if (!token) {
+    console.warn("Telegram token is missing");
+    return null;
+  }
+  if (!chatId || !chatId.trim()) {
+    return null;
+  }
+  const url = new URL(`${TELEGRAM_BASE}/bot${token}/createForumTopic`);
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, name }),
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => null);
+    console.warn("Failed to create forum topic", chatId, errorText ?? response.statusText);
+    return null;
+  }
+  try {
+    const data = (await response.json()) as {
+      ok?: boolean;
+      result?: { message_thread_id?: number };
+    };
+    if (!data?.ok || typeof data.result?.message_thread_id !== "number") {
+      return null;
+    }
+    return data.result.message_thread_id;
+  } catch (error) {
+    console.warn("Failed to parse createForumTopic response", chatId, error);
+    return null;
+  }
 };
 
 export const editTelegramMessage = async (
