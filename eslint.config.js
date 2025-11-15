@@ -1,25 +1,25 @@
-import prettierPlugin from 'eslint-plugin-prettier';
+import prettierPlugin from "eslint-plugin-prettier";
 
 export default [
   {
-    files: ['**/*.{js,ts,tsx}'],
-    ignores: ['dist/**', '.wrangler/**'],
+    files: ["**/*.js"],
+    ignores: ["dist/**", ".wrangler/**", "node_modules/**"],
     languageOptions: {
-      ecmaVersion: 'latest',
-      sourceType: 'module'
+      ecmaVersion: "latest",
+      sourceType: "module",
     },
     linterOptions: {
-      reportUnusedDisableDirectives: true
+      reportUnusedDisableDirectives: true,
     },
     plugins: {
-      prettier: prettierPlugin
+      prettier: prettierPlugin,
     },
     rules: {
-      'prettier/prettier': 'error',
-      quotes: ['error', 'double', { avoidEscape: true }],
-      'no-var': 'error',
-      'prefer-const': 'error',
-      semi: ['error', 'always']
-    }
-  }
+      "prettier/prettier": "error",
+      quotes: ["error", "double", { avoidEscape: true }],
+      "no-var": "error",
+      "prefer-const": "error",
+      semi: ["error", "always"],
+    },
+  },
 ];

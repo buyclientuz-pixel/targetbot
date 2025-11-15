@@ -1,4 +1,4 @@
-name = "th-reports"
+name = "targetbot-worker"
 main = "src/index.ts"
 compatibility_date = "2025-02-04"
 compatibility_flags = ["nodejs_compat"]
@@ -16,7 +16,7 @@ enabled = false
 head_sampling_rate = 1
 
 [[kv_namespaces]]
-binding = "DB"
+binding = "KV"
 id = "0132cf582ce247d4b806a2be748e34c6"
 
 [[r2_buckets]]

@@ -36,7 +36,37 @@ interface R2Object {
   uploaded: string;
 }
 
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException?(): void;
+}
+
+interface URLPatternResult {
+  pathname: {
+    input: string;
+    groups: Record<string, string>;
+  };
+}
+
+interface URLPatternInit {
+  protocol?: string;
+  username?: string;
+  password?: string;
+  hostname?: string;
+  port?: string;
+  pathname?: string;
+  search?: string;
+  hash?: string;
+  baseURL?: string;
+}
+
+declare class URLPattern {
+  constructor(init?: URLPatternInit | string, baseURL?: string);
+  exec(input: string | URL): URLPatternResult | null;
+  test(input: string | URL): boolean;
+}
+
 declare type Env = Record<string, unknown> & {
-  DB: KVNamespace;
+  KV: KVNamespace;
   R2: R2Bucket;
 };
