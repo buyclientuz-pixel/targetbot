@@ -45,7 +45,7 @@ $ npm run build
 $ npm run deploy
 > wrangler deploy
 Success: Uploaded worker scripts
-Success: Finished deploying worker "targetbot"
+Success: Finished deploying worker "th-reports"
 ```
 
 Зафиксируйте дату/время прогона, инициалы исполнителя и ссылку на dashboard Cloudflare с новой версией.

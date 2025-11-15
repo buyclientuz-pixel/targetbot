@@ -18,8 +18,8 @@
    ```
 2. Скопируйте файл `wrangler.toml` и заполните биндинги:
    ```toml
-   name = "targetbot"
-   main = "dist/index.mjs"
+   name = "th-reports"
+   main = "src/index.ts"
 
    [vars]
    TELEGRAM_BOT_TOKEN = "..." # или используйте BOT_TOKEN для обратной совместимости
@@ -33,6 +33,7 @@
    binding = "R2"
    bucket_name = "targetbot-data"
    ```
+   > Продакшн-домен Cloudflare Workers: `https://th-reports.buyclientuz.workers.dev`.
 3. Добавьте защищённые секреты:
    ```bash
    # основной вариант
@@ -46,7 +47,7 @@
 4. Проверьте наличие планировщика:
    ```bash
    npx wrangler deploy --dry-run
-   npx wrangler dispatch-logs targetbot
+   npx wrangler dispatch-logs th-reports
    ```
 
 ## 3. Конфигурация KV
