@@ -51,6 +51,7 @@ import {
 } from "./api/settings";
 import { handleCommandLogsList } from "./api/logs";
 import { handleTelegramWebhookRefresh } from "./api/manage";
+import { handleLegacyReportRequest } from "./api/report-legacy";
 import { AdminFlashMessage, renderAdminDashboard } from "./admin/index";
 import { renderUsersPage } from "./admin/users";
 import { renderProjectForm } from "./admin/project-form";
@@ -818,6 +819,23 @@ export default {
         return htmlResponse(
           renderPaymentsPage({ payments, projects, activeProjectId: activeProject }),
         );
+      }
+
+      if (pathname === "/report" && method === "GET") {
+        const projectParam = url.searchParams.get("project") ?? "";
+        const periodParam = url.searchParams.get("period") ?? undefined;
+        const bindings = ensureEnv(env);
+        return withCors(await handleLegacyReportRequest(bindings, projectParam, periodParam));
+      }
+
+      const legacyReportMatch = pathname.match(/^\/report\/([^/]+)(?:\/([^/]+))?$/);
+      if (legacyReportMatch && method === "GET") {
+        const projectParam = decodeURIComponent(legacyReportMatch[1]);
+        const periodParam = legacyReportMatch[2]
+          ? decodeURIComponent(legacyReportMatch[2])
+          : url.searchParams.get("period") ?? undefined;
+        const bindings = ensureEnv(env);
+        return withCors(await handleLegacyReportRequest(bindings, projectParam, periodParam));
       }
 
       const portalMatch = pathname.match(/^\/portal\/([^/]+)$/);
