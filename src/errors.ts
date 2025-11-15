@@ -11,3 +11,10 @@ export class DataValidationError extends Error {
     this.name = "DataValidationError";
   }
 }
+
+export class EntityConflictError extends Error {
+  constructor(entity: string, id: string) {
+    super(`${entity} with id '${id}' already exists`);
+    this.name = "EntityConflictError";
+  }
+}

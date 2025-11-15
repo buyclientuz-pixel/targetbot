@@ -7,7 +7,11 @@ export const applyCors = (response: Response, origin = DEFAULT_ORIGIN): Response
   headers.set("access-control-allow-origin", origin);
   headers.set("access-control-allow-credentials", "false");
   headers.set("vary", "origin");
-  return new Response(response.body, { ...response, headers });
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 };
 
 export const preflight = (request: Request): Response => {
