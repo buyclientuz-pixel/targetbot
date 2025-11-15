@@ -11,6 +11,7 @@ import {
 } from "./storage";
 import { createId } from "./ids";
 import { calculateNextRunAt } from "./report-scheduler";
+import { ProgressReporter, createConsoleProgressReporter } from "./progress-reporter";
 import {
   LeadRecord,
   PaymentReminderRecord,
@@ -123,18 +124,40 @@ export const evaluateQaDataset = ({
   };
 };
 
-export const runRegressionChecks = async (env: EnvBindings): Promise<QaRunRecord> => {
+export interface RegressionOptions {
+  reporter?: ProgressReporter;
+}
+
+export const runRegressionChecks = async (
+  env: EnvBindings,
+  options: RegressionOptions = {},
+): Promise<QaRunRecord> => {
+  const reporter =
+    options.reporter ??
+    createConsoleProgressReporter([
+      "load_projects",
+      "load_related_records",
+      "evaluate_dataset",
+      "persist_results",
+    ]);
+  reporter.start();
+
   const startedAt = Date.now();
-  const [projects, paymentReminders, schedules] = await Promise.all([
-    listProjects(env),
+  const projects = await listProjects(env);
+  reporter.complete("load_projects");
+
+  const [paymentReminders, schedules] = await Promise.all([
     listPaymentReminders(env),
     listReportSchedules(env),
   ]);
+  reporter.complete("load_related_records");
 
   const leadsNested = await Promise.all(
     projects.map((project) => listLeads(env, project.id).catch(() => [] as LeadRecord[])),
   );
   const leads = leadsNested.flat();
+
+  reporter.complete("evaluate_dataset", "persist_results");
 
   const evaluation = evaluateQaDataset({
     projects,
@@ -147,6 +170,8 @@ export const runRegressionChecks = async (env: EnvBindings): Promise<QaRunRecord
   if (evaluation.scheduleRescheduled > 0) {
     await saveReportSchedules(env, evaluation.schedules);
   }
+
+  reporter.complete("persist_results", null);
 
   const finishedAt = Date.now();
   const record: QaRunRecord = {

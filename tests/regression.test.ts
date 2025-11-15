@@ -46,10 +46,11 @@ import { buildAutoReportDataset } from "../src/utils/reports";
 import { applyKpiSelection } from "../src/utils/kpi";
 import { normalizeCampaigns } from "../src/utils/campaigns";
 import { ensureTelegramUrl, ensureTelegramUrlFromId, resolveChatLink } from "../src/utils/chat-links";
-import { evaluateQaDataset } from "../src/utils/qa";
+import { evaluateQaDataset, runRegressionChecks } from "../src/utils/qa";
 import { appendProjectPayment } from "../src/utils/payments";
 import { applyProjectSettingsPatch, extractProjectSettings, summarizeProjects } from "../src/utils/projects";
 import { handlePaymentsCreate } from "../src/api/payments";
+import { ProgressReporter, ProgressSnapshot } from "../src/utils/progress-reporter";
 import {
   EnvBindings,
   listLeads,
@@ -655,6 +656,55 @@ test("resolveChatLink prefers explicit link but falls back to chat id", () => {
     ensureTelegramUrlFromId("123456"),
     "tg://user?id=123456",
   );
+});
+
+test("ProgressReporter emits iteration snapshots", () => {
+  const logs: { message: string; meta?: unknown }[] = [];
+  const reporter = new ProgressReporter(["alpha", "beta"], (message, meta) => {
+    logs.push({ message, meta });
+  });
+
+  const start = reporter.start();
+  expect.equal(start.iteration, 0);
+  expect.equal(start.total, 2);
+  expect.equal(start.remaining, 2);
+
+  const first = reporter.complete("alpha");
+  expect.equal(first.iteration, 1);
+  expect.equal(first.remaining, 1);
+  expect.equal(first.completed, "alpha");
+
+  const second = reporter.complete("beta", null);
+  expect.equal(second.iteration, 2);
+  expect.equal(second.remaining, 0);
+  expect.equal(second.next, null);
+
+  expect.equal(logs.length, 3);
+  expect.ok((logs[1].message as string).includes("Iteration 1/2 completed"));
+  expect.ok((logs[2].message as string).includes("Iteration 2/2 completed"));
+});
+
+test("runRegressionChecks reports iteration progress", async () => {
+  const env = createTestEnv();
+  await saveProjects(env, [createProject("p-progress")]);
+
+  const snapshots: ProgressSnapshot[] = [];
+  const reporter = new ProgressReporter(
+    ["load_projects", "load_related_records", "evaluate_dataset", "persist_results"],
+    (_message, meta) => {
+      if (meta) {
+        snapshots.push(meta as ProgressSnapshot);
+      }
+    },
+  );
+
+  await runRegressionChecks(env, { reporter });
+
+  const last = snapshots[snapshots.length - 1];
+  expect.ok(last, "progress reporter should capture snapshots");
+  expect.equal(last.iteration, 4);
+  expect.equal(last.remaining, 0);
+  expect.equal(last.next, null);
 });
 
 test("evaluateQaDataset keeps clean dataset untouched", () => {
