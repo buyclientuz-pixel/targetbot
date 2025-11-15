@@ -58,7 +58,7 @@ import { clearBotSession, getBotSession, saveBotSession } from "../domain/bot-se
 import { recordKnownChat } from "../domain/chat-registry";
 import { appendPaymentRecord, type PaymentRecord } from "../domain/spec/payments-history";
 import { putBillingRecord } from "../domain/spec/billing";
-import { getFbAuthRecord, putFbAuthRecord } from "../domain/spec/fb-auth";
+import { getFbAuthRecord, putFbAuthRecord, type FbAuthRecord } from "../domain/spec/fb-auth";
 import { getMetaCampaignsDocument } from "../domain/spec/meta-campaigns";
 import { putAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import { putAlertsRecord, type AlertsRecord } from "../domain/spec/alerts";
@@ -581,6 +581,16 @@ const facebookAuthKeyboard = {
   ],
 };
 
+const formatAdAccounts = (accounts: FbAuthRecord["adAccounts"]): string => {
+  if (accounts.length === 0) {
+    return "⚠️ Рекламные аккаунты не найдены. Проверьте права доступа в Meta.";
+  }
+  return [
+    "Доступные рекламные аккаунты:",
+    ...accounts.map((account, index) => `${index + 1}. ${account.name} (${account.id}) — ${account.currency}`),
+  ].join("\n");
+};
+
 const handleFacebookAuth = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
   const record = await getFbAuthRecord(ctx.kv, userId);
   if (!record) {
@@ -623,15 +633,7 @@ const handleFacebookTokenInput = async (
       expiresAt: `${expiresAt}T00:00:00.000Z`,
       adAccounts: accounts,
     });
-    const accountLines =
-      accounts.length > 0
-        ? [
-            "\nДоступные рекламные аккаунты:",
-            ...accounts.map(
-              (account, index) => `${index + 1}. ${account.name} (${account.id}) — ${account.currency}`,
-            ),
-          ]
-        : ["\n⚠️ Рекламные аккаунты не найдены. Проверьте права доступа в Meta."];
+    const accountLines = ["", formatAdAccounts(accounts)];
     await sendTelegramMessage(ctx.token, {
       chatId,
       text:
@@ -1174,14 +1176,28 @@ const handleCallback = async (
         await sendTelegramMessage(ctx.token, { chatId, text: "Пришлите новый токен Facebook." });
       } else if (parts[1] === "accounts") {
         const record = await getFbAuthRecord(ctx.kv, userId);
-        const accounts = record?.adAccounts ?? [];
-        const body =
-          accounts.length === 0
-            ? "Рекламные аккаунты не загружены."
-            : accounts
-                .map((acc, idx) => `${idx + 1}. ${acc.name} (${acc.id}) — ${acc.currency}`)
-                .join("\n");
-        await sendTelegramMessage(ctx.token, { chatId, text: body || "Список пуст." });
+        if (!record) {
+          await sendTelegramMessage(ctx.token, {
+            chatId,
+            text: "⚠️ Токен не найден. Нажмите «🔄 Обновить токен» и отправьте новый код.",
+          });
+          return;
+        }
+        try {
+          const accounts = await fetchFacebookAdAccounts(record.accessToken);
+          await putFbAuthRecord(ctx.kv, { ...record, adAccounts: accounts });
+          await sendTelegramMessage(ctx.token, {
+            chatId,
+            text: formatAdAccounts(accounts),
+          });
+        } catch (error) {
+          await sendTelegramMessage(ctx.token, {
+            chatId,
+            text:
+              "Не удалось загрузить рекламные аккаунты: " +
+              (error instanceof Error ? error.message : "неизвестная ошибка"),
+          });
+        }
       }
       break;
     }

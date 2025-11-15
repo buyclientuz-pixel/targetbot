@@ -16,7 +16,7 @@ const { putAutoreportsRecord, getAutoreportsRecord } = await import("../../src/d
 const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
 const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
 const { putPaymentsHistoryDocument, getPaymentsHistoryDocument } = await import("../../src/domain/spec/payments-history.ts");
-const { getFbAuthRecord } = await import("../../src/domain/spec/fb-auth.ts");
+const { getFbAuthRecord, putFbAuthRecord } = await import("../../src/domain/spec/fb-auth.ts");
 const { getUserSettingsRecord } = await import("../../src/domain/spec/user-settings.ts");
 
 interface FetchRecord {
@@ -221,6 +221,53 @@ test("Telegram bot controller shows project card and handles +30 billing", async
     const payments = await getPaymentsHistoryDocument(r2, "proj_a");
     assert.equal(payments?.payments.length, 1);
     assert.equal(payments?.payments[0]?.periodTo, "2025-01-31");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Telegram bot fetches Facebook ad accounts on demand", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await putFbAuthRecord(kv, {
+    userId: 100,
+    accessToken: "test-token",
+    expiresAt: "2026-01-01T00:00:00.000Z",
+    adAccounts: [],
+  });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub((url) =>
+    url.includes("graph.facebook.com")
+      ? {
+          body: {
+            data: [
+              { id: "act_123", name: "BirLash", currency: "USD" },
+              { id: "act_456", name: "Client Two", currency: "EUR" },
+            ],
+          },
+        }
+      : undefined,
+  );
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-auth",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "auth:accounts",
+      },
+    } as unknown as TelegramUpdate);
+
+    const sendMessage = findLastSendMessage(stub.requests);
+    assert.ok(sendMessage);
+    assert.match(String(sendMessage.body.text), /BirLash/);
+    assert.match(String(sendMessage.body.text), /Client Two/);
+
+    const record = await getFbAuthRecord(kv, 100);
+    assert.ok(record);
+    assert.equal(record.adAccounts.length, 2);
   } finally {
     stub.restore();
   }
