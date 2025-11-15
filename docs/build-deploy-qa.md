@@ -16,11 +16,11 @@
    ```
    Ожидаемый результат: npm устанавливает `wrangler@4.47.0` и dev-зависимости без ошибок.
 
-2. Запустить dry-run деплоя:
+2. Запустить dry-run пайплайн (линт → typecheck → тесты → `wrangler deploy --dry-run`):
    ```bash
-   npm run build
+   npm run dry-run -- --skip-deploy # уберите --skip-deploy, если заданы CLOUDFLARE_ACCOUNT_ID/API_TOKEN
    ```
-   Ожидаемый результат: команда `wrangler deploy --dry-run` завершится успешно с выводом предварительного плана ("Previewing update..."), без реального обновления версии.
+   Ожидаемый результат: линтер, typecheck и тесты проходят без ошибок. Если передан `--skip-deploy` или нет Cloudflare-токенов, скрипт выводит `[warn] Skipping Wrangler dry-run deploy...`. При полном запуске появляется сообщение `Previewing update of <worker-name>` от Wrangler.
 
 3. Выполнить настоящий деплой:
    ```bash
