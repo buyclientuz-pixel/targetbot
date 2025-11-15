@@ -11,9 +11,9 @@ import {
   applyProjectReportPreferencesPatch,
   DEFAULT_PROJECT_SETTINGS,
 } from "../utils/projects";
+import { appendProjectPayment, updateLatestProjectPayment } from "../utils/payments";
 import {
   appendCommandLog,
-  clearLeadReminder,
   clearPendingBillingOperation,
   clearPendingMetaLink,
   clearPendingUserOperation,
@@ -52,6 +52,8 @@ import {
   MetaLinkFlow,
   PendingMetaLinkState,
   updateProjectRecord,
+  updateProjectChatBinding,
+  unlinkProjectChatBinding,
   clearPaymentReminder,
   loadProjectSettingsRecord,
   saveProjectSettingsRecord,
@@ -60,7 +62,13 @@ import {
 } from "../utils/storage";
 import { syncProjectLeads, getProjectLeads } from "../utils/leads";
 import { createId } from "../utils/ids";
-import { answerCallbackQuery, editTelegramMessage, sendTelegramMessage } from "../utils/telegram";
+import {
+  answerCallbackQuery,
+  editTelegramMessage,
+  sendTelegramMessage,
+  getTelegramChatInfo,
+  TelegramChatInfo,
+} from "../utils/telegram";
 import {
   fetchAdAccounts,
   fetchCampaigns,
@@ -70,14 +78,11 @@ import {
 } from "../utils/meta";
 import { generateReport } from "../utils/reports";
 import { KPI_LABELS, syncCampaignObjectives } from "../utils/kpi";
-import { resolveChatLink } from "../utils/chat-links";
+import { parseTelegramChatIdentifier, resolveChatLink, ensureTelegramUrl } from "../utils/chat-links";
 import { mergeMetaAccountLinks } from "../utils/meta-accounts";
 import { normalizeCampaigns, buildCampaignShortName } from "../utils/campaigns";
-import {
-  buildAdminPaymentReviewMarkup,
-  buildAdminPaymentReviewMessage,
-  formatUsdAmount,
-} from "../utils/reminders";
+import { buildAdminPaymentReviewMarkup, buildAdminPaymentReviewMessage, formatUsdAmount } from "../utils/reminders";
+import { fetchUsdToUzsRate, formatUzsAmount } from "../utils/exchange-rate";
 import {
   ChatRegistrationRecord,
   LeadRecord,
@@ -87,10 +92,10 @@ import {
   PortalMetricKey,
   PortalMode,
   ProjectPortalRecord,
-  PaymentRecord,
   PaymentReminderRecord,
   PaymentReminderMethod,
   PaymentReminderStage,
+  PaymentStatus,
   ProjectDeletionSummary,
   ProjectRecord,
   ProjectSummary,
@@ -104,6 +109,7 @@ import {
   UserRecord,
   UserRole,
 } from "../types";
+import { ensureTargetTopicId } from "../utils/project-topics";
 import { calculateLeadAnalytics } from "../utils/analytics";
 import { createSlaReport } from "../utils/sla";
 
@@ -306,7 +312,6 @@ const formatDate = (value?: string): string => {
   }).format(new Date(timestamp));
 };
 
-const PAYMENT_TRANSFER_RATE = 12_000;
 const PAYMENT_FOLLOW_UP_DELAY_MS = 60 * 60 * 1000;
 
 const resolveAdminChatIdFromSummary = (summary: ProjectSummary): string | null => {
@@ -360,18 +365,16 @@ const addMonthsUtc = (value: Date, months: number): Date => {
   return result;
 };
 
-const formatUzAmount = (value: number): string => {
-  if (!Number.isFinite(value) || value <= 0) {
-    return "0";
-  }
-  return new Intl.NumberFormat("ru-RU").format(Math.round(value));
-};
-
 const buildClientPaymentPromptText = (summary: ProjectSummary): string => {
-  const lines = ["Продлеваем сотрудничество?"];
-  if (summary.name) {
-    lines.push("", `Проект: <b>${escapeHtml(summary.name)}</b>`);
+  const lines = ["💵 Уведомление об оплате"];
+  if (summary.billingAmountUsd) {
+    lines.push(`Завтра день оплаты по тарифу ${escapeHtml(formatUsdAmount(summary.billingAmountUsd))}.`);
+  } else if (summary.tariff > 0) {
+    lines.push(`Завтра день оплаты по тарифу ${escapeHtml(formatUsdAmount(summary.tariff))}.`);
+  } else {
+    lines.push("Завтра день оплаты по тарифу проекта.");
   }
+  lines.push("", "Подскажите, продлеваем ли сотрудничество на следующий месяц, и если Да, то в каком формате планируете внести оплату?");
   return lines.join("\n");
 };
 
@@ -384,34 +387,48 @@ const sendClientPaymentPrompt = async (
     await sendMessage(context, "❌ Не удалось отправить запрос: клиентская группа не найдена.");
     return false;
   }
+  const sentMessageId = await sendTelegramMessage(context.env, {
+    chatId,
+    threadId: summary.telegramThreadId ?? undefined,
+    text: buildClientPaymentPromptText(summary),
+  });
+  if (typeof sentMessageId !== "number") {
+    return false;
+  }
   const replyMarkup = {
     inline_keyboard: [
       [
-        { text: "Наличкой", callback_data: `proj:billing-reminder-cash:${summary.id}` },
-        { text: "Перевод на карту", callback_data: `proj:billing-reminder-transfer:${summary.id}` },
+        { text: "Наличкой", callback_data: `payments:pay_cash:${summary.id}:${sentMessageId}` },
+        { text: "Перевод на карту", callback_data: `payments:pay_card:${summary.id}:${sentMessageId}` },
       ],
     ],
   };
-  await sendTelegramMessage(context.env, {
+  await editTelegramMessage(context.env, {
     chatId,
-    threadId: summary.telegramThreadId ?? undefined,
+    messageId: sentMessageId,
     text: buildClientPaymentPromptText(summary),
     replyMarkup,
   });
   return true;
 };
 
-const buildTransferInstructionText = (summary: ProjectSummary): { text: string; nextPaymentIso: string } => {
+const buildTransferInstructionText = async (
+  context: BotContext,
+  summary: ProjectSummary,
+  plannedDateIso: string | null,
+): Promise<{ text: string; nextPaymentIso: string; rate: number }> => {
   const now = new Date();
-  const paymentDateLabel = formatDate(now.toISOString());
-  const nextDate = addMonthsUtc(now, 1);
+  const paymentDateLabel = formatDate((plannedDateIso ?? now.toISOString()) as string);
+  const nextBase = plannedDateIso ? new Date(plannedDateIso) : now;
+  const nextDate = addMonthsUtc(nextBase, 1);
   const nextPaymentIso = nextDate.toISOString();
   const nextPaymentLabel = formatDate(nextPaymentIso);
-  const tariff = summary.tariff ?? 0;
-  const usdLabel = formatUsdAmount(tariff);
-  const uzsAmount = tariff > 0 ? tariff * PAYMENT_TRANSFER_RATE : 0;
-  const uzsLabel = formatUzAmount(uzsAmount);
-  const rateLabel = formatUzAmount(PAYMENT_TRANSFER_RATE);
+  const tariffUsd = summary.billingAmountUsd ?? summary.tariff ?? 0;
+  const usdLabel = formatUsdAmount(tariffUsd);
+  const { rate } = await fetchUsdToUzsRate(context.env);
+  const uzsAmount = tariffUsd > 0 ? tariffUsd * rate : 0;
+  const uzsLabel = formatUzsAmount(uzsAmount);
+  const rateLabel = formatUzsAmount(rate);
   const lines = [
     "Продление сотрудничества:",
     `Дата оплаты: ${escapeHtml(paymentDateLabel)}`,
@@ -430,23 +447,37 @@ const buildTransferInstructionText = (summary: ProjectSummary): { text: string; 
     "",
     "Как переведёте, нажмите на кнопку ниже и отправьте скриншот.",
   ];
-  return { text: lines.join("\n"), nextPaymentIso };
+  return { text: lines.join("\n"), nextPaymentIso, rate };
 };
+
+interface TransferInstructionsResult {
+  delivered: boolean;
+  rate: number;
+  nextPaymentIso: string;
+}
 
 const sendTransferInstructionsToClient = async (
   context: BotContext,
   summary: ProjectSummary,
   meta?: { chatId: string; messageId: number } | null,
-): Promise<boolean> => {
+): Promise<TransferInstructionsResult | null> => {
   const chatId = meta?.chatId ?? resolveClientChatIdFromSummary(summary);
   if (!chatId) {
     await sendMessage(context, "❌ Не удалось отправить реквизиты: клиентская группа не найдена.");
-    return false;
+    return null;
   }
-  const { text } = buildTransferInstructionText(summary);
-  const replyMarkup = {
-    inline_keyboard: [[{ text: "Готово! Перевели ✅", callback_data: `proj:billing-reminder-transfer-done:${summary.id}` }]],
-  };
+  const { text, nextPaymentIso, rate } = await buildTransferInstructionText(
+    context,
+    summary,
+    summary.nextPaymentDate,
+  );
+  const metaMessageId = meta?.messageId;
+  const replyMarkup =
+    typeof metaMessageId === "number"
+      ? {
+          inline_keyboard: [[{ text: "Готово! Перевели ✅", callback_data: `payments:pay_done:${summary.id}:${metaMessageId}` }]],
+        }
+      : undefined;
   if (meta) {
     await editTelegramMessage(context.env, {
       chatId: meta.chatId,
@@ -454,15 +485,26 @@ const sendTransferInstructionsToClient = async (
       text,
       replyMarkup,
     });
+    return { delivered: true, rate, nextPaymentIso };
   } else {
-    await sendTelegramMessage(context.env, {
+    const messageId = await sendTelegramMessage(context.env, {
       chatId,
       threadId: summary.telegramThreadId ?? undefined,
       text,
-      replyMarkup,
     });
+    if (typeof messageId === "number") {
+      await editTelegramMessage(context.env, {
+        chatId,
+        messageId,
+        text,
+        replyMarkup: {
+          inline_keyboard: [[{ text: "Готово! Перевели ✅", callback_data: `payments:pay_done:${summary.id}:${messageId}` }]],
+        },
+      });
+      return { delivered: true, rate, nextPaymentIso };
+    }
   }
-  return true;
+  return { delivered: false, rate, nextPaymentIso };
 };
 
 const sendAdminPaymentReviewRequest = async (
@@ -476,266 +518,19 @@ const sendAdminPaymentReviewRequest = async (
     await sendMessage(context, "❌ Не удалось уведомить администратора: не указан админский чат.");
     return false;
   }
+  const reminderRecord = await loadPaymentReminderRecord(context.env, summary.id).catch(() => null);
+  const amountUsd = summary.billingAmountUsd ?? summary.tariff;
+  const exchangeRate = reminderRecord?.exchangeRate ?? null;
+  const dueDate = reminderRecord?.nextPaymentPlannedAt ?? summary.nextPaymentDate ?? null;
   await sendTelegramMessage(context.env, {
     chatId,
-    text: buildAdminPaymentReviewMessage(summary, method ?? null, summary.nextPaymentDate ?? null, reminder),
+    text: buildAdminPaymentReviewMessage(summary, method ?? null, dueDate, reminder, {
+      exchangeRate,
+      amountUsd,
+    }),
     replyMarkup: buildAdminPaymentReviewMarkup(summary.id),
   });
   return true;
-};
-
-const schedulePaymentFollowUpIso = (): string => {
-  return new Date(Date.now() + PAYMENT_FOLLOW_UP_DELAY_MS).toISOString();
-};
-
-const patchPaymentReminderWithSummary = async (
-  context: BotContext,
-  summary: ProjectSummary,
-  patch: Partial<PaymentReminderRecord>,
-): Promise<PaymentReminderRecord> => {
-  const adminChatId = resolveAdminChatIdFromSummary(summary);
-  const clientChatId = resolveClientChatIdFromSummary(summary);
-  return applyPaymentReminderPatch(context.env, summary.id, {
-    adminChatId,
-    clientChatId,
-    ...patch,
-  });
-};
-
-const handlePaymentReminderDecline = async (
-  context: BotContext,
-  projectId: string,
-): Promise<void> => {
-  const summary = await ensureProjectSummary(context, projectId);
-  if (!summary) {
-    return;
-  }
-  const nowIso = new Date().toISOString();
-  await updateProjectRecord(context.env, projectId, { autoOff: true, autoOffAt: nowIso });
-  await patchPaymentReminderWithSummary(context, summary, {
-    stage: "declined",
-    method: null,
-    nextFollowUpAt: null,
-    lastClientPromptAt: null,
-  });
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(context.env, context.update.callback_query.id, "Отметили отказ");
-  }
-  await sendMessage(context, "Проект отключён. Клиент не продлевает.");
-};
-
-const handlePaymentReminderContinue = async (
-  context: BotContext,
-  projectId: string,
-): Promise<void> => {
-  const summary = await ensureProjectSummary(context, projectId);
-  if (!summary) {
-    return;
-  }
-  const nowIso = new Date().toISOString();
-  await updateProjectRecord(context.env, projectId, { autoOff: false, autoOffAt: null });
-  await patchPaymentReminderWithSummary(context, summary, {
-    stage: "awaiting_client_choice",
-    method: null,
-    lastClientPromptAt: nowIso,
-    nextFollowUpAt: null,
-  });
-  const delivered = await sendClientPaymentPrompt(context, summary);
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(
-      context.env,
-      context.update.callback_query.id,
-      delivered ? "Отправлено клиенту" : "Ошибка отправки",
-    );
-  }
-  if (!delivered) {
-    await sendMessage(
-      context,
-      "❌ Не удалось отправить запрос клиенту. Проверьте регистрацию /reg и права бота в группе.",
-    );
-  }
-};
-
-const handlePaymentReminderCash = async (
-  context: BotContext,
-  projectId: string,
-): Promise<void> => {
-  const summary = await ensureProjectSummary(context, projectId);
-  if (!summary) {
-    return;
-  }
-  await patchPaymentReminderWithSummary(context, summary, {
-    stage: "awaiting_admin_confirmation",
-    method: "cash",
-    nextFollowUpAt: schedulePaymentFollowUpIso(),
-  });
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(context.env, context.update.callback_query.id, "Передано админу");
-  }
-  const callbackMeta = extractCallbackMessageMeta(context);
-  if (callbackMeta) {
-    await editTelegramMessage(context.env, {
-      chatId: callbackMeta.chatId,
-      messageId: callbackMeta.messageId,
-      text: "Принято. Оплата будет наличной.",
-    });
-  } else {
-    const chatId = context.chatId ?? resolveClientChatIdFromSummary(summary);
-    if (chatId) {
-      await sendTelegramMessage(context.env, {
-        chatId,
-        threadId: summary.telegramThreadId ?? undefined,
-        text: "Принято. Оплата будет наличной.",
-      });
-    }
-  }
-  await sendAdminPaymentReviewRequest(context, summary, "cash");
-};
-
-const handlePaymentReminderTransfer = async (
-  context: BotContext,
-  projectId: string,
-): Promise<void> => {
-  const summary = await ensureProjectSummary(context, projectId);
-  if (!summary) {
-    return;
-  }
-  const nowIso = new Date().toISOString();
-  await patchPaymentReminderWithSummary(context, summary, {
-    stage: "awaiting_transfer_confirmation",
-    method: "transfer",
-    lastClientPromptAt: nowIso,
-    nextFollowUpAt: null,
-  });
-  const callbackMeta = extractCallbackMessageMeta(context);
-  const delivered = await sendTransferInstructionsToClient(context, summary, callbackMeta);
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(
-      context.env,
-      context.update.callback_query.id,
-      delivered ? "Реквизиты отправлены" : "Ошибка отправки",
-    );
-  }
-  if (!delivered) {
-    await sendMessage(
-      context,
-      "❌ Не удалось отправить реквизиты. Проверьте, что бот является администратором клиентской группы.",
-    );
-  }
-};
-
-const handlePaymentReminderTransferDone = async (
-  context: BotContext,
-  projectId: string,
-): Promise<void> => {
-  const summary = await ensureProjectSummary(context, projectId);
-  if (!summary) {
-    return;
-  }
-  await patchPaymentReminderWithSummary(context, summary, {
-    stage: "awaiting_admin_confirmation",
-    method: "transfer",
-    nextFollowUpAt: schedulePaymentFollowUpIso(),
-  });
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(context.env, context.update.callback_query.id, "Передано админу");
-  }
-  const callbackMeta = extractCallbackMessageMeta(context);
-  if (callbackMeta) {
-    await editTelegramMessage(context.env, {
-      chatId: callbackMeta.chatId,
-      messageId: callbackMeta.messageId,
-      text: "Спасибо! Администратор проверит поступление и подтвердит оплату.",
-    });
-  } else {
-    const chatId = context.chatId ?? resolveClientChatIdFromSummary(summary);
-    if (chatId) {
-      await sendTelegramMessage(context.env, {
-        chatId,
-        threadId: summary.telegramThreadId ?? undefined,
-        text: "Спасибо! Администратор проверит поступление и подтвердит оплату.",
-      });
-    }
-  }
-  await sendAdminPaymentReviewRequest(context, summary, "transfer");
-};
-
-const handlePaymentReminderConfirm = async (
-  context: BotContext,
-  projectId: string,
-): Promise<void> => {
-  const summary = await ensureProjectSummary(context, projectId);
-  if (!summary) {
-    return;
-  }
-  const reminder = await loadPaymentReminderRecord(context.env, projectId);
-  const paidAt = new Date();
-  const nextPaymentIso = addMonthsUtc(paidAt, 1).toISOString();
-  await updateProjectRecord(context.env, projectId, {
-    nextPaymentDate: nextPaymentIso,
-    billingStatus: "active",
-  });
-  summary.nextPaymentDate = nextPaymentIso;
-  await patchPaymentReminderWithSummary(context, summary, {
-    stage: "completed",
-    method: reminder?.method ?? null,
-    nextFollowUpAt: null,
-  });
-  await clearPaymentReminder(context.env, projectId).catch(() => undefined);
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(context.env, context.update.callback_query.id, "Оплата подтверждена");
-  }
-  await sendMessage(
-    context,
-    `✅ Оплата подтверждена. Дата следующей оплаты: ${escapeHtml(formatDate(nextPaymentIso))}.`,
-  );
-  const clientChatId = resolveClientChatIdFromSummary(summary);
-  if (clientChatId) {
-    await sendTelegramMessage(context.env, {
-      chatId: clientChatId,
-      threadId: summary.telegramThreadId ?? undefined,
-      text: `Спасибо! Средства поступили.\nДата следующей оплаты: ${escapeHtml(formatDate(nextPaymentIso))}.`,
-    });
-  }
-};
-
-const handlePaymentReminderError = async (
-  context: BotContext,
-  projectId: string,
-): Promise<void> => {
-  const summary = await ensureProjectSummary(context, projectId);
-  if (!summary) {
-    return;
-  }
-  await patchPaymentReminderWithSummary(context, summary, {
-    stage: "admin_notified",
-    method: null,
-    nextFollowUpAt: null,
-  });
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(context.env, context.update.callback_query.id, "Сбросили запрос");
-  }
-  await sendMessage(
-    context,
-    "Запрос сброшен. Нажмите «Продолжаем работу», чтобы заново отправить инструкции клиенту.",
-  );
-};
-
-const handlePaymentReminderWait = async (
-  context: BotContext,
-  projectId: string,
-): Promise<void> => {
-  const summary = await ensureProjectSummary(context, projectId);
-  if (!summary) {
-    return;
-  }
-  await patchPaymentReminderWithSummary(context, summary, {
-    stage: "awaiting_admin_confirmation",
-    nextFollowUpAt: schedulePaymentFollowUpIso(),
-  });
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(context.env, context.update.callback_query.id, "Напомню через час");
-  }
 };
 
 const ensureChatId = (context: BotContext): string | null => {
@@ -874,36 +669,50 @@ const toggleRouteChannel = (target: ReportRoutingTarget, channel: RouteChannel):
   return target;
 };
 
-type AlertToggleKey = "payment" | "budget" | "meta" | "pause";
+type AlertToggleKey = "alerts" | "autobilling" | "budget" | "meta" | "pause";
 
-const ALERT_TOGGLE_CONFIG: Record<AlertToggleKey, { label: string; accessor: (settings: ProjectSettingsRecord) => boolean } & {
-  setter: (settings: ProjectSettingsRecord, next: boolean) => void;
-}> = {
-  payment: {
-    label: "Оплата",
-    accessor: (settings) => settings.alerts.payment,
+const ALERT_TOGGLE_CONFIG: Record<
+  AlertToggleKey,
+  { label: string; accessor: (settings: ProjectSettingsRecord) => boolean } & {
+    setter: (settings: ProjectSettingsRecord, next: boolean) => void;
+  }
+> = {
+  alerts: {
+    label: "Лиды",
+    accessor: (settings) => settings.alerts.enabled,
     setter: (settings, next) => {
+      settings.alerts.enabled = next;
+    },
+  },
+  autobilling: {
+    label: "Автобиллинг",
+    accessor: (settings) => settings.autobilling.enabled,
+    setter: (settings, next) => {
+      settings.autobilling.enabled = next;
       settings.alerts.payment = next;
     },
   },
   budget: {
     label: "Бюджет",
-    accessor: (settings) => settings.alerts.budget,
+    accessor: (settings) => settings.budget.enabled,
     setter: (settings, next) => {
+      settings.budget.enabled = next;
       settings.alerts.budget = next;
     },
   },
   meta: {
     label: "Meta API",
-    accessor: (settings) => settings.alerts.metaApi,
+    accessor: (settings) => settings.metaApi.enabled,
     setter: (settings, next) => {
+      settings.metaApi.enabled = next;
       settings.alerts.metaApi = next;
     },
   },
   pause: {
     label: "Пауза",
-    accessor: (settings) => settings.alerts.pause,
+    accessor: (settings) => settings.pause.enabled,
     setter: (settings, next) => {
+      settings.pause.enabled = next;
       settings.alerts.pause = next;
     },
   },
@@ -985,6 +794,7 @@ const handleRegisterChat = async (context: BotContext): Promise<void> => {
       chatTitle: context.chatTitle ?? current.chatTitle,
       chatType: context.chatType ?? current.chatType,
       username: context.username ?? current.username,
+      threadId: typeof context.threadId === "number" ? context.threadId : current.threadId,
       linkedProjectId: project?.id ?? current.linkedProjectId,
       status: project ? "linked" : current.status ?? "pending",
       updatedAt: now,
@@ -997,6 +807,7 @@ const handleRegisterChat = async (context: BotContext): Promise<void> => {
       chatTitle: context.chatTitle,
       chatType: context.chatType,
       username: context.username,
+      threadId: typeof context.threadId === "number" ? context.threadId : null,
       status: project ? "linked" : "pending",
       linkedProjectId: project?.id,
       createdAt: now,
@@ -1018,6 +829,7 @@ const handleRegisterChat = async (context: BotContext): Promise<void> => {
       members: null,
       registered: true,
       linkedProjectId: record.linkedProjectId ?? null,
+      threadId: record.threadId ?? (typeof context.threadId === "number" ? context.threadId : null),
       updatedAt: nowTimestamp,
     };
     if (index >= 0) {
@@ -1247,7 +1059,7 @@ const buildAutoReportLines = (
   }
   lines.push(
     "",
-    `📅 Понедельник: ${auto.mondayDoubleReport ? "[✔] Сегодня + неделя" : "[ ] Сегодня + неделя"}`,
+    `📅 Понедельник: ${auto.mondayDoubleReport ? "[✔] Вчера + неделя" : "[ ] Вчера + неделя"}`,
   );
   lines.push("", "📡 Маршрут отчётов:");
   (Object.keys(ROUTE_CHANNEL_LABEL) as RouteChannel[]).forEach((channel) => {
@@ -1261,7 +1073,7 @@ const buildAutoReportLines = (
   });
   lines.push("", "📡 Маршрут алертов:");
   lines.push(
-    ROUTE_TARGETS.map((target) => `${alerts.target === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`).join(
+    ROUTE_TARGETS.map((target) => `${alerts.route === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`).join(
       "   ",
     ),
   );
@@ -1295,7 +1107,7 @@ const buildAutoReportMarkup = (projectId: string, settings: ProjectSettingsRecor
     callback_data: `auto_send_target:${projectId}:${channel}`,
   }));
   const alertRouteRow = ROUTE_TARGETS.map((target) => ({
-    text: `${settings.alerts.target === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`,
+    text: `${settings.alerts.route === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`,
     callback_data: `alert_route:${projectId}:${target}`,
   }));
   return {
@@ -1310,8 +1122,8 @@ const buildAutoReportMarkup = (projectId: string, settings: ProjectSettingsRecor
       [
         {
           text: auto.mondayDoubleReport
-            ? "✅ Понедельник: сегодня + неделя"
-            : "☑️ Понедельник: сегодня + неделя",
+            ? "✅ Понедельник: вчера + неделя"
+            : "☑️ Понедельник: вчера + неделя",
           callback_data: `auto_monday_toggle:${projectId}`,
         },
       ],
@@ -1360,7 +1172,7 @@ const mutateProjectSettings = async (
   const draft = JSON.parse(JSON.stringify(current)) as ProjectSettingsRecord;
   const status = mutator(draft);
   draft.autoReport.times = normalizeTimeSelection(draft.autoReport.times);
-  draft.autoReport.alertsTarget = draft.alerts.target;
+  draft.autoReport.alertsTarget = draft.alerts.route;
   const saved = await saveProjectSettingsRecord(context.env, projectId, draft);
   await handleAutoReportMenu(context, projectId, { status, settings: saved });
 };
@@ -1374,6 +1186,10 @@ const buildProjectActionsMarkup = (summary: ProjectSummary) => {
         chatUrl
           ? { text: "📲 Чат-группа", url: chatUrl }
           : { text: "📲 Чат-группа", callback_data: `proj:chat:${summary.id}` },
+      ],
+      [
+        { text: "🔁 Изменить чат-группу", callback_data: `proj:chat-change:${summary.id}` },
+        { text: "🚫 Отвязать чат", callback_data: `proj:chat-unlink:${summary.id}` },
       ],
       [
         { text: "💬 Лиды", callback_data: `proj:leads:${summary.id}` },
@@ -1479,7 +1295,7 @@ const handleAutoReportMondayToggle = async (context: BotContext, projectId: stri
   await mutateProjectSettings(context, projectId, (draft) => {
     draft.autoReport.mondayDoubleReport = !draft.autoReport.mondayDoubleReport;
     return draft.autoReport.mondayDoubleReport
-      ? "📅 По понедельникам: сегодня + неделя"
+      ? "📅 По понедельникам: вчера + неделя"
       : "📅 По понедельникам: только сегодня";
   });
 };
@@ -1494,11 +1310,24 @@ const handleAlertToggle = async (
     await handleAutoReportMenu(context, projectId, { status: "❌ Опция не найдена" });
     return;
   }
+  let nextValue: boolean | null = null;
   await mutateProjectSettings(context, projectId, (draft) => {
     const current = config.accessor(draft);
-    config.setter(draft, !current);
-    return `${config.label}: ${!current ? "включено" : "выключено"}`;
+    const toggled = !current;
+    config.setter(draft, toggled);
+    nextValue = toggled;
+    return `${config.label}: ${toggled ? "включено" : "выключено"}`;
   });
+  if (key === "autobilling" && nextValue !== null) {
+    await updateProjectRecord(context.env, projectId, { autoBillingEnabled: nextValue }).catch((error) => {
+      console.warn("Failed to update project auto billing flag", projectId, error);
+    });
+    if (!nextValue) {
+      await clearPaymentReminder(context.env, projectId).catch((error) => {
+        console.warn("Failed to clear payment reminders when disabling autobilling", projectId, error);
+      });
+    }
+  }
 };
 
 const handleAlertRoute = async (
@@ -1511,9 +1340,14 @@ const handleAlertRoute = async (
     return;
   }
   await mutateProjectSettings(context, projectId, (draft) => {
-    draft.alerts.target = target as ReportRoutingTarget;
-    draft.autoReport.alertsTarget = draft.alerts.target;
-    return `📢 Алерты → ${REPORT_ROUTE_LABEL[draft.alerts.target]}`;
+    const nextRoute = target as ReportRoutingTarget;
+    draft.alerts.route = nextRoute;
+    draft.autoReport.alertsTarget = nextRoute;
+    draft.autobilling.route = nextRoute;
+    draft.budget.route = nextRoute;
+    draft.metaApi.route = nextRoute;
+    draft.pause.route = nextRoute;
+    return `📢 Алерты → ${REPORT_ROUTE_LABEL[draft.alerts.route]}`;
   });
 };
 
@@ -1555,6 +1389,7 @@ const handleAutoReportSendNow = async (context: BotContext, projectId: string): 
       const clientChatId = summary.telegramChatId.toString();
       await sendTelegramMessage(context.env, {
         chatId: clientChatId,
+        threadId: typeof summary.telegramThreadId === "number" ? summary.telegramThreadId : undefined,
         text: `${reportText}\n\nОтправлено автоматически (${REPORT_ROUTE_SUMMARY[settings.autoReport.sendTarget]})`,
       });
     }
@@ -1877,6 +1712,7 @@ const ensureTelegramGroupIndex = async (context: BotContext): Promise<TelegramGr
         members: null,
         registered: true,
         linkedProjectId: entry.linkedProjectId ?? null,
+        threadId: entry.threadId ?? null,
         updatedAt: now,
       }));
       await saveTelegramGroupLinks(context.env, groups);
@@ -1886,6 +1722,67 @@ const ensureTelegramGroupIndex = async (context: BotContext): Promise<TelegramGr
   }
 
   return groups;
+};
+
+const FREE_CHAT_OPTIONS_LIMIT = 10;
+
+const buildChatLinkCandidate = (info: TelegramChatInfo): string | undefined => {
+  if (info.inviteLink) {
+    return info.inviteLink;
+  }
+  if (info.username) {
+    const handle = info.username.startsWith("@") ? info.username.slice(1) : info.username;
+    if (handle) {
+      return `https://t.me/${handle}`;
+    }
+  }
+  return undefined;
+};
+
+const resolveChatLinkFromInfo = (info: TelegramChatInfo): string | undefined => {
+  return resolveChatLink(buildChatLinkCandidate(info), info.id);
+};
+
+const describeFreeChatLabel = (group: TelegramGroupLinkRecord): string => {
+  if (group.title && group.title.trim()) {
+    return escapeHtml(group.title);
+  }
+  return `ID ${escapeHtml(group.chatId)}`;
+};
+
+const buildProjectChatChangeMarkup = (
+  projectId: string,
+  chats: TelegramGroupLinkRecord[],
+) => {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = chats.map((chat) => [
+    { text: `🏷 ${truncateLabel(chat.title ?? chat.chatId)}`, callback_data: `bind_chat:${chat.chatId}` },
+  ]);
+  rows.push([{ text: "🔗 Привязать по ссылке", callback_data: "bind_link" }]);
+  rows.push([{ text: "⬅️ Назад", callback_data: `proj:view:${projectId}` }]);
+  return { inline_keyboard: rows };
+};
+
+const announceProjectChatBindingSuccess = async (
+  context: BotContext,
+  projectId: string,
+  chatInfo: TelegramChatInfo,
+  threadId: number | null,
+): Promise<void> => {
+  const chatUrl = resolveChatLinkFromInfo(chatInfo);
+  const chatLabel = chatUrl
+    ? `<a href="${escapeAttribute(chatUrl)}">перейти</a>`
+    : chatInfo.title
+    ? escapeHtml(chatInfo.title)
+    : `<code>${escapeHtml(chatInfo.id)}</code>`;
+  const lines = [
+    "Чат успешно привязан.",
+    "",
+    `Чат: ${chatLabel}.`,
+    `Тема: ${threadId ? "Таргет" : "не требуется"}.`,
+  ];
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: { inline_keyboard: [[{ text: "⬅️ Назад", callback_data: `proj:view:${projectId}` }]] },
+  });
 };
 
 const formatShortDate = (value?: string | null): string | null => {
@@ -2039,10 +1936,11 @@ const handleProjectView = async (
     }`,
   );
   lines.push(
-    `💬 Лиды: ${summary.leadStats.total} (новые ${summary.leadStats.new}, завершено ${summary.leadStats.done})`,
+    `💬 Лиды: сегодня ${summary.leadStats.today} | всего ${summary.leadStats.total}`,
   );
   lines.push(describeBillingStatus(summary));
   lines.push(describePaymentSchedule(summary));
+  lines.push(summary.autoBillingEnabled === false ? "🤖 Автобиллинг: выключен" : "🤖 Автобиллинг: включен");
   try {
     const settings = await loadProjectSettingsRecord(context.env, summary.id);
     const auto = settings.autoReport;
@@ -2051,11 +1949,11 @@ const handleProjectView = async (
       ? `${timesLabel} (вкл)`
       : "выключены";
     lines.push(`⏰ Автоотчёты: ${escapeHtml(autoLabel)}`);
-    const alertFlags = [settings.alerts.payment, settings.alerts.budget, settings.alerts.metaApi, settings.alerts.pause].filter(
-      Boolean,
-    ).length;
-    const alertsLabel = alertFlags
-      ? `включены (${REPORT_ROUTE_SUMMARY[settings.alerts.target]})`
+    const alertFlags = settings.alerts.enabled
+      ? [settings.autobilling.enabled, settings.budget.enabled, settings.metaApi.enabled, settings.pause.enabled].filter(Boolean).length
+      : 0;
+    const alertsLabel = settings.alerts.enabled && alertFlags
+      ? `включены (${REPORT_ROUTE_SUMMARY[settings.alerts.route]})`
       : "отключены";
     lines.push(`📡 Алерты: ${escapeHtml(alertsLabel)}`);
   } catch (error) {
@@ -2198,11 +2096,6 @@ const toggleLeadStatus = async (
   const updated: LeadRecord = { ...current, status: nextStatus };
   leads[index] = updated;
   await saveLeads(env, projectId, leads);
-  if (nextStatus === "done") {
-    await clearLeadReminder(env, leadId).catch((error) => {
-      console.warn("Failed to clear lead reminder", projectId, leadId, error);
-    });
-  }
   return updated;
 };
 
@@ -2234,9 +2127,8 @@ const handleProjectLeads = async (context: BotContext, projectId: string): Promi
   const preview = sorted.slice(0, 5);
   const lines: string[] = [];
   lines.push(`💬 Лиды — <b>${escapeHtml(summary.name)}</b>`);
-  lines.push(
-    `Всего: ${summary.leadStats.total} · Новые: ${summary.leadStats.new} · Завершено: ${summary.leadStats.done}`,
-  );
+  lines.push(`Сегодня: ${summary.leadStats.today} · Всего: ${summary.leadStats.total}`);
+  lines.push(`Завершено: ${summary.leadStats.done} · В работе: ${summary.leadStats.total - summary.leadStats.done}`);
   lines.push("\nПоследние заявки:");
   if (preview.length) {
     for (const lead of preview) {
@@ -2299,7 +2191,7 @@ const handleProjectReport = async (
     `📈 Отчёт по рекламе — <b>${escapeHtml(summary.name)}</b>`,
     `Период: <b>${escapeHtml(period.label)}</b>`,
     "",
-    `Лиды: ${leadStats.total} (новые ${leadStats.new}, закрыто ${leadStats.done})`,
+    `Лиды: ${leadStats.total} · Закрыто: ${leadStats.done} · В работе: ${leadStats.total - leadStats.done}`,
     account
       ? `Расход: ${spendLabel ? escapeHtml(spendLabel) : "—"}`
       : accountInfo.status === "valid"
@@ -2353,6 +2245,7 @@ const handleProjectReportSend = async (
   const message = `${escapeHtml(report.text)}\n\nПериод: <b>${escapeHtml(period.label)}</b>`;
   await sendTelegramMessage(context.env, {
     chatId,
+    threadId: typeof summary.telegramThreadId === "number" ? summary.telegramThreadId : undefined,
     text: message,
   });
   const nowIso = new Date().toISOString();
@@ -3004,80 +2897,74 @@ const BILLING_STATUS_LABELS: Record<ProjectBillingState, string> = {
   blocked: "⛔️ Блокирован",
 };
 
-const PAYMENT_DAY_MS = 24 * 60 * 60 * 1000;
+const BILLING_DAY_MS = 24 * 60 * 60 * 1000;
 
-const addDaysToIso = (source: string | null, days: number): string => {
-  const base = source && !Number.isNaN(Date.parse(source)) ? new Date(source) : new Date();
-  const next = new Date(base.getTime() + days * PAYMENT_DAY_MS);
-  return next.toISOString();
+const toDateOnlyString = (date: Date): string => {
+  const normalized = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const year = normalized.getUTCFullYear();
+  const month = `${normalized.getUTCMonth() + 1}`.padStart(2, "0");
+  const day = `${normalized.getUTCDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
 };
 
-const handlePaymentsAddDays = async (
-  context: BotContext,
-  projectId: string,
-  days: number,
-): Promise<void> => {
-  const summary = await ensureProjectSummary(context, projectId);
-  if (!summary) {
-    return;
-  }
-  const currentDate = summary.nextPaymentDate ?? null;
-  const nextDate = addDaysToIso(currentDate, days);
-  const updated = await updateProjectRecord(context.env, projectId, {
-    nextPaymentDate: nextDate,
-    billingEnabled: true,
-  });
-  if (!updated) {
-    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
-    return;
-  }
-  await clearPaymentReminder(context.env, projectId).catch((error) => {
-    console.warn("Failed to clear payment reminder from payments:add", projectId, error);
-  });
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(context.env, context.update.callback_query.id, "Дата обновлена");
-  }
-  await handleProjectBilling(context, projectId);
+const extendDateByDays = (source: string | null | undefined, days: number): string => {
+  const base =
+    source && !Number.isNaN(Date.parse(source))
+      ? new Date(source)
+      : new Date();
+  const normalized = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate()));
+  const next = new Date(normalized.getTime() + days * BILLING_DAY_MS);
+  return toDateOnlyString(next);
 };
 
-const handlePaymentsSetPlan = async (
-  context: BotContext,
-  projectId: string,
-  amount: number,
-  plan: "350" | "500",
-): Promise<void> => {
-  const updated = await updateProjectRecord(context.env, projectId, {
-    billingPlan: plan,
-    billingAmountUsd: amount,
-    billingEnabled: true,
-  });
-  if (!updated) {
-    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
-    return;
+const formatPlanAmount = (value?: number | null): string | null => {
+  if (typeof value !== "number" || Number.isNaN(value) || value <= 0) {
+    return null;
   }
-  await clearPaymentReminder(context.env, projectId).catch((error) => {
-    console.warn("Failed to clear payment reminder from payments:set", projectId, error);
-  });
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(context.env, context.update.callback_query.id, `Тариф ${amount}$`);
-  }
-  await handleProjectBilling(context, projectId);
+  const formatted = Number.isInteger(value) ? value.toFixed(0) : value.toFixed(2);
+  return `${formatted}$`;
 };
 
-const promptPaymentDateInput = async (context: BotContext, projectId: string): Promise<void> => {
+const resolvePlanAmount = (summary: ProjectSummary): number | null => {
+  if (typeof summary.paymentPlan === "number" && summary.paymentPlan > 0) {
+    return summary.paymentPlan;
+  }
+  if (typeof summary.billingAmountUsd === "number" && summary.billingAmountUsd > 0) {
+    return summary.billingAmountUsd;
+  }
+  if (typeof summary.tariff === "number" && summary.tariff > 0) {
+    return summary.tariff;
+  }
+  return null;
+};
+
+const formatBillingDate = (value?: string | null): string => {
+  const formatted = formatShortDate(value ?? null);
+  return formatted ?? "не указан";
+};
+
+const buildBillingKeyboard = (projectId: string) => ({
+  inline_keyboard: [
+    [{ text: "+30 дней", callback_data: `billing.extend.30:${projectId}` }],
+    [
+      { text: "350$", callback_data: `billing.set_plan.350:${projectId}` },
+      { text: "500$", callback_data: `billing.set_plan.500:${projectId}` },
+    ],
+    [{ text: "📅 Указать дату", callback_data: `billing.set_date:${projectId}` }],
+    [{ text: "📝 Ввести вручную", callback_data: `billing.manual_date:${projectId}` }],
+    [{ text: "⬅ Назад", callback_data: `proj:view:${projectId}` }],
+  ],
+});
+
+const promptBillingManualDate = async (context: BotContext, projectId: string): Promise<void> => {
   const adminId = context.userId;
   if (!adminId) {
     await sendMessage(context, "❌ Пользователь не определён. Отправьте команду из приватного чата.");
     return;
   }
-  await savePendingBillingOperation(context.env, adminId, {
-    action: "set-next-payment",
-    projectId,
-  });
+  await savePendingBillingOperation(context.env, adminId, { action: "manual-date", projectId });
   await sendMessage(context, "📅 Отправьте дату следующего платежа в формате YYYY-MM-DD или DD.MM.YYYY.", {
-    replyMarkup: {
-      inline_keyboard: [[{ text: "⬅ К оплате", callback_data: `proj:billing:${projectId}` }]],
-    },
+    replyMarkup: { inline_keyboard: [[{ text: "⬅ Назад", callback_data: `proj:billing:${projectId}` }]] },
   });
 };
 
@@ -3086,71 +2973,186 @@ const handleProjectBilling = async (context: BotContext, projectId: string): Pro
   if (!summary) {
     return;
   }
-  const billing = summary.billing;
-  const payments = await listPayments(context.env).catch(() => [] as PaymentRecord[]);
-  const projectPayments = payments
-    .filter((payment) => payment.projectId === summary.id)
-    .sort((a, b) => Date.parse(b.periodStart) - Date.parse(a.periodStart))
-    .slice(0, 5);
-  const lines: string[] = [];
-  lines.push(`💳 Оплата — <b>${escapeHtml(summary.name)}</b>`);
-  lines.push(describeBillingStatus(summary));
-  lines.push(describePaymentSchedule(summary));
-  if (billing.notes) {
-    lines.push("Заметка:");
-    lines.push(escapeHtml(billing.notes));
+  const planAmount = resolvePlanAmount(summary);
+  const planLabel = formatPlanAmount(planAmount) ?? "не выбран";
+  const nextPaymentLabel = formatBillingDate(summary.nextPaymentDate);
+  const autoEnabled =
+    summary.autobilling ??
+    summary.autoBillingEnabled ??
+    summary.paymentEnabled ??
+    summary.billingEnabled ??
+    false;
+  const billingStatusKey = summary.billing.status;
+  const statusLabel =
+    billingStatusKey === "missing"
+      ? "не настроен"
+      : BILLING_STATUS_LABELS[billingStatusKey as ProjectBillingState] ?? billingStatusKey;
+
+  const lines = [
+    `📄 Оплата — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    `💵 Тариф: ${escapeHtml(planLabel)}`,
+    `📊 Статус: ${escapeHtml(statusLabel)}`,
+    `📅 Следующий платёж: ${escapeHtml(nextPaymentLabel)}`,
+    `🤖 Автобиллинг: ${autoEnabled ? "включен" : "выключен"}`,
+    "",
+  ];
+  if (summary.billing.status === "missing") {
+    lines.push("Платежи ещё не зафиксированы.");
   }
-  if (projectPayments.length) {
-    lines.push("", "Последние платежи:");
-    projectPayments.forEach((payment) => {
-      const paid = payment.paidAt ? ` · Оплачен ${formatDate(payment.paidAt)}` : "";
-      lines.push(
-        `${payment.status === "active" ? "✅" : payment.status === "overdue" ? "⚠️" : "💳"} ${
-          escapeHtml(payment.amount.toFixed(2))
-        } ${escapeHtml(payment.currency)} · ${escapeHtml(formatDate(payment.periodStart))} — ${escapeHtml(
-          formatDate(payment.periodEnd),
-        )}${paid}`,
-      );
-    });
-    if (payments.filter((payment) => payment.projectId === summary.id).length > projectPayments.length) {
-      lines.push("… остальные платежи доступны в выгрузке отчёта.");
-    }
-  } else {
-    lines.push("", "Платежи ещё не зафиксированы. Добавьте оплату кнопками ниже, чтобы активировать биллинг.");
+  lines.push("Настройте тариф и дату следующего платежа кнопками ниже.");
+
+  await sendMessage(context, lines.join("\n"), { replyMarkup: buildBillingKeyboard(projectId) });
+};
+
+const handleBillingExtend = async (context: BotContext, projectId: string, days: number): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
   }
-  lines.push("", "Настройте дату следующего платежа и тариф прямо отсюда — кнопки ниже.");
-  const replyMarkup = {
-    inline_keyboard: [
-      [{ text: "📅 +30 дней", callback_data: `payments:add_30_days:${projectId}` }],
-      [
-        { text: "350$", callback_data: `payments:set_plan_350:${projectId}` },
-        { text: "500$", callback_data: `payments:set_plan_500:${projectId}` },
-      ],
-      [{ text: "📅 Указать дату оплаты", callback_data: `payments:ask_date_picker:${projectId}` }],
-      [{ text: "📝 Ввести дату вручную", callback_data: `payments:ask_date_manual:${projectId}` }],
-      [{ text: "⬅ Назад", callback_data: `proj:view:${projectId}` }],
-    ],
-  };
-  await sendMessage(context, lines.join("\n"), { replyMarkup });
+  const nextDate = extendDateByDays(summary.nextPaymentDate ?? null, days);
+  const planAmount =
+    resolvePlanAmount(summary) ?? summary.billing.amount ?? (typeof summary.tariff === "number" ? summary.tariff : 0);
+  const currency = summary.billing.currency ?? "USD";
+  const dueTimestamp = Date.parse(`${nextDate}T00:00:00Z`);
+  const status: PaymentStatus = Number.isNaN(dueTimestamp) ? "pending" : dueTimestamp < Date.now() ? "overdue" : "pending";
+  await appendProjectPayment(context.env, projectId, {
+    amount: planAmount,
+    currency,
+    periodStart: summary.nextPaymentDate ?? null,
+    periodEnd: nextDate,
+    status,
+    paidAt: null,
+  });
+  await clearPaymentReminder(context.env, projectId).catch(() => undefined);
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, "Дата обновлена");
+  }
+  await handleProjectBilling(context, projectId);
 };
 
-const handlePaymentsAddThirtyDays = async (context: BotContext, projectId: string): Promise<void> => {
-  await handlePaymentsAddDays(context, projectId, 30);
+const handleBillingSetPlan = async (context: BotContext, projectId: string, amount: number): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const plan = Math.abs(amount - 350) < 0.01 ? "350" : Math.abs(amount - 500) < 0.01 ? "500" : "custom";
+  const updated = await updateProjectRecord(context.env, projectId, {
+    paymentPlan: amount,
+    paymentEnabled: true,
+    billingPlan: plan,
+    billingAmountUsd: amount,
+    tariff: amount,
+    billingEnabled: true,
+  });
+  if (!updated) {
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    return;
+  }
+  const currency = summary.billing.currency ?? "USD";
+  await updateLatestProjectPayment(context.env, projectId, { amount, currency }).catch((error) => {
+    console.warn("Failed to update latest payment after plan change", projectId, error);
+  });
+  await clearPaymentReminder(context.env, projectId).catch(() => undefined);
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, `Тариф ${amount}$`);
+  }
+  await handleProjectBilling(context, projectId);
 };
 
-const handlePaymentsSetPlan350 = async (context: BotContext, projectId: string): Promise<void> => {
-  await handlePaymentsSetPlan(context, projectId, 350, "350");
-};
-
-const handlePaymentsSetPlan500 = async (context: BotContext, projectId: string): Promise<void> => {
-  await handlePaymentsSetPlan(context, projectId, 500, "500");
-};
-
-const handlePaymentsAskDate = async (context: BotContext, projectId: string): Promise<void> => {
+const handleBillingManualDate = async (context: BotContext, projectId: string): Promise<void> => {
   if (context.update.callback_query?.id) {
     await answerCallbackQuery(context.env, context.update.callback_query.id);
   }
-  await promptPaymentDateInput(context, projectId);
+  await promptBillingManualDate(context, projectId);
+};
+
+const handleBillingSetDate = async (context: BotContext, projectId: string): Promise<void> => {
+  await handleBillingManualDate(context, projectId);
+};
+
+const parseNextPaymentInput = (value: string): string | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  let parsed: Date | null = null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    parsed = new Date(`${trimmed}T00:00:00Z`);
+  } else {
+    const dotMatch = trimmed.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+    if (dotMatch) {
+      const [, day, month, year] = dotMatch;
+      parsed = new Date(`${year}-${month}-${day}T00:00:00Z`);
+    } else {
+      const timestamp = Date.parse(trimmed);
+      if (!Number.isNaN(timestamp)) {
+        parsed = new Date(timestamp);
+      }
+    }
+  }
+  if (!parsed || Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return toDateOnlyString(parsed);
+};
+
+export const handlePendingBillingInput = async (context: BotContext): Promise<boolean> => {
+  if (context.update.callback_query) {
+    return false;
+  }
+  const adminId = context.userId;
+  if (!adminId) {
+    return false;
+  }
+  const pending = await loadPendingBillingOperation(context.env, adminId);
+  if (!pending) {
+    return false;
+  }
+  const text = context.text?.trim();
+  if (!text) {
+    await sendMessage(context, "ℹ️ Введите значение текстом.");
+    return true;
+  }
+  if (pending.action === "manual-date" || pending.action === "set-next-payment") {
+    const iso = parseNextPaymentInput(text);
+    if (!iso) {
+      await sendMessage(context, "❌ Не удалось распознать дату. Используйте формат YYYY-MM-DD или DD.MM.YYYY.");
+      return true;
+    }
+    const summary = await loadProjectSummaryById(context, pending.projectId);
+    if (!summary) {
+      await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+      return true;
+    }
+    const planAmount =
+      resolvePlanAmount(summary) ?? summary.billing.amount ?? (typeof summary.tariff === "number" ? summary.tariff : 0);
+    const currency = summary.billing.currency ?? "USD";
+    const dueTimestamp = Date.parse(`${iso}T00:00:00Z`);
+    let status: PaymentStatus = "pending";
+    if (!Number.isNaN(dueTimestamp) && dueTimestamp < Date.now()) {
+      status = "overdue";
+    }
+    await appendProjectPayment(context.env, pending.projectId, {
+      amount: planAmount,
+      currency,
+      periodStart: summary.nextPaymentDate ?? null,
+      periodEnd: iso,
+      status,
+      paidAt: null,
+    });
+    await clearPaymentReminder(context.env, pending.projectId).catch(() => undefined);
+    await clearPendingBillingOperation(context.env, adminId).catch(() => undefined);
+    await sendMessage(context, `✅ Следующая оплата сохранена: ${escapeHtml(formatBillingDate(iso))}.`);
+    await handleProjectBilling(context, pending.projectId);
+    return true;
+  }
+  if (pending.action === "set-tariff") {
+    await clearPendingBillingOperation(context.env, adminId).catch(() => undefined);
+    await sendMessage(context, "ℹ️ Тариф теперь выбирается кнопками 350$ или 500$.");
+    return true;
+  }
+  return false;
 };
 
 const VALID_BILLING_STATUSES: ProjectBillingState[] = ["active", "pending", "overdue", "blocked"];
@@ -3179,226 +3181,6 @@ const handleProjectBillingStatus = async (
   await handleProjectBilling(context, projectId);
 };
 
-const computeNextPaymentDate = (preset: string): string | null => {
-  if (preset === "clear") {
-    return null;
-  }
-  if (preset === "today") {
-    return new Date().toISOString();
-  }
-  if (preset === "yesterday") {
-    return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  }
-  const days = Number(preset);
-  if (!Number.isFinite(days) || days <= 0) {
-    return null;
-  }
-  const ms = days * 24 * 60 * 60 * 1000;
-  return new Date(Date.now() + ms).toISOString();
-};
-
-const parseNextPaymentInput = (value: string): string | null => {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    const parsed = Date.parse(`${trimmed}T00:00:00Z`);
-    return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
-  }
-  const dotMatch = trimmed.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
-  if (dotMatch) {
-    const [, day, month, year] = dotMatch;
-    const isoCandidate = `${year}-${month}-${day}`;
-    const parsed = Date.parse(`${isoCandidate}T00:00:00Z`);
-    return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
-  }
-  const parsed = Date.parse(trimmed);
-  if (Number.isNaN(parsed)) {
-    return null;
-  }
-  return new Date(parsed).toISOString();
-};
-
-const parseTariffInput = (value: string): number | null => {
-  const normalized = value.replace(/[,\s]+/g, (match) => (match.includes(",") ? "." : ""));
-  const amount = Number(normalized);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return null;
-  }
-  return Number(amount.toFixed(2));
-};
-
-const handleProjectBillingNext = async (
-  context: BotContext,
-  projectId: string,
-  preset: string,
-): Promise<void> => {
-  const adminId = context.userId;
-  if (preset === "custom") {
-    const keyboard = {
-      inline_keyboard: [
-        [
-          { text: "Сегодня", callback_data: `proj:billing-next:${projectId}:today` },
-          { text: "Вчера", callback_data: `proj:billing-next:${projectId}:yesterday` },
-        ],
-        [{ text: "📝 Ввести дату", callback_data: `proj:billing-next:${projectId}:manual` }],
-        [{ text: "⬅ Назад", callback_data: `proj:billing:${projectId}` }],
-      ],
-    };
-    await sendMessage(context, "Выберите дату следующего платежа:", { replyMarkup: keyboard });
-    return;
-  }
-  if (preset === "manual") {
-    if (!adminId) {
-      await sendMessage(context, "❌ Пользователь не найден. Повторите команду из админского чата.");
-      return;
-    }
-    await savePendingBillingOperation(context.env, adminId, {
-      action: "set-next-payment",
-      projectId,
-    });
-    await sendMessage(
-      context,
-      "📅 Отправьте дату следующего платежа в формате YYYY-MM-DD или DD.MM.YYYY.",
-      {
-        replyMarkup: {
-          inline_keyboard: [[{ text: "⬅ К оплате", callback_data: `proj:billing:${projectId}` }]],
-        },
-      },
-    );
-    return;
-  }
-  const nextPaymentDate = computeNextPaymentDate(preset);
-  const updated = await updateProjectRecord(context.env, projectId, {
-    nextPaymentDate,
-    billingEnabled: true,
-  });
-  if (!updated) {
-    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
-    return;
-  }
-  await clearPaymentReminder(context.env, projectId).catch((error) => {
-    console.warn("Failed to clear payment reminder from bot", projectId, error);
-  });
-  if (adminId) {
-    await clearPendingBillingOperation(context.env, adminId).catch(() => undefined);
-  }
-  const label = nextPaymentDate ? formatDate(nextPaymentDate) : "не запланирована";
-  await sendMessage(context, `✅ Следующая оплата: ${escapeHtml(label)}.`);
-  await handleProjectBilling(context, projectId);
-};
-
-const handleProjectBillingTariff = async (context: BotContext, projectId: string): Promise<void> => {
-  const adminId = context.userId;
-  if (!adminId) {
-    await sendMessage(context, "❌ Пользователь не определён. Отправьте команду из приватного чата.");
-    return;
-  }
-  await savePendingBillingOperation(context.env, adminId, {
-    action: "set-tariff",
-    projectId,
-  });
-  await sendMessage(
-    context,
-    "💵 Введите новый тариф в валюте проекта (число).",
-    {
-      replyMarkup: {
-        inline_keyboard: [[{ text: "⬅ К оплате", callback_data: `proj:billing:${projectId}` }]],
-      },
-    },
-  );
-};
-
-const handleProjectBillingTariffPreset = async (
-  context: BotContext,
-  projectId: string,
-  rawAmount: string,
-): Promise<void> => {
-  const amount = Number(rawAmount);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    await sendMessage(context, "❌ Не удалось распознать сумму. Выберите другой вариант.");
-    return;
-  }
-  const normalizedAmount = Number(amount.toFixed(2));
-  const plan = Math.abs(normalizedAmount - 350) < 0.01 ? "350" : Math.abs(normalizedAmount - 500) < 0.01 ? "500" : "custom";
-  const updated = await updateProjectRecord(context.env, projectId, {
-    tariff: normalizedAmount,
-    billingAmountUsd: normalizedAmount,
-    billingPlan: plan,
-    billingEnabled: true,
-  });
-  if (!updated) {
-    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
-    return;
-  }
-  if (context.update.callback_query?.id) {
-    await answerCallbackQuery(context.env, context.update.callback_query.id, `Тариф: ${amount}`);
-  }
-  await handleProjectBilling(context, projectId);
-};
-
-export const handlePendingBillingInput = async (context: BotContext): Promise<boolean> => {
-  if (context.update.callback_query) {
-    return false;
-  }
-  const adminId = context.userId;
-  if (!adminId) {
-    return false;
-  }
-  const pending = await loadPendingBillingOperation(context.env, adminId);
-  if (!pending) {
-    return false;
-  }
-  const text = context.text?.trim();
-  if (!text) {
-    await sendMessage(context, "ℹ️ Введите значение текстом.");
-    return true;
-  }
-  if (pending.action === "set-next-payment") {
-    const iso = parseNextPaymentInput(text);
-    if (!iso) {
-      await sendMessage(context, "❌ Не удалось распознать дату. Используйте формат YYYY-MM-DD или DD.MM.YYYY.");
-      return true;
-    }
-    const updated = await updateProjectRecord(context.env, pending.projectId, {
-      nextPaymentDate: iso,
-      billingEnabled: true,
-    });
-    if (!updated) {
-      await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
-      return true;
-    }
-    await clearPendingBillingOperation(context.env, adminId);
-    await sendMessage(context, `✅ Следующая оплата сохранена: ${escapeHtml(formatDate(iso))}.`);
-    await handleProjectBilling(context, pending.projectId);
-    return true;
-  }
-  if (pending.action === "set-tariff") {
-    const amount = parseTariffInput(text);
-    if (amount === null) {
-      await sendMessage(context, "❌ Не удалось распознать сумму. Пример: 350 или 1200.50.");
-      return true;
-    }
-    const plan = Math.abs(amount - 350) < 0.01 ? "350" : Math.abs(amount - 500) < 0.01 ? "500" : "custom";
-    const updated = await updateProjectRecord(context.env, pending.projectId, {
-      tariff: amount,
-      billingAmountUsd: amount,
-      billingPlan: plan,
-      billingEnabled: true,
-    });
-    if (!updated) {
-      await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
-      return true;
-    }
-    await clearPendingBillingOperation(context.env, adminId);
-    await sendMessage(context, `✅ Тариф обновлён: ${amount.toFixed(2)}.`);
-    await handleProjectBilling(context, pending.projectId);
-    return true;
-  }
-  return false;
-};
-
 export const handlePendingProjectEditInput = async (context: BotContext): Promise<boolean> => {
   if (context.update.callback_query) {
     return false;
@@ -3411,14 +3193,83 @@ export const handlePendingProjectEditInput = async (context: BotContext): Promis
   if (!pending) {
     return false;
   }
-  const text = context.text?.trim();
-  if (!text) {
-    await sendMessage(context, "ℹ️ Отправьте новое название текстом (до 80 символов).", {
-      replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
+  const textRaw = context.text?.trim() ?? "";
+  let pendingAction = pending.action;
+  if (pendingAction === "change-chat" && textRaw) {
+    pendingAction = "change-chat-link";
+    await savePendingProjectEditOperation(context.env, adminId, {
+      action: "change-chat-link",
+      projectId: pending.projectId,
+    });
+  }
+  if (pendingAction === "change-chat") {
+    await sendMessage(context, "ℹ️ Выберите чат кнопкой или нажмите «Привязать по ссылке».", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${pending.projectId}` }]] },
     });
     return true;
   }
-  if (pending.action === "rename") {
+  if (pendingAction === "change-chat-link") {
+    if (!textRaw) {
+      await sendMessage(context, "ℹ️ Отправьте ссылку на чат (https://t.me/...), @username или ID.", {
+        replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${pending.projectId}` }]] },
+      });
+      return true;
+    }
+    const normalizedLink = ensureTelegramUrl(textRaw);
+    const identifier =
+      parseTelegramChatIdentifier(textRaw) ??
+      (normalizedLink ? parseTelegramChatIdentifier(normalizedLink) : null);
+    const candidates = [identifier, normalizedLink, textRaw].filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+    let chatInfo: Awaited<ReturnType<typeof getTelegramChatInfo>> = null;
+    for (const candidate of candidates) {
+      chatInfo = await getTelegramChatInfo(context.env, candidate);
+      if (chatInfo) {
+        break;
+      }
+    }
+    if (!chatInfo) {
+      await sendMessage(context, "Ошибка: невозможно привязать этот чат. Проверьте, что бот добавлен администратором и чат доступен.", {
+        replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${pending.projectId}` }]] },
+      });
+      return true;
+    }
+    const threadId = await ensureTargetTopicId(context.env, chatInfo.id);
+    if (threadId === null) {
+      await sendMessage(
+        context,
+        "Ошибка: невозможно привязать этот чат. Проверьте права бота и наличие темы «Таргет».",
+        {
+          replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${pending.projectId}` }]] },
+        },
+      );
+      return true;
+    }
+    const updated = await updateProjectChatBinding(context.env, pending.projectId, {
+      chatId: chatInfo.id,
+      threadId,
+      chatLink: normalizedLink ?? buildChatLinkCandidate(chatInfo) ?? undefined,
+      chatTitle: chatInfo.title ?? undefined,
+    });
+    if (!updated) {
+      await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+      await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+      return true;
+    }
+    await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+    await announceProjectChatBindingSuccess(context, pending.projectId, chatInfo, threadId);
+    await logProjectAction(context, "chat-bind", pending.projectId, chatInfo.id);
+    return true;
+  }
+  if (pendingAction === "rename") {
+    if (!textRaw) {
+      await sendMessage(context, "ℹ️ Отправьте новое название текстом (до 80 символов).", {
+        replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
+      });
+      return true;
+    }
+    const text = textRaw;
     if (text.length < 3) {
       await sendMessage(context, "❌ Название должно содержать не менее 3 символов.", {
         replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
@@ -3534,6 +3385,215 @@ const handleProjectEditCancel = async (context: BotContext, projectId: string): 
     await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
   }
   await handleProjectEdit(context, projectId);
+};
+
+const handleProjectChatChangePrompt = async (context: BotContext, projectId: string): Promise<void> => {
+  const adminId = context.userId;
+  if (!adminId) {
+    await sendMessage(context, "❌ Отправьте команду в личном чате с ботом, чтобы изменить группу.");
+    return;
+  }
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  await savePendingProjectEditOperation(context.env, adminId, { action: "change-chat", projectId });
+  const groups = await ensureTelegramGroupIndex(context);
+  const currentChatId = summary.telegramChatId ?? summary.chatId ?? null;
+  const available = groups.filter(
+    (group) => group.registered && !group.linkedProjectId && group.chatId !== (currentChatId ?? undefined),
+  );
+  const displayed = available
+    .slice()
+    .sort((a, b) => (a.title ?? a.chatId).localeCompare(b.title ?? b.chatId, "ru-RU", { sensitivity: "base" }))
+    .slice(0, FREE_CHAT_OPTIONS_LIMIT);
+  const lines: string[] = [
+    `🔁 Изменить чат-группу — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    "Выберите один из свободных чатов или привяжите вручную.",
+    "",
+  ];
+  if (displayed.length) {
+    lines.push("Свободные чаты:");
+    displayed.forEach((group) => {
+      lines.push(`• ${describeFreeChatLabel(group)}`);
+    });
+    if (available.length > displayed.length) {
+      lines.push("• …");
+    }
+  } else {
+    lines.push("Свободные чаты: свободных чатов нет.");
+  }
+  const chatUrl = resolveProjectChatUrl(summary);
+  if (chatUrl) {
+    lines.push("", `Текущий чат: <a href="${escapeAttribute(chatUrl)}">перейти</a>.`);
+  } else if (summary.telegramChatId) {
+    lines.push("", `Текущий чат: <code>${escapeHtml(summary.telegramChatId)}</code>.`);
+  } else {
+    lines.push("", "Текущий чат: не привязан.");
+  }
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: buildProjectChatChangeMarkup(projectId, displayed),
+  });
+};
+
+const handleProjectChatBindLink = async (context: BotContext): Promise<boolean> => {
+  await ensureAdminUser(context);
+  const adminId = context.userId;
+  if (!adminId) {
+    await sendMessage(context, "❌ Отправьте команду в личном чате с ботом, чтобы изменить группу.");
+    return true;
+  }
+  const pending = await loadPendingProjectEditOperation(context.env, adminId);
+  if (!pending) {
+    await sendMessage(context, "Сессия обновления чата истекла. Откройте проект и выберите «Изменить чат-группу» ещё раз.");
+    return true;
+  }
+  const summary = await ensureProjectSummary(context, pending.projectId);
+  if (!summary) {
+    await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    return true;
+  }
+  await savePendingProjectEditOperation(context.env, adminId, {
+    action: "change-chat-link",
+    projectId: pending.projectId,
+  });
+  const lines = [
+    `🔗 Привязать по ссылке — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    "Отправьте ссылку на чат (https://t.me/...), @username или ID.",
+    "Бот автоматически найдёт тему «Таргет» или создаст её.",
+  ];
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+  });
+  await logProjectAction(context, "chat-bind-link", summary.id);
+  return true;
+};
+
+const handleProjectChatBindSelection = async (context: BotContext, chatId: string): Promise<boolean> => {
+  await ensureAdminUser(context);
+  const adminId = context.userId;
+  if (!adminId) {
+    await sendMessage(context, "❌ Отправьте команду в личном чате с ботом, чтобы изменить группу.");
+    return true;
+  }
+  if (!chatId) {
+    await sendMessage(context, "Не удалось определить чат. Выберите чат из списка ещё раз.");
+    return true;
+  }
+  const pending = await loadPendingProjectEditOperation(context.env, adminId);
+  if (!pending) {
+    await sendMessage(context, "Сессия обновления чата истекла. Откройте проект и выберите «Изменить чат-группу» ещё раз.");
+    return true;
+  }
+  const summary = await ensureProjectSummary(context, pending.projectId);
+  if (!summary) {
+    await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    return true;
+  }
+  const groups = await ensureTelegramGroupIndex(context);
+  const group = groups.find((item) => item.chatId === chatId);
+  if (!group) {
+    await sendMessage(context, "Ошибка: чат не найден среди доступных. Обновите список и попробуйте снова.", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+    });
+    return true;
+  }
+  if (group.linkedProjectId && group.linkedProjectId !== summary.id) {
+    await sendMessage(context, "Ошибка: невозможно привязать этот чат. Проверьте, что чат не используется в другом проекте.", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+    });
+    return true;
+  }
+  const chatInfo = await getTelegramChatInfo(context.env, chatId);
+  if (!chatInfo) {
+    await sendMessage(context, "Ошибка: невозможно привязать этот чат. Проверьте, что бот добавлен администратором и чат доступен.", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+    });
+    return true;
+  }
+  const threadId = await ensureTargetTopicId(context.env, chatInfo.id);
+  if (threadId === null) {
+    await sendMessage(context, "Ошибка: невозможно привязать этот чат. Проверьте права бота и наличие темы «Таргет».", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+    });
+    return true;
+  }
+  const updated = await updateProjectChatBinding(context.env, summary.id, {
+    chatId: chatInfo.id,
+    threadId,
+    chatLink: buildChatLinkCandidate(chatInfo) ?? undefined,
+    chatTitle: chatInfo.title ?? undefined,
+  });
+  if (!updated) {
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+    return true;
+  }
+  await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+  await announceProjectChatBindingSuccess(context, summary.id, chatInfo, threadId);
+  await logProjectAction(context, "chat-bind", summary.id, chatInfo.id);
+  return true;
+};
+
+export const handleProjectChatBindingCallback = async (
+  context: BotContext,
+  data: string,
+): Promise<boolean> => {
+  if (data === "bind_link") {
+    return handleProjectChatBindLink(context);
+  }
+  if (data.startsWith("bind_chat:")) {
+    const chatId = data.slice("bind_chat:".length);
+    return handleProjectChatBindSelection(context, chatId);
+  }
+  return false;
+};
+
+const handleProjectChatUnlinkPrompt = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const lines = [
+    `🚫 Отвязать чат — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    "Вы уверены? Это полностью отключит отправку отчётов и уведомлений.",
+  ];
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: {
+      inline_keyboard: [
+        [
+          { text: "✅ Да, отвязать", callback_data: `proj:chat-unlink-confirm:${projectId}` },
+          { text: "↩️ Отмена", callback_data: `proj:view:${projectId}` },
+        ],
+      ],
+    },
+  });
+};
+
+const handleProjectChatUnlinkConfirm = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  if (!summary.telegramChatId && !summary.chatId) {
+    await handleProjectView(context, projectId, {
+      prefix: "ℹ️ Чат уже не привязан к проекту.",
+    });
+    return;
+  }
+  const updated = await unlinkProjectChatBinding(context.env, projectId);
+  if (!updated) {
+    await sendMessage(context, "❌ Не удалось обновить проект. Попробуйте позже.");
+    return;
+  }
+  await handleProjectView(context, projectId, {
+    prefix: "🚫 Чат-группа отвязана. Отчёты и уведомления отключены.",
+  });
 };
 
 const formatProjectSettingsLines = (
@@ -3732,15 +3792,8 @@ const formatProjectDeletionSummary = (summary: ProjectDeletionSummary): string[]
   if (summary.updatedSchedules > 0) {
     lines.push(`⏰ Расписания обновлены: ${summary.updatedSchedules}.`);
   }
-  if (summary.clearedLeadReminders > 0 || summary.clearedPaymentReminders > 0) {
-    const parts: string[] = [];
-    if (summary.clearedLeadReminders > 0) {
-      parts.push(`лиды — ${summary.clearedLeadReminders}`);
-    }
-    if (summary.clearedPaymentReminders > 0) {
-      parts.push(`оплаты — ${summary.clearedPaymentReminders}`);
-    }
-    lines.push(`🔔 Напоминания сняты (${parts.join(", ")}).`);
+  if (summary.clearedPaymentReminders > 0) {
+    lines.push(`🔔 Напоминания об оплате сняты: ${summary.clearedPaymentReminders}.`);
   }
   lines.push(
     "",
@@ -4491,6 +4544,7 @@ const finalizeProjectLink = async (
     settings: {},
     userId,
     telegramChatId: group.chatId,
+    telegramThreadId: group.threadId ?? undefined,
     telegramLink: undefined,
     telegramTitle: group.title ?? undefined,
     adAccountId: account.accountId,
@@ -4504,7 +4558,13 @@ const finalizeProjectLink = async (
   );
   const nextGroups = groups.map((entry) =>
     entry.chatId === group.chatId
-      ? { ...entry, linkedProjectId: projectId, registered: true, updatedAt: now }
+      ? {
+          ...entry,
+          linkedProjectId: projectId,
+          registered: true,
+          threadId: entry.threadId ?? group.threadId ?? null,
+          updatedAt: now,
+        }
       : entry,
   );
 
@@ -4518,6 +4578,7 @@ const finalizeProjectLink = async (
 
   await sendTelegramMessage(context.env, {
     chatId: group.chatId,
+    threadId: typeof group.threadId === "number" ? group.threadId : undefined,
     text: "🎉 Ваш рекламный аккаунт успешно подключён!",
   });
 
@@ -5103,6 +5164,27 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       await handleProjectChat(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
+    case "chat-change":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectChatChangePrompt(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "chat-unlink":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectChatUnlinkPrompt(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
+    case "chat-unlink-confirm":
+      if (!rest[0]) {
+        return ensureId();
+      }
+      await handleProjectChatUnlinkConfirm(context, rest[0]);
+      await logProjectAction(context, action, rest[0]);
+      return true;
     case "leads":
       if (!rest[0]) {
         return ensureId();
@@ -5257,15 +5339,6 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       await handleProjectBilling(context, rest[0]);
       await logProjectAction(context, action, rest[0]);
       return true;
-    case "billing-tariff-preset": {
-      const [projectId, amount] = rest;
-      if (!projectId || !amount) {
-        return ensureId();
-      }
-      await handleProjectBillingTariffPreset(context, projectId, amount);
-      await logProjectAction(context, action, projectId, amount);
-      return true;
-    }
     case "billing-status": {
       const [projectId, statusValue] = rest;
       if (!projectId || !statusValue) {
@@ -5273,96 +5346,6 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       }
       await handleProjectBillingStatus(context, projectId, statusValue as ProjectBillingState);
       await logProjectAction(context, action, projectId, statusValue);
-      return true;
-    }
-    case "billing-next": {
-      const [projectId, preset] = rest;
-      if (!projectId || !preset) {
-        return ensureId();
-      }
-      await handleProjectBillingNext(context, projectId, preset);
-      await logProjectAction(context, action, projectId, preset);
-      return true;
-    }
-    case "billing-reminder-decline": {
-      const projectId = rest[0];
-      if (!projectId) {
-        return ensureId();
-      }
-      await handlePaymentReminderDecline(context, projectId);
-      await logProjectAction(context, action, projectId);
-      return true;
-    }
-    case "billing-reminder-continue": {
-      const projectId = rest[0];
-      if (!projectId) {
-        return ensureId();
-      }
-      await handlePaymentReminderContinue(context, projectId);
-      await logProjectAction(context, action, projectId);
-      return true;
-    }
-    case "billing-reminder-cash": {
-      const projectId = rest[0];
-      if (!projectId) {
-        return ensureId();
-      }
-      await handlePaymentReminderCash(context, projectId);
-      await logProjectAction(context, action, projectId);
-      return true;
-    }
-    case "billing-reminder-transfer": {
-      const projectId = rest[0];
-      if (!projectId) {
-        return ensureId();
-      }
-      await handlePaymentReminderTransfer(context, projectId);
-      await logProjectAction(context, action, projectId);
-      return true;
-    }
-    case "billing-reminder-transfer-done": {
-      const projectId = rest[0];
-      if (!projectId) {
-        return ensureId();
-      }
-      await handlePaymentReminderTransferDone(context, projectId);
-      await logProjectAction(context, action, projectId);
-      return true;
-    }
-    case "billing-reminder-confirm": {
-      const projectId = rest[0];
-      if (!projectId) {
-        return ensureId();
-      }
-      await handlePaymentReminderConfirm(context, projectId);
-      await logProjectAction(context, action, projectId);
-      return true;
-    }
-    case "billing-reminder-error": {
-      const projectId = rest[0];
-      if (!projectId) {
-        return ensureId();
-      }
-      await handlePaymentReminderError(context, projectId);
-      await logProjectAction(context, action, projectId);
-      return true;
-    }
-    case "billing-reminder-wait": {
-      const projectId = rest[0];
-      if (!projectId) {
-        return ensureId();
-      }
-      await handlePaymentReminderWait(context, projectId);
-      await logProjectAction(context, action, projectId);
-      return true;
-    }
-    case "billing-tariff": {
-      const projectId = rest[0];
-      if (!projectId) {
-        return ensureId();
-      }
-      await handleProjectBillingTariff(context, projectId);
-      await logProjectAction(context, action, projectId);
       return true;
     }
     case "edit":
@@ -5506,37 +5489,47 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
   }
 };
 
-export const handlePaymentsCallback = async (context: BotContext, data: string): Promise<boolean> => {
-  if (!data.startsWith("payments:")) {
+export const handleBillingCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (!data.startsWith("billing.")) {
     return false;
   }
   await ensureAdminUser(context);
-  const [, action, ...rest] = data.split(":");
-  if (!action) {
-    return false;
-  }
-  const projectId = rest[0];
+  const [commandPart, projectId] = data.split(":");
   if (!projectId) {
     await sendMessage(context, "Не удалось определить проект. Обновите список проектов.");
     return true;
   }
+  const segments = commandPart.split(".");
+  const action = segments[1];
+  const value = segments[2] ?? null;
   switch (action) {
-    case "add_30_days":
-      await handlePaymentsAddThirtyDays(context, projectId);
-      await logProjectAction(context, action, projectId);
+    case "extend": {
+      const days = value ? Number(value) : 30;
+      if (!Number.isFinite(days) || days <= 0) {
+        await sendMessage(context, "❌ Не удалось распознать количество дней.");
+        return true;
+      }
+      await handleBillingExtend(context, projectId, Number(days));
+      await logProjectAction(context, "billing.extend", projectId, String(days));
       return true;
-    case "set_plan_350":
-      await handlePaymentsSetPlan350(context, projectId);
-      await logProjectAction(context, action, projectId, "350");
+    }
+    case "set_plan": {
+      const amount = value ? Number(value) : Number.NaN;
+      if (!Number.isFinite(amount) || amount <= 0) {
+        await sendMessage(context, "❌ Не удалось распознать тариф. Используйте кнопки 350$ или 500$.");
+        return true;
+      }
+      await handleBillingSetPlan(context, projectId, Number(amount));
+      await logProjectAction(context, "billing.set_plan", projectId, String(amount));
       return true;
-    case "set_plan_500":
-      await handlePaymentsSetPlan500(context, projectId);
-      await logProjectAction(context, action, projectId, "500");
+    }
+    case "manual_date":
+      await handleBillingManualDate(context, projectId);
+      await logProjectAction(context, "billing.manual_date", projectId);
       return true;
-    case "ask_date_picker":
-    case "ask_date_manual":
-      await handlePaymentsAskDate(context, projectId);
-      await logProjectAction(context, action, projectId);
+    case "set_date":
+      await handleBillingSetDate(context, projectId);
+      await logProjectAction(context, "billing.set_date", projectId);
       return true;
     default:
       await sendMessage(context, "Команда оплаты пока не поддерживается.");
