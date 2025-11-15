@@ -90,6 +90,15 @@ export const saveLead = async (r2: R2Client, lead: Lead): Promise<void> => {
   await r2.putJson(key, lead);
 };
 
+export const deleteLead = async (
+  r2: R2Client,
+  projectId: string,
+  leadId: string,
+): Promise<void> => {
+  const key = R2_KEYS.lead(projectId, leadId);
+  await r2.delete(key);
+};
+
 export const getLead = async (r2: R2Client, projectId: string, leadId: string): Promise<Lead | null> => {
   const key = R2_KEYS.lead(projectId, leadId);
   return r2.getJson<Lead>(key);

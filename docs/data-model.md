@@ -132,6 +132,11 @@
 * `isMetaCacheEntryFresh` проверяет свежесть без повторной десериализации.
 * Ключевые scope’ы: `insights:{period}` (сырые данные Graph API), `summary:{period}`/`campaigns:{period}` для подготовленных ответов портала и `campaign-status` для кеша статусов кампаний при отправке алертов.
 
+### Retention
+
+* Базовый порог очистки кешей — 3 дня. Его можно переопределить, записав целое значение в `config:meta-cache-retention-days`.
+* Планировщик maintenance удаляет записи старше порога и любые повреждённые записи (ошибка парсинга).
+
 ## Report State (KV: `report-state:{projectId}`)
 
 ```json
@@ -187,6 +192,7 @@
 * `parseMetaWebhookPayload` извлекает projectId, имя, телефон и UTM-поля из webhook Meta, дедуплицируя лиды по `leadgen_id`.
 * `createLead` заполняет обязательные поля, нормализует имя/телефон и выставляет `status = "NEW"`, `lastStatusUpdate = createdAt`.
 * `saveLead` складывает JSON в R2, а `/api/meta/webhook` вызывает `dispatchLeadNotifications` для отправки уведомлений в Telegram.
+* Планировщик maintenance удаляет лиды старше retention-порога (14 дней по умолчанию). Значение настраивается через `config:lead-retention-days`.
 
 ## Payment (R2: `payments/{projectId}/{paymentId}.json`)
 
