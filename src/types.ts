@@ -111,6 +111,47 @@ export interface NormalizedCampaign {
   raw: MetaCampaign;
 }
 
+export interface PortalMetricEntry {
+  key: PortalMetricKey;
+  label: string;
+  value: string;
+}
+
+export interface PortalPagination {
+  page: number;
+  totalPages: number;
+  prevUrl?: string | null;
+  nextUrl?: string | null;
+}
+
+export interface PortalStatusCounts {
+  all: number;
+  new: number;
+  done: number;
+}
+
+export type PortalLeadType = "Контакт" | "Сообщение";
+
+export interface PortalLeadView {
+  id: string;
+  name: string;
+  phone?: string | null;
+  status: string;
+  createdAt: string;
+  adLabel?: string | null;
+  type: PortalLeadType;
+}
+
+export interface PortalSnapshotPayload {
+  metrics: PortalMetricEntry[];
+  campaigns: NormalizedCampaign[];
+  leads: PortalLeadView[];
+  statusCounts: PortalStatusCounts;
+  pagination: PortalPagination;
+  periodLabel: string;
+  updatedAt: string;
+}
+
 export type PortalMode = "auto" | "manual";
 
 export type PortalMetricKey =
@@ -209,12 +250,16 @@ export interface ProjectAutoReportSettings {
   lastSentMonday?: string | null;
 }
 
-export interface ProjectAlertSettings {
+export interface ProjectRouteSettings {
+  enabled: boolean;
+  route: ReportRoutingTarget;
+}
+
+export interface ProjectAlertSettings extends ProjectRouteSettings {
   payment: boolean;
   budget: boolean;
   metaApi: boolean;
   pause: boolean;
-  target: ReportRoutingTarget;
 }
 
 export interface ProjectKpiSettings {
@@ -225,6 +270,10 @@ export interface ProjectKpiSettings {
 export interface ProjectSettingsRecord {
   autoReport: ProjectAutoReportSettings;
   alerts: ProjectAlertSettings;
+  autobilling: ProjectRouteSettings;
+  budget: ProjectRouteSettings;
+  metaApi: ProjectRouteSettings;
+  pause: ProjectRouteSettings;
   kpi: ProjectKpiSettings;
   billing: {
     nextPaymentDate: string | null;
@@ -305,6 +354,7 @@ export interface TelegramGroupLinkRecord {
   members?: number | null;
   registered: boolean;
   linkedProjectId?: string | null;
+  threadId?: number | null;
   updatedAt?: string;
 }
 
@@ -332,8 +382,10 @@ export interface ProjectRecord {
   nextPaymentDate: string | null;
   tariff: number;
   billingEnabled?: boolean;
+  autoBillingEnabled?: boolean;
   billingPlan?: "350" | "500" | "custom" | null;
   billingAmountUsd?: number | null;
+  lastPaymentDate?: string | null;
   createdAt: string;
   updatedAt: string;
   settings: JsonObject;
@@ -368,6 +420,7 @@ export interface ChatRegistrationRecord {
   chatType?: string;
   chatTitle?: string;
   username?: string;
+  threadId?: number | null;
   status: "pending" | "linked";
   linkedProjectId?: string;
   createdAt: string;
@@ -501,6 +554,8 @@ export interface PaymentReminderRecord {
   adminChatId?: string | null;
   clientChatId?: string | null;
   lastClientPromptAt?: string | null;
+  exchangeRate?: number | null;
+  nextPaymentPlannedAt?: string | null;
 }
 
 export type PaymentStatus = "pending" | "active" | "overdue" | "cancelled";

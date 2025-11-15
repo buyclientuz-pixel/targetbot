@@ -6,17 +6,21 @@ import {
   listPaymentReminders,
   listProjects,
   listSettings,
+  loadProjectSettingsRecord,
   saveLeadReminders,
   savePaymentReminders,
   updateProjectRecord,
 } from "./storage";
 import { sendTelegramMessage, TelegramEnv } from "./telegram";
+import { ensureProjectTopicRoute } from "./project-topics";
 import {
   LeadRecord,
   LeadReminderRecord,
   PaymentReminderRecord,
   PaymentReminderStatus,
   ProjectRecord,
+  ProjectSettingsRecord,
+  ReportRoutingTarget,
   SettingRecord,
 } from "../types";
 
@@ -69,17 +73,6 @@ const resolveAdminChatId = (project: ProjectRecord): string | null => {
   return ensureChatId(project.chatId);
 };
 
-const resolveClientChatId = (project: ProjectRecord): string | null => {
-  const candidates = [project.telegramChatId, project.chatId];
-  for (const candidate of candidates) {
-    const resolved = ensureChatId(candidate);
-    if (resolved) {
-      return resolved;
-    }
-  }
-  return null;
-};
-
 const resolveAutoOffDisableAt = (project: ProjectRecord): number | null => {
   if (!project.autoOff) {
     return null;
@@ -98,6 +91,34 @@ const resolveAutoOffDisableAt = (project: ProjectRecord): number | null => {
   }
   return 0;
 };
+
+interface TopicRoute {
+  chatId: string;
+  threadId: number;
+}
+
+const ensureTopicRoute = async (
+  env: ReminderEnv,
+  project: ProjectRecord,
+  cache: Map<string, TopicRoute | null>,
+): Promise<TopicRoute | null> => {
+  if (cache.has(project.id)) {
+    return cache.get(project.id) ?? null;
+  }
+  const resolved = await ensureProjectTopicRoute(env, project);
+  if (!resolved) {
+    cache.set(project.id, null);
+    return null;
+  }
+  const route: TopicRoute = { chatId: resolved.chatId, threadId: resolved.threadId };
+  cache.set(project.id, route);
+  return route;
+};
+
+const routeAllowsChat = (route: ReportRoutingTarget): boolean => {
+  return route === "chat" || route === "both";
+};
+
 
 const parseNumber = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -215,27 +236,15 @@ const buildLeadReminderMessage = (
   lead: LeadRecord,
   waitMinutes: number,
 ): string => {
-  const lines = [
-    "⏰ <b>Напоминание по лиду</b>",
-    `Проект: <b>${escapeHtml(project.name)}</b>`,
-    `Заявка: <b>${escapeHtml(lead.name)}</b>`,
-  ];
+  const lines = ["🔔 Лид ожидает ответа", `Имя: ${escapeHtml(lead.name)}`];
   if (lead.phone) {
     lines.push(`Телефон: <code>${escapeHtml(lead.phone)}</code>`);
   }
-  lines.push(`Источник: ${escapeHtml(lead.source)}`);
-  lines.push(`Создан: ${escapeHtml(formatDateTime(lead.createdAt))}`);
-  lines.push(`Ожидает: ${escapeHtml(formatDurationMinutes(waitMinutes))}`);
-  lines.push("", "Обновите статус лида, чтобы снять напоминание.");
+  lines.push(`Получен: ${escapeHtml(formatDateTime(lead.createdAt))}`);
+  lines.push(`В ожидании: ${escapeHtml(formatDurationMinutes(waitMinutes))}`);
+  lines.push(`Проект: ${escapeHtml(project.name)}`);
   return lines.join("\n");
 };
-
-const buildLeadReminderMarkup = (projectId: string) => ({
-  inline_keyboard: [
-    [{ text: "💬 Обработать лиды", callback_data: `proj:leads:${projectId}` }],
-    [{ text: "🏗 Карточка проекта", callback_data: `proj:view:${projectId}` }],
-  ],
-});
 
 export const formatUsdAmount = (value: number): string => {
   if (!Number.isFinite(value) || value <= 0) {
@@ -252,48 +261,31 @@ const formatUzsAmount = (value: number): string => {
 };
 
 export const buildAdminPaymentReminderMessage = (
-  project: ProjectRecord,
+  _project: ProjectRecord,
   status: PaymentReminderStatus,
   dueDate: string,
 ): string => {
-  const lines = ["🧾 <b>Напоминание об оплате</b>"];
-  lines.push(`Проект: <b>${escapeHtml(project.name)}</b>`);
-  lines.push(`Оплата запланирована: <b>${escapeHtml(formatDate(dueDate))}</b>`);
-  if (project.tariff > 0) {
-    lines.push(`Тариф: ${escapeHtml(formatUsdAmount(project.tariff))}`);
-  }
-  if (status === "overdue") {
-    lines.push("Статус: просрочено.");
-  }
-  lines.push("Продлеваем?");
-  return lines.join("\n");
+  const statusLabel =
+    status === "overdue" ? "просрочено" : status === "upcoming" ? "завтра" : "запланировано";
+  return [
+    "🧾 Напоминание об оплате",
+    `Оплата запланирована: ${escapeHtml(formatDate(dueDate))}`,
+    `Статус: ${escapeHtml(statusLabel)}`,
+  ].join("\n");
 };
-
-export const buildAdminPaymentReminderMarkup = (projectId: string) => ({
-  inline_keyboard: [
-    [
-      { text: "Продлеваем", callback_data: `proj:billing-reminder-continue:${projectId}` },
-      { text: "Не продлеваю", callback_data: `proj:billing-reminder-decline:${projectId}` },
-    ],
-  ],
-});
 
 const sendLeadReminder = async (
   env: ReminderEnv,
   project: ProjectRecord,
+  route: TopicRoute,
   lead: LeadRecord,
   waitMinutes: number,
 ): Promise<boolean> => {
-  const chatId = resolveClientChatId(project);
-  if (!chatId) {
-    return false;
-  }
   try {
     await sendTelegramMessage(env, {
-      chatId,
-      threadId: project.telegramThreadId,
+      chatId: route.chatId,
+      threadId: route.threadId,
       text: buildLeadReminderMessage(project, lead, waitMinutes),
-      replyMarkup: buildLeadReminderMarkup(project.id),
     });
     return true;
   } catch (error) {
@@ -302,25 +294,22 @@ const sendLeadReminder = async (
   }
 };
 
-const sendAdminPaymentReminder = async (
+const sendProjectPaymentReminder = async (
   env: ReminderEnv,
   project: ProjectRecord,
+  route: TopicRoute,
   status: PaymentReminderStatus,
   dueDate: string,
 ): Promise<boolean> => {
-  const chatId = resolveAdminChatId(project);
-  if (!chatId) {
-    return false;
-  }
   try {
     await sendTelegramMessage(env, {
-      chatId,
+      chatId: route.chatId,
+      threadId: route.threadId,
       text: buildAdminPaymentReminderMessage(project, status, dueDate),
-      replyMarkup: buildAdminPaymentReminderMarkup(project.id),
     });
     return true;
   } catch (error) {
-    console.error("Failed to send admin payment reminder", project.id, error);
+    console.error("Failed to send project payment reminder", project.id, error);
     return false;
   }
 };
@@ -330,23 +319,26 @@ export const buildAdminPaymentReviewMessage = (
   method: PaymentReminderRecord["method"],
   dueDate: string | null,
   reminder?: boolean,
+  options?: { exchangeRate?: number | null; amountUsd?: number | null },
 ): string => {
   const lines: string[] = [];
   if (reminder) {
-    lines.push("⏰ Напоминание: проверь оплату.");
+    lines.push("⏰ Напоминание: проверьте оплату.");
   }
   if (method === "transfer") {
     lines.push("Проверь оплату переводом");
   } else if (method === "cash") {
-    lines.push("Клиент выбрал оплату наличкой. Надо забрать деньги.");
+    lines.push("Клиент выбрал оплату наличными.");
   } else {
     lines.push("Проверь оплату");
   }
   lines.push(`Проект: <b>${escapeHtml(project.name)}</b>`);
-  if (project.tariff > 0) {
-    const usdLabel = formatUsdAmount(project.tariff);
+  const baseAmount = options?.amountUsd ?? project.billingAmountUsd ?? project.tariff;
+  if (baseAmount > 0) {
+    const usdLabel = formatUsdAmount(baseAmount);
     if (method === "transfer") {
-      const uzsLabel = formatUzsAmount(project.tariff * PAYMENT_TRANSFER_RATE);
+      const rate = options?.exchangeRate ?? PAYMENT_TRANSFER_RATE;
+      const uzsLabel = formatUzsAmount(baseAmount * rate);
       lines.push(`Тариф: ${escapeHtml(`${usdLabel} / ${uzsLabel} сум`)}`);
     } else {
       lines.push(`Тариф: ${escapeHtml(usdLabel)}`);
@@ -362,18 +354,17 @@ export const buildAdminPaymentReviewMessage = (
 export const buildAdminPaymentReviewMarkup = (projectId: string) => ({
   inline_keyboard: [
     [
-      { text: "Подтвердить", callback_data: `proj:billing-reminder-confirm:${projectId}` },
-      { text: "Ошибочно", callback_data: `proj:billing-reminder-error:${projectId}` },
+      { text: "Подтвердить", callback_data: `payments:confirm:${projectId}` },
+      { text: "Ошибочно", callback_data: `payments:error:${projectId}` },
     ],
-    [{ text: "Ожидаю поступления", callback_data: `proj:billing-reminder-wait:${projectId}` }],
+    [{ text: "Ожидаю поступления", callback_data: `payments:wait:${projectId}` }],
   ],
 });
 
 const sendAdminPaymentReview = async (
   env: ReminderEnv,
   project: ProjectRecord,
-  method: PaymentReminderRecord["method"],
-  dueDate: string | null,
+  record: PaymentReminderRecord,
   reminder = false,
 ): Promise<boolean> => {
   const chatId = resolveAdminChatId(project);
@@ -383,7 +374,10 @@ const sendAdminPaymentReview = async (
   try {
     await sendTelegramMessage(env, {
       chatId,
-      text: buildAdminPaymentReviewMessage(project, method, dueDate, reminder),
+      text: buildAdminPaymentReviewMessage(project, record.method ?? null, record.dueDate ?? null, reminder, {
+        exchangeRate: record.exchangeRate ?? undefined,
+        amountUsd: project.billingAmountUsd ?? project.tariff,
+      }),
       replyMarkup: buildAdminPaymentReviewMarkup(project.id),
     });
     return true;
@@ -407,10 +401,23 @@ const processLeadReminders = async (
   const nextRecords: LeadReminderRecord[] = [];
   const now = Date.now();
   let sent = 0;
+  const topicCache = new Map<string, TopicRoute | null>();
+  const settingsCache = new Map<string, ProjectSettingsRecord>();
 
   for (const project of projects) {
-    const chatId = resolveClientChatId(project);
-    if (!chatId) {
+    if (!settingsCache.has(project.id)) {
+      const settings = await loadProjectSettingsRecord(env, project.id).catch((error) => {
+        console.warn("Failed to load project settings for lead reminders", project.id, error);
+        return null;
+      });
+      settingsCache.set(project.id, settings ?? null);
+    }
+    const settings = settingsCache.get(project.id);
+    if (!settings || !settings.alerts.enabled || !routeAllowsChat(settings.alerts.route)) {
+      continue;
+    }
+    const route = await ensureTopicRoute(env, project, topicCache);
+    if (!route) {
       continue;
     }
     const leads = await listLeads(env, project.id).catch(() => [] as LeadRecord[]);
@@ -439,7 +446,7 @@ const processLeadReminders = async (
 
       let record = existing;
       if (!record || record.status === "pending") {
-        const delivered = await sendLeadReminder(env, project, lead, waitMinutes);
+        const delivered = await sendLeadReminder(env, project, route, lead, waitMinutes);
         if (delivered) {
           sent += 1;
           const timestamp = new Date().toISOString();
@@ -501,12 +508,35 @@ const processPaymentReminders = async (
   const nextRecords: PaymentReminderRecord[] = [];
   const now = Date.now();
   let sent = 0;
+  const settingsCache = new Map<string, ProjectSettingsRecord | null>();
+  const topicCache = new Map<string, TopicRoute | null>();
 
   for (const project of projects) {
+    if (project.autoBillingEnabled === false) {
+      reminderMap.delete(project.id);
+      continue;
+    }
+    if (!settingsCache.has(project.id)) {
+      const settings = await loadProjectSettingsRecord(env, project.id).catch((error) => {
+        console.warn("Failed to load project settings for payment reminders", project.id, error);
+        return null;
+      });
+      settingsCache.set(project.id, settings);
+    }
+    const settings = settingsCache.get(project.id);
+    if (!settings || !settings.alerts.enabled || !settings.autobilling.enabled || !routeAllowsChat(settings.autobilling.route)) {
+      reminderMap.delete(project.id);
+      continue;
+    }
+    const route = await ensureTopicRoute(env, project, topicCache);
+    if (!route) {
+      reminderMap.delete(project.id);
+      continue;
+    }
     const adminChatId = resolveAdminChatId(project);
-    const clientChatId = resolveClientChatId(project);
+    const clientChatId = route.chatId;
     const dueIso = project.nextPaymentDate;
-    if (!adminChatId || !dueIso) {
+    if (!project.billingEnabled || !dueIso) {
       reminderMap.delete(project.id);
       continue;
     }
@@ -520,6 +550,15 @@ const processPaymentReminders = async (
         }).catch((error) => {
           console.warn("Failed to enforce auto-off", project.id, error);
         });
+        if (clientChatId) {
+          await sendTelegramMessage(env, {
+            chatId: clientChatId,
+            threadId: route.threadId,
+            text: "Подписка на отчёты по этому проекту не продлена. Отчёты и портал временно отключены.",
+          }).catch((error) => {
+            console.warn("Failed to notify project chat about auto-off", project.id, error);
+          });
+        }
       }
       reminderMap.delete(project.id);
       continue;
@@ -584,7 +623,7 @@ const processPaymentReminders = async (
     let updatedRecord = record;
 
     const deliverReminder = async (): Promise<void> => {
-      const delivered = await sendAdminPaymentReminder(env, project, status, dueIso);
+      const delivered = await sendProjectPaymentReminder(env, project, route, status, dueIso);
       if (delivered) {
         sent += 1;
         const timestamp = new Date().toISOString();
@@ -620,13 +659,7 @@ const processPaymentReminders = async (
     } else if (updatedRecord.stage === "awaiting_admin_confirmation" && updatedRecord.nextFollowUpAt) {
       const followUpMs = Date.parse(updatedRecord.nextFollowUpAt);
       if (!Number.isNaN(followUpMs) && followUpMs <= now) {
-        const delivered = await sendAdminPaymentReview(
-          env,
-          project,
-          updatedRecord.method ?? null,
-          updatedRecord.dueDate ?? null,
-          true,
-        );
+        const delivered = await sendAdminPaymentReview(env, project, updatedRecord, true);
         if (delivered) {
           sent += 1;
           const timestamp = new Date().toISOString();
