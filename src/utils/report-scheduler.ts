@@ -1,8 +1,15 @@
-import { EnvBindings, listReportDeliveries, listReportSchedules, saveReportDeliveries, saveReportSchedules } from "./storage";
+import {
+  EnvBindings,
+  listProjects,
+  listReportDeliveries,
+  listReportSchedules,
+  saveReportDeliveries,
+  saveReportSchedules,
+} from "./storage";
 import { generateReport } from "./reports";
 import { createSlaReport } from "./sla";
 import { createId } from "./ids";
-import { ReportDeliveryRecord, ReportScheduleRecord } from "../types";
+import { ProjectRecord, ReportDeliveryRecord, ReportScheduleRecord } from "../types";
 import { sendTelegramMessage, TelegramEnv } from "./telegram";
 import { escapeHtml } from "./html";
 
@@ -130,6 +137,14 @@ export const runReportSchedules = async (
   if (!schedules.length) {
     return { totalSchedules: 0, triggered: 0, slaReports: 0, errors: 0 };
   }
+  const projects: ProjectRecord[] = await listProjects(env).catch(() => [] as ProjectRecord[]);
+  const threadIndex = new Map<string, number>();
+  projects.forEach((project) => {
+    const chatId = typeof project.telegramChatId === "string" ? project.telegramChatId.trim() : "";
+    if (chatId && typeof project.telegramThreadId === "number") {
+      threadIndex.set(chatId, project.telegramThreadId);
+    }
+  });
   let changed = false;
   const deliveries = await listReportDeliveries(env).catch(() => [] as ReportDeliveryRecord[]);
   const nextDeliveries = [...deliveries];
@@ -186,8 +201,22 @@ export const runReportSchedules = async (
         reportId = result.record.id;
       }
 
+      const rawChatId =
+        typeof schedule.chatId === "number" && Number.isFinite(schedule.chatId)
+          ? String(schedule.chatId)
+          : String(schedule.chatId ?? "");
+      const chatId = rawChatId.trim();
+      if (!chatId) {
+        throw new Error(`Schedule ${schedule.id} is missing chatId`);
+      }
+      const threadId = threadIndex.get(chatId);
+      if (threadId === undefined && schedule.projectIds.length) {
+        console.warn("Schedule thread missing", schedule.id, chatId, schedule.projectIds);
+      }
+
       await sendTelegramMessage(env, {
-        chatId: schedule.chatId,
+        chatId,
+        threadId,
         text: message,
       });
 
@@ -206,7 +235,7 @@ export const runReportSchedules = async (
         channel: "telegram",
         status: "success",
         deliveredAt: now.toISOString(),
-        details: { chatId: schedule.chatId, projectIds: schedule.projectIds },
+        details: { chatId, projectIds: schedule.projectIds },
       });
     } catch (error) {
       errors += 1;

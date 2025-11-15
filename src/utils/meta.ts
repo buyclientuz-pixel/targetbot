@@ -576,6 +576,17 @@ const buildGraphUrl = (env: Record<string, unknown>, path: string, params: Recor
   return url;
 };
 
+const resolveGraphTimeout = (env: Record<string, unknown>): number => {
+  const candidates = [env.META_GRAPH_TIMEOUT_MS, env.GRAPH_TIMEOUT_MS, env.PORTAL_GRAPH_TIMEOUT_MS];
+  for (const candidate of candidates) {
+    const parsed = typeof candidate === "string" ? Number(candidate) : candidate;
+    if (typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return 4500;
+};
+
 export const callGraph = async <T>(
   env: EnvBindings & Record<string, unknown>,
   path: string,
@@ -583,11 +594,55 @@ export const callGraph = async <T>(
   init: RequestInit = {},
 ): Promise<T> => {
   const url = buildGraphUrl(env, path, params);
-  const response = await fetch(url.toString(), init);
+  const timeoutMs = resolveGraphTimeout(env);
+  const startedAt = Date.now();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise: Promise<Response> = new Promise((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error(`Graph API timeout after ${timeoutMs}ms (${path})`));
+    }, timeoutMs);
+  });
+
+  let response: Response | undefined;
+
+  try {
+    response = (await Promise.race([fetch(url.toString(), init), timeoutPromise])) as Response;
+  } catch (error) {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+    console.warn("[meta] graph_request_failed", {
+      path,
+      durationMs: Date.now() - startedAt,
+      error: (error as Error).message,
+    });
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+
+  if (timeoutHandle) {
+    clearTimeout(timeoutHandle);
+  }
+
+  const durationMs = Date.now() - startedAt;
+
   if (!response.ok) {
     const text = await response.text();
+    console.warn("[meta] graph_request_error", {
+      path,
+      status: response.status,
+      durationMs,
+      bodyPreview: text.slice(0, 512),
+    });
     throw new Error(`Graph API error ${response.status}: ${text}`);
   }
+
+  console.log("[meta] graph_request_ok", {
+    path,
+    status: response.status,
+    durationMs,
+  });
+
   return (await response.json()) as T;
 };
 

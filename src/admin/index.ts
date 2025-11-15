@@ -137,12 +137,12 @@ const projectCard = (project: ProjectSummary): string => {
     ? new Date(project.leadStats.latestAt).toLocaleString("ru-RU")
     : "—";
   const leadBadge =
-    project.leadStats.new > 0
-      ? `<span class="badge warning">Новых лидов: ${project.leadStats.new}</span>`
-      : '<span class="badge success">Новых лидов нет</span>';
+    project.leadStats.today > 0
+      ? `<span class="badge warning">Лидов сегодня: ${project.leadStats.today}</span>`
+      : '<span class="badge success">Лидов сегодня нет</span>';
   const leadSummary = `
     <div class="muted">
-      Всего: ${project.leadStats.total} · Завершено: ${project.leadStats.done} · Последний лид: ${latestLead}
+      Сегодня: ${project.leadStats.today} · Всего: ${project.leadStats.total} · Закрыто: ${project.leadStats.done} · Последний лид: ${latestLead}
     </div>
   `;
   return `
