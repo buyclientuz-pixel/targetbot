@@ -1,8 +1,9 @@
 import { escapeAttribute, escapeHtml } from "./html";
 import { sendTelegramMessage, TelegramEnv } from "./telegram";
 import { LeadRecord, MetaLeadDetails, ProjectRecord, JsonObject } from "../types";
-import { EnvBindings } from "./storage";
+import { EnvBindings, hasLeadNotificationBeenSent, markLeadNotificationSent } from "./storage";
 import { ensureProjectTopicRoute } from "./project-topics";
+import { extractProjectSettings } from "./projects";
 
 interface PhoneFormat {
   raw: string;
@@ -15,6 +16,7 @@ interface LeadNotificationContent {
   name: string;
   phone?: PhoneFormat;
   profileUrl?: string;
+  campaignLabel: string;
 }
 
 interface LeadNotificationOptions {
@@ -131,6 +133,32 @@ const ensureFacebookUrl = (value: string): string => {
   return `https://facebook.com/${trimmed}`;
 };
 
+const sanitizeLabel = (value: string | null | undefined): string | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length ? trimmed : null;
+};
+
+const buildCampaignLabel = (lead: LeadRecord): string => {
+  const adName = sanitizeLabel(lead.adName);
+  const campaignName = sanitizeLabel(lead.campaignName);
+  if (adName && campaignName) {
+    if (adName === campaignName) {
+      return adName;
+    }
+    return `${adName} / ${campaignName}`;
+  }
+  if (adName) {
+    return adName;
+  }
+  if (campaignName) {
+    return campaignName;
+  }
+  return "неизвестно";
+};
+
 const detectProfileUrl = (
   details?: MetaLeadDetails | null,
   payload?: JsonObject | null,
@@ -183,12 +211,14 @@ export const metaLeadParser = (
   lead: LeadRecord,
   options: LeadNotificationOptions = {},
 ): LeadNotificationContent => {
+  const campaignLabel = buildCampaignLabel(lead);
   const phone = options.details?.phone || lead.phone || null;
   if (phone) {
     return {
       kind: "contact",
       name: lead.name,
       phone: formatPhone(phone),
+      campaignLabel,
     };
   }
   const profileUrl = detectProfileUrl(options.details, options.payload);
@@ -196,6 +226,7 @@ export const metaLeadParser = (
     kind: "message",
     name: lead.name,
     profileUrl,
+    campaignLabel,
   };
 };
 
@@ -206,11 +237,13 @@ const buildLeadMessage = (content: LeadNotificationContent): { text: string; rep
     lines.push("🔔 Новый лид (контакт)");
     lines.push(`Имя: ${escapeHtml(content.name)}`);
     lines.push(`Телефон: <a href=\"${escapeAttribute(phone.tel)}\">${escapeHtml(phone.display)}</a>`);
+    lines.push(`Реклама: ${escapeHtml(content.campaignLabel)}`);
     return { text: lines.join("\n") };
   }
   lines.push("🔔 Новый лид (сообщение)");
   lines.push(`Имя: ${escapeHtml(content.name)}`);
   lines.push("Сообщение: открыть диалог");
+  lines.push(`Реклама: ${escapeHtml(content.campaignLabel)}`);
   const markup = content.profileUrl
     ? {
         inline_keyboard: [[{ text: "Открыть профиль", url: content.profileUrl }]],
@@ -250,6 +283,14 @@ export const leadReceiveHandler = async (
   lead: LeadRecord,
   options: LeadNotificationOptions = {},
 ): Promise<void> => {
+  const settings = extractProjectSettings(project.settings);
+  if (!settings.leadAlerts) {
+    return;
+  }
+  if (await hasLeadNotificationBeenSent(env, project.id, lead.id)) {
+    return;
+  }
   const content = metaLeadParser(lead, options);
   await sendLeadToTelegram(env, project, content);
+  await markLeadNotificationSent(env, project.id, lead.id);
 };

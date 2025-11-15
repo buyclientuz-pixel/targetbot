@@ -1181,7 +1181,7 @@ export default {
       if (autoStats.reportsSent || autoStats.weeklyReports || autoStats.alertsSent || autoStats.errors) {
         console.log("auto-report", autoStats);
       }
-      if (reminders.leadRemindersSent || reminders.paymentRemindersSent) {
+      if (reminders.paymentRemindersSent) {
         console.log("reminders:sent", reminders);
       }
       if (reports.triggered || reports.errors) {

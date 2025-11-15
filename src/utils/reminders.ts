@@ -1,21 +1,16 @@
 import { escapeHtml } from "./html";
 import {
   EnvBindings,
-  listLeadReminders,
-  listLeads,
   listPaymentReminders,
   listProjects,
   listSettings,
   loadProjectSettingsRecord,
-  saveLeadReminders,
   savePaymentReminders,
   updateProjectRecord,
 } from "./storage";
 import { sendTelegramMessage, TelegramEnv } from "./telegram";
 import { ensureProjectTopicRoute } from "./project-topics";
 import {
-  LeadRecord,
-  LeadReminderRecord,
   PaymentReminderRecord,
   PaymentReminderStatus,
   ProjectRecord,
@@ -231,21 +226,6 @@ export const formatDurationMinutes = (minutesTotal: number): string => {
   return `${minutes} мин`;
 };
 
-const buildLeadReminderMessage = (
-  project: ProjectRecord,
-  lead: LeadRecord,
-  waitMinutes: number,
-): string => {
-  const lines = ["🔔 Лид ожидает ответа", `Имя: ${escapeHtml(lead.name)}`];
-  if (lead.phone) {
-    lines.push(`Телефон: <code>${escapeHtml(lead.phone)}</code>`);
-  }
-  lines.push(`Получен: ${escapeHtml(formatDateTime(lead.createdAt))}`);
-  lines.push(`В ожидании: ${escapeHtml(formatDurationMinutes(waitMinutes))}`);
-  lines.push(`Проект: ${escapeHtml(project.name)}`);
-  return lines.join("\n");
-};
-
 export const formatUsdAmount = (value: number): string => {
   if (!Number.isFinite(value) || value <= 0) {
     return "—";
@@ -272,26 +252,6 @@ export const buildAdminPaymentReminderMessage = (
     `Оплата запланирована: ${escapeHtml(formatDate(dueDate))}`,
     `Статус: ${escapeHtml(statusLabel)}`,
   ].join("\n");
-};
-
-const sendLeadReminder = async (
-  env: ReminderEnv,
-  project: ProjectRecord,
-  route: TopicRoute,
-  lead: LeadRecord,
-  waitMinutes: number,
-): Promise<boolean> => {
-  try {
-    await sendTelegramMessage(env, {
-      chatId: route.chatId,
-      threadId: route.threadId,
-      text: buildLeadReminderMessage(project, lead, waitMinutes),
-    });
-    return true;
-  } catch (error) {
-    console.error("Failed to send lead reminder", project.id, lead.id, error);
-    return false;
-  }
 };
 
 const sendProjectPaymentReminder = async (
@@ -385,97 +345,6 @@ const sendAdminPaymentReview = async (
     console.error("Failed to send admin payment review", project.id, error);
     return false;
   }
-};
-
-const processLeadReminders = async (
-  env: ReminderEnv,
-  thresholdMinutes: number,
-): Promise<number> => {
-  if (thresholdMinutes <= 0) {
-    await saveLeadReminders(env, []);
-    return 0;
-  }
-  const projects = await listProjects(env);
-  const existingRecords = await listLeadReminders(env).catch(() => [] as LeadReminderRecord[]);
-  const reminderMap = new Map(existingRecords.map((record) => [record.leadId, record]));
-  const nextRecords: LeadReminderRecord[] = [];
-  const now = Date.now();
-  let sent = 0;
-  const topicCache = new Map<string, TopicRoute | null>();
-  const settingsCache = new Map<string, ProjectSettingsRecord>();
-
-  for (const project of projects) {
-    if (!settingsCache.has(project.id)) {
-      const settings = await loadProjectSettingsRecord(env, project.id).catch((error) => {
-        console.warn("Failed to load project settings for lead reminders", project.id, error);
-        return null;
-      });
-      settingsCache.set(project.id, settings ?? null);
-    }
-    const settings = settingsCache.get(project.id);
-    if (!settings || !settings.alerts.enabled || !routeAllowsChat(settings.alerts.route)) {
-      continue;
-    }
-    const route = await ensureTopicRoute(env, project, topicCache);
-    if (!route) {
-      continue;
-    }
-    const leads = await listLeads(env, project.id).catch(() => [] as LeadRecord[]);
-    for (const lead of leads) {
-      const existing = reminderMap.get(lead.id);
-      if (lead.status === "done") {
-        reminderMap.delete(lead.id);
-        continue;
-      }
-      const created = Date.parse(lead.createdAt);
-      if (Number.isNaN(created)) {
-        if (existing) {
-          nextRecords.push({ ...existing, updatedAt: new Date().toISOString() });
-          reminderMap.delete(lead.id);
-        }
-        continue;
-      }
-      const waitMinutes = (now - created) / MINUTE_MS;
-      if (waitMinutes < thresholdMinutes) {
-        if (existing) {
-          nextRecords.push({ ...existing, updatedAt: new Date().toISOString() });
-          reminderMap.delete(lead.id);
-        }
-        continue;
-      }
-
-      let record = existing;
-      if (!record || record.status === "pending") {
-        const delivered = await sendLeadReminder(env, project, route, lead, waitMinutes);
-        if (delivered) {
-          sent += 1;
-          const timestamp = new Date().toISOString();
-          record = {
-            id: existing?.id ?? lead.id,
-            leadId: lead.id,
-            projectId: project.id,
-            status: "notified",
-            notifiedCount: (existing?.notifiedCount ?? 0) + 1,
-            createdAt: existing?.createdAt ?? timestamp,
-            updatedAt: timestamp,
-            lastNotifiedAt: timestamp,
-          };
-        } else if (existing) {
-          record = { ...existing, updatedAt: new Date().toISOString() };
-        }
-      } else {
-        record = { ...record, updatedAt: new Date().toISOString() };
-      }
-
-      if (record) {
-        nextRecords.push(record);
-        reminderMap.delete(lead.id);
-      }
-    }
-  }
-
-  await saveLeadReminders(env, nextRecords);
-  return sent;
 };
 
 const resolvePaymentStatus = (
@@ -685,7 +554,6 @@ const processPaymentReminders = async (
 };
 
 export interface ReminderRunResult {
-  leadRemindersSent: number;
   paymentRemindersSent: number;
 }
 
@@ -693,11 +561,11 @@ export type ReminderEnv = EnvBindings & TelegramEnv & Record<string, unknown>;
 
 export const runReminderSweep = async (env: ReminderEnv): Promise<ReminderRunResult> => {
   const { values } = await loadReminderSettings(env);
+  const paymentCount = await processPaymentReminders(
+    env,
+    values.paymentDaysBefore,
+    values.paymentOverdueHours,
+  );
 
-  const [leadCount, paymentCount] = await Promise.all([
-    processLeadReminders(env, values.leadThresholdMinutes),
-    processPaymentReminders(env, values.paymentDaysBefore, values.paymentOverdueHours),
-  ]);
-
-  return { leadRemindersSent: leadCount, paymentRemindersSent: paymentCount };
+  return { paymentRemindersSent: paymentCount };
 };

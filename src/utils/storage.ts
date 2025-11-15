@@ -2,7 +2,6 @@ import {
   ChatRegistrationRecord,
   CommandLogRecord,
   LeadRecord,
-  LeadReminderRecord,
   MetaAccountLinkRecord,
   MetaProjectLinkRecord,
   MetaTokenRecord,
@@ -47,7 +46,6 @@ const SETTINGS_KEY = "settings/index.json";
 const COMMAND_LOG_KEY = "logs/commands.json";
 const REPORT_SESSION_PREFIX = "reports/session/";
 const REPORT_ASSET_PREFIX = "reports/assets/";
-const LEAD_REMINDER_INDEX_KEY = "reminders/leads.json";
 const PAYMENT_REMINDER_INDEX_KEY = "reminders/payments.json";
 const CHAT_REGISTRY_KEY = "chats/index.json";
 const META_ACCOUNTS_KEY = "meta/accounts.json";
@@ -68,7 +66,6 @@ const PROJECT_KV_INDEX_KEY = "projects:index";
 const META_KV_INDEX_KEY = "meta:index";
 const LEAD_KV_INDEX_PREFIX = "leads:index:";
 const META_WEBHOOK_KV_INDEX_KEY = "meta:webhook:index";
-const LEAD_REMINDER_KV_INDEX_KEY = "reminders:lead:index";
 const PAYMENT_REMINDER_KV_INDEX_KEY = "reminders:payment:index";
 const REPORT_SCHEDULE_KV_INDEX_KEY = "reports:schedule:index";
 const REPORT_DELIVERY_KV_INDEX_KEY = "reports:delivery:index";
@@ -80,7 +77,6 @@ const PROJECT_KV_PREFIX = "project:";
 const META_KV_PREFIX = "meta:";
 const LEAD_KV_PREFIX = "leads:";
 const META_WEBHOOK_KV_PREFIX = "meta:webhook:event:";
-const LEAD_REMINDER_KV_PREFIX = "reminders:lead:";
 const PAYMENT_REMINDER_KV_PREFIX = "reminders:payment:";
 const REPORT_SCHEDULE_KV_PREFIX = "reports:schedule:";
 const REPORT_DELIVERY_KV_PREFIX = "reports:delivery:";
@@ -97,6 +93,7 @@ const CAMPAIGN_KPI_KV_PREFIX = "project_campaign_kpis:";
 const KPI_PENDING_PREFIX = "kpi/pending/";
 const PROJECT_SETTINGS_KV_PREFIX = "project_settings:";
 const PORTAL_REPORT_CACHE_PREFIX = "reports:";
+const LEAD_NOTIFICATION_INDEX_PREFIX = "lead_notifications:";
 
 interface PortalReportCacheEntry {
   campaigns: MetaCampaign[];
@@ -1963,65 +1960,49 @@ export const deleteLeads = async (env: EnvBindings, projectId: string): Promise<
   await writeKvIndex(env, indexKey, []);
 };
 
-const normalizeLeadReminderRecord = (
-  input: LeadReminderRecord | Record<string, unknown>,
-): LeadReminderRecord => {
-  const data = input as Record<string, unknown>;
-  const nowIso = new Date().toISOString();
-  const leadSource = data.leadId ?? data.lead_id ?? data.leadID ?? data.id;
-  const leadId =
-    typeof leadSource === "string" && leadSource.trim()
-      ? leadSource.trim()
-      : leadSource !== undefined
-        ? String(leadSource)
-        : "";
-  const projectSource = data.projectId ?? data.project_id;
-  const projectId =
-    typeof projectSource === "string" && projectSource.trim()
-      ? projectSource.trim()
-      : projectSource !== undefined
-        ? String(projectSource)
-        : "";
-  const idSource = data.id ?? leadId;
-  const id =
-    typeof idSource === "string" && idSource.trim()
-      ? idSource.trim()
-      : `leadrem_${createId(8)}`;
-  const statusSource = data.status;
-  const status: LeadReminderRecord["status"] =
-    statusSource === "notified" || statusSource === "resolved" ? statusSource : "pending";
-  const notifiedSource = data.notifiedCount ?? data.notified_count ?? data.count;
-  const notifiedCount =
-    typeof notifiedSource === "number" && Number.isFinite(notifiedSource)
-      ? Math.max(0, Math.floor(notifiedSource))
-      : 0;
-  const createdSource = data.createdAt ?? data.created_at;
-  const createdAt =
-    typeof createdSource === "string" && createdSource.trim() && !Number.isNaN(Date.parse(createdSource))
-      ? new Date(createdSource).toISOString()
-      : nowIso;
-  const updatedSource = data.updatedAt ?? data.updated_at;
-  const updatedAt =
-    typeof updatedSource === "string" && updatedSource.trim() && !Number.isNaN(Date.parse(updatedSource))
-      ? new Date(updatedSource).toISOString()
-      : nowIso;
-  const lastSource = data.lastNotifiedAt ?? data.last_notified_at;
-  const lastNotifiedAt =
-    typeof lastSource === "string" && lastSource.trim() && !Number.isNaN(Date.parse(lastSource))
-      ? new Date(lastSource).toISOString()
-      : lastSource === null
-        ? null
-        : undefined;
-  return {
-    id,
-    leadId,
-    projectId,
-    status,
-    notifiedCount,
-    createdAt,
-    updatedAt,
-    lastNotifiedAt,
-  };
+const leadNotificationKey = (projectId: string) => `${LEAD_NOTIFICATION_INDEX_PREFIX}${projectId}.json`;
+const LEAD_NOTIFICATION_HISTORY_LIMIT = 500;
+
+export const hasLeadNotificationBeenSent = async (
+  env: EnvBindings,
+  projectId: string,
+  leadId: string,
+): Promise<boolean> => {
+  if (!projectId || !leadId) {
+    return false;
+  }
+  const history = await readJsonFromR2<string[]>(env, leadNotificationKey(projectId), []);
+  return history.includes(leadId);
+};
+
+export const markLeadNotificationSent = async (
+  env: EnvBindings,
+  projectId: string,
+  leadId: string,
+): Promise<void> => {
+  if (!projectId || !leadId) {
+    return;
+  }
+  const key = leadNotificationKey(projectId);
+  const history = await readJsonFromR2<string[]>(env, key, []);
+  if (history.includes(leadId)) {
+    return;
+  }
+  history.push(leadId);
+  const trimmed = history.length > LEAD_NOTIFICATION_HISTORY_LIMIT
+    ? history.slice(history.length - LEAD_NOTIFICATION_HISTORY_LIMIT)
+    : history;
+  await writeJsonToR2(env, key, trimmed);
+};
+
+export const clearLeadNotificationHistory = async (
+  env: EnvBindings,
+  projectId: string,
+): Promise<void> => {
+  if (!projectId) {
+    return;
+  }
+  await env.R2.delete(leadNotificationKey(projectId));
 };
 
 const normalizePaymentReminderRecord = (
@@ -2150,71 +2131,6 @@ const normalizePaymentReminderRecord = (
     exchangeRate: exchangeRate ?? null,
     nextPaymentPlannedAt: nextPaymentPlannedAt ?? null,
   };
-};
-
-export const listLeadReminders = async (env: EnvBindings): Promise<LeadReminderRecord[]> => {
-  const stored = await readJsonFromR2<LeadReminderRecord[] | Record<string, unknown>[]>(
-    env,
-    LEAD_REMINDER_INDEX_KEY,
-    [],
-  );
-  return stored
-    .map((record) => normalizeLeadReminderRecord(record))
-    .filter((record) => record.leadId && record.projectId);
-};
-
-export const saveLeadReminders = async (
-  env: EnvBindings,
-  reminders: LeadReminderRecord[],
-): Promise<void> => {
-  const normalized = reminders
-    .map((record) => normalizeLeadReminderRecord(record))
-    .filter((record) => record.leadId && record.projectId);
-  await writeJsonToR2(env, LEAD_REMINDER_INDEX_KEY, normalized);
-  await syncKvRecords({
-    env,
-    indexKey: LEAD_REMINDER_KV_INDEX_KEY,
-    prefix: LEAD_REMINDER_KV_PREFIX,
-    items: normalized,
-    getId: (record) => record.id,
-    serialize: (record) => ({
-      id: record.id,
-      lead_id: record.leadId,
-      project_id: record.projectId,
-      status: record.status,
-      notified_count: record.notifiedCount,
-      last_notified_at: record.lastNotifiedAt ?? null,
-      created_at: record.createdAt,
-      updated_at: record.updatedAt,
-    }),
-  });
-};
-
-export const clearLeadReminder = async (env: EnvBindings, leadId: string): Promise<void> => {
-  if (!leadId) {
-    return;
-  }
-  const reminders = await listLeadReminders(env);
-  const filtered = reminders.filter((record) => record.leadId !== leadId);
-  if (filtered.length === reminders.length) {
-    return;
-  }
-  await saveLeadReminders(env, filtered);
-};
-
-export const clearLeadRemindersByProject = async (
-  env: EnvBindings,
-  projectId: string,
-): Promise<void> => {
-  if (!projectId) {
-    return;
-  }
-  const reminders = await listLeadReminders(env);
-  const filtered = reminders.filter((record) => record.projectId !== projectId);
-  if (filtered.length === reminders.length) {
-    return;
-  }
-  await saveLeadReminders(env, filtered);
 };
 
 export const listPaymentReminders = async (env: EnvBindings): Promise<PaymentReminderRecord[]> => {
@@ -2937,7 +2853,6 @@ export const deleteProjectCascade = async (
     telegramGroups,
     leads,
     payments,
-    leadReminders,
     paymentReminders,
     schedules,
     reports,
@@ -2949,7 +2864,6 @@ export const deleteProjectCascade = async (
     listTelegramGroupLinks(env).catch(() => [] as TelegramGroupLinkRecord[]),
     listLeads(env, projectId).catch(() => [] as LeadRecord[]),
     listPayments(env).catch(() => [] as PaymentRecord[]),
-    listLeadReminders(env).catch(() => [] as LeadReminderRecord[]),
     listPaymentReminders(env).catch(() => [] as PaymentReminderRecord[]),
     listReportSchedules(env).catch(() => [] as ReportScheduleRecord[]),
     listReports(env).catch(() => [] as ReportRecord[]),
@@ -2993,9 +2907,6 @@ export const deleteProjectCascade = async (
 
   const paymentsRemaining = payments.filter((payment) => payment.projectId !== projectId);
   const removedPayments = payments.length - paymentsRemaining.length;
-
-  const leadRemindersRemaining = leadReminders.filter((record) => record.projectId !== projectId);
-  const removedLeadReminders = leadReminders.length - leadRemindersRemaining.length;
 
   const paymentRemindersRemaining = paymentReminders.filter((record) => record.projectId !== projectId);
   const removedPaymentReminders = paymentReminders.length - paymentRemindersRemaining.length;
@@ -3056,9 +2967,6 @@ export const deleteProjectCascade = async (
   if (removedPayments > 0) {
     storageUpdates.push(savePayments(env, paymentsRemaining));
   }
-  if (removedLeadReminders > 0) {
-    storageUpdates.push(saveLeadReminders(env, leadRemindersRemaining));
-  }
   if (removedPaymentReminders > 0) {
     storageUpdates.push(savePaymentReminders(env, paymentRemindersRemaining));
   }
@@ -3080,6 +2988,9 @@ export const deleteProjectCascade = async (
   const cleanupTasks: Promise<void>[] = [
     deleteLeads(env, projectId).catch((error) => {
       console.warn("Failed to delete project leads", projectId, error);
+    }),
+    clearLeadNotificationHistory(env, projectId).catch((error) => {
+      console.warn("Failed to clear lead notification history", projectId, error);
     }),
     deleteAllProjectCampaignKpis(env, projectId).catch((error) => {
       console.warn("Failed to delete project campaign KPIs", projectId, error);
@@ -3110,7 +3021,6 @@ export const deleteProjectCascade = async (
     removedLeads: leads.length,
     removedPayments,
     removedReports: reportPartition.removed.length,
-    clearedLeadReminders: removedLeadReminders,
     clearedPaymentReminders: removedPaymentReminders,
     updatedSchedules: updatedSchedulesCount,
     portalRemoved: removedPortal,

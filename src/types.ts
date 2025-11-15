@@ -408,7 +408,6 @@ export interface ProjectDeletionSummary {
   removedLeads: number;
   removedPayments: number;
   removedReports: number;
-  clearedLeadReminders: number;
   clearedPaymentReminders: number;
   updatedSchedules: number;
   portalRemoved?: boolean;
@@ -511,19 +510,6 @@ export interface LeadRecord {
   campaignShortName?: string | null;
   campaignObjective?: string | null;
   adName?: string | null;
-}
-
-export type LeadReminderStatus = "pending" | "notified" | "resolved";
-
-export interface LeadReminderRecord {
-  id: string;
-  leadId: string;
-  projectId: string;
-  status: LeadReminderStatus;
-  notifiedCount: number;
-  createdAt: string;
-  updatedAt: string;
-  lastNotifiedAt?: string | null;
 }
 
 export type PaymentReminderStatus = "pending" | "upcoming" | "overdue";

@@ -13,7 +13,6 @@ import {
 } from "../utils/projects";
 import {
   appendCommandLog,
-  clearLeadReminder,
   clearPendingBillingOperation,
   clearPendingMetaLink,
   clearPendingUserOperation,
@@ -2336,11 +2335,6 @@ const toggleLeadStatus = async (
   const updated: LeadRecord = { ...current, status: nextStatus };
   leads[index] = updated;
   await saveLeads(env, projectId, leads);
-  if (nextStatus === "done") {
-    await clearLeadReminder(env, leadId).catch((error) => {
-      console.warn("Failed to clear lead reminder", projectId, leadId, error);
-    });
-  }
   return updated;
 };
 
@@ -4015,15 +4009,8 @@ const formatProjectDeletionSummary = (summary: ProjectDeletionSummary): string[]
   if (summary.updatedSchedules > 0) {
     lines.push(`⏰ Расписания обновлены: ${summary.updatedSchedules}.`);
   }
-  if (summary.clearedLeadReminders > 0 || summary.clearedPaymentReminders > 0) {
-    const parts: string[] = [];
-    if (summary.clearedLeadReminders > 0) {
-      parts.push(`лиды — ${summary.clearedLeadReminders}`);
-    }
-    if (summary.clearedPaymentReminders > 0) {
-      parts.push(`оплаты — ${summary.clearedPaymentReminders}`);
-    }
-    lines.push(`🔔 Напоминания сняты (${parts.join(", ")}).`);
+  if (summary.clearedPaymentReminders > 0) {
+    lines.push(`🔔 Напоминания об оплате сняты: ${summary.clearedPaymentReminders}.`);
   }
   lines.push(
     "",
