@@ -1376,6 +1376,9 @@ const isPortalFailure = (
   return value.ok === false;
 };
 
+export const testResolvePortalRequestForProject = resolvePortalRequestForProject;
+export const testBuildPortalApiPayload = buildPortalApiPayload;
+
 let projectMigrationRan = false;
 
 export default {

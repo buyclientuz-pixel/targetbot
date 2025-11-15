@@ -51,15 +51,21 @@ import { appendProjectPayment } from "../src/utils/payments";
 import { applyProjectSettingsPatch, extractProjectSettings, summarizeProjects } from "../src/utils/projects";
 import { handlePaymentsCreate } from "../src/api/payments";
 import { ProgressReporter, ProgressSnapshot } from "../src/utils/progress-reporter";
+import { calculateLeadAnalytics } from "../src/utils/analytics";
+import { createSlaReport } from "../src/utils/sla";
+import { renderPortal } from "../src/views/portal";
 import {
   EnvBindings,
   listLeads,
   listPayments,
   listProjects,
+  listReports,
   readPortalSnapshotCache,
   saveLeads,
+  savePortals,
   saveProjects,
   writePortalSnapshotCache,
+  getReportAsset,
 } from "../src/utils/storage";
 import {
   ApiSuccess,
@@ -70,12 +76,19 @@ import {
   LeadRecord,
   PaymentRecord,
   PaymentReminderRecord,
+  ProjectBillingSummary,
+  ProjectPortalRecord,
   ProjectRecord,
   ProjectSummary,
   PortalComputationResult,
   PortalSnapshotCacheDescriptor,
+  PortalSnapshotPayload,
   ReportScheduleRecord,
 } from "../src/types";
+import {
+  testBuildPortalApiPayload,
+  testResolvePortalRequestForProject,
+} from "../src/index";
 
 class MemoryKV implements KVNamespace {
   private readonly store = new Map<string, string>();
@@ -258,6 +271,31 @@ const createLead = (id: string, projectId: string): LeadRecord => ({
   source: "test",
   status: "new",
   createdAt: new Date("2025-02-20T09:00:00Z").toISOString(),
+});
+
+const createPortalRecord = (project: ProjectRecord): ProjectPortalRecord => {
+  const now = new Date("2025-02-20T10:05:00Z").toISOString();
+  return {
+    portalId: `${project.id}-portal`,
+    projectId: project.id,
+    mode: "auto",
+    campaignIds: [],
+    metrics: ["spend", "leads"],
+    createdAt: now,
+    updatedAt: now,
+  } satisfies ProjectPortalRecord;
+};
+
+const createBillingSummary = (overrides: Partial<ProjectBillingSummary> = {}): ProjectBillingSummary => ({
+  status: "active",
+  active: true,
+  overdue: false,
+  amount: 350,
+  currency: "USD",
+  amountFormatted: "$350",
+  periodLabel: "Февраль 2025",
+  updatedAt: new Date("2025-02-20T10:10:00Z").toISOString(),
+  ...overrides,
 });
 
 const createSchedule = (overrides: Partial<ReportScheduleRecord> = {}): ReportScheduleRecord => ({
@@ -749,6 +787,209 @@ test("evaluateQaDataset keeps clean dataset untouched", () => {
     evaluation.schedules[0].nextRunAt,
     new Date("2025-02-23T08:00:00Z").toISOString(),
   );
+});
+
+test("calculateLeadAnalytics summarises totals consistently", async () => {
+  const env = createTestEnv();
+  const primary = { ...createProject("analytics-main") };
+  const secondary = { ...createProject("analytics-secondary") };
+  await saveProjects(env, [primary, secondary]);
+
+  const leads: LeadRecord[] = [
+    { ...createLead("lead-today", primary.id), createdAt: "2025-02-22T09:00:00.000Z" },
+    { ...createLead("lead-week", primary.id), createdAt: "2025-02-18T10:00:00.000Z" },
+    { ...createLead("lead-old", primary.id), createdAt: "2025-01-25T08:00:00.000Z", status: "done" },
+  ];
+  await saveLeads(env, primary.id, leads);
+
+  const analytics = await calculateLeadAnalytics(env, new Date("2025-02-22T12:00:00Z"));
+
+  expect.deepEqual(analytics.totals, { today: 1, week: 2, month: 2, total: 3 });
+  expect.equal(analytics.lastLeadAt, "2025-02-22T09:00:00.000Z");
+  const topProject = analytics.projects[0];
+  expect.equal(topProject.projectId, primary.id);
+  expect.equal(topProject.today, 1);
+  expect.equal(topProject.week, 2);
+  expect.equal(topProject.month, 2);
+  expect.equal(topProject.total, 3);
+  expect.equal(topProject.lastLeadAt, "2025-02-22T09:00:00.000Z");
+  const secondaryStats = analytics.projects.find((entry) => entry.projectId === secondary.id);
+  expect.ok(secondaryStats);
+  if (secondaryStats) {
+    expect.deepEqual(
+      { today: secondaryStats.today, week: secondaryStats.week, month: secondaryStats.month, total: secondaryStats.total },
+      { today: 0, week: 0, month: 0, total: 0 },
+    );
+  }
+});
+
+test("buildPortalApiPayload maps lead counters to metrics", () => {
+  const project = { ...createProject("portal-api") };
+  const portal = createPortalRecord(project);
+  project.portalSlug = portal.portalId;
+  const periodSelection = {
+    key: "today",
+    label: "Сегодня",
+    since: new Date("2025-02-22T00:00:00Z"),
+    until: new Date("2025-02-22T23:59:59Z"),
+    datePreset: "today",
+  };
+  const snapshot: PortalComputationResult = {
+    billing: createBillingSummary({ amount: 420, amountFormatted: "$420" }),
+    statusCounts: { all: 4, new: 3, done: 1 },
+    page: 1,
+    totalPages: 2,
+    leads: [
+      {
+        id: "lead-1",
+        name: "Lead 1",
+        phone: "+998901112233",
+        status: "new",
+        createdAt: "2025-02-22T09:00:00.000Z",
+        adLabel: "Ad A",
+        type: "Контакт",
+      },
+    ],
+    metrics: [
+      { key: "spend", label: "Расход", value: "9.90 $" },
+      { key: "leads", label: "Лиды", value: "4" },
+    ],
+    campaigns: [],
+    periodLabel: "Сегодня",
+    updatedAt: "2025-02-22T12:00:00.000Z",
+    partial: false,
+    dataSource: "cache",
+  } satisfies PortalComputationResult;
+
+  const resolution = {
+    ok: true,
+    project,
+    portal,
+    periodSelection,
+    snapshot,
+    snapshotSource: "cache" as const,
+    slug: portal.portalId,
+    basePath: `/portal/${portal.portalId}`,
+  };
+
+  const payload = testBuildPortalApiPayload(
+    resolution as Parameters<typeof testBuildPortalApiPayload>[0],
+  );
+
+  expect.equal(payload.statusCounts.new, snapshot.statusCounts.new);
+  expect.ok(Object.prototype.hasOwnProperty.call(payload.metricsMap, "spend"));
+  expect.equal(payload.metricsMap.spend, "9.90 $");
+  expect.equal(payload.metricsMap.leads_total, "4");
+  expect.equal(payload.metricsMap.leads_new, "3");
+  expect.equal(payload.metricsMap.leads_done, "1");
+  expect.equal(payload.partial, false);
+  expect.equal(payload.dataSource, "cache");
+});
+
+test("resolvePortalRequestForProject serves cached snapshot", async () => {
+  const env = createTestEnv();
+  const project = { ...createProject("portal-resolve") };
+  const portal = createPortalRecord(project);
+  project.portalSlug = portal.portalId;
+  await saveProjects(env, [project]);
+  await savePortals(env, [portal]);
+
+  const descriptor: PortalSnapshotCacheDescriptor = {
+    key: "today",
+    datePreset: "today",
+    since: null,
+    until: null,
+    page: 1,
+  };
+  const snapshot: PortalComputationResult = {
+    billing: createBillingSummary(),
+    statusCounts: { all: 2, new: 1, done: 1 },
+    page: 1,
+    totalPages: 1,
+    leads: [],
+    metrics: [{ key: "spend", label: "Расход", value: "12.50 $" }],
+    campaigns: [],
+    periodLabel: "Сегодня",
+    updatedAt: "2025-02-22T12:00:00.000Z",
+    partial: false,
+    dataSource: "cache",
+  } satisfies PortalComputationResult;
+
+  await writePortalSnapshotCache(env, project.id, descriptor, snapshot, 120);
+
+  const resolution = await testResolvePortalRequestForProject(
+    env,
+    project.id,
+    new URLSearchParams(),
+    new Date("2025-02-22T13:00:00Z"),
+  );
+
+  expect.ok((resolution as { ok: boolean }).ok);
+  if ((resolution as { ok: boolean }).ok) {
+    const success = resolution as Extract<typeof resolution, { ok: true }>;
+    expect.ok(["cache", "fresh", "stale-cache", "fallback"].includes(success.snapshotSource));
+    expect.equal(typeof success.snapshot.partial, "boolean");
+  }
+});
+
+test("createSlaReport persists CSV asset and report record", async () => {
+  const env = createTestEnv();
+  const project = createProject("sla-project");
+  await saveProjects(env, [project]);
+  const leads: LeadRecord[] = [
+    { ...createLead("sla-1", project.id), createdAt: "2025-02-21T09:00:00.000Z" },
+    { ...createLead("sla-2", project.id), createdAt: "2025-02-20T09:00:00.000Z", status: "done" },
+  ];
+  await saveLeads(env, project.id, leads);
+
+  const result = await createSlaReport(env, { thresholdMinutes: 60 });
+  expect.ok(result.record.id);
+  expect.ok(result.text.includes("SLA-экспорт"));
+
+  const reports = await listReports(env);
+  expect.equal(reports.length, 1);
+  expect.equal(reports[0].id, result.record.id);
+
+  const asset = await getReportAsset(env, result.record.id);
+  // @ts-expect-error accessing test double internals
+  const rawAsset = await env.R2.get(`reports/assets/${result.record.id}`);
+  const csvText = rawAsset ? await rawAsset.text() : "";
+  expect.ok(asset);
+  expect.ok(csvText.includes("lead_id"));
+});
+
+test("renderPortal embeds loader overlay and retry control", () => {
+  const project = createProject("portal-view");
+  const billing = createBillingSummary();
+  const snapshot: PortalSnapshotPayload = {
+    metrics: [{ key: "spend", label: "Расход", value: "15.00 $" }],
+    leads: [],
+    campaigns: [],
+    statusCounts: { all: 0, new: 0, done: 0 },
+    pagination: { page: 1, totalPages: 1, prevUrl: null, nextUrl: null },
+    billing,
+    periodLabel: "Сегодня",
+    updatedAt: "2025-02-22T12:00:00.000Z",
+    partial: false,
+    dataSource: "cache",
+  };
+
+  const html = renderPortal({
+    project,
+    billing,
+    periodOptions: [],
+    snapshot,
+    snapshotUrl: "/portal/portal-view/snapshot",
+    statsUrl: "/api/meta/stats?project=portal-view",
+    leadsUrl: "/api/meta/leads?project=portal-view",
+    campaignsUrl: "/api/meta/campaigns?project=portal-view",
+    periodKey: "today",
+  });
+
+  expect.ok(html.includes('data-role="portal-loader"'));
+  expect.ok(html.includes('data-role="loader-retry"'));
+  expect.ok(html.includes("Готовим данные…"));
+  expect.ok(html.includes("window.__portalSnapshot"));
 });
 
 (async () => {

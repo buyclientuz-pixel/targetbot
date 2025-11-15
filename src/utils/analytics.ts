@@ -73,9 +73,11 @@ const addCounters = (target: LeadCounters, addition: LeadCounters): void => {
   target.total += addition.total;
 };
 
-export const calculateLeadAnalytics = async (env: EnvBindings): Promise<LeadAnalyticsSummary> => {
+export const calculateLeadAnalytics = async (
+  env: EnvBindings,
+  now: Date = new Date(),
+): Promise<LeadAnalyticsSummary> => {
   const projects = await listProjects(env);
-  const now = new Date();
   const dayBoundary = startOfDay(now).getTime();
   const weekBoundary = startOfWeek(now).getTime();
   const monthBoundary = startOfMonth(now).getTime();
