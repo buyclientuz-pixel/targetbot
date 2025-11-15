@@ -474,7 +474,7 @@ export interface PendingPortalOperation {
   updatedAt: string;
 }
 
-export type PendingProjectEditAction = "rename" | "change-chat";
+export type PendingProjectEditAction = "rename" | "change-chat" | "change-chat-link";
 
 export interface PendingProjectEditOperation {
   action: PendingProjectEditAction;

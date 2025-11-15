@@ -4,6 +4,7 @@ import {
   runCommand,
   resolveCommand,
   handleProjectCallback,
+  handleProjectChatBindingCallback,
   handlePaymentsCallback,
   handleAutoReportCallback,
   handleMetaCallback,
@@ -238,6 +239,13 @@ const handleUpdate = async (context: BotContext): Promise<void> => {
     }
     const handledPayments = await handlePaymentsCallback(context, callbackData);
     if (handledPayments) {
+      if (context.update.callback_query?.id) {
+        await answerCallbackQuery(context.env, context.update.callback_query.id);
+      }
+      return;
+    }
+    const handledChatBinding = await handleProjectChatBindingCallback(context, callbackData);
+    if (handledChatBinding) {
       if (context.update.callback_query?.id) {
         await answerCallbackQuery(context.env, context.update.callback_query.id);
       }

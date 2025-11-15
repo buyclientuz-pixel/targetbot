@@ -66,6 +66,7 @@ import {
   editTelegramMessage,
   sendTelegramMessage,
   getTelegramChatInfo,
+  TelegramChatInfo,
 } from "../utils/telegram";
 import {
   fetchAdAccounts,
@@ -2024,6 +2025,67 @@ const ensureTelegramGroupIndex = async (context: BotContext): Promise<TelegramGr
   return groups;
 };
 
+const FREE_CHAT_OPTIONS_LIMIT = 10;
+
+const buildChatLinkCandidate = (info: TelegramChatInfo): string | undefined => {
+  if (info.inviteLink) {
+    return info.inviteLink;
+  }
+  if (info.username) {
+    const handle = info.username.startsWith("@") ? info.username.slice(1) : info.username;
+    if (handle) {
+      return `https://t.me/${handle}`;
+    }
+  }
+  return undefined;
+};
+
+const resolveChatLinkFromInfo = (info: TelegramChatInfo): string | undefined => {
+  return resolveChatLink(buildChatLinkCandidate(info), info.id);
+};
+
+const describeFreeChatLabel = (group: TelegramGroupLinkRecord): string => {
+  if (group.title && group.title.trim()) {
+    return escapeHtml(group.title);
+  }
+  return `ID ${escapeHtml(group.chatId)}`;
+};
+
+const buildProjectChatChangeMarkup = (
+  projectId: string,
+  chats: TelegramGroupLinkRecord[],
+) => {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = chats.map((chat) => [
+    { text: `🏷 ${truncateLabel(chat.title ?? chat.chatId)}`, callback_data: `bind_chat:${chat.chatId}` },
+  ]);
+  rows.push([{ text: "🔗 Привязать по ссылке", callback_data: "bind_link" }]);
+  rows.push([{ text: "⬅️ Назад", callback_data: `proj:view:${projectId}` }]);
+  return { inline_keyboard: rows };
+};
+
+const announceProjectChatBindingSuccess = async (
+  context: BotContext,
+  projectId: string,
+  chatInfo: TelegramChatInfo,
+  threadId: number | null,
+): Promise<void> => {
+  const chatUrl = resolveChatLinkFromInfo(chatInfo);
+  const chatLabel = chatUrl
+    ? `<a href="${escapeAttribute(chatUrl)}">перейти</a>`
+    : chatInfo.title
+    ? escapeHtml(chatInfo.title)
+    : `<code>${escapeHtml(chatInfo.id)}</code>`;
+  const lines = [
+    "Чат успешно привязан.",
+    "",
+    `Чат: ${chatLabel}.`,
+    `Тема: ${threadId ? "Таргет" : "не требуется"}.`,
+  ];
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: { inline_keyboard: [[{ text: "⬅️ Назад", callback_data: `proj:view:${projectId}` }]] },
+  });
+};
+
 const formatShortDate = (value?: string | null): string | null => {
   if (!value) {
     return null;
@@ -3546,10 +3608,24 @@ export const handlePendingProjectEditInput = async (context: BotContext): Promis
     return false;
   }
   const textRaw = context.text?.trim() ?? "";
-  if (pending.action === "change-chat") {
+  let pendingAction = pending.action;
+  if (pendingAction === "change-chat" && textRaw) {
+    pendingAction = "change-chat-link";
+    await savePendingProjectEditOperation(context.env, adminId, {
+      action: "change-chat-link",
+      projectId: pending.projectId,
+    });
+  }
+  if (pendingAction === "change-chat") {
+    await sendMessage(context, "ℹ️ Выберите чат кнопкой или нажмите «Привязать по ссылке».", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${pending.projectId}` }]] },
+    });
+    return true;
+  }
+  if (pendingAction === "change-chat-link") {
     if (!textRaw) {
-      await sendMessage(context, "ℹ️ Пришлите ссылку на чат-группу (https://t.me/...) или @username.", {
-        replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
+      await sendMessage(context, "ℹ️ Отправьте ссылку на чат (https://t.me/...), @username или ID.", {
+        replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${pending.projectId}` }]] },
       });
       return true;
     }
@@ -3568,26 +3644,18 @@ export const handlePendingProjectEditInput = async (context: BotContext): Promis
       }
     }
     if (!chatInfo) {
-      await sendMessage(
-        context,
-        "❌ Не удалось получить данные чата. Убедитесь, что бот добавлен в группу и отправьте корректную ссылку.",
-        {
-          replyMarkup: {
-            inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]],
-          },
-        },
-      );
+      await sendMessage(context, "Ошибка: невозможно привязать этот чат. Проверьте, что бот добавлен администратором и чат доступен.", {
+        replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${pending.projectId}` }]] },
+      });
       return true;
     }
     const threadId = await ensureTargetTopicId(context.env, chatInfo.id);
     if (threadId === null) {
       await sendMessage(
         context,
-        "❌ Не удалось найти или создать тему «Таргет». Проверьте права бота в чате и попробуйте снова.",
+        "Ошибка: невозможно привязать этот чат. Проверьте права бота и наличие темы «Таргет».",
         {
-          replyMarkup: {
-            inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]],
-          },
+          replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${pending.projectId}` }]] },
         },
       );
       return true;
@@ -3595,7 +3663,7 @@ export const handlePendingProjectEditInput = async (context: BotContext): Promis
     const updated = await updateProjectChatBinding(context.env, pending.projectId, {
       chatId: chatInfo.id,
       threadId,
-      chatLink: normalizedLink ?? undefined,
+      chatLink: normalizedLink ?? buildChatLinkCandidate(chatInfo) ?? undefined,
       chatTitle: chatInfo.title ?? undefined,
     });
     if (!updated) {
@@ -3604,19 +3672,17 @@ export const handlePendingProjectEditInput = async (context: BotContext): Promis
       return true;
     }
     await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
-    const chatLabel = chatInfo.title ?? `ID ${chatInfo.id}`;
-    await handleProjectView(context, pending.projectId, {
-      prefix: `✅ Чат-группа обновлена: <b>${escapeHtml(chatLabel)}</b>.`,
-    });
+    await announceProjectChatBindingSuccess(context, pending.projectId, chatInfo, threadId);
+    await logProjectAction(context, "chat-bind", pending.projectId, chatInfo.id);
     return true;
   }
-  if (!textRaw) {
-    await sendMessage(context, "ℹ️ Отправьте новое название текстом (до 80 символов).", {
-      replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
-    });
-    return true;
-  }
-  if (pending.action === "rename") {
+  if (pendingAction === "rename") {
+    if (!textRaw) {
+      await sendMessage(context, "ℹ️ Отправьте новое название текстом (до 80 символов).", {
+        replyMarkup: { inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${pending.projectId}` }]] },
+      });
+      return true;
+    }
     const text = textRaw;
     if (text.length < 3) {
       await sendMessage(context, "❌ Название должно содержать не менее 3 символов.", {
@@ -3746,28 +3812,159 @@ const handleProjectChatChangePrompt = async (context: BotContext, projectId: str
     return;
   }
   await savePendingProjectEditOperation(context.env, adminId, { action: "change-chat", projectId });
-  const chatUrl = resolveProjectChatUrl(summary);
+  const groups = await ensureTelegramGroupIndex(context);
+  const currentChatId = summary.telegramChatId ?? summary.chatId ?? null;
+  const available = groups.filter(
+    (group) => group.registered && !group.linkedProjectId && group.chatId !== (currentChatId ?? undefined),
+  );
+  const displayed = available
+    .slice()
+    .sort((a, b) => (a.title ?? a.chatId).localeCompare(b.title ?? b.chatId, "ru-RU", { sensitivity: "base" }))
+    .slice(0, FREE_CHAT_OPTIONS_LIMIT);
   const lines: string[] = [
     `🔁 Изменить чат-группу — <b>${escapeHtml(summary.name)}</b>`,
     "",
-  ];
-  if (chatUrl) {
-    lines.push(`Текущий чат: <a href="${escapeAttribute(chatUrl)}">перейти</a>.`);
-  } else if (summary.telegramChatId) {
-    lines.push(`Текущий чат: <code>${escapeHtml(summary.telegramChatId)}</code>`);
-  } else {
-    lines.push("Текущий чат: не привязан.");
-  }
-  lines.push(
+    "Выберите один из свободных чатов или привяжите вручную.",
     "",
-    "Пришлите ссылку на чат (https://t.me/...), @username или ID, где бот уже добавлен администратором.",
-    "Бот автоматически найдёт тему «Таргет» или создаст её, а затем обновит привязку.",
-  );
+  ];
+  if (displayed.length) {
+    lines.push("Свободные чаты:");
+    displayed.forEach((group) => {
+      lines.push(`• ${describeFreeChatLabel(group)}`);
+    });
+    if (available.length > displayed.length) {
+      lines.push("• …");
+    }
+  } else {
+    lines.push("Свободные чаты: свободных чатов нет.");
+  }
+  const chatUrl = resolveProjectChatUrl(summary);
+  if (chatUrl) {
+    lines.push("", `Текущий чат: <a href="${escapeAttribute(chatUrl)}">перейти</a>.`);
+  } else if (summary.telegramChatId) {
+    lines.push("", `Текущий чат: <code>${escapeHtml(summary.telegramChatId)}</code>.`);
+  } else {
+    lines.push("", "Текущий чат: не привязан.");
+  }
   await sendMessage(context, lines.join("\n"), {
-    replyMarkup: {
-      inline_keyboard: [[{ text: "↩️ Отмена", callback_data: `proj:edit-cancel:${projectId}` }]],
-    },
+    replyMarkup: buildProjectChatChangeMarkup(projectId, displayed),
   });
+};
+
+const handleProjectChatBindLink = async (context: BotContext): Promise<boolean> => {
+  await ensureAdminUser(context);
+  const adminId = context.userId;
+  if (!adminId) {
+    await sendMessage(context, "❌ Отправьте команду в личном чате с ботом, чтобы изменить группу.");
+    return true;
+  }
+  const pending = await loadPendingProjectEditOperation(context.env, adminId);
+  if (!pending) {
+    await sendMessage(context, "Сессия обновления чата истекла. Откройте проект и выберите «Изменить чат-группу» ещё раз.");
+    return true;
+  }
+  const summary = await ensureProjectSummary(context, pending.projectId);
+  if (!summary) {
+    await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    return true;
+  }
+  await savePendingProjectEditOperation(context.env, adminId, {
+    action: "change-chat-link",
+    projectId: pending.projectId,
+  });
+  const lines = [
+    `🔗 Привязать по ссылке — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    "Отправьте ссылку на чат (https://t.me/...), @username или ID.",
+    "Бот автоматически найдёт тему «Таргет» или создаст её.",
+  ];
+  await sendMessage(context, lines.join("\n"), {
+    replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+  });
+  await logProjectAction(context, "chat-bind-link", summary.id);
+  return true;
+};
+
+const handleProjectChatBindSelection = async (context: BotContext, chatId: string): Promise<boolean> => {
+  await ensureAdminUser(context);
+  const adminId = context.userId;
+  if (!adminId) {
+    await sendMessage(context, "❌ Отправьте команду в личном чате с ботом, чтобы изменить группу.");
+    return true;
+  }
+  if (!chatId) {
+    await sendMessage(context, "Не удалось определить чат. Выберите чат из списка ещё раз.");
+    return true;
+  }
+  const pending = await loadPendingProjectEditOperation(context.env, adminId);
+  if (!pending) {
+    await sendMessage(context, "Сессия обновления чата истекла. Откройте проект и выберите «Изменить чат-группу» ещё раз.");
+    return true;
+  }
+  const summary = await ensureProjectSummary(context, pending.projectId);
+  if (!summary) {
+    await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    return true;
+  }
+  const groups = await ensureTelegramGroupIndex(context);
+  const group = groups.find((item) => item.chatId === chatId);
+  if (!group) {
+    await sendMessage(context, "Ошибка: чат не найден среди доступных. Обновите список и попробуйте снова.", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+    });
+    return true;
+  }
+  if (group.linkedProjectId && group.linkedProjectId !== summary.id) {
+    await sendMessage(context, "Ошибка: невозможно привязать этот чат. Проверьте, что чат не используется в другом проекте.", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+    });
+    return true;
+  }
+  const chatInfo = await getTelegramChatInfo(context.env, chatId);
+  if (!chatInfo) {
+    await sendMessage(context, "Ошибка: невозможно привязать этот чат. Проверьте, что бот добавлен администратором и чат доступен.", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+    });
+    return true;
+  }
+  const threadId = await ensureTargetTopicId(context.env, chatInfo.id);
+  if (threadId === null) {
+    await sendMessage(context, "Ошибка: невозможно привязать этот чат. Проверьте права бота и наличие темы «Таргет».", {
+      replyMarkup: { inline_keyboard: [[{ text: "↩️ Назад", callback_data: `proj:chat-change:${summary.id}` }]] },
+    });
+    return true;
+  }
+  const updated = await updateProjectChatBinding(context.env, summary.id, {
+    chatId: chatInfo.id,
+    threadId,
+    chatLink: buildChatLinkCandidate(chatInfo) ?? undefined,
+    chatTitle: chatInfo.title ?? undefined,
+  });
+  if (!updated) {
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+    return true;
+  }
+  await clearPendingProjectEditOperation(context.env, adminId).catch(() => undefined);
+  await announceProjectChatBindingSuccess(context, summary.id, chatInfo, threadId);
+  await logProjectAction(context, "chat-bind", summary.id, chatInfo.id);
+  return true;
+};
+
+export const handleProjectChatBindingCallback = async (
+  context: BotContext,
+  data: string,
+): Promise<boolean> => {
+  if (data === "bind_link") {
+    return handleProjectChatBindLink(context);
+  }
+  if (data.startsWith("bind_chat:")) {
+    const chatId = data.slice("bind_chat:".length);
+    return handleProjectChatBindSelection(context, chatId);
+  }
+  return false;
 };
 
 const handleProjectChatUnlinkPrompt = async (context: BotContext, projectId: string): Promise<void> => {
