@@ -16,6 +16,7 @@ import {
   getPaymentsHistoryDocument,
   type PaymentsHistoryDocument,
 } from "../domain/spec/payments-history";
+import { listAvailableChats, type ChatRegistryEntry } from "../domain/chat-registry";
 
 const createDefaultBilling = (project: ProjectRecord): BillingRecord => ({
   tariff: 0,
@@ -67,6 +68,37 @@ export interface ProjectBundle {
   payments: PaymentsHistoryDocument;
 }
 
+export interface AnalyticsProjectSummary {
+  id: string;
+  name: string;
+  currency: string;
+  spend: number;
+  leads: number;
+  messages: number;
+}
+
+export interface AnalyticsOverview {
+  projects: AnalyticsProjectSummary[];
+  totalLeads: number;
+  totalMessages: number;
+  spendByCurrency: Record<string, number>;
+}
+
+export interface FinanceProjectEntry {
+  id: string;
+  name: string;
+  tariff: number;
+  currency: string;
+  nextPaymentDate: string | null;
+  autobilling: boolean;
+  payments: PaymentsHistoryDocument["payments"];
+}
+
+export interface FinanceOverview {
+  projects: FinanceProjectEntry[];
+  spendByCurrency: Record<string, number>;
+}
+
 export const loadUserProjects = async (kv: KvClient, userId: number): Promise<ProjectRecord[]> => {
   const membership = await getProjectsByUser(kv, userId);
   if (!membership) {
@@ -84,6 +116,84 @@ export const loadUserProjects = async (kv: KvClient, userId: number): Promise<Pr
   );
 
   return projects.filter((project): project is ProjectRecord => project !== null);
+};
+
+export const loadProjectBundlesForUser = async (
+  kv: KvClient,
+  r2: R2Client,
+  userId: number,
+): Promise<ProjectBundle[]> => {
+  const projects = await loadUserProjects(kv, userId);
+  const bundles = await Promise.all(
+    projects.map(async (project) => {
+      try {
+        return await loadProjectBundle(kv, r2, project.id);
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return bundles.filter((bundle): bundle is ProjectBundle => bundle != null);
+};
+
+export const loadAnalyticsOverview = async (
+  kv: KvClient,
+  r2: R2Client,
+  userId: number,
+): Promise<AnalyticsOverview> => {
+  const bundles = await loadProjectBundlesForUser(kv, r2, userId);
+  const projects = bundles.map((bundle) => ({
+    id: bundle.project.id,
+    name: bundle.project.name,
+    currency: bundle.project.settings.currency,
+    spend: bundle.campaigns.summary.spend ?? 0,
+    leads: bundle.campaigns.summary.leads ?? 0,
+    messages: bundle.campaigns.summary.messages ?? 0,
+  }));
+  const spendByCurrency: Record<string, number> = {};
+  let totalLeads = 0;
+  let totalMessages = 0;
+  for (const project of projects) {
+    spendByCurrency[project.currency] =
+      (spendByCurrency[project.currency] ?? 0) + project.spend;
+    totalLeads += project.leads;
+    totalMessages += project.messages;
+  }
+  return { projects, totalLeads, totalMessages, spendByCurrency };
+};
+
+export const loadFinanceOverview = async (
+  kv: KvClient,
+  r2: R2Client,
+  userId: number,
+): Promise<FinanceOverview> => {
+  const bundles = await loadProjectBundlesForUser(kv, r2, userId);
+  const spendByCurrency: Record<string, number> = {};
+  const projects: FinanceProjectEntry[] = bundles.map((bundle) => {
+    spendByCurrency[bundle.billing.currency] =
+      (spendByCurrency[bundle.billing.currency] ?? 0) + bundle.billing.tariff;
+    return {
+      id: bundle.project.id,
+      name: bundle.project.name,
+      tariff: bundle.billing.tariff,
+      currency: bundle.billing.currency,
+      nextPaymentDate: bundle.billing.nextPaymentDate ?? null,
+      autobilling: bundle.billing.autobilling,
+      payments: bundle.payments.payments,
+    } satisfies FinanceProjectEntry;
+  });
+  return { projects, spendByCurrency };
+};
+
+export const listAvailableProjectChats = async (
+  kv: KvClient,
+  userId: number,
+): Promise<ChatRegistryEntry[]> => {
+  const projects = await loadUserProjects(kv, userId);
+  const occupied = projects
+    .map((project) => project.chatId)
+    .filter((chatId): chatId is number => typeof chatId === "number");
+  return listAvailableChats(kv, occupied);
 };
 
 export const loadProjectBundle = async (

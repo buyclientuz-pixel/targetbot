@@ -18,6 +18,20 @@ export interface SendTelegramMessageOptions {
   replyMarkup?: unknown;
 }
 
+interface TelegramChatInfo {
+  id: number;
+  type: string;
+  title?: string;
+}
+
+interface TelegramWebhookInfo {
+  url?: string;
+  has_custom_certificate?: boolean;
+  pending_update_count: number;
+  last_error_date?: number;
+  last_error_message?: string;
+}
+
 export interface CreateForumTopicOptions {
   chatId: number;
   name: string;
@@ -115,6 +129,52 @@ export const answerCallbackQuery = async (
     if (!data.ok) {
       throw new TelegramError(`Telegram API error: ${data.description ?? "unknown"}`, response.status, bodyText);
     }
+  } catch (error) {
+    if (error instanceof TelegramError) {
+      throw error;
+    }
+    throw new TelegramError("Failed to parse Telegram response", response.status, bodyText);
+  }
+};
+
+export const getTelegramChatInfo = async (token: string, identifier: string): Promise<TelegramChatInfo | null> => {
+  const url = `https://api.telegram.org/bot${token}/getChat`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat_id: identifier }),
+  });
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw new TelegramError(`Telegram getChat failed with status ${response.status}`, response.status, bodyText);
+  }
+  try {
+    const data = JSON.parse(bodyText) as TelegramResponse<TelegramChatInfo>;
+    if (!data.ok) {
+      throw new TelegramError(`Telegram API error: ${data.description ?? "unknown"}`, response.status, bodyText);
+    }
+    return data.result ?? null;
+  } catch (error) {
+    if (error instanceof TelegramError) {
+      throw error;
+    }
+    throw new TelegramError("Failed to parse Telegram response", response.status, bodyText);
+  }
+};
+
+export const getWebhookInfo = async (token: string): Promise<TelegramWebhookInfo | null> => {
+  const url = `https://api.telegram.org/bot${token}/getWebhookInfo`;
+  const response = await fetch(url);
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw new TelegramError(`Telegram getWebhookInfo failed with status ${response.status}`, response.status, bodyText);
+  }
+  try {
+    const data = JSON.parse(bodyText) as TelegramResponse<TelegramWebhookInfo>;
+    if (!data.ok) {
+      throw new TelegramError(`Telegram API error: ${data.description ?? "unknown"}`, response.status, bodyText);
+    }
+    return data.result ?? null;
   } catch (error) {
     if (error instanceof TelegramError) {
       throw error;

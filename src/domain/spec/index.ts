@@ -7,3 +7,4 @@ export * from "./autoreports";
 export * from "./project-leads";
 export * from "./meta-campaigns";
 export * from "./payments-history";
+export * from "./user-settings";

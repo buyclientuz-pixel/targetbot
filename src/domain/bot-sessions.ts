@@ -4,7 +4,11 @@ import type { KvClient } from "../infra/kv";
 export type BotSessionState =
   | { type: "idle" }
   | { type: "billing:set-date"; projectId: string }
-  | { type: "billing:manual"; projectId: string };
+  | { type: "billing:manual"; projectId: string }
+  | { type: "facebook:token" }
+  | { type: "project:edit"; projectId: string; field: "name" | "ad" | "owner" }
+  | { type: "chat:manual"; projectId: string }
+  | { type: "autoreports:set-time"; projectId: string };
 
 export interface BotSession {
   userId: number;

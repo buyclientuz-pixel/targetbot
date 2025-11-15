@@ -3,6 +3,10 @@ export interface TargetBotEnv {
   R2: R2Bucket;
   TELEGRAM_BOT_TOKEN?: string;
   BOT_TOKEN?: string;
+  TELEGRAM_SECRET?: string;
+  WORKER_URL?: string;
+  DEFAULT_TZ?: string;
+  ADMIN_IDS?: string;
   META_APP_ID?: string;
   META_APP_SECRET?: string;
   META_REDIRECT_URI?: string;

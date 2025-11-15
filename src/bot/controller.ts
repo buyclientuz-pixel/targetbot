@@ -1,40 +1,88 @@
 import { parseManualBillingInput } from "./amounts";
-import { loadProjectBundle, loadUserProjects } from "./data";
 import {
+  loadAnalyticsOverview,
+  loadFinanceOverview,
+  loadProjectBundle,
+  loadUserProjects,
+  listAvailableProjectChats,
+} from "./data";
+import {
+  buildAutoreportsKeyboard,
+  buildAutoreportsRouteKeyboard,
+  buildAlertsKeyboard,
+  buildAlertsRouteKeyboard,
   buildBillingKeyboard,
+  buildChatChangeKeyboard,
+  buildChatInfoKeyboard,
+  buildDeleteConfirmKeyboard,
   buildExportKeyboard,
-  buildLeadsFilterKeyboard,
+  buildKpiKeyboard,
+  buildLeadDetailKeyboard,
+  buildLeadsKeyboard,
   buildMainMenuKeyboard,
   buildProjectActionsKeyboard,
+  buildProjectEditKeyboard,
   buildProjectListKeyboard,
+  buildSettingsKeyboard,
 } from "./keyboards";
 import {
+  buildAlertsMessage,
+  buildAnalyticsOverviewMessage,
+  buildAutoreportsMessage,
   buildBillingScreenMessage,
   buildCampaignsMessage,
+  buildChatChangeMessage,
+  buildChatInfoMessage,
+  buildDeleteConfirmationMessage,
+  buildFinanceOverviewMessage,
+  buildKpiMessage,
+  buildLeadDetailMessage,
   buildLeadsMessage,
   buildMenuMessage,
   buildPortalMessage,
   buildProjectCardMessage,
+  buildProjectEditMessage,
   buildProjectsListMessage,
   buildReportMessage,
+  buildSettingsMessage,
+  buildUsersMessage,
+  buildWebhookStatusMessage,
   type ProjectListItem,
 } from "./messages";
 import { addDaysIso, parseDateInput, todayIsoDate } from "./dates";
 import type { TelegramUpdate } from "./types";
 
+import { KV_KEYS } from "../config/kv";
+import { R2_KEYS } from "../config/r2";
 import { clearBotSession, getBotSession, saveBotSession } from "../domain/bot-sessions";
+import { recordKnownChat } from "../domain/chat-registry";
 import { appendPaymentRecord, type PaymentRecord } from "../domain/spec/payments-history";
 import { putBillingRecord } from "../domain/spec/billing";
-import { getFbAuthRecord } from "../domain/spec/fb-auth";
+import { getFbAuthRecord, putFbAuthRecord } from "../domain/spec/fb-auth";
 import { getMetaCampaignsDocument } from "../domain/spec/meta-campaigns";
+import { putAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
+import { putAlertsRecord, type AlertsRecord } from "../domain/spec/alerts";
+import {
+  getLeadDetailRecord,
+  putLeadDetailRecord,
+  putProjectLeadsList,
+  type ProjectLeadsListRecord,
+} from "../domain/spec/project-leads";
+import { putProjectRecord, deleteProjectRecord, requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
+import { getProjectsByUser, putProjectsByUser } from "../domain/spec/projects-by-user";
+import { getUserSettingsRecord, updateUserSettingsRecord, type UserSettingsRecord } from "../domain/spec/user-settings";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
-import { answerCallbackQuery, sendTelegramMessage } from "../services/telegram";
+import { answerCallbackQuery, getTelegramChatInfo, getWebhookInfo, sendTelegramMessage } from "../services/telegram";
 
 interface BotContext {
   kv: KvClient;
   r2: R2Client;
   token: string;
+  workerUrl: string;
+  telegramSecret: string;
+  defaultTimezone: string;
+  adminIds: number[];
 }
 
 const escapeHtml = (value: string): string =>
@@ -61,6 +109,14 @@ const extractChatId = (update: TelegramUpdate): number | null => {
     return update.callback_query.message.chat.id;
   }
   return null;
+};
+
+const recordChatFromUpdate = async (ctx: BotContext, update: TelegramUpdate): Promise<void> => {
+  const chat = update.message?.chat ?? update.callback_query?.message?.chat;
+  if (!chat || chat.type === "private") {
+    return;
+  }
+  await recordKnownChat(ctx.kv, { id: chat.id, title: chat.title, type: chat.type });
 };
 
 const sendMenu = async (ctx: BotContext, chatId: number): Promise<void> => {
@@ -240,7 +296,26 @@ const sendLeadsSection = async (
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildLeadsMessage(bundle.project, bundle.leads, status),
-    replyMarkup: buildLeadsFilterKeyboard(projectId),
+    replyMarkup: buildLeadsKeyboard(projectId, bundle.leads.leads, status),
+  });
+};
+
+const sendLeadDetail = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  leadId: string,
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const lead = bundle.leads.leads.find((entry) => entry.id === leadId);
+  if (!lead) {
+    await sendTelegramMessage(ctx.token, { chatId, text: "Лид не найден." });
+    return;
+  }
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildLeadDetailMessage(bundle.project, lead),
+    replyMarkup: buildLeadDetailKeyboard(projectId, leadId, lead.status),
   });
 };
 
@@ -354,30 +429,165 @@ const sendCsvExport = async (
   });
 };
 
-const handleSessionInput = async (
+const sendAnalyticsOverview = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  const overview = await loadAnalyticsOverview(ctx.kv, ctx.r2, userId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildAnalyticsOverviewMessage(overview),
+    replyMarkup: buildMainMenuKeyboard(),
+  });
+};
+
+const sendUsersOverview = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  const projects = await loadUserProjects(ctx.kv, userId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildUsersMessage(projects, ctx.adminIds, userId),
+    replyMarkup: buildMainMenuKeyboard(),
+  });
+};
+
+const sendFinanceOverview = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  const finance = await loadFinanceOverview(ctx.kv, ctx.r2, userId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildFinanceOverviewMessage(finance),
+    replyMarkup: buildMainMenuKeyboard(),
+  });
+};
+
+const sendWebhookStatus = async (ctx: BotContext, chatId: number): Promise<void> => {
+  const info = await getWebhookInfo(ctx.token);
+  const expectedUrl = ctx.telegramSecret
+    ? `https://${ctx.workerUrl}/tg-webhook?secret=${ctx.telegramSecret}`
+    : `https://${ctx.workerUrl}/tg-webhook`;
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildWebhookStatusMessage({
+      currentUrl: info?.url ?? null,
+      expectedUrl,
+      pendingUpdates: info?.pending_update_count ?? 0,
+      lastError: info?.last_error_message ?? null,
+      lastErrorDate: info?.last_error_date
+        ? new Date(info.last_error_date * 1000).toISOString()
+        : null,
+    }),
+    replyMarkup: buildMainMenuKeyboard(),
+  });
+};
+
+const sendSettingsScreen = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  const settings = await getUserSettingsRecord(ctx.kv, userId, { timezone: ctx.defaultTimezone, language: "ru" });
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildSettingsMessage(settings),
+    replyMarkup: buildSettingsKeyboard(settings),
+  });
+};
+
+const sendChatInfoScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildChatInfoMessage(bundle.project),
+    replyMarkup: buildChatInfoKeyboard(projectId, Boolean(bundle.project.chatId)),
+  });
+};
+
+const sendChatChangeScreen = async (
   ctx: BotContext,
   chatId: number,
   userId: number,
-  text: string,
-  sessionState: Awaited<ReturnType<typeof getBotSession>>,
-): Promise<boolean> => {
-  switch (sessionState.state.type) {
-    case "billing:set-date":
-      await handleBillingDateInput(ctx, chatId, sessionState.state.projectId, text);
-      await clearBotSession(ctx.kv, userId);
-      return true;
-    case "billing:manual":
-      await handleBillingManualInput(ctx, chatId, sessionState.state.projectId, text);
-      await clearBotSession(ctx.kv, userId);
-      return true;
-    default:
-      return false;
-  }
+  projectId: string,
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const chats = await listAvailableProjectChats(ctx.kv, userId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildChatChangeMessage(bundle.project, chats),
+    replyMarkup: buildChatChangeKeyboard(projectId, chats),
+  });
+};
+
+const sendAutoreportsScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildAutoreportsMessage(bundle.project, bundle.autoreports),
+    replyMarkup: buildAutoreportsKeyboard(projectId, bundle.autoreports),
+  });
+};
+
+const sendAlertsScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildAlertsMessage(bundle.project, bundle.alerts),
+    replyMarkup: buildAlertsKeyboard(projectId, bundle.alerts),
+  });
+};
+
+const sendKpiScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildKpiMessage(bundle.project),
+    replyMarkup: buildKpiKeyboard(projectId),
+  });
+};
+
+const sendProjectEditScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildProjectEditMessage(bundle.project),
+    replyMarkup: buildProjectEditKeyboard(projectId),
+  });
+};
+
+const sendDeleteConfirm = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildDeleteConfirmationMessage(bundle.project),
+    replyMarkup: buildDeleteConfirmKeyboard(projectId),
+  });
+};
+
+const updateProject = async (
+  ctx: BotContext,
+  projectId: string,
+  update: (record: ProjectRecord) => void,
+): Promise<ProjectRecord> => {
+  const project = await requireProjectRecord(ctx.kv, projectId);
+  const next: ProjectRecord = {
+    ...project,
+    settings: {
+      ...project.settings,
+      kpi: { ...project.settings.kpi },
+    },
+  };
+  update(next);
+  await putProjectRecord(ctx.kv, next);
+  return next;
+};
+
+const facebookAuthKeyboard = {
+  inline_keyboard: [
+    [{ text: "🔄 Обновить токен", callback_data: "auth:refresh" }],
+    [{ text: "📦 Список рекламных аккаунтов", callback_data: "auth:accounts" }],
+    [{ text: "⬅️ Назад", callback_data: "project:menu" }],
+  ],
 };
 
 const handleFacebookAuth = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
   const record = await getFbAuthRecord(ctx.kv, userId);
   if (!record) {
+    await saveBotSession(ctx.kv, {
+      userId,
+      state: { type: "facebook:token" },
+      updatedAt: new Date().toISOString(),
+    });
     await sendTelegramMessage(ctx.token, {
       chatId,
       text:
@@ -392,8 +602,576 @@ const handleFacebookAuth = async (ctx: BotContext, chatId: number, userId: numbe
       `✅ Facebook уже подключён.\nАккаунт: <b>${record.userId}</b>\n` +
       `Токен действителен до: <b>${record.expiresAt}</b>\n` +
       "Используйте кнопки ниже для обновления или проверки подключения.",
+    replyMarkup: facebookAuthKeyboard,
+  });
+};
+
+const handleFacebookTokenInput = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  tokenValue: string,
+): Promise<void> => {
+  const expiresAt = addDaysIso(todayIsoDate(), 90);
+  await putFbAuthRecord(ctx.kv, {
+    userId,
+    accessToken: tokenValue.trim(),
+    expiresAt: `${expiresAt}T00:00:00.000Z`,
+    adAccounts: [],
+  });
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: "✅ Facebook подключён. Аккаунт сохранён, можно возвращаться к проектам.",
     replyMarkup: buildMainMenuKeyboard(),
   });
+};
+
+const resolveChatInput = async (
+  ctx: BotContext,
+  input: string,
+): Promise<{ id: number; title?: string; type: string }> => {
+  const trimmed = input.trim();
+  if (/^-?\d+$/.test(trimmed)) {
+    return { id: Number(trimmed), type: "group" };
+  }
+  const cMatch = trimmed.match(/t\.me\/c\/(\d+)/i);
+  if (cMatch) {
+    return { id: Number(`-100${cMatch[1]}`), type: "supergroup" };
+  }
+  const usernameMatch = trimmed.match(/(?:@|t\.me\/)([A-Za-z0-9_]+)/i);
+  const identifier = usernameMatch ? `@${usernameMatch[1]}` : trimmed;
+  const info = await getTelegramChatInfo(ctx.token, identifier);
+  if (!info) {
+    throw new Error("Не удалось получить данные о чате. Убедитесь, что бот добавлен в группу.");
+  }
+  return { id: info.id, title: info.title ?? undefined, type: info.type };
+};
+
+const handleChatManualInput = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  input: string,
+): Promise<void> => {
+  try {
+    const chat = await resolveChatInput(ctx, input);
+    await updateProject(ctx, projectId, (project) => {
+      project.chatId = chat.id;
+    });
+    await recordKnownChat(ctx.kv, chat);
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: `✅ Чат-группа обновлена: ID ${chat.id}.`,
+    });
+    await sendChatInfoScreen(ctx, chatId, projectId);
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: `Не удалось привязать чат: ${(error as Error).message}`,
+    });
+  }
+};
+
+const handleChatSelect = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  selectedChatId: number,
+): Promise<void> => {
+  await updateProject(ctx, projectId, (project) => {
+    project.chatId = selectedChatId;
+  });
+  await sendTelegramMessage(ctx.token, { chatId, text: `✅ Чат привязан: ${selectedChatId}` });
+  await sendChatInfoScreen(ctx, chatId, projectId);
+};
+
+const handleChatUnlink = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  await updateProject(ctx, projectId, (project) => {
+    project.chatId = null;
+  });
+  await sendTelegramMessage(ctx.token, { chatId, text: "✅ Чат успешно отвязан от проекта." });
+  await sendChatInfoScreen(ctx, chatId, projectId);
+};
+
+const handleAutoreportsToggle = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await putAutoreportsRecord(ctx.kv, projectId, { ...bundle.autoreports, enabled: !bundle.autoreports.enabled });
+  await sendAutoreportsScreen(ctx, chatId, projectId);
+};
+
+const handleAutoreportsTimeInput = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  timeInput: string,
+): Promise<void> => {
+  const match = timeInput.trim().match(/^(\d{2}):(\d{2})$/);
+  if (!match) {
+    await sendTelegramMessage(ctx.token, { chatId, text: "Введите время в формате HH:MM" });
+    return;
+  }
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (hours > 23 || minutes > 59) {
+    await sendTelegramMessage(ctx.token, { chatId, text: "Некорректное время." });
+    return;
+  }
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await putAutoreportsRecord(ctx.kv, projectId, { ...bundle.autoreports, time: `${match[1]}:${match[2]}` });
+  await sendAutoreportsScreen(ctx, chatId, projectId);
+};
+
+const handleAutoreportsRouteSet = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  route: AutoreportsRecord["sendTo"],
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await putAutoreportsRecord(ctx.kv, projectId, { ...bundle.autoreports, sendTo: route });
+  await sendAutoreportsScreen(ctx, chatId, projectId);
+};
+
+const handleAlertsToggle = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await putAlertsRecord(ctx.kv, projectId, { ...bundle.alerts, enabled: !bundle.alerts.enabled });
+  await sendAlertsScreen(ctx, chatId, projectId);
+};
+
+const handleAlertsRouteSet = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  channel: AlertsRecord["channel"],
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await putAlertsRecord(ctx.kv, projectId, { ...bundle.alerts, channel });
+  await sendAlertsScreen(ctx, chatId, projectId);
+};
+
+const handleAlertsTypeToggle = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  key: keyof AlertsRecord["types"],
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await putAlertsRecord(ctx.kv, projectId, {
+    ...bundle.alerts,
+    types: { ...bundle.alerts.types, [key]: !bundle.alerts.types[key] },
+  });
+  await sendAlertsScreen(ctx, chatId, projectId);
+};
+
+const handleKpiModeChange = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  mode: ProjectRecord["settings"]["kpi"]["mode"],
+): Promise<void> => {
+  await updateProject(ctx, projectId, (project) => {
+    project.settings.kpi.mode = mode;
+  });
+  await sendKpiScreen(ctx, chatId, projectId);
+};
+
+const handleKpiTypeChange = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  type: ProjectRecord["settings"]["kpi"]["type"],
+): Promise<void> => {
+  await updateProject(ctx, projectId, (project) => {
+    project.settings.kpi.type = type;
+    switch (type) {
+      case "LEAD":
+        project.settings.kpi.label = "Лиды";
+        break;
+      case "MESSAGE":
+        project.settings.kpi.label = "Сообщения";
+        break;
+      case "CLICK":
+        project.settings.kpi.label = "Клики";
+        break;
+      case "VIEW":
+        project.settings.kpi.label = "Просмотры";
+        break;
+      case "PURCHASE":
+        project.settings.kpi.label = "Покупки";
+        break;
+      default:
+        break;
+    }
+  });
+  await sendKpiScreen(ctx, chatId, projectId);
+};
+
+const cleanupProjectData = async (ctx: BotContext, projectId: string): Promise<void> => {
+  await ctx.kv.delete(KV_KEYS.billing(projectId));
+  await ctx.kv.delete(KV_KEYS.autoreports(projectId));
+  await ctx.kv.delete(KV_KEYS.alerts(projectId));
+
+  const deletePrefix = async (prefix: string): Promise<void> => {
+    let cursor: string | undefined;
+    do {
+      const { objects, cursor: nextCursor } = await ctx.r2.list(prefix, { cursor, limit: 100 });
+      for (const object of objects) {
+        await ctx.r2.delete(object.key);
+      }
+      cursor = nextCursor;
+    } while (cursor);
+  };
+
+  await ctx.r2.delete(R2_KEYS.projectLeadsList(projectId));
+  await deletePrefix(`project-leads/${projectId}/`);
+  await ctx.r2.delete(R2_KEYS.metaCampaigns(projectId));
+  await ctx.r2.delete(R2_KEYS.paymentsHistory(projectId));
+  await deletePrefix(`payments/${projectId}/`);
+};
+
+const handleProjectDelete = async (ctx: BotContext, chatId: number, projectId: string, userId: number): Promise<void> => {
+  const membership = await getProjectsByUser(ctx.kv, userId);
+  await deleteProjectRecord(ctx.kv, projectId);
+  await cleanupProjectData(ctx, projectId);
+  if (membership) {
+    await putProjectsByUser(ctx.kv, userId, {
+      projects: membership.projects.filter((id) => id !== projectId),
+    });
+  }
+  await sendTelegramMessage(ctx.token, { chatId, text: "✅ Проект удалён." });
+  await sendProjectsList(ctx, chatId, userId);
+};
+
+const handleLeadStatusChange = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  leadId: string,
+  status: ProjectLeadsListRecord["leads"][number]["status"],
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const leads = bundle.leads.leads.map((lead) => (lead.id === leadId ? { ...lead, status } : lead));
+  await putProjectLeadsList(ctx.r2, projectId, { ...bundle.leads, leads });
+  try {
+    const detail = await getLeadDetailRecord(ctx.r2, projectId, leadId);
+    await putLeadDetailRecord(ctx.r2, projectId, { ...detail, status });
+  } catch {
+    // ignore missing detail
+  }
+  await sendLeadDetail(ctx, chatId, projectId, leadId);
+};
+
+const handleSettingsChange = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  patch: Partial<UserSettingsRecord>,
+): Promise<void> => {
+  await updateUserSettingsRecord(ctx.kv, userId, patch, { timezone: ctx.defaultTimezone, language: "ru" });
+  await sendSettingsScreen(ctx, chatId, userId);
+};
+
+const buildChatUnlinkKeyboard = (projectId: string) => ({
+  inline_keyboard: [
+    [{ text: "✅ Да, отвязать", callback_data: `project:chat-unlink-confirm:${projectId}` }],
+    [{ text: "⬅️ Отмена", callback_data: `project:chat:${projectId}` }],
+  ],
+});
+
+const sendChatUnlinkConfirm = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text:
+      `Вы уверены, что хотите отвязать чат от проекта <b>${escapeHtml(bundle.project.name)}</b>?\n` +
+      "Лиды, отчёты и алерты перестанут отправляться в этот чат.",
+    replyMarkup: buildChatUnlinkKeyboard(projectId),
+  });
+};
+
+const handleTextCommand = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  text: string,
+): Promise<void> => {
+  switch (text) {
+    case "/start":
+    case "Меню":
+      await sendMenu(ctx, chatId);
+      return;
+    case "Авторизация Facebook":
+      await handleFacebookAuth(ctx, chatId, userId);
+      return;
+    case "Проекты":
+      await sendProjectsList(ctx, chatId, userId);
+      return;
+    case "Аналитика":
+      await sendAnalyticsOverview(ctx, chatId, userId);
+      return;
+    case "Пользователи":
+      await sendUsersOverview(ctx, chatId, userId);
+      return;
+    case "Финансы":
+      await sendFinanceOverview(ctx, chatId, userId);
+      return;
+    case "Вебхуки Telegram":
+      await sendWebhookStatus(ctx, chatId);
+      return;
+    case "Настройки":
+      await sendSettingsScreen(ctx, chatId, userId);
+      return;
+    default:
+      await sendMenu(ctx, chatId);
+  }
+};
+
+const handleCallback = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  data: string,
+): Promise<void> => {
+  const parts = data.split(":");
+  const scope = parts[0];
+  switch (scope) {
+    case "project": {
+      const action = parts[1];
+      switch (action) {
+        case "card":
+          await sendProjectCard(ctx, chatId, parts[2]!);
+          break;
+        case "list":
+          await sendProjectsList(ctx, chatId, userId);
+          break;
+        case "menu":
+          await sendMenu(ctx, chatId);
+          break;
+        case "billing":
+          await sendBillingView(ctx, chatId, parts[2]!);
+          break;
+        case "leads":
+          await sendLeadsSection(ctx, chatId, parts[3]!, parts[2]! as ProjectLeadsListRecord["leads"][number]["status"]);
+          break;
+        case "report":
+          await sendReport(ctx, chatId, parts[2]!);
+          break;
+        case "campaigns":
+          await sendCampaigns(ctx, chatId, parts[2]!);
+          break;
+        case "portal":
+          await sendPortalLink(ctx, chatId, parts[2]!);
+          break;
+        case "export":
+          await sendExportMenu(ctx, chatId, parts[2]!);
+          break;
+        case "export-leads":
+          await sendCsvExport(ctx, chatId, parts[2]!, "leads");
+          break;
+        case "export-campaigns":
+          await sendCsvExport(ctx, chatId, parts[2]!, "campaigns");
+          break;
+        case "export-payments":
+          await sendCsvExport(ctx, chatId, parts[2]!, "payments");
+          break;
+        case "chat":
+          await sendChatInfoScreen(ctx, chatId, parts[2]!);
+          break;
+        case "chat-change":
+          await sendChatChangeScreen(ctx, chatId, userId, parts[2]!);
+          break;
+        case "chat-manual":
+          await saveBotSession(ctx.kv, {
+            userId,
+            state: { type: "chat:manual", projectId: parts[2]! },
+            updatedAt: new Date().toISOString(),
+          });
+          await sendTelegramMessage(ctx.token, {
+            chatId,
+            text: "Пришлите ссылку, @username или ID чата",
+          });
+          break;
+        case "chat-select":
+          await handleChatSelect(ctx, chatId, parts[2]!, Number(parts[3]));
+          break;
+        case "chat-unlink":
+          await sendChatUnlinkConfirm(ctx, chatId, parts[2]!);
+          break;
+        case "chat-unlink-confirm":
+          await handleChatUnlink(ctx, chatId, parts[2]!);
+          break;
+        case "autoreports":
+          await sendAutoreportsScreen(ctx, chatId, parts[2]!);
+          break;
+        case "autoreports-toggle":
+          await handleAutoreportsToggle(ctx, chatId, parts[2]!);
+          break;
+        case "autoreports-time":
+          await saveBotSession(ctx.kv, {
+            userId,
+            state: { type: "autoreports:set-time", projectId: parts[2]! },
+            updatedAt: new Date().toISOString(),
+          });
+          await sendTelegramMessage(ctx.token, { chatId, text: "Введите время HH:MM" });
+          break;
+        case "autoreports-route":
+          await sendTelegramMessage(ctx.token, {
+            chatId,
+            text: "Кому отправлять отчёты",
+            replyMarkup: buildAutoreportsRouteKeyboard(parts[2]!),
+          });
+          break;
+        case "autoreports-send":
+          await handleAutoreportsRouteSet(ctx, chatId, parts[2]!, parts[3]! as AutoreportsRecord["sendTo"]);
+          break;
+        case "alerts":
+          await sendAlertsScreen(ctx, chatId, parts[2]!);
+          break;
+        case "alerts-toggle":
+          await handleAlertsToggle(ctx, chatId, parts[2]!);
+          break;
+        case "alerts-route":
+          await sendTelegramMessage(ctx.token, {
+            chatId,
+            text: "Выберите маршрут доставки алертов",
+            replyMarkup: buildAlertsRouteKeyboard(parts[2]!),
+          });
+          break;
+        case "alerts-route-set":
+          await handleAlertsRouteSet(ctx, chatId, parts[2]!, parts[3]! as AlertsRecord["channel"]);
+          break;
+        case "alerts-type": {
+          const typeKeyMap: Record<string, keyof AlertsRecord["types"]> = {
+            lead: "leadInQueue",
+            pause: "pause24h",
+            payment: "paymentReminder",
+          };
+          await handleAlertsTypeToggle(ctx, chatId, parts[2]!, typeKeyMap[parts[3]!] ?? "leadInQueue");
+          break;
+        }
+        case "kpi":
+          await sendKpiScreen(ctx, chatId, parts[2]!);
+          break;
+        case "kpi-mode":
+          await handleKpiModeChange(ctx, chatId, parts[2]!, parts[3]! as ProjectRecord["settings"]["kpi"]["mode"]);
+          break;
+        case "kpi-type":
+          await handleKpiTypeChange(ctx, chatId, parts[2]!, parts[3]! as ProjectRecord["settings"]["kpi"]["type"]);
+          break;
+        case "edit":
+          await sendProjectEditScreen(ctx, chatId, parts[2]!);
+          break;
+        case "edit-name":
+        case "edit-ad":
+        case "edit-owner":
+          await saveBotSession(ctx.kv, {
+            userId,
+            state: {
+              type: "project:edit",
+              projectId: parts[2]!,
+              field: action === "edit-name" ? "name" : action === "edit-ad" ? "ad" : "owner",
+            },
+            updatedAt: new Date().toISOString(),
+          });
+          await sendTelegramMessage(ctx.token, {
+            chatId,
+            text:
+              action === "edit-owner"
+                ? "Введите ID владельца"
+                : action === "edit-ad"
+                  ? "Введите ID рекламного кабинета"
+                  : "Введите новое название проекта",
+          });
+          break;
+        case "delete":
+          await sendDeleteConfirm(ctx, chatId, parts[2]!);
+          break;
+        case "delete-confirm":
+          await handleProjectDelete(ctx, chatId, parts[2]!, userId);
+          break;
+        default:
+          break;
+      }
+      break;
+    }
+    case "billing": {
+      const action = parts[1];
+      const projectId = parts[2]!;
+      if (action === "add30") {
+        await handleBillingAdd30(ctx, chatId, projectId);
+      } else if (action === "tariff") {
+        await handleBillingTariff(ctx, chatId, projectId, Number(parts[3]));
+      } else if (action === "set-date") {
+        await saveBotSession(ctx.kv, {
+          userId,
+          state: { type: "billing:set-date", projectId },
+          updatedAt: new Date().toISOString(),
+        });
+        await sendTelegramMessage(ctx.token, { chatId, text: "Введите дату YYYY-MM-DD или DD.MM.YYYY" });
+      } else if (action === "manual") {
+        await saveBotSession(ctx.kv, {
+          userId,
+          state: { type: "billing:manual", projectId },
+          updatedAt: new Date().toISOString(),
+        });
+        await sendTelegramMessage(ctx.token, { chatId, text: "Введите сумму и дату, пример: '500 2025-12-15'" });
+      }
+      break;
+    }
+    case "lead": {
+      const action = parts[1];
+      if (action === "view") {
+        await sendLeadDetail(ctx, chatId, parts[2]!, parts[3]!);
+      } else if (action === "status") {
+        await handleLeadStatusChange(
+          ctx,
+          chatId,
+          parts[2]!,
+          parts[3]!,
+          parts[4]! as ProjectLeadsListRecord["leads"][number]["status"],
+        );
+      }
+      break;
+    }
+    case "auth": {
+      if (parts[1] === "refresh") {
+        await saveBotSession(ctx.kv, {
+          userId,
+          state: { type: "facebook:token" },
+          updatedAt: new Date().toISOString(),
+        });
+        await sendTelegramMessage(ctx.token, { chatId, text: "Пришлите новый токен Facebook." });
+      } else if (parts[1] === "accounts") {
+        const record = await getFbAuthRecord(ctx.kv, userId);
+        const accounts = record?.adAccounts ?? [];
+        const body =
+          accounts.length === 0
+            ? "Рекламные аккаунты не загружены."
+            : accounts.map((acc, idx) => `${idx + 1}. ${acc.name} (${acc.id})`).join("\n");
+        await sendTelegramMessage(ctx.token, { chatId, text: body || "Список пуст." });
+      }
+      break;
+    }
+    case "settings": {
+      const target = parts[1];
+      if (target === "language") {
+        await handleSettingsChange(ctx, chatId, userId, { language: parts[2]! });
+      } else if (target === "tz") {
+        await handleSettingsChange(ctx, chatId, userId, { timezone: parts[2]! });
+      }
+      break;
+    }
+    default:
+      break;
+  }
 };
 
 const createTelegramBotController = (ctx: BotContext) => ({
@@ -403,96 +1181,19 @@ const createTelegramBotController = (ctx: BotContext) => ({
     if (userId == null || chatId == null) {
       return;
     }
+    await recordChatFromUpdate(ctx, update);
 
     if (update.message?.text) {
       const session = await getBotSession(ctx.kv, userId);
       if (await handleSessionInput(ctx, chatId, userId, update.message.text, session)) {
         return;
       }
-
-      const text = update.message.text.trim();
-      if (text === "/start" || text === "Меню") {
-        await sendMenu(ctx, chatId);
-        return;
-      }
-      if (text === "Авторизация Facebook") {
-        await handleFacebookAuth(ctx, chatId, userId);
-        return;
-      }
-      if (text === "Проекты") {
-        await sendProjectsList(ctx, chatId, userId);
-        return;
-      }
-      // default fallback
-      await sendMenu(ctx, chatId);
+      await handleTextCommand(ctx, chatId, userId, update.message.text.trim());
       return;
     }
 
     if (update.callback_query?.data) {
-      const parts = update.callback_query.data.split(":");
-      const scope = parts[0];
-      switch (scope) {
-        case "project": {
-          const action = parts[1];
-          const projectId = parts[2];
-          if (!action) {
-            break;
-          }
-          if (action === "card" && projectId) {
-            await sendProjectCard(ctx, chatId, projectId);
-          } else if (action === "list") {
-            await sendProjectsList(ctx, chatId, userId);
-          } else if (action === "menu") {
-            await sendMenu(ctx, chatId);
-          } else if (action === "billing" && projectId) {
-            await sendBillingView(ctx, chatId, projectId);
-          } else if (action === "leads" && parts[2] && parts[3]) {
-            await sendLeadsSection(ctx, chatId, parts[3], parts[2] as "new" | "processing" | "done" | "trash");
-          } else if (action === "report" && projectId) {
-            await sendReport(ctx, chatId, projectId);
-          } else if (action === "campaigns" && projectId) {
-            await sendCampaigns(ctx, chatId, projectId);
-          } else if (action === "portal" && projectId) {
-            await sendPortalLink(ctx, chatId, projectId);
-          } else if (action === "export" && projectId) {
-            await sendExportMenu(ctx, chatId, projectId);
-          } else if (action === "export-leads" && projectId) {
-            await sendCsvExport(ctx, chatId, projectId, "leads");
-          } else if (action === "export-campaigns" && projectId) {
-            await sendCsvExport(ctx, chatId, projectId, "campaigns");
-          } else if (action === "export-payments" && projectId) {
-            await sendCsvExport(ctx, chatId, projectId, "payments");
-          }
-          break;
-        }
-        case "billing": {
-          const action = parts[1];
-          const projectId = parts[2];
-          if (!projectId) {
-            break;
-          }
-          if (action === "add30") {
-            await handleBillingAdd30(ctx, chatId, projectId);
-          } else if (action === "tariff" && parts[3]) {
-            await handleBillingTariff(ctx, chatId, projectId, Number(parts[3]));
-          } else if (action === "set-date") {
-            await saveBotSession(ctx.kv, { userId, state: { type: "billing:set-date", projectId }, updatedAt: new Date().toISOString() });
-            await sendTelegramMessage(ctx.token, {
-              chatId,
-              text: "Введите дату оплаты в формате YYYY-MM-DD или DD.MM.YYYY",
-            });
-          } else if (action === "manual") {
-            await saveBotSession(ctx.kv, { userId, state: { type: "billing:manual", projectId }, updatedAt: new Date().toISOString() });
-            await sendTelegramMessage(ctx.token, {
-              chatId,
-              text: "Введите сумму и дату в формате '500 2025-12-15'",
-            });
-          }
-          break;
-        }
-        default:
-          break;
-      }
+      await handleCallback(ctx, chatId, userId, update.callback_query.data);
       if (update.callback_query.id) {
         await answerCallbackQuery(ctx.token, { id: update.callback_query.id });
       }
@@ -501,3 +1202,74 @@ const createTelegramBotController = (ctx: BotContext) => ({
 });
 
 export { createTelegramBotController };
+
+const handleSessionInput = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  text: string,
+  sessionState: Awaited<ReturnType<typeof getBotSession>>,
+): Promise<boolean> => {
+  if (!sessionState || !sessionState.state || sessionState.state.type === "idle") {
+    return false;
+  }
+  switch (sessionState.state.type) {
+    case "billing:set-date":
+      await handleBillingDateInput(ctx, chatId, sessionState.state.projectId, text);
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    case "billing:manual":
+      await handleBillingManualInput(ctx, chatId, sessionState.state.projectId, text);
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    case "facebook:token":
+      await handleFacebookTokenInput(ctx, chatId, userId, text);
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    case "project:edit":
+      await handleProjectEditInput(ctx, chatId, sessionState.state.projectId, sessionState.state.field, text);
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    case "chat:manual":
+      await handleChatManualInput(ctx, chatId, sessionState.state.projectId, text);
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    case "autoreports:set-time":
+      await handleAutoreportsTimeInput(ctx, chatId, sessionState.state.projectId, text);
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    default:
+      return false;
+  }
+};
+
+const handleProjectEditInput = async (
+  ctx: BotContext,
+  chatId: number,
+  projectId: string,
+  field: "name" | "ad" | "owner",
+  value: string,
+): Promise<void> => {
+  const trimmed = value.trim();
+  if (field === "owner") {
+    const ownerId = Number(trimmed);
+    if (!Number.isFinite(ownerId)) {
+      await sendTelegramMessage(ctx.token, { chatId, text: "ID владельца должен быть числом." });
+      return;
+    }
+    await updateProject(ctx, projectId, (project) => {
+      project.ownerId = ownerId;
+    });
+  } else if (field === "ad") {
+    await updateProject(ctx, projectId, (project) => {
+      project.adAccountId = trimmed;
+    });
+  } else {
+    await updateProject(ctx, projectId, (project) => {
+      project.name = trimmed;
+    });
+  }
+  await sendTelegramMessage(ctx.token, { chatId, text: "✅ Данные проекта обновлены." });
+  await sendProjectEditScreen(ctx, chatId, projectId);
+};
+

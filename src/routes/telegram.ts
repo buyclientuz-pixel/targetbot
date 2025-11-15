@@ -4,6 +4,16 @@ import { jsonResponse } from "../http/responses";
 import { resolveTelegramToken } from "../config/telegram";
 import type { RouteHandler, Router } from "../worker/router";
 
+const parseAdminIds = (raw?: string): number[] => {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(/[,\s]+/)
+    .map((part) => Number(part.trim()))
+    .filter((value) => Number.isFinite(value));
+};
+
 const createWebhookHandler = (): RouteHandler => {
   return async (context) => {
     const token = resolveTelegramToken(context.env);
@@ -25,6 +35,10 @@ const createWebhookHandler = (): RouteHandler => {
       token,
       kv: context.kv,
       r2: context.r2,
+      workerUrl: context.env.WORKER_URL ?? "",
+      telegramSecret: context.env.TELEGRAM_SECRET ?? "",
+      defaultTimezone: context.env.DEFAULT_TZ ?? "Asia/Tashkent",
+      adminIds: parseAdminIds(context.env.ADMIN_IDS),
     });
 
     try {

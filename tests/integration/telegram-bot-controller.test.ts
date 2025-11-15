@@ -7,29 +7,48 @@ import type { TelegramUpdate } from "../../src/bot/types.ts";
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
 const { createTelegramBotController } = await import("../../src/bot/controller.ts");
+const { recordKnownChat } = await import("../../src/domain/chat-registry.ts");
 const { putProjectsByUser } = await import("../../src/domain/spec/projects-by-user.ts");
-const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
-const { putBillingRecord } = await import("../../src/domain/spec/billing.ts");
-const { putAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
-const { putAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
+const { putProjectRecord, requireProjectRecord } = await import("../../src/domain/spec/project.ts");
+const { putBillingRecord, getBillingRecord } = await import("../../src/domain/spec/billing.ts");
+const { putAlertsRecord, getAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
+const { putAutoreportsRecord, getAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
 const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
 const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
-const { putPaymentsHistoryDocument } = await import("../../src/domain/spec/payments-history.ts");
+const { putPaymentsHistoryDocument, getPaymentsHistoryDocument } = await import("../../src/domain/spec/payments-history.ts");
+const { getFbAuthRecord } = await import("../../src/domain/spec/fb-auth.ts");
+const { getUserSettingsRecord } = await import("../../src/domain/spec/user-settings.ts");
 
-const installFetchStub = () => {
+interface FetchRecord {
+  url: string;
+  method: string;
+  body: Record<string, unknown>;
+}
+
+const installFetchStub = (
+  responder?: (url: string, init?: RequestInit) => { status?: number; body?: unknown },
+) => {
   const originalFetch = globalThis.fetch;
-  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const requests: FetchRecord[] = [];
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const bodyText = typeof init?.body === "string" ? init.body : init?.body ? String(init.body) : "{}";
     try {
-      requests.push({ url, body: JSON.parse(bodyText) as Record<string, unknown> });
+      requests.push({
+        url,
+        method: init?.method ?? "GET",
+        body: JSON.parse(bodyText) as Record<string, unknown>,
+      });
     } catch {
-      requests.push({ url, body: {} });
+      requests.push({ url, method: init?.method ?? "GET", body: {} });
     }
-    return new Response(JSON.stringify({ ok: true, result: {} }), {
-      status: 200,
+    const override = responder?.(url, init);
+    const status = override?.status ?? 200;
+    const payload = override?.body ?? { ok: true, result: {} };
+    const responseBody = typeof payload === "string" ? payload : JSON.stringify(payload);
+    return new Response(responseBody, {
+      status,
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
@@ -41,6 +60,23 @@ const installFetchStub = () => {
     },
   };
 };
+
+const createController = (
+  kv: InstanceType<typeof KvClient>,
+  r2: InstanceType<typeof R2Client>,
+) =>
+  createTelegramBotController({
+    kv,
+    r2,
+    token: "test-token",
+    workerUrl: "th-reports.buyclientuz.workers.dev",
+    telegramSecret: "secret",
+    defaultTimezone: "Asia/Tashkent",
+    adminIds: [999999],
+  });
+
+const findLastSendMessage = (requests: FetchRecord[]) =>
+  [...requests].reverse().find((entry) => entry.url.includes("/sendMessage"));
 
 const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<typeof R2Client>) => {
   await putProjectsByUser(kv, 100, { projects: ["proj_a"] });
@@ -117,7 +153,7 @@ test("Telegram bot controller serves menu and project list", async () => {
   const r2 = new R2Client(new MemoryR2Bucket());
   await seedProject(kv, r2);
 
-  const controller = createTelegramBotController({ kv, r2, token: "test-token" });
+  const controller = createController(kv, r2);
   const stub = installFetchStub();
 
   try {
@@ -148,7 +184,7 @@ test("Telegram bot controller shows project card and handles +30 billing", async
   const r2 = new R2Client(new MemoryR2Bucket());
   await seedProject(kv, r2);
 
-  const controller = createTelegramBotController({ kv, r2, token: "test-token" });
+  const controller = createController(kv, r2);
   const stub = installFetchStub();
 
   try {
@@ -179,10 +215,10 @@ test("Telegram bot controller shows project card and handles +30 billing", async
     const confirmation = stub.requests[0];
     assert.ok(String(confirmation?.body.text).includes("✅ Дата следующего платежа"));
 
-    const billing = await (await import("../../src/domain/spec/billing.ts")).getBillingRecord(kv, "proj_a");
+    const billing = await getBillingRecord(kv, "proj_a");
     assert.equal(billing?.nextPaymentDate, "2025-01-31");
 
-    const payments = await (await import("../../src/domain/spec/payments-history.ts")).getPaymentsHistoryDocument(r2, "proj_a");
+    const payments = await getPaymentsHistoryDocument(r2, "proj_a");
     assert.equal(payments?.payments.length, 1);
     assert.equal(payments?.payments[0]?.periodTo, "2025-01-31");
   } finally {
@@ -195,7 +231,7 @@ test("Telegram bot controller updates billing date via prompt", async () => {
   const r2 = new R2Client(new MemoryR2Bucket());
   await seedProject(kv, r2);
 
-  const controller = createTelegramBotController({ kv, r2, token: "test-token" });
+  const controller = createController(kv, r2);
   const stub = installFetchStub();
 
   try {
@@ -217,8 +253,236 @@ test("Telegram bot controller updates billing date via prompt", async () => {
     } as unknown as TelegramUpdate);
 
     assert.equal(stub.requests.length >= 1, true);
-    const billing = await (await import("../../src/domain/spec/billing.ts")).getBillingRecord(kv, "proj_a");
+    const billing = await getBillingRecord(kv, "proj_a");
     assert.equal(billing?.nextPaymentDate, "2025-02-15");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Telegram bot controller serves analytics, users, finance and webhook sections", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub((url) => {
+    if (url.includes("getWebhookInfo")) {
+      return { body: { ok: true, result: { url: "https://example/tg", pending_update_count: 0 } } };
+    }
+    return {};
+  });
+
+  try {
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Аналитика" },
+    } as unknown as TelegramUpdate);
+    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Сводная аналитика"));
+
+    stub.requests.length = 0;
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Пользователи" },
+    } as unknown as TelegramUpdate);
+    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Пользователи и доступы"));
+
+    stub.requests.length = 0;
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Финансы" },
+    } as unknown as TelegramUpdate);
+    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Финансы (все проекты)"));
+
+    stub.requests.length = 0;
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Вебхуки Telegram" },
+    } as unknown as TelegramUpdate);
+    const webhookRequest = stub.requests.find((entry) => entry.url.includes("getWebhookInfo"));
+    assert.ok(webhookRequest);
+    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Telegram Webhook"));
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Telegram bot controller updates chat bindings via selection and manual input", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await recordKnownChat(kv, { id: -1001234, title: "Bir Group", type: "supergroup" });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub((url) => {
+    if (url.includes("getChat")) {
+      return { body: { ok: true, result: { id: -1007001, title: "Manual Chat", type: "supergroup" } } };
+    }
+    return {};
+  });
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "chat1",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:chat-change:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "chat2",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:chat-select:proj_a:-1001234",
+      },
+    } as unknown as TelegramUpdate);
+
+    let project = await requireProjectRecord(kv, "proj_a");
+    assert.equal(project.chatId, -1001234);
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "chat3",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:chat-manual:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "@manualchat" },
+    } as unknown as TelegramUpdate);
+
+    project = await requireProjectRecord(kv, "proj_a");
+    assert.equal(project.chatId, -1007001);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Telegram bot controller toggles autoreports and alerts", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "auto1",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:autoreports-toggle:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+    let autoreports = await getAutoreportsRecord(kv, "proj_a");
+    assert.equal(autoreports?.enabled, false);
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "auto2",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:autoreports-time:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "11:30" },
+    } as unknown as TelegramUpdate);
+    autoreports = await getAutoreportsRecord(kv, "proj_a");
+    assert.equal(autoreports?.time, "11:30");
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "auto3",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:autoreports-send:proj_a:admin",
+      },
+    } as unknown as TelegramUpdate);
+    autoreports = await getAutoreportsRecord(kv, "proj_a");
+    assert.equal(autoreports?.sendTo, "admin");
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "alert1",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:alerts-toggle:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+    let alerts = await getAlertsRecord(kv, "proj_a");
+    assert.equal(alerts?.enabled, false);
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "alert2",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:alerts-route-set:proj_a:admin",
+      },
+    } as unknown as TelegramUpdate);
+    alerts = await getAlertsRecord(kv, "proj_a");
+    assert.equal(alerts?.channel, "admin");
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "alert3",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:alerts-type:proj_a:lead",
+      },
+    } as unknown as TelegramUpdate);
+    alerts = await getAlertsRecord(kv, "proj_a");
+    assert.equal(alerts?.types.leadInQueue, false);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Telegram bot controller stores Facebook tokens and user settings", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Авторизация Facebook" },
+    } as unknown as TelegramUpdate);
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "EAATESTTOKEN" },
+    } as unknown as TelegramUpdate);
+    const fbAuth = await getFbAuthRecord(kv, 100);
+    assert.equal(fbAuth?.accessToken, "EAATESTTOKEN");
+
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Настройки" },
+    } as unknown as TelegramUpdate);
+    await controller.handleUpdate({
+      callback_query: {
+        id: "set1",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "settings:tz:Europe/Moscow",
+      },
+    } as unknown as TelegramUpdate);
+    await controller.handleUpdate({
+      callback_query: {
+        id: "set2",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "settings:language:en",
+      },
+    } as unknown as TelegramUpdate);
+
+    const settings = await getUserSettingsRecord(kv, 100, {});
+    assert.equal(settings.timezone, "Europe/Moscow");
+    assert.equal(settings.language, "en");
   } finally {
     stub.restore();
   }
