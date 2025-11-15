@@ -962,36 +962,50 @@ const toggleRouteChannel = (target: ReportRoutingTarget, channel: RouteChannel):
   return target;
 };
 
-type AlertToggleKey = "payment" | "budget" | "meta" | "pause";
+type AlertToggleKey = "alerts" | "autobilling" | "budget" | "meta" | "pause";
 
-const ALERT_TOGGLE_CONFIG: Record<AlertToggleKey, { label: string; accessor: (settings: ProjectSettingsRecord) => boolean } & {
-  setter: (settings: ProjectSettingsRecord, next: boolean) => void;
-}> = {
-  payment: {
-    label: "Автобиллинг",
-    accessor: (settings) => settings.alerts.payment,
+const ALERT_TOGGLE_CONFIG: Record<
+  AlertToggleKey,
+  { label: string; accessor: (settings: ProjectSettingsRecord) => boolean } & {
+    setter: (settings: ProjectSettingsRecord, next: boolean) => void;
+  }
+> = {
+  alerts: {
+    label: "Лиды",
+    accessor: (settings) => settings.alerts.enabled,
     setter: (settings, next) => {
+      settings.alerts.enabled = next;
+    },
+  },
+  autobilling: {
+    label: "Автобиллинг",
+    accessor: (settings) => settings.autobilling.enabled,
+    setter: (settings, next) => {
+      settings.autobilling.enabled = next;
       settings.alerts.payment = next;
     },
   },
   budget: {
     label: "Бюджет",
-    accessor: (settings) => settings.alerts.budget,
+    accessor: (settings) => settings.budget.enabled,
     setter: (settings, next) => {
+      settings.budget.enabled = next;
       settings.alerts.budget = next;
     },
   },
   meta: {
     label: "Meta API",
-    accessor: (settings) => settings.alerts.metaApi,
+    accessor: (settings) => settings.metaApi.enabled,
     setter: (settings, next) => {
+      settings.metaApi.enabled = next;
       settings.alerts.metaApi = next;
     },
   },
   pause: {
     label: "Пауза",
-    accessor: (settings) => settings.alerts.pause,
+    accessor: (settings) => settings.pause.enabled,
     setter: (settings, next) => {
+      settings.pause.enabled = next;
       settings.alerts.pause = next;
     },
   },
@@ -1352,7 +1366,7 @@ const buildAutoReportLines = (
   });
   lines.push("", "📡 Маршрут алертов:");
   lines.push(
-    ROUTE_TARGETS.map((target) => `${alerts.target === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`).join(
+    ROUTE_TARGETS.map((target) => `${alerts.route === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`).join(
       "   ",
     ),
   );
@@ -1386,7 +1400,7 @@ const buildAutoReportMarkup = (projectId: string, settings: ProjectSettingsRecor
     callback_data: `auto_send_target:${projectId}:${channel}`,
   }));
   const alertRouteRow = ROUTE_TARGETS.map((target) => ({
-    text: `${settings.alerts.target === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`,
+    text: `${settings.alerts.route === target ? "•" : "○"} ${REPORT_ROUTE_LABEL[target]}`,
     callback_data: `alert_route:${projectId}:${target}`,
   }));
   return {
@@ -1451,7 +1465,7 @@ const mutateProjectSettings = async (
   const draft = JSON.parse(JSON.stringify(current)) as ProjectSettingsRecord;
   const status = mutator(draft);
   draft.autoReport.times = normalizeTimeSelection(draft.autoReport.times);
-  draft.autoReport.alertsTarget = draft.alerts.target;
+  draft.autoReport.alertsTarget = draft.alerts.route;
   const saved = await saveProjectSettingsRecord(context.env, projectId, draft);
   await handleAutoReportMenu(context, projectId, { status, settings: saved });
 };
@@ -1593,7 +1607,7 @@ const handleAlertToggle = async (
     nextValue = toggled;
     return `${config.label}: ${toggled ? "включено" : "выключено"}`;
   });
-  if (key === "payment" && nextValue !== null) {
+  if (key === "autobilling" && nextValue !== null) {
     await updateProjectRecord(context.env, projectId, { autoBillingEnabled: nextValue }).catch((error) => {
       console.warn("Failed to update project auto billing flag", projectId, error);
     });
@@ -1615,9 +1629,14 @@ const handleAlertRoute = async (
     return;
   }
   await mutateProjectSettings(context, projectId, (draft) => {
-    draft.alerts.target = target as ReportRoutingTarget;
-    draft.autoReport.alertsTarget = draft.alerts.target;
-    return `📢 Алерты → ${REPORT_ROUTE_LABEL[draft.alerts.target]}`;
+    const nextRoute = target as ReportRoutingTarget;
+    draft.alerts.route = nextRoute;
+    draft.autoReport.alertsTarget = nextRoute;
+    draft.autobilling.route = nextRoute;
+    draft.budget.route = nextRoute;
+    draft.metaApi.route = nextRoute;
+    draft.pause.route = nextRoute;
+    return `📢 Алерты → ${REPORT_ROUTE_LABEL[draft.alerts.route]}`;
   });
 };
 
@@ -2158,11 +2177,11 @@ const handleProjectView = async (
       ? `${timesLabel} (вкл)`
       : "выключены";
     lines.push(`⏰ Автоотчёты: ${escapeHtml(autoLabel)}`);
-    const alertFlags = [settings.alerts.payment, settings.alerts.budget, settings.alerts.metaApi, settings.alerts.pause].filter(
-      Boolean,
-    ).length;
-    const alertsLabel = alertFlags
-      ? `включены (${REPORT_ROUTE_SUMMARY[settings.alerts.target]})`
+    const alertFlags = settings.alerts.enabled
+      ? [settings.autobilling.enabled, settings.budget.enabled, settings.metaApi.enabled, settings.pause.enabled].filter(Boolean).length
+      : 0;
+    const alertsLabel = settings.alerts.enabled && alertFlags
+      ? `включены (${REPORT_ROUTE_SUMMARY[settings.alerts.route]})`
       : "отключены";
     lines.push(`📡 Алерты: ${escapeHtml(alertsLabel)}`);
   } catch (error) {

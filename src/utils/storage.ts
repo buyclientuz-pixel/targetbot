@@ -180,12 +180,17 @@ const DEFAULT_PROJECT_SETTINGS: ProjectSettingsRecord = {
     lastSentMonday: null,
   },
   alerts: {
+    enabled: true,
+    route: "chat",
     payment: true,
     budget: true,
     metaApi: true,
     pause: true,
-    target: "admin",
   },
+  autobilling: { enabled: true, route: "chat" },
+  budget: { enabled: true, route: "chat" },
+  metaApi: { enabled: true, route: "chat" },
+  pause: { enabled: true, route: "chat" },
   kpi: {
     default: ["spend", "leads", "cpa"],
     perCampaign: {},
@@ -306,11 +311,56 @@ const sanitizeProjectSettingsRecord = (raw: unknown): ProjectSettingsRecord => {
     autoSource.alerts_target ?? autoSource.alertsTarget ?? alertsSource.route,
     fallback.autoReport.alertsTarget,
   );
+  const alertsEnabled = sanitizeBoolean(
+    alertsSource.enabled ?? alertsSource.payment ?? alertsSource.enabled_flag,
+    fallback.alerts.enabled,
+  );
   const paymentAlert = sanitizeBoolean(alertsSource.payment, fallback.alerts.payment);
   const budgetAlert = sanitizeBoolean(alertsSource.budget, fallback.alerts.budget);
   const metaAlert = sanitizeBoolean(alertsSource.meta_api ?? alertsSource.metaApi, fallback.alerts.metaApi);
   const pauseAlert = sanitizeBoolean(alertsSource.pause, fallback.alerts.pause);
-  const alertsRoute = sanitizeRoutingTarget(alertsSource.route ?? alertsTarget, fallback.alerts.target);
+  const alertsRoute = sanitizeRoutingTarget(
+    alertsSource.route ?? alertsSource.target ?? alertsTarget,
+    fallback.alerts.route,
+  );
+
+  const autobillingSource = (source.autobilling ?? source.payment ?? {}) as Record<string, unknown>;
+  const budgetSource = (source.budget ?? {}) as Record<string, unknown>;
+  const metaRouteSource = (source.meta_api ?? source.metaApiSettings ?? {}) as Record<string, unknown>;
+  const pauseSource = (source.pause ?? {}) as Record<string, unknown>;
+
+  const autobillingEnabled = sanitizeBoolean(
+    autobillingSource.enabled ?? alertsSource.payment,
+    fallback.autobilling.enabled,
+  );
+  const autobillingRoute = sanitizeRoutingTarget(
+    autobillingSource.route ?? alertsRoute,
+    fallback.autobilling.route,
+  );
+  const budgetEnabled = sanitizeBoolean(
+    budgetSource.enabled ?? alertsSource.budget,
+    fallback.budget.enabled,
+  );
+  const budgetRoute = sanitizeRoutingTarget(
+    budgetSource.route ?? alertsRoute,
+    fallback.budget.route,
+  );
+  const metaEnabled = sanitizeBoolean(
+    metaRouteSource.enabled ?? alertsSource.meta_api ?? alertsSource.metaApi,
+    fallback.metaApi.enabled,
+  );
+  const metaRoute = sanitizeRoutingTarget(
+    metaRouteSource.route ?? alertsRoute,
+    fallback.metaApi.route,
+  );
+  const pauseEnabled = sanitizeBoolean(
+    pauseSource.enabled ?? alertsSource.pause,
+    fallback.pause.enabled,
+  );
+  const pauseRoute = sanitizeRoutingTarget(
+    pauseSource.route ?? alertsRoute,
+    fallback.pause.route,
+  );
   const defaultMetrics = sanitizeMetricList(kpiSource.default, fallback.kpi.default);
   const perCampaign = sanitizePerCampaignMetrics(kpiSource.per_campaign ?? kpiSource.perCampaign);
 
@@ -336,11 +386,28 @@ const sanitizeProjectSettingsRecord = (raw: unknown): ProjectSettingsRecord => {
       lastSentMonday: lastMonday,
     },
     alerts: {
+      enabled: alertsEnabled,
+      route: alertsRoute,
       payment: paymentAlert,
       budget: budgetAlert,
       metaApi: metaAlert,
       pause: pauseAlert,
-      target: alertsRoute,
+    },
+    autobilling: {
+      enabled: alertsEnabled && paymentAlert && autobillingEnabled,
+      route: autobillingRoute,
+    },
+    budget: {
+      enabled: alertsEnabled && budgetAlert && budgetEnabled,
+      route: budgetRoute,
+    },
+    metaApi: {
+      enabled: alertsEnabled && metaAlert && metaEnabled,
+      route: metaRoute,
+    },
+    pause: {
+      enabled: alertsEnabled && pauseAlert && pauseEnabled,
+      route: pauseRoute,
     },
     kpi: {
       default: defaultMetrics,
@@ -371,11 +438,28 @@ const serializeProjectSettingsRecord = (record: ProjectSettingsRecord): JsonObje
       last_sent_monday: record.autoReport.lastSentMonday ?? null,
     },
     alerts: {
+      enabled: record.alerts.enabled,
+      route: record.alerts.route,
       payment: record.alerts.payment,
       budget: record.alerts.budget,
       meta_api: record.alerts.metaApi,
       pause: record.alerts.pause,
-      route: record.alerts.target,
+    },
+    autobilling: {
+      enabled: record.autobilling.enabled,
+      route: record.autobilling.route,
+    },
+    budget: {
+      enabled: record.budget.enabled,
+      route: record.budget.route,
+    },
+    meta_api: {
+      enabled: record.metaApi.enabled,
+      route: record.metaApi.route,
+    },
+    pause: {
+      enabled: record.pause.enabled,
+      route: record.pause.route,
     },
     kpi: {
       default: record.kpi.default,

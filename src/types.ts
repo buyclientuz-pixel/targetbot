@@ -250,12 +250,16 @@ export interface ProjectAutoReportSettings {
   lastSentMonday?: string | null;
 }
 
-export interface ProjectAlertSettings {
+export interface ProjectRouteSettings {
+  enabled: boolean;
+  route: ReportRoutingTarget;
+}
+
+export interface ProjectAlertSettings extends ProjectRouteSettings {
   payment: boolean;
   budget: boolean;
   metaApi: boolean;
   pause: boolean;
-  target: ReportRoutingTarget;
 }
 
 export interface ProjectKpiSettings {
@@ -266,6 +270,10 @@ export interface ProjectKpiSettings {
 export interface ProjectSettingsRecord {
   autoReport: ProjectAutoReportSettings;
   alerts: ProjectAlertSettings;
+  autobilling: ProjectRouteSettings;
+  budget: ProjectRouteSettings;
+  metaApi: ProjectRouteSettings;
+  pause: ProjectRouteSettings;
   kpi: ProjectKpiSettings;
   billing: {
     nextPaymentDate: string | null;

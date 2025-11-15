@@ -71,6 +71,56 @@ export const sendTelegramMessage = async (
   return null;
 };
 
+export interface TelegramForumTopic {
+  messageThreadId: number;
+  name?: string;
+}
+
+export const listTelegramForumTopics = async (
+  env: TelegramEnv,
+  chatId: string,
+): Promise<TelegramForumTopic[]> => {
+  const token = resolveToken(env);
+  if (!token) {
+    return [];
+  }
+  if (!chatId || !chatId.trim()) {
+    return [];
+  }
+  const url = new URL(`${TELEGRAM_BASE}/bot${token}/getForumTopicList`);
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId }),
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => null);
+    console.warn("Failed to list forum topics", chatId, errorText ?? response.statusText);
+    return [];
+  }
+  try {
+    const data = (await response.json()) as {
+      ok?: boolean;
+      result?: { total_count?: number; topics?: { message_thread_id?: number; name?: string }[] };
+    };
+    if (!data?.ok || !data.result?.topics?.length) {
+      return [];
+    }
+    return data.result.topics
+      .map((topic): TelegramForumTopic | null => {
+        if (!topic || typeof topic.message_thread_id !== "number") {
+          return null;
+        }
+        const name = typeof topic.name === "string" && topic.name ? topic.name : undefined;
+        return { messageThreadId: topic.message_thread_id, name };
+      })
+      .filter((topic): topic is TelegramForumTopic => topic !== null);
+  } catch (error) {
+    console.warn("Failed to parse forum topic response", chatId, error);
+  }
+  return [];
+};
+
 export const editTelegramMessage = async (
   env: TelegramEnv,
   options: TelegramEditMessageOptions,

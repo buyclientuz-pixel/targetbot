@@ -1,7 +1,8 @@
 import { escapeAttribute, escapeHtml } from "./html";
-import { sendTelegramMessage } from "./telegram";
+import { sendTelegramMessage, TelegramEnv } from "./telegram";
 import { LeadRecord, MetaLeadDetails, ProjectRecord, JsonObject } from "../types";
 import { EnvBindings } from "./storage";
+import { ensureProjectTopicRoute } from "./project-topics";
 
 interface PhoneFormat {
   raw: string;
@@ -218,26 +219,19 @@ const buildLeadMessage = (content: LeadNotificationContent): { text: string; rep
   return { text: lines.join("\n"), replyMarkup: markup };
 };
 
-export const projectTopicRouter = (project: ProjectRecord): { chatId: string; threadId: number } | null => {
-  const chatId = project.telegramChatId || project.chatId;
-  const threadId = project.telegramThreadId;
-  if (!chatId || typeof chatId !== "string" || !chatId.trim()) {
-    console.warn("Project chat is missing", project.id);
-    return null;
-  }
-  if (typeof threadId !== "number") {
-    console.warn("Project thread is missing", project.id);
-    return null;
-  }
-  return { chatId: chatId.trim(), threadId };
+export const projectTopicRouter = async (
+  env: EnvBindings & TelegramEnv,
+  project: ProjectRecord,
+): Promise<{ chatId: string; threadId: number; project: ProjectRecord } | null> => {
+  return ensureProjectTopicRoute(env, project);
 };
 
 export const sendLeadToTelegram = async (
-  env: EnvBindings & Record<string, unknown>,
+  env: (EnvBindings & TelegramEnv) & Record<string, unknown>,
   project: ProjectRecord,
   content: LeadNotificationContent,
 ): Promise<void> => {
-  const route = projectTopicRouter(project);
+  const route = await projectTopicRouter(env, project);
   if (!route) {
     return;
   }
@@ -251,7 +245,7 @@ export const sendLeadToTelegram = async (
 };
 
 export const leadReceiveHandler = async (
-  env: EnvBindings & Record<string, unknown>,
+  env: (EnvBindings & TelegramEnv) & Record<string, unknown>,
   project: ProjectRecord,
   lead: LeadRecord,
   options: LeadNotificationOptions = {},
