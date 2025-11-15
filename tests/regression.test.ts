@@ -36,6 +36,8 @@ const expect = {
   },
 };
 
+import { Buffer } from "node:buffer";
+
 import {
   buildAutoReportNotification,
   evaluateAutoReportTrigger,
@@ -45,16 +47,110 @@ import { applyKpiSelection } from "../src/utils/kpi";
 import { normalizeCampaigns } from "../src/utils/campaigns";
 import { ensureTelegramUrl, ensureTelegramUrlFromId, resolveChatLink } from "../src/utils/chat-links";
 import { evaluateQaDataset } from "../src/utils/qa";
+import { appendProjectPayment } from "../src/utils/payments";
+import { summarizeProjects } from "../src/utils/projects";
+import { handlePaymentsCreate } from "../src/api/payments";
+import { EnvBindings, listPayments, listProjects, saveProjects } from "../src/utils/storage";
 import {
+  ApiSuccess,
   AutoReportDataset,
   MetaAdAccount,
   MetaCampaign,
   LeadRecord,
+  PaymentRecord,
   PaymentReminderRecord,
   ProjectRecord,
   ProjectSummary,
   ReportScheduleRecord,
 } from "../src/types";
+
+class MemoryKV implements KVNamespace {
+  private readonly store = new Map<string, string>();
+
+  async get(key: string): Promise<string | null> {
+    return this.store.has(key) ? this.store.get(key)! : null;
+  }
+
+  async put(key: string, value: string, _options?: KVPutOptions): Promise<void> {
+    this.store.set(key, value);
+  }
+
+  async delete(key: string): Promise<void> {
+    this.store.delete(key);
+  }
+}
+
+class MemoryR2ObjectBody implements R2ObjectBody {
+  constructor(private readonly value: string) {}
+
+  async text(): Promise<string> {
+    return this.value;
+  }
+
+  async json<T = unknown>(): Promise<T> {
+    return JSON.parse(this.value) as T;
+  }
+}
+
+class MemoryR2 implements R2Bucket {
+  private readonly store = new Map<string, string>();
+
+  async get(key: string): Promise<R2ObjectBody | null> {
+    const value = this.store.get(key);
+    return value === undefined ? null : new MemoryR2ObjectBody(value);
+  }
+
+  private async normaliseValue(
+    value: string | ArrayBuffer | ReadableStream | Blob,
+  ): Promise<string> {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (value instanceof ArrayBuffer) {
+      return Buffer.from(value).toString();
+    }
+    if (typeof (value as { arrayBuffer?: () => Promise<ArrayBuffer> }).arrayBuffer === "function") {
+      const buffer = await (value as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer();
+      return Buffer.from(buffer).toString();
+    }
+    if (value instanceof ReadableStream) {
+      const reader = value.getReader();
+      const chunks: Uint8Array[] = [];
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        // eslint-disable-next-line no-await-in-loop
+        const { done, value: chunk } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (chunk) {
+          chunks.push(chunk);
+        }
+      }
+      return Buffer.concat(chunks).toString();
+    }
+    return "";
+  }
+
+  async put(
+    key: string,
+    value: string | ArrayBuffer | ReadableStream | Blob,
+    _options?: R2PutOptions,
+  ): Promise<R2Object | null> {
+    const text = await this.normaliseValue(value);
+    this.store.set(key, text);
+    return { key, size: text.length, uploaded: new Date().toISOString() };
+  }
+
+  async delete(key: string): Promise<void> {
+    this.store.delete(key);
+  }
+}
+
+const createTestEnv = (): EnvBindings => ({
+  DB: new MemoryKV(),
+  R2: new MemoryR2(),
+});
 
 const createProject = (id: string): ProjectRecord => {
   const now = new Date("2025-02-20T10:00:00Z").toISOString();
@@ -72,6 +168,18 @@ const createProject = (id: string): ProjectRecord => {
     settings: {},
   };
 };
+
+const createBillingProject = (id: string): ProjectRecord => ({
+  ...createProject(id),
+  billingStatus: "pending",
+  paymentEnabled: false,
+  billingEnabled: false,
+  billingAmountUsd: null,
+  paymentPlan: null,
+  tariff: 0,
+  nextPaymentDate: null,
+  lastPaymentDate: null,
+});
 
 const createSummary = (id: string): ProjectSummary => {
   const base = createProject(id);
@@ -307,6 +415,80 @@ test("buildAutoReportDataset builds portal link and project report", () => {
   expect.equal(project.report.kpis.leads_total, 5);
   expect.equal(project.report.kpis.spend, 9.92);
   expect.equal(project.report.campaigns.length, 1);
+});
+
+test("appendProjectPayment syncs project billing for bot and portal", async () => {
+  const env = createTestEnv();
+  const project = createBillingProject("p-pay-sync");
+  await saveProjects(env, [project]);
+
+  const record = await appendProjectPayment(env, project.id, {
+    amount: 500,
+    currency: "USD",
+    periodStart: "2025-01-01",
+    periodEnd: "2025-02-01",
+    status: "pending",
+    paidAt: null,
+  });
+
+  expect.equal(record.projectId, project.id);
+  expect.equal(record.amount, 500);
+  expect.equal(record.periodEnd?.startsWith("2025-02-01"), true);
+
+  const payments = (await listPayments(env)).filter((item) => item.projectId === project.id);
+  expect.equal(payments.length, 1);
+
+  const storedProject = (await listProjects(env)).find((item) => item.id === project.id);
+  expect.ok(storedProject, "project should exist after payment append");
+  expect.equal(storedProject?.nextPaymentDate, "2025-02-01");
+  expect.equal(storedProject?.paymentPlan, 500);
+  expect.equal(storedProject?.billingAmountUsd, 500);
+
+  const [summary] = await summarizeProjects(env, { projectIds: [project.id] });
+  expect.equal(summary.billing.amount, 500);
+  expect.equal(summary.billing.status, "pending");
+  expect.equal(summary.nextPaymentDate, "2025-02-01");
+  expect.equal(summary.tariff, 500);
+});
+
+test("handlePaymentsCreate persists payments and refreshes summaries", async () => {
+  const env = createTestEnv();
+  const project = createBillingProject("p-pay-api");
+  await saveProjects(env, [project]);
+
+  const request = new Request("https://example.com/api/payments", {
+    method: "POST",
+    body: JSON.stringify({
+      projectId: project.id,
+      amount: 350,
+      currency: "USD",
+      status: "active",
+      periodStart: "2025-02-01",
+      periodEnd: "2025-03-01",
+      paidAt: "2025-02-28",
+      notes: "Оплата через портал",
+    }),
+  });
+
+  const response = await handlePaymentsCreate(request, env);
+  expect.equal(response.status, 201);
+  const payload = (await response.json()) as ApiSuccess<PaymentRecord>;
+  expect.equal(payload.ok, true);
+  expect.equal(payload.data.projectId, project.id);
+  expect.equal(payload.data.status, "active");
+  expect.equal(payload.data.amount, 350);
+
+  const projectAfter = (await listProjects(env)).find((item) => item.id === project.id);
+  expect.ok(projectAfter, "project should persist after portal payment");
+  expect.equal(projectAfter?.nextPaymentDate, "2025-03-01");
+  expect.equal(projectAfter?.paymentPlan, 350);
+  expect.equal(projectAfter?.billingStatus, "active");
+
+  const [summary] = await summarizeProjects(env, { projectIds: [project.id] });
+  expect.equal(summary.billing.status, "active");
+  expect.equal(summary.billing.amount, 350);
+  expect.equal(summary.billing.periodEnd?.startsWith("2025-03-01"), true);
+  expect.equal(summary.nextPaymentDate, "2025-03-01");
 });
 
 test("buildAutoReportNotification renders summary text and buttons", () => {
