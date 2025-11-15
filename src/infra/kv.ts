@@ -24,4 +24,16 @@ export class KvClient {
   async delete(key: string): Promise<void> {
     await this.kv.delete(key);
   }
+
+  async list(prefix: string, options?: { limit?: number; cursor?: string }): Promise<{ keys: string[]; cursor?: string }> {
+    const result = await this.kv.list({
+      prefix,
+      limit: options?.limit,
+      cursor: options?.cursor,
+    });
+    return {
+      keys: result.keys.map((entry) => entry.name),
+      cursor: result.cursor,
+    };
+  }
 }

@@ -9,6 +9,7 @@ import { createMetaToken, getMetaToken, parseMetaToken, upsertMetaToken } from "
 import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
 import { getProject, type Project } from "../domain/projects";
 import { getLead, saveLead, type Lead } from "../domain/leads";
+import type { MetaSummaryPayload } from "../domain/meta-summary";
 import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
 import { fetchMetaInsights, fetchMetaInsightsRaw, resolveDatePreset } from "../services/meta-api";
@@ -132,20 +133,6 @@ interface ValidatedTokenBody {
   accessToken: string;
   refreshToken: string | null;
   expiresAt: string | null;
-}
-
-interface MetaSummaryPayload {
-  periodKey: string;
-  metrics: {
-    spend: number;
-    impressions: number;
-    clicks: number;
-    leads: number;
-    leadsToday: number;
-    leadsTotal: number;
-    cpa: number | null;
-  };
-  source: unknown;
 }
 
 const toIsoDate = (date: Date): string => date.toISOString().split("T")[0] ?? date.toISOString();

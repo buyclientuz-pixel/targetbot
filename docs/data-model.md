@@ -149,6 +149,43 @@
 * `createLead` заполняет обязательные поля, нормализует имя/телефон и выставляет `status = "NEW"`, `lastStatusUpdate = createdAt`.
 * `saveLead` складывает JSON в R2, а `/api/meta/webhook` вызывает `dispatchLeadNotifications` для отправки уведомлений в Telegram.
 
+## Payment (R2: `payments/{projectId}/{paymentId}.json`)
+
+```json
+{
+  "id": "pay_birlash_20251215_ab12cd",
+  "projectId": "birlash",
+  "amount": 500,
+  "currency": "USD",
+  "periodStart": "2025-11-15",
+  "periodEnd": "2025-12-15",
+  "status": "PLANNED",
+  "paidAt": null,
+  "comment": null,
+  "createdBy": 123456789,
+  "createdAt": "2025-11-15T10:05:00.000Z",
+  "updatedAt": "2025-11-15T10:05:00.000Z"
+}
+```
+
+* `createPayment` нормализует суммы и даты, генерирует `pay_{projectId}_{periodEnd}_{suffix}` при отсутствии `id`.
+* `savePayment` сериализует запись в R2; биллинг-операции бота создают платежи со статусом `PLANNED`.
+* `listProjectPayments` читает последние записи по префиксу `payments/{projectId}/`.
+
+## Bot Session (KV: `bot-session:{telegramUserId}`)
+
+```json
+{
+  "userId": 123456789,
+  "state": { "type": "billing:manual", "projectId": "birlash" },
+  "updatedAt": "2025-11-15T10:05:00.000Z"
+}
+```
+
+* `getBotSession` создаёт запись по умолчанию (`state.type = "idle"`) при первом обращении.
+* `saveBotSession` фиксирует состояние ожидания (ручная дата/сумма) перед продолжением диалога.
+* `clearBotSession` возвращает пользователя в `idle` после успешного обновления настроек биллинга.
+
 ## REST API поверхности
 
 | Method & Path                          | Описание                                        |
@@ -160,5 +197,6 @@
 | `GET /api/meta/projects/:projectId/summary` | Возвращает кешированный summary по показателям |
 | `GET /api/meta/projects/:projectId/campaigns` | Отдаёт сырые данные кампаний (level=campaign) |
 | `POST /api/meta/webhook` | Принимает webhook Meta Ads, импортирует лиды и запускает уведомления |
+| `POST /api/telegram/webhook`            | Обрабатывает команды Telegram-бота (меню, карточки, биллинг) |
 
 Эти роуты подключены в `registerCoreRoutes`: проектные операции обслуживает `registerProjectRoutes`, а Meta-прокси — `registerMetaRoutes` с общей обвязкой валидации и кеширования.

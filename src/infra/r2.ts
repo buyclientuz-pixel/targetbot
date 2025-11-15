@@ -35,4 +35,19 @@ export class R2Client {
   async delete(key: string): Promise<void> {
     await this.bucket.delete(key);
   }
+
+  async list(
+    prefix: string,
+    options?: { limit?: number; cursor?: string },
+  ): Promise<{ objects: R2Object[]; cursor?: string }> {
+    const result = await this.bucket.list({
+      prefix,
+      limit: options?.limit,
+      cursor: options?.cursor,
+    });
+    return {
+      objects: result.objects,
+      cursor: result.cursor,
+    };
+  }
 }

@@ -1,4 +1,4 @@
-import { KV_KEYS } from "../config/kv";
+import { KV_KEYS, KV_PREFIXES } from "../config/kv";
 import type { KvClient } from "../infra/kv";
 import { DataValidationError, EntityNotFoundError } from "../errors";
 import {
@@ -77,4 +77,25 @@ export const touchProjectUpdatedAt = async (kv: KvClient, projectId: string): Pr
 
 export const deleteProject = async (kv: KvClient, projectId: string): Promise<void> => {
   await kv.delete(KV_KEYS.project(projectId));
+};
+
+export const listProjects = async (kv: KvClient): Promise<Project[]> => {
+  const { keys } = await kv.list(KV_PREFIXES.projects);
+  if (keys.length === 0) {
+    return [];
+  }
+  const projects = await Promise.all(
+    keys.map(async (key) => {
+      const record = await kv.getJson<Record<string, unknown>>(key);
+      if (!record) {
+        return null;
+      }
+      try {
+        return parseProject(record);
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return projects.filter((project): project is Project => project !== null);
 };

@@ -15,6 +15,7 @@ export interface SendTelegramMessageOptions {
   messageThreadId?: number | null;
   parseMode?: "MarkdownV2" | "Markdown" | "HTML";
   disableWebPagePreview?: boolean;
+  replyMarkup?: unknown;
 }
 
 interface TelegramResponse<T> {
@@ -39,6 +40,10 @@ export const sendTelegramMessage = async <T = unknown>(
     payload.message_thread_id = options.messageThreadId;
   }
 
+  if (options.replyMarkup) {
+    payload.reply_markup = options.replyMarkup;
+  }
+
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -59,6 +64,46 @@ export const sendTelegramMessage = async <T = unknown>(
       throw new TelegramError(`Telegram API error: ${data.description ?? "unknown"}`, response.status, bodyText);
     }
     return data.result;
+  } catch (error) {
+    if (error instanceof TelegramError) {
+      throw error;
+    }
+    throw new TelegramError("Failed to parse Telegram response", response.status, bodyText);
+  }
+};
+
+export const answerCallbackQuery = async (
+  token: string,
+  params: { id: string; text?: string; showAlert?: boolean },
+): Promise<void> => {
+  const url = `https://api.telegram.org/bot${token}/answerCallbackQuery`;
+  const payload: Record<string, unknown> = {
+    callback_query_id: params.id,
+  };
+  if (params.text) {
+    payload.text = params.text;
+  }
+  if (params.showAlert) {
+    payload.show_alert = params.showAlert;
+  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw new TelegramError(
+      `Telegram answerCallbackQuery failed with status ${response.status}`,
+      response.status,
+      bodyText,
+    );
+  }
+  try {
+    const data = JSON.parse(bodyText) as TelegramResponse<unknown>;
+    if (!data.ok) {
+      throw new TelegramError(`Telegram API error: ${data.description ?? "unknown"}`, response.status, bodyText);
+    }
   } catch (error) {
     if (error instanceof TelegramError) {
       throw error;

@@ -2,6 +2,11 @@ interface KVNamespace {
   get(key: string): Promise<string | null>;
   put(key: string, value: string, options?: KVPutOptions): Promise<void>;
   delete(key: string): Promise<void>;
+  list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
+    keys: { name: string }[];
+    list_complete?: boolean;
+    cursor?: string;
+  }>;
 }
 
 interface KVPutOptions {
@@ -13,6 +18,11 @@ interface R2Bucket {
   get(key: string): Promise<R2ObjectBody | null>;
   put(key: string, value: string | ArrayBuffer | ReadableStream | Blob, options?: R2PutOptions): Promise<R2Object | null>;
   delete(key: string): Promise<void>;
+  list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
+    objects: R2Object[];
+    truncated?: boolean;
+    cursor?: string;
+  }>;
 }
 
 interface R2ObjectBody {
