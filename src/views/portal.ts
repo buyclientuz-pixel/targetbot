@@ -230,6 +230,8 @@ export const renderPortal = ({
         pagination: initialSnapshot.pagination || { page: 1, totalPages: 1, prevUrl: null, nextUrl: null },
         periodLabel: initialSnapshot.periodLabel || '',
         filter: 'all',
+        partial: Boolean(initialSnapshot && initialSnapshot.partial),
+        dataSource: typeof initialSnapshot?.dataSource === 'string' ? initialSnapshot.dataSource : null,
       };
       window.__portalSnapshot = initialSnapshot;
 
@@ -251,6 +253,54 @@ export const renderPortal = ({
       const loaderInitialMessage = 'Готовим данные…<br>Это может занять 3–5 секунд.';
       const loadState = { stats: false, leads: false, campaigns: false };
       let loaderTimeoutId = 0;
+      let scheduledRefreshId = 0;
+
+      const clearScheduledRefresh = () => {
+        if (scheduledRefreshId) {
+          window.clearTimeout(scheduledRefreshId);
+          scheduledRefreshId = 0;
+        }
+      };
+
+      const updateStateSource = (data) => {
+        if (!data) {
+          return;
+        }
+        if (typeof data.partial === 'boolean') {
+          state.partial = data.partial;
+        }
+        if (typeof data.dataSource === 'string') {
+          state.dataSource = data.dataSource;
+        }
+      };
+
+      const requiresRefresh = () => {
+        if (state.partial) {
+          return true;
+        }
+        if (!state.dataSource) {
+          return false;
+        }
+        return state.dataSource === 'deferred' || state.dataSource === 'fallback' || state.dataSource === 'error';
+      };
+
+      const scheduleRefresh = () => {
+        if (scheduledRefreshId) {
+          return;
+        }
+        scheduledRefreshId = window.setTimeout(() => {
+          scheduledRefreshId = 0;
+          restartLoading();
+        }, 4000);
+      };
+
+      const maybeScheduleRefresh = () => {
+        if (requiresRefresh()) {
+          scheduleRefresh();
+        } else {
+          clearScheduledRefresh();
+        }
+      };
 
       const resetLoaderOverlay = () => {
         if (loaderMessage instanceof HTMLElement) {
@@ -284,6 +334,7 @@ export const renderPortal = ({
           if (loaderOverlay instanceof HTMLElement) {
             loaderOverlay.classList.add('hidden');
           }
+          maybeScheduleRefresh();
         }
       };
 
@@ -634,9 +685,11 @@ export const renderPortal = ({
         if (typeof data.periodLabel === 'string') {
           state.periodLabel = data.periodLabel;
         }
+        updateStateSource(data);
         renderMetrics();
         updateCounts();
         updatePeriodLabel();
+        maybeScheduleRefresh();
       };
 
       const applyLeads = (data) => {
@@ -655,11 +708,13 @@ export const renderPortal = ({
         if (typeof data.periodLabel === 'string') {
           state.periodLabel = data.periodLabel;
         }
+        updateStateSource(data);
         renderLeads();
         renderPagination();
         updateCounts();
         updatePeriodLabel();
         toggleSkeleton(leadsSkeleton, false);
+        maybeScheduleRefresh();
       };
 
       const applyCampaigns = (data) => {
@@ -669,8 +724,10 @@ export const renderPortal = ({
         if (Array.isArray(data.campaigns)) {
           state.campaigns = data.campaigns;
         }
+        updateStateSource(data);
         renderCampaigns();
         toggleSkeleton(campaignsSkeleton, false);
+        maybeScheduleRefresh();
       };
 
       const filterButtons = Array.from(document.querySelectorAll('#leadFilters button'));
@@ -766,6 +823,9 @@ export const renderPortal = ({
         if (loaderRetry instanceof HTMLElement) {
           loaderRetry.classList.add('hidden');
         }
+        clearScheduledRefresh();
+        state.partial = false;
+        state.dataSource = null;
         startLoaderTimer();
         fetchStats();
         fetchLeads();
@@ -784,6 +844,7 @@ export const renderPortal = ({
       renderPagination();
       updateCounts();
       updatePeriodLabel();
+      maybeScheduleRefresh();
 
       fetchStats();
       fetchLeads();

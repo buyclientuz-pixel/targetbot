@@ -101,6 +101,7 @@ import {
   ProjectSummary,
   PortalLeadView,
   PortalComputationResult,
+  PortalSnapshotDataSource,
   PortalSnapshotCacheDescriptor,
 } from "./types";
 import { collectProjectMetricContext, buildProjectReportEntry } from "./utils/reports";
@@ -244,46 +245,37 @@ const toIsoDate = (value: Date | null, now: Date): string => {
   return copy.toISOString().slice(0, 10);
 };
 
-interface PortalComputationOptions {
-  ctx?: WorkerExecutionContext | null;
-  logger?: PortalLogger;
+const formatPeriodLabel = (periodSelection: PortalPeriodSelection): string => {
+  if (periodSelection.since && periodSelection.until) {
+    const startLabel = formatRuDate(periodSelection.since);
+    const endLabel = formatRuDate(periodSelection.until);
+    return startLabel === endLabel
+      ? `${periodSelection.label} · ${startLabel}`
+      : `${periodSelection.label} · ${startLabel} — ${endLabel}`;
+  }
+  return periodSelection.label;
+};
+
+interface PortalBaseComputation {
+  billing: ProjectBillingSummary;
+  statusCounts: PortalStatusCounts;
+  page: number;
+  totalPages: number;
+  leads: PortalLeadView[];
+  periodLabel: string;
+  summary: ProjectSummary;
+  preferenceInput: { campaignIds: string[]; metrics: PortalMetricKey[] };
 }
 
-const computePortalSnapshot = async (
+const preparePortalBaseData = async (
   bindings: EnvBindings,
   project: ProjectRecord,
   portalRecord: ProjectPortalRecord,
   periodSelection: PortalPeriodSelection,
   requestedPage: number,
   now: Date,
-  options: PortalComputationOptions = {},
-): Promise<PortalComputationResult> => {
-  const extendedEnv = bindings as EnvBindings & Record<string, unknown>;
-  const { ctx, logger } = options;
-
-  const leadSyncTask = syncProjectLeads(extendedEnv, project.id)
-    .then((result) => {
-      logger?.("lead_sync_complete", {
-        projectId: project.id,
-        newLeads: result.newLeads,
-        totalLeads: result.total,
-      });
-    })
-    .catch((error) => {
-      logger?.("lead_sync_failed", {
-        projectId: project.id,
-        message: (error as Error).message,
-      });
-    });
-
-  if (ctx) {
-    ctx.waitUntil(leadSyncTask);
-  }
-
-  if (!ctx) {
-    await leadSyncTask;
-  }
-
+  logger?: PortalLogger,
+): Promise<PortalBaseComputation> => {
   const [allLeads, payments] = await Promise.all([
     getProjectLeads(bindings, project.id),
     listPayments(bindings),
@@ -360,84 +352,280 @@ const computePortalSnapshot = async (
     metrics: portalRecord.metrics.length ? portalRecord.metrics : preferences.metrics,
   };
 
-  const periodDescriptor = {
-    key: periodSelection.key,
-    datePreset: periodSelection.datePreset,
-    since: isoDay(periodSelection.since),
-    until: isoDay(periodSelection.until),
+  const periodLabel = formatPeriodLabel(periodSelection);
+
+  return {
+    billing,
+    statusCounts,
+    page,
+    totalPages,
+    leads: leadViews,
+    periodLabel,
+    summary,
+    preferenceInput,
+  };
+};
+
+interface PortalCampaignLoadResult {
+  campaigns: MetaCampaign[];
+  fetchedAt: string;
+  source: PortalSnapshotDataSource;
+}
+
+interface PortalReportPeriod {
+  key: string;
+  datePreset?: string | null;
+  since?: string | null;
+  until?: string | null;
+}
+
+const loadPortalCampaigns = async (
+  bindings: EnvBindings,
+  extendedEnv: EnvBindings & Record<string, unknown>,
+  project: ProjectRecord,
+  portalRecord: ProjectPortalRecord,
+  accountId: string | null,
+  period: PortalReportPeriod,
+  options: { ctx?: WorkerExecutionContext | null; logger?: PortalLogger; allowDeferred: boolean },
+): Promise<PortalCampaignLoadResult> => {
+  const logger = options.logger;
+  if (!accountId) {
+    logger?.("campaign_fetch_skipped", { projectId: project.id, reason: "missing_account" });
+    return { campaigns: [], fetchedAt: new Date().toISOString(), source: "skipped" };
+  }
+
+  const reportPeriod: PortalReportPeriod = {
+    key: period.key,
+    datePreset: period.datePreset ?? null,
+    since: period.since ?? null,
+    until: period.until ?? null,
   };
 
+  logger?.("campaign_cache_lookup", {
+    projectId: project.id,
+    accountId,
+    preset: reportPeriod.datePreset ?? null,
+  });
+
   let campaigns: MetaCampaign[] = [];
-  let campaignsUpdatedAt = new Date().toISOString();
+  let fetchedAt = new Date().toISOString();
+  let source: PortalSnapshotDataSource = "error";
 
-  const accountId = project.adAccountId || project.metaAccountId || null;
-
-  if (accountId) {
-    logger?.("campaign_cache_lookup", {
+  const cached = await readPortalReportCache(bindings, accountId, reportPeriod).catch((error) => {
+    logger?.("campaign_cache_error", {
       projectId: project.id,
       accountId,
-      preset: periodDescriptor.datePreset ?? null,
+      message: (error as Error).message,
     });
-    const cached = await readPortalReportCache(bindings, accountId, periodDescriptor).catch((error) => {
-      logger?.("campaign_cache_error", {
+    return null;
+  });
+
+  if (cached?.campaigns?.length) {
+    campaigns = cached.campaigns as MetaCampaign[];
+    fetchedAt = cached.fetchedAt;
+    source = "cache";
+    logger?.("campaign_cache_hit", {
+      projectId: project.id,
+      accountId,
+      count: campaigns.length,
+    });
+  } else {
+    logger?.("campaign_cache_miss", { projectId: project.id, accountId });
+  }
+
+  const fetchLimit =
+    portalRecord.mode === "manual" && portalRecord.campaignIds.length
+      ? Math.max(10, portalRecord.campaignIds.length || 10)
+      : 25;
+
+  const persistCampaigns = async (data: MetaCampaign[], timestamp: string) => {
+    await writePortalReportCache(bindings, accountId, reportPeriod, data).catch((error) => {
+      logger?.("campaign_cache_write_failed", {
         projectId: project.id,
         accountId,
         message: (error as Error).message,
       });
-      return null;
     });
-    if (cached?.campaigns?.length) {
-      campaigns = cached.campaigns as MetaCampaign[];
-      campaignsUpdatedAt = cached.fetchedAt;
-      logger?.("campaign_cache_hit", {
+    await syncCampaignObjectives(bindings, project.id, data).catch((error) => {
+      logger?.("campaign_objective_sync_failed", {
         projectId: project.id,
         accountId,
-        count: campaigns.length,
+        message: (error as Error).message,
       });
-    }
+    });
+  };
 
-    if (!campaigns.length) {
+  const performFetch = async (): Promise<{ campaigns: MetaCampaign[]; fetchedAt: string }> => {
+    logger?.("campaign_fetch_start", { projectId: project.id, accountId });
+    const token = await loadMetaToken(bindings);
+    if (!token?.accessToken) {
+      throw new Error("meta_token_missing");
+    }
+    const metaEnv = await withMetaSettings(extendedEnv);
+    const fetched = await fetchCampaigns(metaEnv, token, accountId, {
+      limit: fetchLimit,
+      datePreset: reportPeriod.datePreset ?? undefined,
+      since: reportPeriod.since ?? undefined,
+      until: reportPeriod.until ?? undefined,
+    });
+    const timestamp = new Date().toISOString();
+    await persistCampaigns(fetched, timestamp);
+    logger?.("campaign_fetch_success", {
+      projectId: project.id,
+      accountId,
+      count: fetched.length,
+    });
+    return { campaigns: fetched, fetchedAt: timestamp };
+  };
+
+  const scheduleDeferredFetch = () => {
+    if (!options.ctx) {
+      return;
+    }
+    options.ctx.waitUntil(
+      performFetch().catch((error) => {
+        logger?.("campaign_fetch_failed", {
+          projectId: project.id,
+          accountId,
+          message: (error as Error).message,
+          stage: "deferred",
+        });
+      }),
+    );
+  };
+
+  if (!campaigns.length) {
+    if (options.allowDeferred && options.ctx) {
+      source = "deferred";
+      fetchedAt = new Date().toISOString();
+      scheduleDeferredFetch();
+    } else {
       try {
-        logger?.("campaign_fetch_start", {
-          projectId: project.id,
-          accountId,
-        });
-        const token = await loadMetaToken(bindings);
-        const metaEnv = await withMetaSettings(extendedEnv);
-        campaigns = await fetchCampaigns(metaEnv, token, accountId, {
-          limit:
-            portalRecord.mode === "manual"
-              ? Math.max(10, portalRecord.campaignIds.length || 10)
-              : 25,
-          datePreset: periodSelection.datePreset,
-          since: periodDescriptor.since || undefined,
-          until: periodDescriptor.until || undefined,
-        });
-        await writePortalReportCache(bindings, accountId, periodDescriptor, campaigns).catch((error) => {
-          logger?.("campaign_cache_write_failed", {
-            projectId: project.id,
-            accountId,
-            message: (error as Error).message,
-          });
-        });
-        await syncCampaignObjectives(bindings, project.id, campaigns);
-        campaignsUpdatedAt = new Date().toISOString();
-        logger?.("campaign_fetch_success", {
-          projectId: project.id,
-          accountId,
-          count: campaigns.length,
-        });
+        const result = await performFetch();
+        campaigns = result.campaigns;
+        fetchedAt = result.fetchedAt;
+        source = "fresh";
       } catch (error) {
         logger?.("campaign_fetch_failed", {
           projectId: project.id,
           accountId,
           message: (error as Error).message,
         });
+        source = "error";
       }
     }
-  } else {
-    logger?.("campaign_fetch_skipped", { projectId: project.id, reason: "missing_account" });
+  } else if (options.allowDeferred && options.ctx) {
+    scheduleDeferredFetch();
   }
+
+  if (!campaigns.length && source === "error") {
+    fetchedAt = new Date().toISOString();
+  }
+
+  return { campaigns, fetchedAt, source };
+};
+
+const buildPortalFallbackSnapshot = async (
+  bindings: EnvBindings,
+  project: ProjectRecord,
+  portalRecord: ProjectPortalRecord,
+  periodSelection: PortalPeriodSelection,
+  requestedPage: number,
+  now: Date,
+  logger?: PortalLogger,
+): Promise<PortalComputationResult> => {
+  try {
+    const base = await preparePortalBaseData(bindings, project, portalRecord, periodSelection, requestedPage, now, logger);
+    return {
+      billing: base.billing,
+      statusCounts: base.statusCounts,
+      page: base.page,
+      totalPages: base.totalPages,
+      leads: base.leads,
+      metrics: [],
+      campaigns: [],
+      periodLabel: base.periodLabel,
+      updatedAt: new Date(now.getTime()).toISOString(),
+      partial: true,
+      dataSource: "fallback",
+    } satisfies PortalComputationResult;
+  } catch (error) {
+    logger?.("snapshot_fallback_failed", {
+      projectId: project.id,
+      message: (error as Error).message,
+    });
+    return {
+      billing: projectBilling.summarize([]),
+      statusCounts: { all: 0, new: 0, done: 0 },
+      page: 1,
+      totalPages: 1,
+      leads: [],
+      metrics: [],
+      campaigns: [],
+      periodLabel: formatPeriodLabel(periodSelection),
+      updatedAt: new Date(now.getTime()).toISOString(),
+      partial: true,
+      dataSource: "fallback",
+    } satisfies PortalComputationResult;
+  }
+};
+
+interface PortalComputationOptions {
+  ctx?: WorkerExecutionContext | null;
+  logger?: PortalLogger;
+}
+
+const computePortalSnapshot = async (
+  bindings: EnvBindings,
+  project: ProjectRecord,
+  portalRecord: ProjectPortalRecord,
+  periodSelection: PortalPeriodSelection,
+  requestedPage: number,
+  now: Date,
+  options: PortalComputationOptions = {},
+): Promise<PortalComputationResult> => {
+  const extendedEnv = bindings as EnvBindings & Record<string, unknown>;
+  const { ctx, logger } = options;
+
+  const leadSyncTask = syncProjectLeads(extendedEnv, project.id)
+    .then((result) => {
+      logger?.("lead_sync_complete", {
+        projectId: project.id,
+        newLeads: result.newLeads,
+        totalLeads: result.total,
+      });
+    })
+    .catch((error) => {
+      logger?.("lead_sync_failed", {
+        projectId: project.id,
+        message: (error as Error).message,
+      });
+    });
+
+  if (ctx) {
+    ctx.waitUntil(leadSyncTask);
+  } else {
+    await leadSyncTask;
+  }
+
+  const base = await preparePortalBaseData(bindings, project, portalRecord, periodSelection, requestedPage, now, logger);
+
+  const accountId = project.adAccountId || project.metaAccountId || null;
+
+  const reportPeriod = {
+    key: periodSelection.key,
+    datePreset: periodSelection.datePreset ?? null,
+    since: isoDay(periodSelection.since),
+    until: isoDay(periodSelection.until),
+  };
+
+  const campaignLoad = await loadPortalCampaigns(bindings, extendedEnv, project, portalRecord, accountId, reportPeriod, {
+    ctx,
+    logger,
+    allowDeferred: Boolean(ctx),
+  });
+
+  const campaigns = campaignLoad.campaigns;
 
   const selectedCampaigns = (() => {
     if (!campaigns.length) {
@@ -452,19 +640,19 @@ const computePortalSnapshot = async (
     return sorted.slice(0, 10);
   })();
 
-  const contextMap = await collectProjectMetricContext(bindings, [summary]);
+  const contextMap = await collectProjectMetricContext(bindings, [base.summary]);
   const context = contextMap.get(project.id);
   const { report, metrics: metricKeys } = buildProjectReportEntry(
-    summary,
+    base.summary,
     selectedCampaigns,
     context,
-    preferenceInput,
+    base.preferenceInput,
     { start: toIsoDate(periodSelection.since, now), end: toIsoDate(periodSelection.until, now) },
   );
 
   const spendCurrency =
     selectedCampaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency
-    || campaigns[0]?.spendCurrency
+    || campaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency
     || "USD";
 
   const formatNumber = (value: number): string => new Intl.NumberFormat("ru-RU").format(Math.round(value));
@@ -519,35 +707,30 @@ const computePortalSnapshot = async (
 
   const normalizedCampaigns = normalizeCampaigns(selectedCampaigns);
 
-  let periodLabel = periodSelection.label;
-  if (periodSelection.since && periodSelection.until) {
-    const startLabel = formatRuDate(periodSelection.since);
-    const endLabel = formatRuDate(periodSelection.until);
-    periodLabel = startLabel === endLabel
-      ? `${periodSelection.label} · ${startLabel}`
-      : `${periodSelection.label} · ${startLabel} — ${endLabel}`;
-  }
-
-  const payload = {
-    billing,
-    statusCounts,
-    page,
-    totalPages,
-    leads: leadViews,
+  const snapshot = {
+    billing: base.billing,
+    statusCounts: base.statusCounts,
+    page: base.page,
+    totalPages: base.totalPages,
+    leads: base.leads,
     metrics,
     campaigns: normalizedCampaigns,
-    periodLabel,
-    updatedAt: campaignsUpdatedAt,
+    periodLabel: base.periodLabel,
+    updatedAt: campaignLoad.fetchedAt,
+    partial: campaignLoad.source === "deferred" || campaignLoad.source === "error",
+    dataSource: campaignLoad.source,
   } satisfies PortalComputationResult;
 
   logger?.("snapshot_computed", {
     projectId: project.id,
-    page,
+    page: base.page,
     metrics: metrics.length,
     campaigns: normalizedCampaigns.length,
+    partial: snapshot.partial ?? false,
+    source: snapshot.dataSource ?? null,
   });
 
-  return payload;
+  return snapshot;
 };
 
 interface PortalSnapshotLoadOptions {
@@ -574,7 +757,7 @@ const loadPortalSnapshot = async (
   requestedPage: number,
   now: Date,
   options: PortalSnapshotLoadOptions = {},
-): Promise<{ snapshot: PortalComputationResult; source: "fresh" | "cache" | "stale-cache" }> => {
+): Promise<{ snapshot: PortalComputationResult; source: "fresh" | "cache" | "stale-cache" | "fallback" }> => {
   const sanitizedPage = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
   const descriptor = buildSnapshotDescriptor(periodSelection, sanitizedPage);
   const logger = options.logger;
@@ -592,7 +775,8 @@ const loadPortalSnapshot = async (
   const nowMs = now.getTime();
   const cacheAgeMs = cached ? nowMs - Date.parse(cached.fetchedAt) : null;
   const cacheValid = cacheAgeMs !== null && Number.isFinite(cacheAgeMs);
-  const cacheIsFresh = cacheValid && (cacheAgeMs as number) < PORTAL_CACHE_TTL_MS;
+  const cacheIsPartial = Boolean(cached?.data?.partial);
+  const cacheIsFresh = cacheValid && !cacheIsPartial && (cacheAgeMs as number) < PORTAL_CACHE_TTL_MS;
 
   if (cached && cacheIsFresh) {
     logger?.("snapshot_cache_hit", {
@@ -624,6 +808,12 @@ const loadPortalSnapshot = async (
           }),
       );
     }
+    if (!cached.data.dataSource) {
+      cached.data.dataSource = "cache";
+    }
+    if (cached.data.partial === undefined) {
+      cached.data.partial = false;
+    }
     return { snapshot: cached.data, source: "cache" };
   }
 
@@ -634,6 +824,7 @@ const loadPortalSnapshot = async (
       projectId: project.id,
       page: sanitizedPage,
       ageMs: cacheAgeMs,
+      partial: cacheIsPartial,
     });
   }
 
@@ -692,11 +883,37 @@ const loadPortalSnapshot = async (
           projectId: project.id,
           ageMs: cacheAgeMs,
         });
+        if (!cached.data.dataSource) {
+          cached.data.dataSource = "stale-cache";
+        }
         return { snapshot: cached.data, source: "stale-cache" };
       }
-      throw new Error("Portal snapshot computation timed out");
+      const fallbackSnapshot = await buildPortalFallbackSnapshot(
+        bindings,
+        project,
+        portalRecord,
+        periodSelection,
+        sanitizedPage,
+        now,
+        logger,
+      );
+      await writePortalSnapshotCache(bindings, project.id, descriptor, fallbackSnapshot, PORTAL_SNAPSHOT_CACHE_TTL_SECONDS).catch(
+        (error) => {
+          logger?.("snapshot_cache_write_failed", {
+            projectId: project.id,
+            message: (error as Error).message,
+          });
+        },
+      );
+      return { snapshot: fallbackSnapshot, source: "fallback" };
     }
     const snapshot = result as PortalComputationResult;
+    if (!snapshot.dataSource) {
+      snapshot.dataSource = cached ? "stale-cache" : "fresh";
+    }
+    if (snapshot.partial === undefined) {
+      snapshot.partial = false;
+    }
     await writePortalSnapshotCache(bindings, project.id, descriptor, snapshot, PORTAL_SNAPSHOT_CACHE_TTL_SECONDS).catch(
       (error) => {
         logger?.("snapshot_cache_write_failed", {
@@ -719,9 +936,29 @@ const loadPortalSnapshot = async (
         projectId: project.id,
         ageMs: cacheAgeMs,
       });
+      if (!cached.data.dataSource) {
+        cached.data.dataSource = "stale-cache";
+      }
       return { snapshot: cached.data, source: "stale-cache" };
     }
-    throw error;
+    const fallbackSnapshot = await buildPortalFallbackSnapshot(
+      bindings,
+      project,
+      portalRecord,
+      periodSelection,
+      sanitizedPage,
+      now,
+      logger,
+    );
+    await writePortalSnapshotCache(bindings, project.id, descriptor, fallbackSnapshot, PORTAL_SNAPSHOT_CACHE_TTL_SECONDS).catch(
+      (writeError) => {
+        logger?.("snapshot_cache_write_failed", {
+          projectId: project.id,
+          message: (writeError as Error).message,
+        });
+      },
+    );
+    return { snapshot: fallbackSnapshot, source: "fallback" };
   }
 };
 
@@ -767,6 +1004,7 @@ interface PortalRouteSuccess {
   portal: ProjectPortalRecord;
   periodSelection: PortalPeriodSelection;
   snapshot: PortalComputationResult;
+  snapshotSource: "fresh" | "cache" | "stale-cache" | "fallback";
   slug: string;
   basePath: string;
 }
@@ -831,6 +1069,13 @@ const resolvePortalRequest = async (
   });
 
   const snapshot = snapshotResult.snapshot;
+  if (!snapshot.dataSource) {
+    snapshot.dataSource = snapshotResult.source;
+  }
+
+  if (snapshot.partial === undefined) {
+    snapshot.partial = false;
+  }
 
   return {
     ok: true,
@@ -838,6 +1083,7 @@ const resolvePortalRequest = async (
     portal: portalRecord,
     periodSelection,
     snapshot,
+    snapshotSource: snapshotResult.source,
     slug,
     basePath: `/portal/${encodeURIComponent(slug)}`,
   };
@@ -1219,7 +1465,7 @@ export default {
           return htmlResponse(`<h1>${title}</h1><p>${message}</p>`, { status });
         }
 
-        const { project, periodSelection, snapshot: portalSnapshot, basePath } = resolution;
+        const { project, periodSelection, snapshot: portalSnapshot, snapshotSource, basePath } = resolution;
 
         const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
           const params = new URLSearchParams();
@@ -1269,6 +1515,8 @@ export default {
           pagination,
           periodLabel: portalSnapshot.periodLabel,
           updatedAt: portalSnapshot.updatedAt,
+          partial: portalSnapshot.partial,
+          dataSource: portalSnapshot.dataSource ?? snapshotSource,
         };
 
         const params = new URLSearchParams();
@@ -1321,7 +1569,7 @@ export default {
           return jsonResponse({ ok: false, error: message, details: { code } }, { status });
         }
 
-        const { periodSelection, snapshot: portalSnapshot } = resolution;
+        const { periodSelection, snapshot: portalSnapshot, snapshotSource } = resolution;
         const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
           const params = new URLSearchParams();
           if (periodKey !== "today") {
@@ -1352,6 +1600,8 @@ export default {
           pagination,
           periodLabel: portalSnapshot.periodLabel,
           updatedAt: portalSnapshot.updatedAt,
+          partial: portalSnapshot.partial,
+          dataSource: portalSnapshot.dataSource ?? snapshotSource,
         };
 
         portalLogger("route_success", { route: "portal.snapshot", slug, page: portalSnapshot.page });
@@ -1379,7 +1629,7 @@ export default {
           const { message, status, code } = resolution;
           return jsonResponse({ ok: false, error: message, details: { code } }, { status });
         }
-        const { snapshot: portalSnapshot } = resolution;
+        const { snapshot: portalSnapshot, snapshotSource } = resolution;
         const response = jsonResponse({
           ok: true,
           data: {
@@ -1388,6 +1638,8 @@ export default {
             updatedAt: portalSnapshot.updatedAt,
             statusCounts: portalSnapshot.statusCounts,
             billing: portalSnapshot.billing,
+            partial: portalSnapshot.partial ?? false,
+            dataSource: portalSnapshot.dataSource ?? snapshotSource,
           },
         });
         portalLogger("route_success", { route: "portal.stats", slug });
@@ -1415,7 +1667,7 @@ export default {
           const { message, status, code } = resolution;
           return jsonResponse({ ok: false, error: message, details: { code } }, { status });
         }
-        const { snapshot: portalSnapshot, periodSelection } = resolution;
+        const { snapshot: portalSnapshot, periodSelection, snapshotSource } = resolution;
         const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
           const params = new URLSearchParams();
           if (periodKey !== "today") {
@@ -1443,6 +1695,8 @@ export default {
             pagination,
             statusCounts: portalSnapshot.statusCounts,
             periodLabel: portalSnapshot.periodLabel,
+            partial: portalSnapshot.partial ?? false,
+            dataSource: portalSnapshot.dataSource ?? snapshotSource,
           },
         });
         portalLogger("route_success", { route: "portal.leads", slug, page: portalSnapshot.page });
@@ -1470,12 +1724,14 @@ export default {
           const { message, status, code } = resolution;
           return jsonResponse({ ok: false, error: message, details: { code } }, { status });
         }
-        const { snapshot: portalSnapshot } = resolution;
+        const { snapshot: portalSnapshot, snapshotSource } = resolution;
         const response = jsonResponse({
           ok: true,
           data: {
             campaigns: portalSnapshot.campaigns,
             updatedAt: portalSnapshot.updatedAt,
+            partial: portalSnapshot.partial ?? false,
+            dataSource: portalSnapshot.dataSource ?? snapshotSource,
           },
         });
         portalLogger("route_success", { route: "portal.campaigns", slug, campaigns: portalSnapshot.campaigns.length });

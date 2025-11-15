@@ -142,6 +142,15 @@ export interface PortalLeadView {
   type: PortalLeadType;
 }
 
+export type PortalSnapshotDataSource =
+  | "fresh"
+  | "cache"
+  | "stale-cache"
+  | "fallback"
+  | "deferred"
+  | "skipped"
+  | "error";
+
 export interface PortalSnapshotPayload {
   metrics: PortalMetricEntry[];
   campaigns: NormalizedCampaign[];
@@ -150,6 +159,8 @@ export interface PortalSnapshotPayload {
   pagination: PortalPagination;
   periodLabel: string;
   updatedAt: string;
+  partial?: boolean;
+  dataSource?: PortalSnapshotDataSource | null;
 }
 
 export interface PortalComputationResult {
@@ -162,6 +173,8 @@ export interface PortalComputationResult {
   campaigns: NormalizedCampaign[];
   periodLabel: string;
   updatedAt: string;
+  partial?: boolean;
+  dataSource?: PortalSnapshotDataSource | null;
 }
 
 export interface PortalSnapshotCacheDescriptor {
