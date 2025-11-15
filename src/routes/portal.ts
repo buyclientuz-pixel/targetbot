@@ -1,17 +1,11 @@
-import { ensureProjectSettings } from "../domain/project-settings";
-import { filterLeadsByDateRange, listLeads } from "../domain/leads";
-import { listProjectPayments } from "../domain/payments";
-import { getProject } from "../domain/projects";
+import { loadProjectBundle, type ProjectBundle } from "../bot/data";
+import { resolvePeriodRange } from "../services/project-insights";
 import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
+import { applyCors, preflight } from "../http/cors";
+import { requireProjectRecord } from "../domain/spec/project";
 import type { Router } from "../worker/router";
 import type { RequestContext } from "../worker/context";
-import {
-  loadProjectCampaigns,
-  loadProjectSummary,
-  mapCampaignRows,
-  resolvePeriodRange,
-} from "../services/project-insights";
 
 const htmlResponse = (body: string): Response =>
   new Response(body, {
@@ -22,13 +16,630 @@ const htmlResponse = (body: string): Response =>
     },
   });
 
-const badRequest = (message: string): Response => jsonResponse({ error: message }, { status: 400 });
-const forbidden = (message: string): Response => jsonResponse({ error: message }, { status: 403 });
-const notFound = (message: string): Response => jsonResponse({ error: message }, { status: 404 });
-const unprocessable = (message: string): Response => jsonResponse({ error: message }, { status: 422 });
+const withNoStore = (headers?: HeadersInit): HeadersInit => {
+  const merged = new Headers(headers);
+  merged.set("cache-control", "no-store");
+  return merged;
+};
+
+const jsonOk = (data: unknown, init?: ResponseInit): Response =>
+  applyCors(jsonResponse({ ok: true, data }, { ...init, headers: withNoStore(init?.headers) }));
+
+const jsonError = (status: number, message: string): Response =>
+  applyCors(jsonResponse({ ok: false, error: message }, { status, headers: withNoStore() }));
+
+const badRequest = (message: string): Response => jsonError(400, message);
+const forbidden = (message: string): Response => jsonError(403, message);
+const notFound = (message: string): Response => jsonError(404, message);
+const unprocessable = (message: string): Response => jsonError(422, message);
+
+const computeCpa = (spend: number, value: number): number | null => {
+  if (!Number.isFinite(spend) || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return spend / value;
+};
+
+const buildSummaryPayload = (bundle: ProjectBundle, requestedPeriod: string) => {
+  const summary = bundle.campaigns.summary;
+  const spend = summary.spend ?? 0;
+  const leads = summary.leads ?? 0;
+  const leadsToday = bundle.leads.stats.today ?? 0;
+  return {
+    project: {
+      id: bundle.project.id,
+      name: bundle.project.name,
+      portalUrl: bundle.project.portalUrl,
+    },
+    period: bundle.campaigns.period,
+    periodKey: bundle.campaigns.periodKey ?? requestedPeriod,
+    metrics: {
+      spend,
+      impressions: summary.impressions ?? 0,
+      clicks: summary.clicks ?? 0,
+      leads,
+      messages: summary.messages ?? 0,
+      cpa: computeCpa(spend, leads),
+      leadsTotal: bundle.leads.stats.total ?? 0,
+      leadsToday,
+      cpaToday: computeCpa(spend, leadsToday),
+      currency: bundle.project.settings.currency,
+      kpiLabel: bundle.project.settings.kpi.label,
+    },
+  };
+};
+
+const filterLeadsForPeriod = (bundle: ProjectBundle, periodKey: string) => {
+  const range = resolvePeriodRange(periodKey);
+  const fromTime = range.from.getTime();
+  const toTime = range.to.getTime();
+  const leads = bundle.leads.leads ?? [];
+  const filtered = leads.filter((lead) => {
+    const createdTime = Date.parse(lead.createdAt);
+    return Number.isFinite(createdTime) && createdTime >= fromTime && createdTime <= toTime;
+  });
+  return {
+    period: range.period,
+    leads: filtered
+      .slice()
+      .sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt > b.createdAt ? -1 : 1))
+      .map((lead) => ({
+        id: lead.id,
+        name: lead.name,
+        phone: lead.phone,
+        campaignName: lead.campaignName,
+        createdAt: lead.createdAt,
+        status: lead.status,
+        type: lead.type,
+        source: lead.source,
+      })),
+  };
+};
+
+const buildCampaignsPayload = (bundle: ProjectBundle, requestedPeriod: string) => ({
+  period: bundle.campaigns.period,
+  periodKey: bundle.campaigns.periodKey ?? requestedPeriod,
+  summary: bundle.campaigns.summary,
+  campaigns: bundle.campaigns.campaigns,
+  kpi: bundle.project.settings.kpi,
+});
+
+const buildPaymentsPayload = (bundle: ProjectBundle) => ({
+  billing: bundle.billing,
+  payments: bundle.payments.payments,
+});
 
 export const renderPortalHtml = (projectId: string): string => {
   const projectIdJson = JSON.stringify(projectId);
+  const portalScriptSource = String.raw`
+      (() => {
+        const PROJECT_ID = PROJECT_ID_PLACEHOLDER;
+        const API_BASE = '/api/projects/' + encodeURIComponent(PROJECT_ID);
+        const TOKEN = new URLSearchParams(window.location.search).get('token');
+        const REQUEST_TIMEOUT = 12000;
+        const elements = {
+          preloader: document.querySelector('[data-preloader]'),
+          error: document.querySelector('[data-error]'),
+          errorMessage: document.querySelector('[data-error-message]'),
+          content: document.querySelector('[data-content]'),
+          projectTitle: document.querySelector('[data-project-title]'),
+          projectDescription: document.querySelector('[data-project-description]'),
+          summaryPeriod: document.querySelector('[data-summary-period]'),
+          metrics: document.querySelectorAll('[data-metric]'),
+          periodButtons: document.querySelectorAll('[data-period-button]'),
+          leadsBody: document.querySelector('[data-leads-body]'),
+          leadsEmpty: document.querySelector('[data-leads-empty]'),
+          leadsSkeleton: document.querySelector('[data-leads-skeleton]'),
+          leadsPeriod: document.querySelector('[data-leads-period]'),
+          campaignsBody: document.querySelector('[data-campaigns-body]'),
+          campaignsEmpty: document.querySelector('[data-campaigns-empty]'),
+          campaignsSkeleton: document.querySelector('[data-campaigns-skeleton]'),
+          campaignsPeriod: document.querySelector('[data-campaigns-period]'),
+          paymentsBody: document.querySelector('[data-payments-body]'),
+          paymentsEmpty: document.querySelector('[data-payments-empty]'),
+          paymentsSkeleton: document.querySelector('[data-payments-skeleton]'),
+          paymentsSubtitle: document.querySelector('[data-payments-subtitle]'),
+          retryButtons: document.querySelectorAll('[data-retry]'),
+          retryLeads: document.querySelector('[data-retry-leads]'),
+          retryCampaigns: document.querySelector('[data-retry-campaigns]'),
+          retryPayments: document.querySelector('[data-retry-payments]'),
+          exportLeads: document.querySelector('[data-export-leads]'),
+          exportCampaigns: document.querySelector('[data-export-campaigns]'),
+          exportSummary: document.querySelector('[data-export-summary]'),
+        };
+        const state = {
+          period: 'today',
+          project: null,
+          summary: null,
+          leads: null,
+          campaigns: null,
+          payments: null,
+        };
+        const appendToken = (url) => {
+          if (!TOKEN) return url;
+          const separator = url.includes('?') ? '&' : '?';
+          return url + separator + 'token=' + encodeURIComponent(TOKEN);
+        };
+        const formatNumber = (value) => {
+          if (typeof value !== 'number' || !Number.isFinite(value)) {
+            return '—';
+          }
+          return new Intl.NumberFormat('ru-RU').format(value);
+        };
+        const formatMoney = (value, currency = 'USD') => {
+          if (typeof value !== 'number' || !Number.isFinite(value)) {
+            return '—';
+          }
+          try {
+            return new Intl.NumberFormat('ru-RU', { style: 'currency', currency }).format(value);
+          } catch {
+            return value.toFixed(2) + ' ' + currency;
+          }
+        };
+        const formatDate = (value) => {
+          if (!value) return '—';
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) return '—';
+          return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(date);
+        };
+        const formatDateTime = (value) => {
+          if (!value) return '—';
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) return '—';
+          return new Intl.DateTimeFormat('ru-RU', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          }).format(date);
+        };
+        const formatDateRange = (range) => {
+          if (!range || !range.from || !range.to) {
+            return '—';
+          }
+          return formatDate(range.from) + ' — ' + formatDate(range.to);
+        };
+        const escapeHtml = (value) => {
+          if (typeof value !== 'string') return '';
+          return value.replace(/[&<>"']/g, (char) => {
+            switch (char) {
+              case '&':
+                return '&amp;';
+              case '<':
+                return '&lt;';
+              case '>':
+                return '&gt;';
+              case '"':
+                return '&quot;';
+              case "'":
+                return '&#39;';
+              default:
+                return char;
+            }
+          });
+        };
+        const showPreloader = (visible) => {
+          if (!elements.preloader) return;
+          elements.preloader.classList.toggle('portal__preloader--hidden', !visible);
+        };
+        const toggleContent = (visible) => {
+          if (!elements.content) return;
+          elements.content.classList.toggle('portal__content--visible', visible);
+        };
+        const showError = (message) => {
+          if (elements.errorMessage) {
+            elements.errorMessage.textContent = message || 'Не удалось загрузить данные. Попробуйте снова.';
+          }
+          elements.error?.classList.remove('portal__error--hidden');
+        };
+        const hideError = () => {
+          elements.error?.classList.add('portal__error--hidden');
+        };
+        const markActivePeriod = (period) => {
+          elements.periodButtons?.forEach?.((button) => {
+            const value = button.getAttribute('data-period-button');
+            button.classList.toggle('portal-tabs__button--active', value === period);
+          });
+        };
+        const toggleSkeleton = (skeleton, body, empty, isLoading) => {
+          skeleton?.classList.toggle('portal-skeleton--hidden', !isLoading);
+          if (body) {
+            body.style.opacity = isLoading ? '0.3' : '1';
+          }
+          if (isLoading) {
+            empty?.classList.add('portal-empty--hidden');
+          }
+        };
+        const fetchWithTimeout = async (path, options = {}) => {
+          const controller = typeof AbortController === 'function' ? new AbortController() : null;
+          const timeoutMs = options.timeout ?? REQUEST_TIMEOUT;
+          let timeoutId = null;
+          if (controller) {
+            timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+          }
+          try {
+            return await fetch(appendToken(path), {
+              ...options,
+              signal: controller?.signal ?? options.signal,
+              headers: {
+                accept: 'application/json',
+                ...(options.headers || {}),
+              },
+            });
+          } finally {
+            if (timeoutId !== null) {
+              clearTimeout(timeoutId);
+            }
+          }
+        };
+        const fetchJson = async (path) => {
+          try {
+            const response = await fetchWithTimeout(path);
+            const payload = await response
+              .clone()
+              .json()
+              .catch(() => null);
+            if (!response.ok || !payload?.ok) {
+              const text = (payload && payload.error) || (await response.text()) || 'Request failed';
+              const error = new Error(text);
+              error.status = response.status;
+              throw error;
+            }
+            return payload.data;
+          } catch (error) {
+            if (error?.name === 'AbortError') {
+              const timeoutError = new Error('Превышено время ожидания ответа. Попробуйте ещё раз.');
+              timeoutError.code = 'timeout';
+              throw timeoutError;
+            }
+            throw error;
+          }
+        };
+        const portalClient = {
+          project: () => fetchJson(API_BASE),
+          summary: (period) => fetchJson(API_BASE + '/summary?period=' + encodeURIComponent(period)),
+          leads: (period) => fetchJson(API_BASE + '/leads?period=' + encodeURIComponent(period)),
+          campaigns: (period) => fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period)),
+          payments: () => fetchJson(API_BASE + '/payments'),
+        };
+        const renderProject = (project) => {
+          if (!project) return;
+          document.title = 'Портал — ' + project.name;
+          if (elements.projectTitle) {
+            elements.projectTitle.textContent = 'Проект ' + project.name;
+          }
+          if (elements.projectDescription) {
+            elements.projectDescription.textContent = project.portalUrl || 'Актуальные показатели по проекту';
+          }
+        };
+        const renderMetrics = (summary) => {
+          const metrics = summary?.metrics || {};
+          elements.summaryPeriod && (elements.summaryPeriod.textContent = formatDateRange(summary?.period));
+          const values = {
+            spend: formatMoney(metrics.spend, metrics.currency || 'USD'),
+            impressions: formatNumber(metrics.impressions),
+            clicks: formatNumber(metrics.clicks),
+            leads: formatNumber(metrics.leads),
+            cpa: metrics.cpa != null ? formatMoney(metrics.cpa, metrics.currency || 'USD') : '—',
+            'leads-total': formatNumber(metrics.leadsTotal),
+            'leads-today': formatNumber(metrics.leadsToday),
+            'cpa-today': metrics.cpaToday != null ? formatMoney(metrics.cpaToday, metrics.currency || 'USD') : '—',
+          };
+          elements.metrics?.forEach?.((metric) => {
+            const key = metric.getAttribute('data-metric');
+            const target = metric.querySelector('[data-metric-value]');
+            if (key && target) {
+              target.textContent = values[key] ?? '—';
+            }
+          });
+        };
+        const renderLeads = (payload) => {
+          if (elements.leadsPeriod) {
+            elements.leadsPeriod.textContent = formatDateRange(payload?.period);
+          }
+          const leads = payload?.leads || [];
+          if (elements.leadsBody) {
+            elements.leadsBody.innerHTML = leads
+              .map((lead) => {
+                const name = escapeHtml(lead.name || 'Без имени');
+                const phone = escapeHtml(lead.phone || '—');
+                const campaign = escapeHtml(lead.campaignName || lead.campaign || '—');
+                const status = escapeHtml(lead.status || '—');
+                return (
+                  '<tr>' +
+                  '<td>' + name + '</td>' +
+                  '<td>' + phone + '</td>' +
+                  '<td>' + campaign + '</td>' +
+                  '<td>' + formatDateTime(lead.createdAt) + '</td>' +
+                  '<td><span class="portal-table__status"><span class="portal-table__status-dot"></span>' +
+                  status +
+                  '</span></td>' +
+                  '</tr>'
+                );
+              })
+              .join('');
+          }
+          if (elements.leadsEmpty) {
+            elements.leadsEmpty.classList.toggle('portal-empty--hidden', leads.length > 0);
+            if (leads.length === 0) {
+              elements.leadsEmpty.textContent = 'За выбранный период лидов нет.';
+            }
+          }
+        };
+        const campaignKpiValue = (campaign, type) => {
+          switch (type) {
+            case 'LEAD':
+              return campaign.leads;
+            case 'MESSAGE':
+              return campaign.messages;
+            case 'CLICK':
+              return campaign.clicks;
+            case 'VIEW':
+              return campaign.impressions;
+            case 'PURCHASE':
+              return campaign.leads;
+            default:
+              return campaign.leads;
+          }
+        };
+        const renderCampaigns = (payload) => {
+          if (elements.campaignsPeriod) {
+            elements.campaignsPeriod.textContent = formatDateRange(payload?.period);
+          }
+          const campaigns = payload?.campaigns || [];
+          if (elements.campaignsBody) {
+            elements.campaignsBody.innerHTML = campaigns
+              .map((campaign) => {
+                const kpiValue = campaignKpiValue(campaign, campaign.kpiType);
+                const cpa = kpiValue && Number(kpiValue) > 0 ? campaign.spend / kpiValue : null;
+                return (
+                  '<tr>' +
+                  '<td>' + escapeHtml(campaign.name) + '</td>' +
+                  '<td>' + formatMoney(campaign.spend) + '</td>' +
+                  '<td>' + formatNumber(campaign.impressions) + '</td>' +
+                  '<td>' + formatNumber(campaign.clicks) + '</td>' +
+                  '<td>' + formatNumber(kpiValue) + '</td>' +
+                  '<td>' + (cpa != null ? formatMoney(cpa) : '—') + '</td>' +
+                  '</tr>'
+                );
+              })
+              .join('');
+          }
+          if (elements.campaignsEmpty) {
+            elements.campaignsEmpty.classList.toggle('portal-empty--hidden', campaigns.length > 0);
+            if (campaigns.length === 0) {
+              elements.campaignsEmpty.textContent = 'Нет данных по кампаниям.';
+            }
+          }
+        };
+        const renderPayments = (payload) => {
+          const billing = payload?.billing;
+          if (elements.paymentsSubtitle && billing) {
+            elements.paymentsSubtitle.textContent =
+              'Тариф: ' +
+              billing.tariff +
+              ' ' +
+              billing.currency +
+              ' · Следующая оплата: ' +
+              formatDate(billing.nextPaymentDate);
+          }
+          const payments = payload?.payments || [];
+          if (elements.paymentsBody) {
+            elements.paymentsBody.innerHTML = payments
+              .map(
+                (payment) =>
+                  '<tr>' +
+                  '<td>' + escapeHtml(payment.id) + '</td>' +
+                  '<td>' + formatMoney(payment.amount, payment.currency) + '</td>' +
+                  '<td>' + formatDate(payment.periodFrom) + ' — ' + formatDate(payment.periodTo) + '</td>' +
+                  '<td>' + escapeHtml(payment.status) + '</td>' +
+                  '<td>' + (payment.paidAt ? formatDateTime(payment.paidAt) : '—') + '</td>' +
+                  '</tr>',
+              )
+              .join('');
+          }
+          if (elements.paymentsEmpty) {
+            elements.paymentsEmpty.classList.toggle('portal-empty--hidden', payments.length > 0);
+            if (payments.length === 0) {
+              elements.paymentsEmpty.textContent = 'Оплаты ещё не зафиксированы.';
+            }
+          }
+        };
+        const setSectionLoading = (section, isLoading) => {
+          switch (section) {
+            case 'leads':
+              toggleSkeleton(elements.leadsSkeleton, elements.leadsBody, elements.leadsEmpty, isLoading);
+              break;
+            case 'campaigns':
+              toggleSkeleton(elements.campaignsSkeleton, elements.campaignsBody, elements.campaignsEmpty, isLoading);
+              break;
+            case 'payments':
+              toggleSkeleton(elements.paymentsSkeleton, elements.paymentsBody, elements.paymentsEmpty, isLoading);
+              break;
+            default:
+              break;
+          }
+        };
+        const handleSectionError = (section, message) => {
+          const text = message || 'Не удалось загрузить данные.';
+          if (section === 'leads' && elements.leadsEmpty) {
+            elements.leadsEmpty.textContent = text;
+            elements.leadsEmpty.classList.remove('portal-empty--hidden');
+          }
+          if (section === 'campaigns' && elements.campaignsEmpty) {
+            elements.campaignsEmpty.textContent = text;
+            elements.campaignsEmpty.classList.remove('portal-empty--hidden');
+          }
+          if (section === 'payments' && elements.paymentsEmpty) {
+            elements.paymentsEmpty.textContent = text;
+            elements.paymentsEmpty.classList.remove('portal-empty--hidden');
+          }
+        };
+        const updateExportButtons = () => {
+          if (elements.exportLeads) {
+            elements.exportLeads.disabled = !state.leads || !state.leads.leads?.length;
+          }
+          if (elements.exportCampaigns) {
+            elements.exportCampaigns.disabled = !state.campaigns || !state.campaigns.campaigns?.length;
+          }
+          if (elements.exportSummary) {
+            elements.exportSummary.disabled = !state.summary;
+          }
+        };
+        const toCsvRow = (values) =>
+          values
+            .map((value) => {
+              const text = value == null ? '' : String(value);
+              if (/[";\n]/.test(text)) {
+                return '"' + text.replace(/"/g, '""') + '"';
+              }
+              return text;
+            })
+            .join(';');
+        const downloadFile = (filename, content, mime) => {
+          if (typeof document.createElement !== 'function' || typeof URL === 'undefined') {
+            console.warn('Экспорт недоступен в этом окружении');
+            return;
+          }
+          const blob = new Blob([content], { type: mime });
+          const link = document.createElement('a');
+          link.href = URL.createObjectURL(blob);
+          link.download = filename;
+          document.body?.appendChild?.(link);
+          link.click();
+          document.body?.removeChild?.(link);
+          setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        };
+        const exportLeads = () => {
+          if (!state.leads?.leads?.length) return;
+          const header = toCsvRow(['ID', 'Имя', 'Телефон', 'Кампания', 'Статус', 'Дата']);
+          const rows = state.leads.leads.map((lead) =>
+            toCsvRow([lead.id, lead.name, lead.phone, lead.campaignName, lead.status, lead.createdAt]),
+          );
+          downloadFile('leads-' + state.period + '.csv', [header, ...rows].join('\n'), 'text/csv');
+        };
+        const exportCampaigns = () => {
+          if (!state.campaigns?.campaigns?.length) return;
+          const header = toCsvRow(['ID', 'Название', 'Цель', 'Расход', 'Показы', 'Клики', 'KPI', 'CPA']);
+          const rows = state.campaigns.campaigns.map((campaign) => {
+            const kpiValue = campaignKpiValue(campaign, campaign.kpiType);
+            const cpa = kpiValue && Number(kpiValue) > 0 ? campaign.spend / kpiValue : '';
+            return toCsvRow([
+              campaign.id,
+              campaign.name,
+              campaign.objective,
+              campaign.spend,
+              campaign.impressions,
+              campaign.clicks,
+              kpiValue,
+              cpa,
+            ]);
+          });
+          downloadFile('campaigns-' + state.period + '.csv', [header, ...rows].join('\n'), 'text/csv');
+        };
+        const exportSummary = () => {
+          if (!state.summary) return;
+          downloadFile('summary-' + state.period + '.json', JSON.stringify(state.summary, null, 2), 'application/json');
+        };
+        const loadProject = async () => {
+          const data = await portalClient.project();
+          state.project = data.project;
+          renderProject(data.project);
+        };
+        const loadSummary = async (period) => {
+          state.period = period;
+          markActivePeriod(period);
+          const summary = await portalClient.summary(period);
+          state.summary = summary;
+          renderMetrics(summary);
+          updateExportButtons();
+        };
+        const loadLeads = async (period) => {
+          setSectionLoading('leads', true);
+          try {
+            const leads = await portalClient.leads(period);
+            state.leads = leads;
+            renderLeads(leads);
+          } catch (error) {
+            handleSectionError('leads', error?.message);
+          } finally {
+            setSectionLoading('leads', false);
+            updateExportButtons();
+          }
+        };
+        const loadCampaigns = async (period) => {
+          setSectionLoading('campaigns', true);
+          try {
+            const campaigns = await portalClient.campaigns(period);
+            state.campaigns = campaigns;
+            renderCampaigns(campaigns);
+          } catch (error) {
+            handleSectionError('campaigns', error?.message);
+          } finally {
+            setSectionLoading('campaigns', false);
+            updateExportButtons();
+          }
+        };
+        const loadPayments = async () => {
+          setSectionLoading('payments', true);
+          try {
+            const payments = await portalClient.payments();
+            state.payments = payments;
+            renderPayments(payments);
+          } catch (error) {
+            handleSectionError('payments', error?.message);
+          } finally {
+            setSectionLoading('payments', false);
+          }
+        };
+        const refreshPeriodData = async (period) => {
+          try {
+            await Promise.all([loadSummary(period), loadLeads(period), loadCampaigns(period)]);
+          } catch (error) {
+            showError(error?.message || 'Не удалось загрузить данные.');
+          }
+        };
+        const bootstrap = async () => {
+          showPreloader(true);
+          hideError();
+          toggleContent(false);
+          try {
+            await Promise.all([loadProject(), loadSummary(state.period)]);
+            toggleContent(true);
+            showPreloader(false);
+            loadLeads(state.period);
+            loadCampaigns(state.period);
+            loadPayments();
+          } catch (error) {
+            showPreloader(false);
+            showError(error?.message || 'Не удалось загрузить данные.');
+          }
+        };
+        elements.retryButtons?.forEach?.((button) => {
+          button.addEventListener('click', () => bootstrap());
+        });
+        elements.retryLeads?.addEventListener('click', () => loadLeads(state.period));
+        elements.retryCampaigns?.addEventListener('click', () => loadCampaigns(state.period));
+        elements.retryPayments?.addEventListener('click', () => loadPayments());
+        elements.periodButtons?.forEach?.((button) => {
+          button.addEventListener('click', () => {
+            const period = button.getAttribute('data-period-button');
+            if (period && period !== state.period) {
+              refreshPeriodData(period);
+            }
+          });
+        });
+        elements.exportLeads?.addEventListener('click', exportLeads);
+        elements.exportCampaigns?.addEventListener('click', exportCampaigns);
+        elements.exportSummary?.addEventListener('click', exportSummary);
+        bootstrap();
+        window.PortalApp = { reload: bootstrap };
+      })();
+  `;
+  const portalScript = portalScriptSource
+    .replace(/PROJECT_ID_PLACEHOLDER/g, projectIdJson)
+    .replace(/\$\{/g, "\\${");
   return `<!doctype html>
 <html lang="ru">
   <head>
@@ -312,6 +923,25 @@ export const renderPortalHtml = (projectId: string): string => {
         padding: 8px 16px;
         cursor: pointer;
       }
+      .portal-export {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .portal-export__button {
+        border: 1px solid var(--portal-border);
+        background: rgba(148, 163, 184, 0.12);
+        color: var(--portal-text);
+        border-radius: 16px;
+        padding: 12px 18px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.2s ease, color 0.2s ease;
+      }
+      .portal-export__button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
       a.portal-link {
         color: var(--portal-accent);
         text-decoration: none;
@@ -484,437 +1114,32 @@ export const renderPortalHtml = (projectId: string): string => {
             <div class="portal-empty portal-empty--hidden" data-payments-empty>Записей об оплатах пока нет.</div>
           </div>
         </section>
+        <section class="portal-section" data-section="export">
+          <div class="portal-section__header">
+            <div>
+              <div class="portal-section__title">Экспорт данных</div>
+              <div class="portal-section__subtitle">Скачайте лиды, кампании или сводку по выбранному периоду.</div>
+            </div>
+          </div>
+          <div class="portal-export">
+            <button class="portal-export__button" type="button" data-export-leads>
+              💬 Лиды (CSV)
+            </button>
+            <button class="portal-export__button" type="button" data-export-campaigns>
+              📈 Кампании (CSV)
+            </button>
+            <button class="portal-export__button" type="button" data-export-summary>
+              📦 Сводка (JSON)
+            </button>
+          </div>
+        </section>
       </div>
     </div>
     <script>
-      (() => {
-        const PROJECT_ID = ${projectIdJson};
-        const state = {
-          period: 'yesterday',
-          currency: 'USD',
-          summaryLoaded: false,
-        };
-        const elements = {
-          preloader: document.querySelector('[data-preloader]'),
-          error: document.querySelector('[data-error]'),
-          errorMessage: document.querySelector('[data-error-message]'),
-          retryButtons: document.querySelectorAll('[data-retry]'),
-          content: document.querySelector('[data-content]'),
-          projectTitle: document.querySelector('[data-project-title]'),
-          projectDescription: document.querySelector('[data-project-description]'),
-          summaryPeriod: document.querySelector('[data-summary-period]'),
-          metrics: document.querySelectorAll('[data-metric]'),
-          periodButtons: document.querySelectorAll('[data-period-button]'),
-          leadsSection: document.querySelector('[data-section="leads"]'),
-          leadsBody: document.querySelector('[data-leads-body]'),
-          leadsEmpty: document.querySelector('[data-leads-empty]'),
-          leadsSkeleton: document.querySelector('[data-leads-skeleton]'),
-          leadsPeriod: document.querySelector('[data-leads-period]'),
-          campaignsSection: document.querySelector('[data-section="campaigns"]'),
-          campaignsBody: document.querySelector('[data-campaigns-body]'),
-          campaignsEmpty: document.querySelector('[data-campaigns-empty]'),
-          campaignsSkeleton: document.querySelector('[data-campaigns-skeleton]'),
-          campaignsPeriod: document.querySelector('[data-campaigns-period]'),
-          retryLeads: document.querySelector('[data-retry-leads]'),
-          retryCampaigns: document.querySelector('[data-retry-campaigns]'),
-          paymentsSection: document.querySelector('[data-section="payments"]'),
-          paymentsBody: document.querySelector('[data-payments-body]'),
-          paymentsEmpty: document.querySelector('[data-payments-empty]'),
-          paymentsSkeleton: document.querySelector('[data-payments-skeleton]'),
-          paymentsSubtitle: document.querySelector('[data-payments-subtitle]'),
-          retryPayments: document.querySelector('[data-retry-payments]'),
-        };
-
-        const numberFormatter = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
-        const moneyFormatter = (currency) =>
-          new Intl.NumberFormat('ru-RU', { style: 'currency', currency, maximumFractionDigits: 2 });
-        const dateFormatter = new Intl.DateTimeFormat('ru-RU', {
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-        });
-        const dateTimeFormatter = new Intl.DateTimeFormat('ru-RU', {
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-
-        const formatMoneyWithCurrency = (value, currency) => {
-          if (value == null) return '—';
-          const unit = currency || state.currency;
-          try {
-            return moneyFormatter(unit).format(value);
-          } catch (error) {
-            const amount = value.toFixed ? value.toFixed(2) : String(value);
-            return amount + ' ' + unit;
-          }
-        };
-        const formatMoney = (value) => formatMoneyWithCurrency(value, state.currency);
-        const formatNumber = (value) => {
-          if (value == null) return '—';
-          return numberFormatter.format(value);
-        };
-        const formatDateRange = (period) => {
-          if (!period || !period.from || !period.to) return '—';
-          if (period.from === period.to) {
-            return dateFormatter.format(new Date(period.from));
-          }
-          const from = dateFormatter.format(new Date(period.from));
-          const to = dateFormatter.format(new Date(period.to));
-          return from + ' — ' + to;
-        };
-        const formatDateTime = (value) => {
-          if (!value) return '—';
-          const date = new Date(value);
-          if (Number.isNaN(date.getTime())) return '—';
-          return dateTimeFormatter.format(date);
-        };
-        const escapeHtml = (value) => {
-          if (value == null) return '';
-          return String(value)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-        };
-        const formatPhone = (value) => {
-          if (!value) return '—';
-          const cleaned = String(value);
-          const href = cleaned.replace(/[^0-9+]/g, '');
-          const label = escapeHtml(cleaned);
-          if (!href) return label;
-          return '<a class="portal-link" href="tel:' + href + '">' + label + '</a>';
-        };
-
-        const setPreloaderVisible = (visible) => {
-          if (!elements.preloader) return;
-          elements.preloader.classList.toggle('portal__preloader--hidden', !visible);
-        };
-        const setContentVisible = (visible) => {
-          if (!elements.content) return;
-          elements.content.classList.toggle('portal__content--visible', visible);
-        };
-        const showError = (message) => {
-          if (elements.errorMessage) {
-            elements.errorMessage.textContent = message || 'Не удалось загрузить данные.';
-          }
-          if (elements.error) {
-            elements.error.classList.remove('portal__error--hidden');
-          }
-        };
-        const hideError = () => {
-          if (elements.error) {
-            elements.error.classList.add('portal__error--hidden');
-          }
-        };
-
-        const markActivePeriod = (period) => {
-          elements.periodButtons.forEach((button) => {
-            const value = button.getAttribute('data-period-button');
-            button.classList.toggle('portal-tabs__button--active', value === period);
-          });
-        };
-
-        const toggleSkeleton = (container, skeleton, body, empty, isLoading) => {
-          if (skeleton) skeleton.classList.toggle('portal-skeleton--hidden', !isLoading);
-          if (body) body.style.opacity = isLoading ? '0.3' : '1';
-          if (empty) empty.classList.add('portal-empty--hidden');
-        };
-
-        const fetchJson = async (url) => {
-          const response = await fetch(url, { headers: { accept: 'application/json' } });
-          if (!response.ok) {
-            const text = await response.text();
-            const error = new Error(text || 'Request failed');
-            error.status = response.status;
-            throw error;
-          }
-          return response.json();
-        };
-
-        const loadProject = async () => {
-          const data = await fetchJson('/api/projects/' + encodeURIComponent(PROJECT_ID));
-          if (data?.project) {
-            document.title = 'Портал — ' + data.project.name;
-            if (elements.projectTitle) {
-              elements.projectTitle.textContent = 'Проект ' + data.project.name;
-            }
-            if (elements.projectDescription) {
-              const account = data.project.adsAccountId ? data.project.adsAccountId : '—';
-              elements.projectDescription.textContent = 'Статистика по кабинету ' + account;
-            }
-          }
-          if (data?.settings) {
-            state.currency = data.settings.billing?.currency || 'USD';
-          }
-          return data;
-        };
-
-        const renderMetrics = (metrics) => {
-          const values = {
-            spend: formatMoney(metrics?.spend ?? null),
-            impressions: formatNumber(metrics?.impressions ?? null),
-            clicks: formatNumber(metrics?.clicks ?? null),
-            leads: formatNumber(metrics?.leads ?? null),
-            cpa: metrics?.cpa != null ? formatMoney(metrics.cpa) : '—',
-            'leads-total': formatNumber(metrics?.leadsTotal ?? null),
-            'leads-today': formatNumber(metrics?.leadsToday ?? null),
-            'cpa-today': metrics?.cpaToday != null ? formatMoney(metrics.cpaToday) : '—',
-          };
-          elements.metrics.forEach((element) => {
-            const key = element.getAttribute('data-metric');
-            const target = element.querySelector('[data-metric-value]');
-            if (!key || !target) return;
-            if (key === 'spend') {
-              target.textContent = values.spend;
-            } else {
-              target.textContent = values[key] ?? '—';
-            }
-          });
-        };
-
-        const loadSummary = async (period) => {
-          const summaryUrl = '/api/projects/' + encodeURIComponent(PROJECT_ID) + '/summary?period=' + encodeURIComponent(period);
-          const data = await fetchJson(summaryUrl);
-          state.summaryLoaded = true;
-          if (elements.summaryPeriod) {
-            elements.summaryPeriod.textContent = formatDateRange(data.period);
-          }
-          renderMetrics(data.metrics);
-          return data;
-        };
-
-        const renderLeads = (payload) => {
-          const leads = payload?.leads || [];
-          if (elements.leadsPeriod) {
-            elements.leadsPeriod.textContent = formatDateRange(payload?.period);
-          }
-          if (elements.leadsBody) {
-            elements.leadsBody.innerHTML = leads
-              .map((lead) => {
-                const name = escapeHtml(lead.name || 'Без имени');
-                const campaign = escapeHtml(lead.campaign || '—');
-                const created = formatDateTime(lead.createdAt);
-                const status = escapeHtml(lead.status);
-                return (
-                  '<tr>' +
-                  '<td>' + name + '</td>' +
-                  '<td>' + formatPhone(lead.phone) + '</td>' +
-                  '<td>' + campaign + '</td>' +
-                  '<td>' + created + '</td>' +
-                  '<td><span class="portal-table__status"><span class="portal-table__status-dot"></span>' + status + '</span></td>' +
-                  '</tr>'
-                );
-              })
-              .join('');
-          }
-          if (elements.leadsEmpty) {
-            elements.leadsEmpty.classList.toggle('portal-empty--hidden', leads.length !== 0);
-          }
-        };
-
-        const loadLeads = async (period) => {
-          toggleSkeleton(elements.leadsSection, elements.leadsSkeleton, elements.leadsBody, elements.leadsEmpty, true);
-          try {
-            const leadsUrl = '/api/projects/' + encodeURIComponent(PROJECT_ID) + '/leads?period=' + encodeURIComponent(period);
-            const data = await fetchJson(leadsUrl);
-            renderLeads(data);
-            return data;
-          } finally {
-            toggleSkeleton(elements.leadsSection, elements.leadsSkeleton, elements.leadsBody, elements.leadsEmpty, false);
-          }
-        };
-
-        const renderCampaigns = (payload) => {
-          const campaigns = payload?.campaigns || [];
-          if (elements.campaignsPeriod) {
-            elements.campaignsPeriod.textContent = formatDateRange(payload?.period);
-          }
-          if (elements.campaignsBody) {
-            elements.campaignsBody.innerHTML = campaigns
-              .map((campaign) => {
-                const name = escapeHtml(campaign.name);
-                const cpa = campaign.cpa != null ? formatMoney(campaign.cpa) : '—';
-                return (
-                  '<tr>' +
-                  '<td>' + name + '</td>' +
-                  '<td>' + formatMoney(campaign.spend) + '</td>' +
-                  '<td>' + formatNumber(campaign.impressions) + '</td>' +
-                  '<td>' + formatNumber(campaign.clicks) + '</td>' +
-                  '<td>' + formatNumber(campaign.leads) + '</td>' +
-                  '<td>' + cpa + '</td>' +
-                  '</tr>'
-                );
-              })
-              .join('');
-          }
-          if (elements.campaignsEmpty) {
-            elements.campaignsEmpty.classList.toggle('portal-empty--hidden', campaigns.length !== 0);
-          }
-        };
-
-        const loadCampaigns = async (period) => {
-          toggleSkeleton(elements.campaignsSection, elements.campaignsSkeleton, elements.campaignsBody, elements.campaignsEmpty, true);
-          try {
-            const campaignsUrl = '/api/projects/' + encodeURIComponent(PROJECT_ID) + '/campaigns?period=' + encodeURIComponent(period);
-            const data = await fetchJson(campaignsUrl);
-            renderCampaigns(data);
-            return data;
-          } finally {
-            toggleSkeleton(elements.campaignsSection, elements.campaignsSkeleton, elements.campaignsBody, elements.campaignsEmpty, false);
-          }
-        };
-
-        const paymentStatusLabels = {
-          PLANNED: 'Запланировано',
-          PAID: 'Оплачено',
-          CANCELLED: 'Отменено',
-        };
-
-        const formatPaymentPeriod = (start, end) => {
-          if (!start && !end) return '—';
-          const from = start ? dateFormatter.format(new Date(start)) : '—';
-          const to = end ? dateFormatter.format(new Date(end)) : '—';
-          return from === to ? from : from + ' — ' + to;
-        };
-
-        const renderPayments = (payload) => {
-          const payments = payload?.payments || [];
-          if (elements.paymentsBody) {
-            elements.paymentsBody.innerHTML = payments
-              .map((payment) => {
-                const amount = formatMoneyWithCurrency(payment.amount, payment.currency);
-                const period = formatPaymentPeriod(payment.periodStart, payment.periodEnd);
-                const status = escapeHtml(paymentStatusLabels[payment.status] || payment.status);
-                const paidAt = payment.paidAt ? formatDateTime(payment.paidAt) : '—';
-                const comment = escapeHtml(payment.comment || '—');
-                return (
-                  '<tr>' +
-                  '<td>' + amount + '</td>' +
-                  '<td>' + period + '</td>' +
-                  '<td>' + status + '</td>' +
-                  '<td>' + paidAt + '</td>' +
-                  '<td>' + comment + '</td>' +
-                  '</tr>'
-                );
-              })
-              .join('');
-          }
-          if (elements.paymentsEmpty) {
-            elements.paymentsEmpty.classList.toggle('portal-empty--hidden', payments.length !== 0);
-          }
-          if (elements.paymentsSubtitle) {
-            elements.paymentsSubtitle.textContent = payments.length
-              ? 'Всего платежей: ' + payments.length
-              : 'Записей об оплатах пока нет.';
-          }
-        };
-
-        const loadPayments = async () => {
-          toggleSkeleton(elements.paymentsSection, elements.paymentsSkeleton, elements.paymentsBody, elements.paymentsEmpty, true);
-          try {
-            const paymentsUrl = '/api/projects/' + encodeURIComponent(PROJECT_ID) + '/payments';
-            const data = await fetchJson(paymentsUrl);
-            renderPayments(data);
-            return data;
-          } finally {
-            toggleSkeleton(elements.paymentsSection, elements.paymentsSkeleton, elements.paymentsBody, elements.paymentsEmpty, false);
-          }
-        };
-
-        const loadAll = async (period, { initial } = { initial: false }) => {
-          state.summaryLoaded = false;
-          const summaryPromise = loadSummary(period);
-          const leadsPromise = loadLeads(period);
-          const campaignsPromise = loadCampaigns(period);
-          const paymentsPromise = loadPayments();
-
-          if (initial) {
-            const timeout = setTimeout(() => {
-              if (!state.summaryLoaded) {
-                setPreloaderVisible(false);
-                showError('Не удалось загрузить данные.');
-              }
-            }, 9000);
-            try {
-              await summaryPromise;
-            } catch (error) {
-              console.error(error);
-              throw error;
-            } finally {
-              clearTimeout(timeout);
-            }
-          } else {
-            await summaryPromise;
-          }
-
-          await Promise.allSettled([leadsPromise, campaignsPromise, paymentsPromise]);
-        };
-
-        const reloadAll = () => {
-          state.summaryLoaded = false;
-          hideError();
-          setPreloaderVisible(true);
-          loadProject()
-            .then(() => loadAll(state.period, { initial: true }))
-            .then(() => {
-              setPreloaderVisible(false);
-              setContentVisible(true);
-            })
-            .catch((error) => {
-              console.error(error);
-              showError('Не удалось загрузить данные.');
-            });
-        };
-
-        elements.periodButtons.forEach((button) => {
-          button.addEventListener('click', () => {
-            const period = button.getAttribute('data-period-button');
-            if (!period || period === state.period) return;
-            state.period = period;
-            markActivePeriod(period);
-            loadAll(period).catch((error) => console.error(error));
-          });
-        });
-
-        elements.retryButtons.forEach((button) => {
-          button.addEventListener('click', () => {
-            reloadAll();
-          });
-        });
-        if (elements.retryLeads) {
-          elements.retryLeads.addEventListener('click', () => {
-            loadLeads(state.period).catch((error) => console.error(error));
-          });
-        }
-        if (elements.retryCampaigns) {
-          elements.retryCampaigns.addEventListener('click', () => {
-            loadCampaigns(state.period).catch((error) => console.error(error));
-          });
-        }
-        if (elements.retryPayments) {
-          elements.retryPayments.addEventListener('click', () => {
-            loadPayments().catch((error) => console.error(error));
-          });
-        }
-
-        reloadAll();
-      })();
+${portalScript}
     </script>
   </body>
 </html>`;
-};
-
-const ensurePortalAccess = async (context: RequestContext, projectId: string) => {
-  const project = await getProject(context.kv, projectId);
-  const settings = await ensureProjectSettings(context.kv, projectId);
-  if (!settings.portalEnabled) {
-    throw new DataValidationError("Portal is disabled for this project");
-  }
-  return { project, settings };
 };
 
 export const registerPortalRoutes = (router: Router): void => {
@@ -924,18 +1149,32 @@ export const registerPortalRoutes = (router: Router): void => {
       return badRequest("Project ID is required");
     }
     try {
-      await ensurePortalAccess(context, projectId);
+      await requireProjectRecord(context.kv, projectId);
       return htmlResponse(renderPortalHtml(projectId));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
       }
-      if (error instanceof DataValidationError) {
-        return forbidden(error.message);
+      throw error;
+    }
+  });
+
+  router.on("GET", "/api/projects/:projectId", async (context) => {
+    const projectId = context.state.params.projectId;
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    try {
+      const project = await requireProjectRecord(context.kv, projectId);
+      return jsonOk({ project });
+    } catch (error) {
+      if (error instanceof EntityNotFoundError) {
+        return notFound(error.message);
       }
       throw error;
     }
   });
+  router.on("OPTIONS", "/api/projects/:projectId", (context) => preflight(context.request));
 
   router.on("GET", "/api/projects/:projectId/summary", async (context) => {
     const projectId = context.state.params.projectId;
@@ -943,17 +1182,10 @@ export const registerPortalRoutes = (router: Router): void => {
       return badRequest("Project ID is required");
     }
     const url = new URL(context.request.url);
-    const period = url.searchParams.get("period") ?? "today";
+    const periodKey = url.searchParams.get("period") ?? "today";
     try {
-      const { project, settings } = await ensurePortalAccess(context, projectId);
-      const { entry } = await loadProjectSummary(context.kv, projectId, period, { project, settings });
-      return jsonResponse({
-        projectId,
-        periodKey: entry.payload.periodKey,
-        period: entry.period,
-        fetchedAt: entry.fetchedAt,
-        metrics: entry.payload.metrics,
-      });
+      const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      return jsonOk(buildSummaryPayload(bundle, periodKey));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
@@ -964,6 +1196,7 @@ export const registerPortalRoutes = (router: Router): void => {
       throw error;
     }
   });
+  router.on("OPTIONS", "/api/projects/:projectId/summary", (context) => preflight(context.request));
 
   router.on("GET", "/api/projects/:projectId/leads", async (context) => {
     const projectId = context.state.params.projectId;
@@ -973,24 +1206,14 @@ export const registerPortalRoutes = (router: Router): void => {
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
     try {
-      const { settings } = await ensurePortalAccess(context, projectId);
-      const range = resolvePeriodRange(periodKey);
-      const leads = await listLeads(context.r2, projectId);
-      const filtered = filterLeadsByDateRange(leads, range.from, range.to).map((lead) => ({
-        id: lead.id,
-        name: lead.name,
-        phone: lead.phone,
-        campaign: lead.campaign,
-        createdAt: lead.createdAt,
-        status: lead.status,
-      }));
-      return jsonResponse({
+      const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      const filtered = filterLeadsForPeriod(bundle, periodKey);
+      return jsonOk({
         projectId,
-        period: range.period,
+        period: filtered.period,
         periodKey,
-        leads: filtered,
-        total: filtered.length,
-        portalEnabled: settings.portalEnabled,
+        leads: filtered.leads,
+        stats: bundle.leads.stats,
       });
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
@@ -1002,6 +1225,7 @@ export const registerPortalRoutes = (router: Router): void => {
       throw error;
     }
   });
+  router.on("OPTIONS", "/api/projects/:projectId/leads", (context) => preflight(context.request));
 
   router.on("GET", "/api/projects/:projectId/campaigns", async (context) => {
     const projectId = context.state.params.projectId;
@@ -1011,15 +1235,8 @@ export const registerPortalRoutes = (router: Router): void => {
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
     try {
-      const { project, settings } = await ensurePortalAccess(context, projectId);
-      const { entry } = await loadProjectCampaigns(context.kv, projectId, periodKey, { project, settings });
-      return jsonResponse({
-        projectId,
-        period: entry.period,
-        periodKey,
-        fetchedAt: entry.fetchedAt,
-        campaigns: mapCampaignRows(entry.payload),
-      });
+      const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      return jsonOk(buildCampaignsPayload(bundle, periodKey));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
@@ -1030,6 +1247,7 @@ export const registerPortalRoutes = (router: Router): void => {
       throw error;
     }
   });
+  router.on("OPTIONS", "/api/projects/:projectId/campaigns", (context) => preflight(context.request));
 
   router.on("GET", "/api/projects/:projectId/payments", async (context) => {
     const projectId = context.state.params.projectId;
@@ -1037,25 +1255,8 @@ export const registerPortalRoutes = (router: Router): void => {
       return badRequest("Project ID is required");
     }
     try {
-      const { settings } = await ensurePortalAccess(context, projectId);
-      const payments = await listProjectPayments(context.r2, projectId);
-      const sorted = payments.sort((a, b) => (a.periodEnd < b.periodEnd ? 1 : -1));
-      return jsonResponse({
-        projectId,
-        payments: sorted.map((payment) => ({
-          id: payment.id,
-          amount: payment.amount,
-          currency: payment.currency,
-          periodStart: payment.periodStart,
-          periodEnd: payment.periodEnd,
-          status: payment.status,
-          paidAt: payment.paidAt,
-          comment: payment.comment,
-          createdAt: payment.createdAt,
-        })),
-        total: sorted.length,
-        portalEnabled: settings.portalEnabled,
-      });
+      const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      return jsonOk(buildPaymentsPayload(bundle));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
@@ -1066,4 +1267,5 @@ export const registerPortalRoutes = (router: Router): void => {
       throw error;
     }
   });
+  router.on("OPTIONS", "/api/projects/:projectId/payments", (context) => preflight(context.request));
 };

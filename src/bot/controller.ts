@@ -74,6 +74,7 @@ import { getUserSettingsRecord, updateUserSettingsRecord, type UserSettingsRecor
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
 import { answerCallbackQuery, getTelegramChatInfo, getWebhookInfo, sendTelegramMessage } from "../services/telegram";
+import { fetchFacebookAdAccounts } from "../services/facebook-auth";
 
 interface BotContext {
   kv: KvClient;
@@ -612,18 +613,40 @@ const handleFacebookTokenInput = async (
   userId: number,
   tokenValue: string,
 ): Promise<void> => {
-  const expiresAt = addDaysIso(todayIsoDate(), 90);
-  await putFbAuthRecord(ctx.kv, {
-    userId,
-    accessToken: tokenValue.trim(),
-    expiresAt: `${expiresAt}T00:00:00.000Z`,
-    adAccounts: [],
-  });
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: "✅ Facebook подключён. Аккаунт сохранён, можно возвращаться к проектам.",
-    replyMarkup: buildMainMenuKeyboard(),
-  });
+  try {
+    const trimmed = tokenValue.trim();
+    const accounts = await fetchFacebookAdAccounts(trimmed);
+    const expiresAt = addDaysIso(todayIsoDate(), 90);
+    await putFbAuthRecord(ctx.kv, {
+      userId,
+      accessToken: trimmed,
+      expiresAt: `${expiresAt}T00:00:00.000Z`,
+      adAccounts: accounts,
+    });
+    const accountLines =
+      accounts.length > 0
+        ? [
+            "\nДоступные рекламные аккаунты:",
+            ...accounts.map(
+              (account, index) => `${index + 1}. ${account.name} (${account.id}) — ${account.currency}`,
+            ),
+          ]
+        : ["\n⚠️ Рекламные аккаунты не найдены. Проверьте права доступа в Meta."];
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text:
+        "✅ Facebook подключён. Аккаунт сохранён, можно возвращаться к проектам." +
+        accountLines.join("\n"),
+      replyMarkup: buildMainMenuKeyboard(),
+    });
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text:
+        "Не удалось сохранить токен Facebook: " +
+        (error instanceof Error ? error.message : "неизвестная ошибка"),
+    });
+  }
 };
 
 const resolveChatInput = async (
@@ -1155,7 +1178,9 @@ const handleCallback = async (
         const body =
           accounts.length === 0
             ? "Рекламные аккаунты не загружены."
-            : accounts.map((acc, idx) => `${idx + 1}. ${acc.name} (${acc.id})`).join("\n");
+            : accounts
+                .map((acc, idx) => `${idx + 1}. ${acc.name} (${acc.id}) — ${acc.currency}`)
+                .join("\n");
         await sendTelegramMessage(ctx.token, { chatId, text: body || "Список пуст." });
       }
       break;

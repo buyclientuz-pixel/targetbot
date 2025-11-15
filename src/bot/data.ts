@@ -54,6 +54,7 @@ const createEmptyMetaCampaigns = (): MetaCampaignsDocument => ({
   period: { from: new Date().toISOString().slice(0, 10), to: new Date().toISOString().slice(0, 10) },
   summary: { spend: 0, impressions: 0, clicks: 0, leads: 0, messages: 0 },
   campaigns: [],
+  periodKey: null,
 });
 
 const createEmptyPayments = (): PaymentsHistoryDocument => ({ payments: [] });

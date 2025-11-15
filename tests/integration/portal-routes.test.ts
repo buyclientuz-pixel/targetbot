@@ -35,12 +35,11 @@ const { createRouter } = await import("../../src/worker/router.ts");
 const { registerPortalRoutes } = await import("../../src/routes/portal.ts");
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
-const { createProject, putProject } = await import("../../src/domain/projects.ts");
-const { createDefaultProjectSettings, upsertProjectSettings } = await import("../../src/domain/project-settings.ts");
-const { createLead, saveLead } = await import("../../src/domain/leads.ts");
-const { createPayment, savePayment } = await import("../../src/domain/payments.ts");
-const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/meta-cache.ts");
-const { resolvePeriodRange } = await import("../../src/services/project-insights.ts");
+const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
+const { putBillingRecord } = await import("../../src/domain/spec/billing.ts");
+const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
+const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
+const { putPaymentsHistoryDocument } = await import("../../src/domain/spec/payments-history.ts");
 
 const createEnv = () => ({
   KV: new MemoryKVNamespace(),
@@ -56,88 +55,76 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   const kv = new KvClient(env.KV);
   const r2 = new R2Client(env.R2);
 
-  const project = createProject({
+  const projectRecord: import("../../src/domain/spec/project.ts").ProjectRecord = {
     id: "birlash",
     name: "Birlash",
-    adsAccountId: "act_813372877848888",
-    ownerTelegramId: 123456789,
-  });
-  await putProject(kv, project);
-  const settings = createDefaultProjectSettings(project.id);
-  settings.meta.facebookUserId = "fb_1";
-  await upsertProjectSettings(kv, settings);
-
-  const periodRange = resolvePeriodRange("yesterday");
-  const summaryEntry = createMetaCacheEntry(
-    project.id,
-    "summary:yesterday",
-    periodRange.period,
-    {
-      periodKey: "yesterday",
-      metrics: {
-        spend: 16.15,
-        impressions: 1200,
-        clicks: 140,
-        leads: 6,
-        leadsToday: 2,
-        leadsTotal: 170,
-        cpa: 2.69,
-        spendToday: 4.5,
-        cpaToday: 2.25,
-      },
-      source: { mock: true },
+    ownerId: 123456789,
+    adAccountId: "act_813372877848888",
+    chatId: -1003269756488,
+    portalUrl: "https://th-reports.buyclientuz.workers.dev/p/birlash",
+    settings: {
+      currency: "USD",
+      timezone: "Asia/Tashkent",
+      kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
     },
-    600,
-  );
-  await saveMetaCache(kv, summaryEntry);
-
-  const campaignEntry = createMetaCacheEntry(
-    project.id,
-    "campaigns:yesterday",
-    periodRange.period,
-    {
-      data: [
-        {
-          campaign_id: "cmp-1",
-          campaign_name: "Campaign A",
-          spend: "16.15",
-          impressions: "1000",
-          clicks: "120",
-          actions: [
-            { action_type: "lead", value: "5" },
-            { action_type: "view_content", value: "100" },
-          ],
-        },
-      ],
-    },
-    600,
-  );
-  await saveMetaCache(kv, campaignEntry);
-
-  const lead = createLead({
-    id: "lead-1",
-    projectId: project.id,
-    name: "Sharofat Ona",
-    phone: "+998902867999",
-    campaign: "Campaign A",
-    adset: "Женщины",
-    ad: "Креатив №3",
-    createdAt: "2025-11-14T21:54:26.000Z",
-  });
-  await saveLead(r2, lead);
-
-  const payment = createPayment({
-    projectId: project.id,
-    amount: 500,
+  };
+  await putProjectRecord(kv, projectRecord);
+  await putBillingRecord(kv, projectRecord.id, {
+    tariff: 500,
     currency: "USD",
-    periodStart: "2025-11-15",
-    periodEnd: "2025-12-15",
-    status: "PAID",
-    paidAt: "2025-11-15T17:11:00.000Z",
-    comment: "Оплата от клиента",
-    createdBy: 123456789,
+    nextPaymentDate: "2025-12-15",
+    autobilling: true,
   });
-  await savePayment(r2, payment);
+
+  await putProjectLeadsList(r2, projectRecord.id, {
+    stats: { total: 170, today: 2 },
+    leads: [
+      {
+        id: "lead-1",
+        name: "Sharofat Ona",
+        phone: "+998902867999",
+        createdAt: "2025-11-14T21:54:26.000Z",
+        source: "facebook",
+        campaignName: "Campaign A",
+        status: "new",
+        type: "lead",
+      },
+    ],
+  });
+
+  await putMetaCampaignsDocument(r2, projectRecord.id, {
+    period: { from: "2025-11-14", to: "2025-11-14" },
+    summary: { spend: 16.15, impressions: 1200, clicks: 140, leads: 6, messages: 2 },
+    campaigns: [
+      {
+        id: "cmp-1",
+        name: "Campaign A",
+        objective: "LEAD_GENERATION",
+        kpiType: "LEAD",
+        spend: 16.15,
+        impressions: 1000,
+        clicks: 120,
+        leads: 5,
+        messages: 0,
+      },
+    ],
+    periodKey: "yesterday",
+  });
+
+  await putPaymentsHistoryDocument(r2, projectRecord.id, {
+    payments: [
+      {
+        id: "pay-1",
+        amount: 500,
+        currency: "USD",
+        periodFrom: "2025-11-15",
+        periodTo: "2025-12-15",
+        paidAt: "2025-11-15T17:11:00.000Z",
+        status: "paid",
+        comment: "Оплата от клиента",
+      },
+    ],
+  });
 
   const summaryResponse = await router.dispatch(
     new Request("https://example.com/api/projects/birlash/summary?period=yesterday"),
@@ -145,14 +132,15 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
     execution,
   );
   assert.equal(summaryResponse.status, 200);
-  const summary = (await summaryResponse.clone().json()) as {
-    metrics: { spend: number; leads: number; cpaToday: number | null };
-    period: { from: string; to: string };
+  const summaryPayload = (await summaryResponse.clone().json()) as {
+    ok: boolean;
+    data: { metrics: { spend: number; leads: number; cpaToday: number | null }; period: { from: string; to: string } };
   };
-  assert.equal(summary.metrics.spend, 16.15);
-  assert.equal(summary.metrics.leads, 6);
-  assert.equal(summary.metrics.cpaToday, 2.25);
-  assert.equal(summary.period.from, summary.period.to);
+  assert.ok(summaryPayload.ok);
+  assert.equal(summaryPayload.data.metrics.spend, 16.15);
+  assert.equal(summaryPayload.data.metrics.leads, 6);
+  assert.equal(summaryPayload.data.metrics.cpaToday, 16.15 / 2);
+  assert.equal(summaryPayload.data.period.from, summaryPayload.data.period.to);
 
   const leadsResponse = await router.dispatch(
     new Request("https://example.com/api/projects/birlash/leads?period=yesterday"),
@@ -160,10 +148,15 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
     execution,
   );
   assert.equal(leadsResponse.status, 200);
-  const leadsBody = (await leadsResponse.clone().json()) as { leads: Array<{ id: string; status: string }> };
-  assert.equal(leadsBody.leads.length, 1);
-  assert.equal(leadsBody.leads[0]?.id, "lead-1");
-  assert.equal(leadsBody.leads[0]?.status, "NEW");
+  const leadsPayload = (await leadsResponse.clone().json()) as {
+    ok: boolean;
+    data: { leads: Array<{ id: string; status: string }>; stats: { total: number; today: number } };
+  };
+  assert.ok(leadsPayload.ok);
+  assert.equal(leadsPayload.data.leads.length, 1);
+  assert.equal(leadsPayload.data.leads[0]?.id, "lead-1");
+  assert.equal(leadsPayload.data.leads[0]?.status, "new");
+  assert.equal(leadsPayload.data.stats.total, 170);
 
   const campaignsResponse = await router.dispatch(
     new Request("https://example.com/api/projects/birlash/campaigns?period=yesterday"),
@@ -171,11 +164,16 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
     execution,
   );
   assert.equal(campaignsResponse.status, 200);
-  const campaigns = (await campaignsResponse.clone().json()) as { campaigns: Array<{ id: string; cpa: number | null }> };
-  assert.equal(campaigns.campaigns.length, 1);
-  assert.equal(campaigns.campaigns[0]?.id, "cmp-1");
-  const cpa = campaigns.campaigns[0]?.cpa ?? 0;
-  assert.ok(Math.abs(cpa - 3.23) < 0.001, `expected CPA ≈ 3.23, received ${cpa}`);
+  const campaignsPayload = (await campaignsResponse.clone().json()) as {
+    ok: boolean;
+    data: { campaigns: Array<{ id: string; spend: number; leads: number }> };
+  };
+  assert.ok(campaignsPayload.ok);
+  assert.equal(campaignsPayload.data.campaigns.length, 1);
+  const campaign = campaignsPayload.data.campaigns[0];
+  assert.equal(campaign?.id, "cmp-1");
+  assert.equal(campaign?.spend, 16.15);
+  assert.equal(campaign?.leads, 5);
 
   const paymentsResponse = await router.dispatch(
     new Request("https://example.com/api/projects/birlash/payments"),
@@ -183,10 +181,15 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
     execution,
   );
   assert.equal(paymentsResponse.status, 200);
-  const payments = (await paymentsResponse.clone().json()) as { payments: Array<{ id: string; status: string }> };
-  assert.equal(payments.payments.length, 1);
-  assert.equal(payments.payments[0]?.id, payment.id);
-  assert.equal(payments.payments[0]?.status, "PAID");
+  const paymentsPayload = (await paymentsResponse.clone().json()) as {
+    ok: boolean;
+    data: { payments: Array<{ id: string; status: string }>; billing: { tariff: number } };
+  };
+  assert.ok(paymentsPayload.ok);
+  assert.equal(paymentsPayload.data.payments.length, 1);
+  assert.equal(paymentsPayload.data.payments[0]?.id, "pay-1");
+  assert.equal(paymentsPayload.data.payments[0]?.status, "paid");
+  assert.equal(paymentsPayload.data.billing.tariff, 500);
 
   const portalResponse = await router.dispatch(
     new Request("https://example.com/portal/birlash"),

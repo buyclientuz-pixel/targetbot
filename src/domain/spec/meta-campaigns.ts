@@ -1,7 +1,7 @@
 import { R2_KEYS } from "../../config/r2";
 import type { R2Client } from "../../infra/r2";
 import { DataValidationError } from "../../errors";
-import { assertEnum, assertNumber, assertString } from "../validation";
+import { assertEnum, assertNumber, assertOptionalString, assertString } from "../validation";
 import { KPI_TYPES } from "./project";
 
 export interface MetaPeriodRange {
@@ -28,6 +28,7 @@ export interface MetaCampaignsDocument {
   period: MetaPeriodRange;
   summary: MetaSummaryMetrics;
   campaigns: MetaCampaignRecord[];
+  periodKey: string | null;
 }
 
 const parseSummary = (raw: unknown, field: string): MetaSummaryMetrics => {
@@ -89,6 +90,7 @@ export const parseMetaCampaignsDocument = (raw: unknown): MetaCampaignsDocument 
     period: parsePeriod(record.period ?? record["period"]),
     summary: parseSummary(record.summary ?? record["summary"], "meta.campaigns.summary"),
     campaigns: campaigns.map((entry, index) => parseCampaign(entry, index)),
+    periodKey: assertOptionalString(record.periodKey ?? record["period_key"], "meta.campaigns.period_key"),
   };
 };
 
@@ -106,6 +108,7 @@ export const putMetaCampaignsDocument = async (
   document: MetaCampaignsDocument,
 ): Promise<void> => {
   await r2.putJson(R2_KEYS.metaCampaigns(projectId), {
+    period_key: document.periodKey,
     period: document.period,
     summary: document.summary,
     campaigns: document.campaigns.map((campaign) => ({
