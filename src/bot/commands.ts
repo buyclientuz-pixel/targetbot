@@ -632,6 +632,7 @@ const handlePaymentsPayCash = async (
       chatId: callbackMeta.chatId,
       messageId: callbackMeta.messageId,
       text: "Продление сотрудничества.\n\nФормат оплаты: наличными. Спасибо! Ожидаем оплату.",
+      replyMarkup: { inline_keyboard: [] },
     });
   } else {
     const chatId = context.chatId ?? resolveClientChatIdFromSummary(summary);
@@ -732,6 +733,7 @@ const handlePaymentsPayDone = async (
       chatId: callbackMeta.chatId,
       messageId: callbackMeta.messageId,
       text: "Спасибо! Администратор проверит поступление и подтвердит оплату.",
+      replyMarkup: { inline_keyboard: [] },
     });
   } else {
     const chatId = context.chatId ?? resolveClientChatIdFromSummary(summary);

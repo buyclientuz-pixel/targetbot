@@ -6,6 +6,7 @@ import {
   listPaymentReminders,
   listProjects,
   listSettings,
+  loadProjectSettingsRecord,
   saveLeadReminders,
   savePaymentReminders,
   updateProjectRecord,
@@ -17,6 +18,7 @@ import {
   PaymentReminderRecord,
   PaymentReminderStatus,
   ProjectRecord,
+  ProjectSettingsRecord,
   SettingRecord,
 } from "../types";
 
@@ -505,8 +507,21 @@ const processPaymentReminders = async (
   const nextRecords: PaymentReminderRecord[] = [];
   const now = Date.now();
   let sent = 0;
+  const settingsCache = new Map<string, ProjectSettingsRecord | null>();
 
   for (const project of projects) {
+    if (!settingsCache.has(project.id)) {
+      const settings = await loadProjectSettingsRecord(env, project.id).catch((error) => {
+        console.warn("Failed to load project settings for payment reminders", project.id, error);
+        return null;
+      });
+      settingsCache.set(project.id, settings);
+    }
+    const settings = settingsCache.get(project.id);
+    if (settings && settings.alerts.payment === false) {
+      reminderMap.delete(project.id);
+      continue;
+    }
     const adminChatId = resolveAdminChatId(project);
     const clientChatId = resolveClientChatId(project);
     const dueIso = project.nextPaymentDate;
