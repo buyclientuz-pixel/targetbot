@@ -39,18 +39,18 @@ export const renderLayout = ({ title, body, styles = "", scripts = "", nav }: La
     <title>${title}</title>
     <style>
       body { font-family: "Inter", system-ui, sans-serif; margin: 0; padding: 0; background: #f5f7fb; color: #1f2933; }
-      header { background: #1f75fe; color: #fff; padding: 16px 24px; }
-      main { padding: 24px; max-width: 1200px; margin: 0 auto; }
-      h1 { margin-top: 0; font-size: 28px; }
-      h2 { margin-top: 32px; font-size: 20px; }
-      table { border-collapse: collapse; width: 100%; margin-top: 16px; background: #fff; }
-      th, td { border: 1px solid #d9e2ec; padding: 10px 12px; text-align: left; }
+      header { background: #1f75fe; color: #fff; padding: 8px 12px; }
+      main { padding: 16px; max-width: 1100px; margin: 0 auto; }
+      h1 { margin-top: 0; font-size: 26px; }
+      h2 { margin-top: 24px; font-size: 20px; }
+      table { border-collapse: collapse; width: 100%; margin-top: 12px; background: #fff; }
+      th, td { border: 1px solid #d9e2ec; padding: 8px 10px; text-align: left; }
       th { background: #f0f4f8; font-weight: 600; }
       .badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 600; }
       .badge.success { background: #def7ec; color: #03543f; }
       .badge.warning { background: #fdf6b2; color: #723b13; }
       .badge.error { background: #fde2e1; color: #9b1c1c; }
-      .card { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 24px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); }
+      .card { background: #fff; border-radius: 12px; padding: 12px 16px; margin: 8px 0 16px; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08); }
       .actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
       .btn { display: inline-flex; align-items: center; justify-content: center; padding: 10px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; text-decoration: none; }
       .btn-primary { background: #1f75fe; color: #fff; }
@@ -75,6 +75,9 @@ export const renderLayout = ({ title, body, styles = "", scripts = "", nav }: La
       .top-nav .nav-link { color: rgba(255,255,255,0.85); text-decoration: none; font-weight: 600; padding: 6px 12px; border-radius: 8px; }
       .top-nav .nav-link:hover { background: rgba(255,255,255,0.12); }
       .top-nav .nav-link.active { background: #fff; color: #163d7a; }
+      @media (max-width: 768px) {
+        .logo-large { display: none; }
+      }
       ${styles}
     </style>
   </head>

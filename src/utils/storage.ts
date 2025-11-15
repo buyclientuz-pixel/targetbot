@@ -8,6 +8,7 @@ import {
   MetaTokenRecord,
   MetaTokenStatus,
   MetaWebhookEventRecord,
+  MetaCampaign,
   JsonObject,
   PaymentReminderRecord,
   PaymentRecord,
@@ -95,6 +96,18 @@ const CAMPAIGN_OBJECTIVE_KV_PREFIX = "campaign_objective:";
 const CAMPAIGN_KPI_KV_PREFIX = "project_campaign_kpis:";
 const KPI_PENDING_PREFIX = "kpi/pending/";
 const PROJECT_SETTINGS_KV_PREFIX = "project_settings:";
+const PORTAL_REPORT_CACHE_PREFIX = "reports:";
+
+interface PortalReportCacheEntry {
+  campaigns: MetaCampaign[];
+  fetchedAt: string;
+  period: {
+    key: string;
+    since?: string | null;
+    until?: string | null;
+    datePreset?: string | null;
+  };
+}
 
 const PORTAL_ALLOWED_METRICS: PortalMetricKey[] = [
   "leads_total",
@@ -2294,6 +2307,62 @@ export const savePortals = async (env: EnvBindings, portals: ProjectPortalRecord
       last_shared_at: portal.lastSharedAt ?? null,
       last_report_id: portal.lastReportId ?? null,
     }),
+  });
+};
+
+const normalizePeriodSegment = (value: string): string => {
+  return value.replace(/[^0-9a-zA-Z_-]/g, "-");
+};
+
+const portalReportCacheKey = (
+  accountId: string,
+  period: PortalReportCacheEntry["period"],
+): string => {
+  const base = normalizePeriodSegment(period.key || "current");
+  const preset = period.datePreset ? normalizePeriodSegment(period.datePreset) : base;
+  const since = period.since ? normalizePeriodSegment(period.since) : "none";
+  const until = period.until ? normalizePeriodSegment(period.until) : "none";
+  return `${PORTAL_REPORT_CACHE_PREFIX}${accountId}:${preset}:${since}:${until}`;
+};
+
+export const readPortalReportCache = async (
+  env: EnvBindings,
+  accountId: string,
+  period: PortalReportCacheEntry["period"],
+): Promise<PortalReportCacheEntry | null> => {
+  const key = portalReportCacheKey(accountId, period);
+  const stored = await env.DB.get(key);
+  if (!stored) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(stored) as PortalReportCacheEntry;
+    if (!Array.isArray(parsed.campaigns)) {
+      throw new Error("Invalid campaigns payload");
+    }
+    return parsed;
+  } catch (error) {
+    console.warn("Failed to parse portal report cache", { key, error });
+    await env.DB.delete(key).catch(() => undefined);
+    return null;
+  }
+};
+
+export const writePortalReportCache = async (
+  env: EnvBindings,
+  accountId: string,
+  period: PortalReportCacheEntry["period"],
+  campaigns: MetaCampaign[],
+  ttlSeconds = 300,
+): Promise<void> => {
+  const key = portalReportCacheKey(accountId, period);
+  const entry: PortalReportCacheEntry = {
+    campaigns,
+    fetchedAt: new Date().toISOString(),
+    period,
+  };
+  await env.DB.put(key, JSON.stringify(entry, null, 0), {
+    expirationTtl: Math.max(60, ttlSeconds),
   });
 };
 

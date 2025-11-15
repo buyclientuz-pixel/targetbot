@@ -111,6 +111,47 @@ export interface NormalizedCampaign {
   raw: MetaCampaign;
 }
 
+export interface PortalMetricEntry {
+  key: PortalMetricKey;
+  label: string;
+  value: string;
+}
+
+export interface PortalPagination {
+  page: number;
+  totalPages: number;
+  prevUrl?: string | null;
+  nextUrl?: string | null;
+}
+
+export interface PortalStatusCounts {
+  all: number;
+  new: number;
+  done: number;
+}
+
+export type PortalLeadType = "Контакт" | "Сообщение";
+
+export interface PortalLeadView {
+  id: string;
+  name: string;
+  phone?: string | null;
+  status: string;
+  createdAt: string;
+  adLabel?: string | null;
+  type: PortalLeadType;
+}
+
+export interface PortalSnapshotPayload {
+  metrics: PortalMetricEntry[];
+  campaigns: NormalizedCampaign[];
+  leads: PortalLeadView[];
+  statusCounts: PortalStatusCounts;
+  pagination: PortalPagination;
+  periodLabel: string;
+  updatedAt: string;
+}
+
 export type PortalMode = "auto" | "manual";
 
 export type PortalMetricKey =

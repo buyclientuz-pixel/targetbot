@@ -72,6 +72,8 @@ import {
   loadPortalById,
   loadPortalByProjectId,
   migrateProjectsStructure,
+  readPortalReportCache,
+  writePortalReportCache,
 } from "./utils/storage";
 import { fetchAdAccounts, fetchCampaigns, resolveMetaStatus, withMetaSettings } from "./utils/meta";
 import {
@@ -81,7 +83,21 @@ import {
   isProjectAutoDisabled,
   extractProjectReportPreferences,
 } from "./utils/projects";
-import { MetaCampaign, PortalMetricKey, ProjectSummary, ProjectRecord } from "./types";
+import {
+  LeadRecord,
+  MetaCampaign,
+  NormalizedCampaign,
+  PortalMetricEntry,
+  PortalMetricKey,
+  PortalPagination,
+  PortalSnapshotPayload,
+  PortalStatusCounts,
+  ProjectBillingSummary,
+  ProjectPortalRecord,
+  ProjectRecord,
+  ProjectSummary,
+  PortalLeadView,
+} from "./types";
 import { collectProjectMetricContext, buildProjectReportEntry } from "./utils/reports";
 import { handleTelegramUpdate } from "./bot/router";
 import { handleMetaWebhook } from "./api/meta-webhook";
@@ -165,6 +181,317 @@ const resolvePortalPeriod = (raw: string | null, now: Date): PortalPeriodSelecti
     default:
       return { key: "today", label: "Сегодня", since: todayStart, until: todayEnd, datePreset: "today" };
   }
+};
+
+const isoDay = (value: Date | null): string | null => {
+  if (!value) {
+    return null;
+  }
+  const copy = new Date(value.getTime());
+  copy.setUTCHours(0, 0, 0, 0);
+  return copy.toISOString().slice(0, 10);
+};
+
+const resolveLeadType = (lead: LeadRecord): PortalLeadView["type"] => {
+  if (lead.phone && lead.phone.trim()) {
+    return "Контакт";
+  }
+  const objective = lead.campaignObjective ? lead.campaignObjective.toUpperCase() : "";
+  if (objective.includes("MESSAGE")) {
+    return "Сообщение";
+  }
+  return "Сообщение";
+};
+
+const toPortalLeadView = (lead: LeadRecord): PortalLeadView => {
+  const adLabel = lead.adName && lead.adName.trim() ? lead.adName.trim() : null;
+  return {
+    id: lead.id,
+    name: lead.name,
+    phone: lead.phone ?? null,
+    status: lead.status,
+    createdAt: lead.createdAt,
+    adLabel,
+    type: resolveLeadType(lead),
+  };
+};
+
+interface PortalComputationResult {
+  billing: ProjectBillingSummary;
+  statusCounts: PortalStatusCounts;
+  page: number;
+  totalPages: number;
+  leads: PortalLeadView[];
+  metrics: PortalMetricEntry[];
+  campaigns: NormalizedCampaign[];
+  periodLabel: string;
+  updatedAt: string;
+}
+
+const toIsoDate = (value: Date | null, now: Date): string => {
+  if (!value) {
+    const today = new Date(now.getTime());
+    today.setUTCHours(0, 0, 0, 0);
+    return today.toISOString().slice(0, 10);
+  }
+  const copy = new Date(value.getTime());
+  copy.setUTCHours(0, 0, 0, 0);
+  return copy.toISOString().slice(0, 10);
+};
+
+const buildPortalSnapshotPayload = async (
+  bindings: EnvBindings,
+  project: ProjectRecord,
+  portalRecord: ProjectPortalRecord,
+  periodSelection: PortalPeriodSelection,
+  requestedPage: number,
+  now: Date,
+): Promise<PortalComputationResult> => {
+  const extendedEnv = bindings as EnvBindings & Record<string, unknown>;
+
+  await syncProjectLeads(extendedEnv, project.id).catch((error) => {
+    console.warn("Failed to sync portal leads", project.id, (error as Error).message);
+  });
+
+  const [allLeads, payments] = await Promise.all([
+    getProjectLeads(bindings, project.id),
+    listPayments(bindings),
+  ]);
+
+  const billing = projectBilling.summarize(payments.filter((entry) => entry.projectId === project.id));
+
+  const sinceMs = periodSelection.since ? periodSelection.since.getTime() : null;
+  const untilMs = periodSelection.until ? periodSelection.until.getTime() : null;
+
+  const leadsInPeriod = allLeads.filter((lead) => {
+    const created = Date.parse(lead.createdAt);
+    if (Number.isNaN(created)) {
+      return true;
+    }
+    if (sinceMs !== null && created < sinceMs) {
+      return false;
+    }
+    if (untilMs !== null && created > untilMs) {
+      return false;
+    }
+    return true;
+  });
+
+  const statusCounts = leadsInPeriod.reduce<PortalStatusCounts>(
+    (acc, lead) => {
+      acc.all += 1;
+      if (lead.status === "done") {
+        acc.done += 1;
+      } else {
+        acc.new += 1;
+      }
+      return acc;
+    },
+    { all: 0, new: 0, done: 0 },
+  );
+
+  const totalPages = Math.max(1, Math.ceil(leadsInPeriod.length / PORTAL_PAGE_SIZE));
+  const safePage = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
+  const page = Math.min(safePage, totalPages);
+  const offset = (page - 1) * PORTAL_PAGE_SIZE;
+  const paginatedLeads = leadsInPeriod.slice(offset, offset + PORTAL_PAGE_SIZE);
+  const leadViews = paginatedLeads.map(toPortalLeadView);
+
+  const latestLeadTimestamp = leadsInPeriod.reduce((acc, lead) => {
+    const created = Date.parse(lead.createdAt);
+    if (!Number.isNaN(created) && created > acc) {
+      return created;
+    }
+    return acc;
+  }, 0);
+
+  const summary: ProjectSummary = {
+    ...project,
+    leadStats: {
+      total: statusCounts.all,
+      new: statusCounts.new,
+      done: statusCounts.done,
+      latestAt: latestLeadTimestamp ? new Date(latestLeadTimestamp).toISOString() : undefined,
+    },
+    billing,
+  };
+
+  const preferences = extractProjectReportPreferences(project.settings ?? {});
+  const preferenceInput = {
+    campaignIds:
+      portalRecord.mode === "manual" && portalRecord.campaignIds.length
+        ? portalRecord.campaignIds
+        : preferences.campaignIds,
+    metrics: portalRecord.metrics.length ? portalRecord.metrics : preferences.metrics,
+  };
+
+  const periodDescriptor = {
+    key: periodSelection.key,
+    datePreset: periodSelection.datePreset,
+    since: isoDay(periodSelection.since),
+    until: isoDay(periodSelection.until),
+  };
+
+  let campaigns: MetaCampaign[] = [];
+  let campaignsUpdatedAt = new Date().toISOString();
+
+  if (project.adAccountId) {
+    const cached = await readPortalReportCache(bindings, project.adAccountId, periodDescriptor).catch(() => null);
+    if (cached?.campaigns?.length) {
+      campaigns = cached.campaigns as MetaCampaign[];
+      campaignsUpdatedAt = cached.fetchedAt;
+    }
+
+    if (!campaigns.length) {
+      try {
+        const token = await loadMetaToken(bindings);
+        const metaEnv = await withMetaSettings(extendedEnv);
+        campaigns = await fetchCampaigns(metaEnv, token, project.adAccountId, {
+          limit:
+            portalRecord.mode === "manual"
+              ? Math.max(10, portalRecord.campaignIds.length || 10)
+              : 25,
+          datePreset: periodSelection.datePreset,
+          since: periodDescriptor.since || undefined,
+          until: periodDescriptor.until || undefined,
+        });
+        await writePortalReportCache(bindings, project.adAccountId, periodDescriptor, campaigns).catch((error) => {
+          console.warn("Failed to cache portal campaigns", project.id, (error as Error).message);
+        });
+        await syncCampaignObjectives(bindings, project.id, campaigns);
+        campaignsUpdatedAt = new Date().toISOString();
+      } catch (error) {
+        console.warn("Failed to load portal campaigns", project.id, (error as Error).message);
+      }
+    }
+  }
+
+  const selectedCampaigns = (() => {
+    if (!campaigns.length) {
+      return [] as MetaCampaign[];
+    }
+    const sorted = campaigns.slice().sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0));
+    if (portalRecord.mode === "manual" && portalRecord.campaignIds.length) {
+      const ids = new Set(portalRecord.campaignIds);
+      const manual = sorted.filter((campaign) => ids.has(campaign.id));
+      return manual.length ? manual : sorted.slice(0, 10);
+    }
+    return sorted.slice(0, 10);
+  })();
+
+  const contextMap = await collectProjectMetricContext(bindings, [summary]);
+  const context = contextMap.get(project.id);
+  const { report, metrics: metricKeys } = buildProjectReportEntry(
+    summary,
+    selectedCampaigns,
+    context,
+    preferenceInput,
+    { start: toIsoDate(periodSelection.since, now), end: toIsoDate(periodSelection.until, now) },
+  );
+
+  const spendCurrency =
+    selectedCampaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency
+    || campaigns[0]?.spendCurrency
+    || "USD";
+
+  const formatNumber = (value: number): string => new Intl.NumberFormat("ru-RU").format(Math.round(value));
+  const formatCurrency = (value: number | undefined): string => {
+    if (value === undefined || Number.isNaN(value) || value === 0) {
+      return "—";
+    }
+    try {
+      return new Intl.NumberFormat("ru-RU", {
+        style: "currency",
+        currency: spendCurrency,
+        maximumFractionDigits: 2,
+      }).format(value);
+    } catch {
+      return `${value.toFixed(2)} ${spendCurrency}`;
+    }
+  };
+
+  const filteredMetricKeys = metricKeys.filter((key) => key !== "leads_done" && key !== "conversations");
+  const metrics = filteredMetricKeys
+    .map((key) => {
+      const raw = (report.kpis as Record<PortalMetricKey, number | undefined>)[key];
+      let value: string;
+      switch (key) {
+        case "spend":
+        case "cpl":
+        case "cpa":
+        case "cpc":
+        case "cpm":
+        case "cpe":
+        case "cpv":
+        case "cpi":
+        case "cpurchase":
+          value = formatCurrency(raw);
+          break;
+        case "ctr":
+          value = raw !== undefined ? `${raw.toFixed(2)}%` : "—";
+          break;
+        case "roas":
+          value = raw !== undefined ? `${raw.toFixed(2)}x` : "—";
+          break;
+        case "freq":
+          value = raw !== undefined ? raw.toFixed(2) : "—";
+          break;
+        default:
+          value = raw !== undefined ? formatNumber(raw) : "—";
+          break;
+      }
+      return { key, label: KPI_LABELS[key], value } satisfies PortalMetricEntry;
+    })
+    .filter((entry) => entry.value && entry.value !== "—");
+
+  const normalizedCampaigns = normalizeCampaigns(selectedCampaigns);
+
+  let periodLabel = periodSelection.label;
+  if (periodSelection.since && periodSelection.until) {
+    const startLabel = formatRuDate(periodSelection.since);
+    const endLabel = formatRuDate(periodSelection.until);
+    periodLabel = startLabel === endLabel
+      ? `${periodSelection.label} · ${startLabel}`
+      : `${periodSelection.label} · ${startLabel} — ${endLabel}`;
+  }
+
+  return {
+    billing,
+    statusCounts,
+    page,
+    totalPages,
+    leads: leadViews,
+    metrics,
+    campaigns: normalizedCampaigns,
+    periodLabel,
+    updatedAt: campaignsUpdatedAt,
+  };
+};
+
+const loadPortalContext = async (
+  bindings: EnvBindings,
+  slug: string,
+): Promise<{ project: ProjectRecord | null; portal: ProjectPortalRecord | null }> => {
+  let portalRecord = await loadPortalById(bindings, slug);
+  let project = portalRecord ? await loadProject(bindings, portalRecord.projectId) : null;
+
+  if (!portalRecord && !project) {
+    project = await loadProject(bindings, slug);
+    if (project) {
+      portalRecord = await loadPortalByProjectId(bindings, project.id);
+    }
+  }
+
+  if (!portalRecord && !project) {
+    const allProjects = await listProjects(bindings).catch(() => [] as ProjectRecord[]);
+    const match = allProjects.find((entry) => entry.portalSlug === slug);
+    if (match) {
+      project = match;
+      portalRecord = await loadPortalByProjectId(bindings, match.id);
+    }
+  }
+
+  return { project, portal: portalRecord };
 };
 
 let projectMigrationRan = false;
@@ -497,24 +824,9 @@ export default {
       if (portalMatch && method === "GET") {
         const slug = decodeURIComponent(portalMatch[1]);
         const bindings = ensureEnv(env);
-        let portalRecord = await loadPortalById(bindings, slug);
-        let project = portalRecord ? await loadProject(bindings, portalRecord.projectId) : null;
-
-        if (!portalRecord && !project) {
-          project = await loadProject(bindings, slug);
-          if (project) {
-            portalRecord = await loadPortalByProjectId(bindings, project.id);
-          }
-        }
-
-        if (!portalRecord && !project) {
-          const allProjects = await listProjects(bindings).catch(() => [] as ProjectRecord[]);
-          const match = allProjects.find((entry) => entry.portalSlug === slug);
-          if (match) {
-            project = match;
-            portalRecord = await loadPortalByProjectId(bindings, match.id);
-          }
-        }
+        const context = await loadPortalContext(bindings, slug);
+        const project = context.project;
+        const portalRecord = context.portal;
 
         if (!project) {
           return htmlResponse("<h1>Проект не найден</h1>", { status: 404 });
@@ -536,50 +848,15 @@ export default {
         }
 
         const periodSelection = resolvePortalPeriod(url.searchParams.get("period"), now);
-        await syncProjectLeads(bindings, project.id).catch((error) => {
-          console.warn("Failed to sync portal leads", project.id, (error as Error).message);
-        });
-        const [allLeads, payments] = await Promise.all([
-          getProjectLeads(bindings, project.id),
-          listPayments(bindings),
-        ]);
-        const billing = projectBilling.summarize(payments.filter((entry) => entry.projectId === project.id));
-
-        const sinceMs = periodSelection.since ? periodSelection.since.getTime() : null;
-        const untilMs = periodSelection.until ? periodSelection.until.getTime() : null;
-        const leads = allLeads.filter((lead) => {
-          const created = Date.parse(lead.createdAt);
-          if (Number.isNaN(created)) {
-            return true;
-          }
-          if (sinceMs !== null && created < sinceMs) {
-            return false;
-          }
-          if (untilMs !== null && created > untilMs) {
-            return false;
-          }
-          return true;
-        });
-
-        const statusCounts = leads.reduce(
-          (acc, lead) => {
-            acc.all += 1;
-            if (lead.status === "done") {
-              acc.done += 1;
-            } else {
-              acc.new += 1;
-            }
-            return acc;
-          },
-          { all: 0, new: 0, done: 0 },
-        );
-
         const requestedPage = Number(url.searchParams.get("page") ?? "1");
-        const rawPage = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
-        const totalPages = Math.max(1, Math.ceil(leads.length / PORTAL_PAGE_SIZE));
-        const page = Math.min(rawPage, totalPages);
-        const offset = (page - 1) * PORTAL_PAGE_SIZE;
-        const paginatedLeads = leads.slice(offset, offset + PORTAL_PAGE_SIZE);
+        const portalState = await buildPortalSnapshotPayload(
+          bindings,
+          project,
+          portalRecord,
+          periodSelection,
+          Number.isFinite(requestedPage) ? requestedPage : 1,
+          now,
+        );
 
         const basePath = `/portal/${encodeURIComponent(slug)}`;
         const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
@@ -612,172 +889,108 @@ export default {
           };
         });
 
-        const pagination = {
-          page,
-          totalPages,
-          prevUrl: page > 1 ? buildPortalUrl(periodSelection.key, page - 1) : null,
-          nextUrl: page < totalPages ? buildPortalUrl(periodSelection.key, page + 1) : null,
+        const pagination: PortalPagination = {
+          page: portalState.page,
+          totalPages: portalState.totalPages,
+          prevUrl: portalState.page > 1 ? buildPortalUrl(periodSelection.key, portalState.page - 1) : null,
+          nextUrl:
+            portalState.page < portalState.totalPages
+              ? buildPortalUrl(periodSelection.key, portalState.page + 1)
+              : null,
         };
 
-        let periodLabel = periodSelection.label;
-        if (periodSelection.since && periodSelection.until) {
-          const startLabel = formatRuDate(periodSelection.since);
-          const endLabel = formatRuDate(periodSelection.until);
-          periodLabel = startLabel === endLabel
-            ? `${periodSelection.label} · ${startLabel}`
-            : `${periodSelection.label} · ${startLabel} — ${endLabel}`;
+        const snapshot: PortalSnapshotPayload = {
+          metrics: portalState.metrics,
+          campaigns: portalState.campaigns,
+          leads: portalState.leads,
+          statusCounts: portalState.statusCounts,
+          pagination,
+          periodLabel: portalState.periodLabel,
+          updatedAt: portalState.updatedAt,
+        };
+
+        const params = new URLSearchParams();
+        if (periodSelection.key !== "today") {
+          params.set("period", periodSelection.key);
         }
-
-        let campaigns: MetaCampaign[] = [];
-        try {
-          if (project.adAccountId) {
-            const token = await loadMetaToken(bindings);
-            const metaEnv = await withMetaSettings(bindings);
-            campaigns = await fetchCampaigns(metaEnv, token, project.adAccountId, {
-              limit: portalRecord.mode === "manual" ? Math.max(10, portalRecord.campaignIds.length || 10) : 25,
-              datePreset: periodSelection.datePreset,
-            });
-            await syncCampaignObjectives(bindings, project.id, campaigns);
-          }
-        } catch (error) {
-          console.warn("Failed to load portal campaigns", project.id, (error as Error).message);
+        if (portalState.page > 1) {
+          params.set("page", String(portalState.page));
         }
-
-        const selectedCampaigns = (() => {
-          if (!campaigns.length) {
-            return [] as MetaCampaign[];
-          }
-          const sorted = campaigns.slice().sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0));
-          if (portalRecord.mode === "manual" && portalRecord.campaignIds.length) {
-            const ids = new Set(portalRecord.campaignIds);
-            const manual = sorted.filter((campaign) => ids.has(campaign.id));
-            return manual.length ? manual : sorted.slice(0, 10);
-          }
-          return sorted.slice(0, 10);
-        })();
-
-        const toIsoDate = (value: Date | null): string => {
-          if (!value) {
-            const today = new Date(now.getTime());
-            today.setUTCHours(0, 0, 0, 0);
-            return today.toISOString().slice(0, 10);
-          }
-          const copy = new Date(value.getTime());
-          copy.setUTCHours(0, 0, 0, 0);
-          return copy.toISOString().slice(0, 10);
-        };
-
-        const latestLeadTimestamp = leads.reduce((acc, lead) => {
-          const created = Date.parse(lead.createdAt);
-          if (!Number.isNaN(created) && created > acc) {
-            return created;
-          }
-          return acc;
-        }, 0);
-
-        const summary: ProjectSummary = {
-          ...project,
-          leadStats: {
-            total: statusCounts.all,
-            new: statusCounts.new,
-            done: statusCounts.done,
-            latestAt: latestLeadTimestamp ? new Date(latestLeadTimestamp).toISOString() : undefined,
-          },
-          billing,
-        };
-
-        const preferences = extractProjectReportPreferences(project.settings ?? {});
-        const preferenceInput = {
-          campaignIds:
-            portalRecord.mode === "manual" && portalRecord.campaignIds.length
-              ? portalRecord.campaignIds
-              : preferences.campaignIds,
-          metrics: portalRecord.metrics.length ? portalRecord.metrics : preferences.metrics,
-        };
-
-        const contextMap = await collectProjectMetricContext(bindings, [summary]);
-        const context = contextMap.get(project.id);
-        const { report, metrics: metricKeys } = buildProjectReportEntry(
-          summary,
-          selectedCampaigns,
-          context,
-          preferenceInput,
-          { start: toIsoDate(periodSelection.since), end: toIsoDate(periodSelection.until) },
-        );
-
-        const spendCurrency =
-          selectedCampaigns.find((campaign) => campaign.spendCurrency)?.spendCurrency || campaigns[0]?.spendCurrency || "USD";
-
-        const formatNumber = (value: number): string => new Intl.NumberFormat("ru-RU").format(Math.round(value));
-        const formatCurrency = (value: number | undefined): string => {
-          if (value === undefined || Number.isNaN(value)) {
-            return "—";
-          }
-          if (value === 0) {
-            return "—";
-          }
-          try {
-            return new Intl.NumberFormat("ru-RU", {
-              style: "currency",
-              currency: spendCurrency,
-              maximumFractionDigits: 2,
-            }).format(value);
-          } catch {
-            return `${value.toFixed(2)} ${spendCurrency}`;
-          }
-        };
-
-        const metricLabels = KPI_LABELS;
-        const filteredMetricKeys = metricKeys.filter(
-          (key) => key !== "leads_done" && key !== "conversations",
-        );
-        const metrics = filteredMetricKeys
-          .map((key) => {
-            const raw = (report.kpis as Record<PortalMetricKey, number | undefined>)[key];
-            let value: string;
-            switch (key) {
-              case "spend":
-              case "cpl":
-              case "cpa":
-              case "cpc":
-              case "cpm":
-              case "cpe":
-              case "cpv":
-              case "cpi":
-              case "cpurchase":
-                value = formatCurrency(raw);
-                break;
-              case "ctr":
-                value = raw !== undefined ? `${raw.toFixed(2)}%` : "—";
-                break;
-              case "roas":
-                value = raw !== undefined ? `${raw.toFixed(2)}x` : "—";
-                break;
-              case "freq":
-                value = raw !== undefined ? raw.toFixed(2) : "—";
-                break;
-              default:
-                value = raw !== undefined ? formatNumber(raw) : "—";
-                break;
-            }
-            return { key, label: metricLabels[key], value };
-          })
-          .filter((entry) => entry.value && entry.value !== "—");
-
-        const normalizedCampaigns = normalizeCampaigns(selectedCampaigns);
+        const snapshotUrl = `${basePath}/snapshot${params.toString() ? `?${params.toString()}` : ""}`;
 
         const html = renderPortal({
           project,
-          leads: paginatedLeads,
-          billing,
-          campaigns: normalizedCampaigns,
-          metrics,
+          billing: portalState.billing,
           periodOptions,
-          periodLabel,
-          pagination,
-          statusCounts,
+          snapshot,
+          snapshotUrl,
+          periodKey: periodSelection.key,
         });
         return htmlResponse(html);
+      }
+
+      const portalSnapshotMatch = pathname.match(/^\/portal\/([^/]+)\/snapshot$/);
+      if (portalSnapshotMatch && method === "GET") {
+        const slug = decodeURIComponent(portalSnapshotMatch[1]);
+        const bindings = ensureEnv(env);
+        const context = await loadPortalContext(bindings, slug);
+        const project = context.project;
+        const portalRecord = context.portal;
+
+        if (!project || !portalRecord) {
+          return jsonResponse({ ok: false, error: "Портал не найден" }, { status: 404 });
+        }
+
+        const now = new Date();
+        if (isProjectAutoDisabled(project, now)) {
+          return jsonResponse({ ok: false, error: "Портал временно отключён" }, { status: 403 });
+        }
+
+        const periodSelection = resolvePortalPeriod(url.searchParams.get("period"), now);
+        const requestedPage = Number(url.searchParams.get("page") ?? "1");
+        const portalState = await buildPortalSnapshotPayload(
+          bindings,
+          project,
+          portalRecord,
+          periodSelection,
+          Number.isFinite(requestedPage) ? requestedPage : 1,
+          now,
+        );
+
+        const basePath = `/portal/${encodeURIComponent(slug)}`;
+        const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
+          const params = new URLSearchParams();
+          if (periodKey !== "today") {
+            params.set("period", periodKey);
+          }
+          if (pageNumber > 1) {
+            params.set("page", String(pageNumber));
+          }
+          const query = params.toString();
+          return `${basePath}${query ? `?${query}` : ""}`;
+        };
+
+        const pagination: PortalPagination = {
+          page: portalState.page,
+          totalPages: portalState.totalPages,
+          prevUrl: portalState.page > 1 ? buildPortalUrl(periodSelection.key, portalState.page - 1) : null,
+          nextUrl:
+            portalState.page < portalState.totalPages
+              ? buildPortalUrl(periodSelection.key, portalState.page + 1)
+              : null,
+        };
+
+        const snapshot: PortalSnapshotPayload = {
+          metrics: portalState.metrics,
+          campaigns: portalState.campaigns,
+          leads: portalState.leads,
+          statusCounts: portalState.statusCounts,
+          pagination,
+          periodLabel: portalState.periodLabel,
+          updatedAt: portalState.updatedAt,
+        };
+
+        return jsonResponse({ ok: true, data: snapshot });
       }
 
       if (pathname.startsWith("/manage/telegram/webhook") && method === "GET") {
