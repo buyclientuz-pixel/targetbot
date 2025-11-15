@@ -48,21 +48,16 @@
 | `proj:portal-campaign-clear:{projectId}` | Очистить ручной список кампаний портала. |
 | `proj:billing:{projectId}` | Статус оплаты и платежей. |
 | `proj:billing-status:{projectId}:{status}` | Установить статус биллинга (`active`, `pending`, `overdue`, `blocked`). |
-| `proj:billing-next:{projectId}:{preset}` | _Legacy._ Обновить дату следующего платежа (`30`, `custom`, `manual`, `today`, `yesterday`). |
-| `proj:billing-tariff:{projectId}` | _Legacy._ Запросить обновление тарифа проекта. |
-| `proj:billing-tariff-preset:{projectId}:{amount}` | _Legacy._ Установить тариф из пресета (`350`, `500` и др.). |
-| `payments:add_30_days:{projectId}` | Добавить 30 дней к текущей дате оплаты и активировать биллинг. |
-| `payments:set_plan_350:{projectId}` | Установить тариф 350 $ и включить биллинг. |
-| `payments:set_plan_500:{projectId}` | Установить тариф 500 $ и включить биллинг. |
-| `payments:ask_date_picker:{projectId}` | Запросить у администратора дату следующего платежа (ручной ввод). |
-| `payments:ask_date_manual:{projectId}` | Альтернативный callback для ручного ввода даты платежа. |
-| `payments:renew_no:{projectId}` | Администратор фиксирует отказ клиента от продления. |
-| `payments:renew_yes:{projectId}` | Администратор отправляет запрос формата оплаты в клиентскую группу. |
-| `payments:pay_cash:{projectId}:{messageId}` | Клиент выбирает оплату наличными. |
-| `payments:pay_card:{projectId}:{messageId}` | Клиент запрашивает реквизиты для перевода. |
-| `payments:pay_done:{projectId}:{messageId}` | Клиент подтверждает перевод средств. |
-| `payments:confirm:{projectId}` | Администратор подтверждает поступление оплаты. |
-| `payments:error:{projectId}` | Администратор отмечает ошибку и сбрасывает напоминание. |
+
+## Оплата (`billing.*`)
+
+| Callback шаблон | Описание |
+| --- | --- |
+| `billing.extend.30:{projectId}` | Продлить срок оплаты проекта на 30 дней. |
+| `billing.set_plan.350:{projectId}` | Установить тариф проекта на 350 USD и включить биллинг. |
+| `billing.set_plan.500:{projectId}` | Установить тариф проекта на 500 USD и включить биллинг. |
+| `billing.set_date:{projectId}` | Запросить дату следующего платежа через календарь/селектор. |
+| `billing.manual_date:{projectId}` | Перейти в режим ручного ввода даты следующего платежа. |
 
 ## KPI (`PROJECT_KPI_*`, `CAMPAIGN_KPI_*`, `KPI_*`)
 
@@ -76,7 +71,6 @@
 | `KPI_SAVE_DEFAULT:{projectId}:{campaignId}` | Сохранить выбранные KPI кампании как дефолтные (используются во всех отчётах). |
 | `KPI_SAVE_ONCE:{projectId}` | Использовать выбранные KPI проекта один раз (без сохранения). |
 | `KPI_SAVE_ONCE:{projectId}:{campaignId}` | Использовать выбранные KPI кампании один раз для текущего отчёта. |
-| `payments:wait:{projectId}` | Администратор откладывает подтверждение (следующий follow-up через час). |
 | `proj:edit:{projectId}` | Управление основными данными проекта (переименование, быстрые ссылки). |
 | `proj:edit-name:{projectId}` | Запустить ввод нового названия проекта. |
 | `proj:edit-cancel:{projectId}` | Отменить операцию редактирования проекта. |

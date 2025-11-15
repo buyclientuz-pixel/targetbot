@@ -727,14 +727,35 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
         ? Number(tariffCandidate)
         : undefined;
 
+  const paymentPlanCandidate = data.paymentPlan ?? data.payment_plan ?? null;
+  const parsedPaymentPlan = (() => {
+    if (paymentPlanCandidate === null) {
+      return null;
+    }
+    if (typeof paymentPlanCandidate === "number" && Number.isFinite(paymentPlanCandidate)) {
+      return Number(paymentPlanCandidate.toFixed(2));
+    }
+    if (typeof paymentPlanCandidate === "string" && paymentPlanCandidate.trim()) {
+      const numeric = Number(paymentPlanCandidate);
+      if (!Number.isNaN(numeric)) {
+        return Number(numeric.toFixed(2));
+      }
+    }
+    return undefined;
+  })();
+
   const billingAmountCandidate =
     data.billingAmountUsd ?? data.billing_amount_usd ?? data.billingAmountUSD ?? tariffValue ?? null;
-  const billingAmount =
+  let billingAmount =
     typeof billingAmountCandidate === "number" && Number.isFinite(billingAmountCandidate)
       ? Number(billingAmountCandidate.toFixed(2))
       : typeof billingAmountCandidate === "string" && billingAmountCandidate.trim() && !Number.isNaN(Number(billingAmountCandidate))
         ? Number(Number(billingAmountCandidate).toFixed(2))
         : tariffValue ?? null;
+
+  if (parsedPaymentPlan !== undefined) {
+    billingAmount = parsedPaymentPlan;
+  }
 
   const planCandidate = (data.billingPlan ?? data.billing_plan ?? null) as string | null;
   const normalizedPlan = typeof planCandidate === "string" ? planCandidate.trim().toLowerCase() : null;
@@ -758,6 +779,17 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
 
   const tariff = typeof billingAmount === "number" ? billingAmount : tariffValue ?? 0;
 
+  const paymentPlan =
+    parsedPaymentPlan !== undefined
+      ? parsedPaymentPlan
+      : billingAmount !== null && typeof billingAmount === "number"
+        ? Math.abs(billingAmount - 350) < 0.01
+          ? 350
+          : Math.abs(billingAmount - 500) < 0.01
+            ? 500
+            : null
+        : null;
+
   const resolveBoolean = (value: unknown): boolean => {
     if (typeof value === "boolean") {
       return value;
@@ -775,10 +807,16 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     return false;
   };
 
-  const billingEnabledSource = data.billingEnabled ?? data.billing_enabled ?? null;
+  const paymentEnabledSource = data.paymentEnabled ?? data.payment_enabled ?? null;
+  const billingEnabledSource = data.billingEnabled ?? data.billing_enabled ?? paymentEnabledSource ?? null;
   const billingEnabledExplicit =
     billingEnabledSource !== null && billingEnabledSource !== undefined
       ? resolveBoolean(billingEnabledSource)
+      : undefined;
+
+  const paymentEnabledExplicit =
+    paymentEnabledSource !== null && paymentEnabledSource !== undefined
+      ? resolveBoolean(paymentEnabledSource)
       : undefined;
 
   const createdCandidate = data.createdAt ?? data.created_at;
@@ -858,9 +896,12 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     billingEnabledExplicit !== undefined
       ? billingEnabledExplicit
       : Boolean(nextPaymentDate || (typeof billingAmount === "number" && billingAmount > 0));
+  const paymentEnabled =
+    paymentEnabledExplicit !== undefined ? paymentEnabledExplicit : billingEnabled;
   const billingAmountUsd = typeof billingAmount === "number" ? billingAmount : null;
 
   const autoBillingSource =
+    data.autobilling ??
     data.autoBillingEnabled ??
     data.auto_billing_enabled ??
     data.billingAutomationEnabled ??
@@ -881,8 +922,11 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     billingStatus,
     nextPaymentDate,
     tariff,
+    paymentEnabled,
+    paymentPlan,
     billingEnabled,
     autoBillingEnabled,
+    autobilling: autoBillingEnabled,
     billingPlan,
     billingAmountUsd,
     lastPaymentDate,
@@ -1103,6 +1147,28 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
     base.billingEnabled ??
     extra.billingEnabled ??
     Boolean(base.nextPaymentDate || extra.nextPaymentDate || (billingAmount ?? 0) > 0);
+  const paymentPlan =
+    base.paymentPlan !== undefined
+      ? base.paymentPlan
+      : extra.paymentPlan !== undefined
+        ? extra.paymentPlan
+        : billingPlan === "350"
+          ? 350
+          : billingPlan === "500"
+            ? 500
+            : null;
+  const paymentEnabled =
+    base.paymentEnabled ??
+    extra.paymentEnabled ??
+    base.billingEnabled ??
+    extra.billingEnabled ??
+    Boolean(base.nextPaymentDate || extra.nextPaymentDate || (billingAmount ?? 0) > 0);
+  const autobilling =
+    base.autobilling ??
+    extra.autobilling ??
+    base.autoBillingEnabled ??
+    extra.autoBillingEnabled ??
+    paymentEnabled;
   return {
     ...base,
     metaAccountId: base.metaAccountId || extra.metaAccountId,
@@ -1112,9 +1178,13 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
     billingStatus: base.billingStatus || extra.billingStatus,
     nextPaymentDate: coalesce(base.nextPaymentDate, extra.nextPaymentDate, null) ?? null,
     tariff,
+    paymentEnabled,
+    paymentPlan,
     billingAmountUsd: billingAmount,
     billingPlan,
     billingEnabled,
+    autoBillingEnabled: base.autoBillingEnabled ?? extra.autoBillingEnabled ?? autobilling,
+    autobilling,
     lastPaymentDate: coalesce(base.lastPaymentDate, extra.lastPaymentDate, null) ?? null,
     settings: { ...extra.settings, ...base.settings },
     manualKpi:
@@ -1457,9 +1527,31 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
         billing_status: project.billingStatus ?? "pending",
         next_payment_date: project.nextPaymentDate ?? null,
         tariff: project.tariff ?? 0,
+        payment_enabled:
+          project.paymentEnabled !== undefined
+            ? project.paymentEnabled
+            : project.billingEnabled !== undefined
+              ? project.billingEnabled
+              : null,
+        payment_plan:
+          project.paymentPlan !== undefined
+            ? project.paymentPlan
+            : project.billingPlan === "350"
+              ? 350
+              : project.billingPlan === "500"
+                ? 500
+                : project.billingAmountUsd !== undefined && project.billingAmountUsd !== null
+                  ? Number(project.billingAmountUsd.toFixed(2))
+                  : null,
         billing_enabled: project.billingEnabled ?? null,
         auto_billing_enabled:
           project.autoBillingEnabled !== undefined ? Boolean(project.autoBillingEnabled) : null,
+        autobilling:
+          project.autobilling !== undefined
+            ? Boolean(project.autobilling)
+            : project.autoBillingEnabled !== undefined
+              ? Boolean(project.autoBillingEnabled)
+              : null,
         billing_plan: project.billingPlan ?? null,
         billing_amount_usd:
           project.billingAmountUsd !== undefined && project.billingAmountUsd !== null
@@ -1603,9 +1695,27 @@ export const updateProjectRecord = async (
     return undefined;
   };
 
+  let paymentPlanPatch: number | null | undefined;
+
   let billingAmountPatch = sanitizeBillingAmount(patch.billingAmountUsd);
   if (billingAmountPatch === undefined && patch.tariff !== undefined) {
     billingAmountPatch = sanitizeBillingAmount(patch.tariff);
+  }
+
+  const rawPaymentPlan = (patch as { paymentPlan?: unknown }).paymentPlan;
+
+  if (rawPaymentPlan !== undefined) {
+    if (rawPaymentPlan === null) {
+      paymentPlanPatch = null;
+      billingAmountPatch = null;
+    } else if (typeof rawPaymentPlan === "number" && Number.isFinite(rawPaymentPlan)) {
+      paymentPlanPatch = Number(rawPaymentPlan.toFixed(2));
+      billingAmountPatch = paymentPlanPatch;
+    } else if (typeof rawPaymentPlan === "string" && rawPaymentPlan.trim() && !Number.isNaN(Number(rawPaymentPlan))) {
+      const parsed = Number(Number(rawPaymentPlan).toFixed(2));
+      paymentPlanPatch = parsed;
+      billingAmountPatch = parsed;
+    }
   }
 
   let billingPlanPatch = sanitizeBillingPlan(patch.billingPlan);
@@ -1618,6 +1728,18 @@ export const updateProjectRecord = async (
     } else if (Math.abs(billingAmountPatch - 500) < 0.01) {
       billingPlanPatch = "500";
     } else if (billingAmountPatch > 0) {
+      billingPlanPatch = "custom";
+    }
+  }
+
+  if (paymentPlanPatch !== undefined) {
+    if (paymentPlanPatch === null) {
+      billingPlanPatch = null;
+    } else if (Math.abs(paymentPlanPatch - 350) < 0.01) {
+      billingPlanPatch = "350";
+    } else if (Math.abs(paymentPlanPatch - 500) < 0.01) {
+      billingPlanPatch = "500";
+    } else if (paymentPlanPatch > 0) {
       billingPlanPatch = "custom";
     }
   }
@@ -1636,10 +1758,16 @@ export const updateProjectRecord = async (
   if (patch.billingEnabled !== undefined) {
     billingEnabledPatch = Boolean(patch.billingEnabled);
   }
+  if (patch.paymentEnabled !== undefined) {
+    billingEnabledPatch = Boolean(patch.paymentEnabled);
+  }
 
   let autoBillingEnabledPatch: boolean | undefined;
   if (patch.autoBillingEnabled !== undefined) {
     autoBillingEnabledPatch = Boolean(patch.autoBillingEnabled);
+  }
+  if (patch.autobilling !== undefined) {
+    autoBillingEnabledPatch = Boolean(patch.autobilling);
   }
 
   const resolvedBillingAmount =
@@ -1689,6 +1817,32 @@ export const updateProjectRecord = async (
     return null;
   };
 
+  const resolvePaymentPlanValue = (): number | null => {
+    if (paymentPlanPatch !== undefined) {
+      return paymentPlanPatch;
+    }
+    const billingPlanValue = billingPlanPatch !== undefined ? billingPlanPatch : resolveBillingPlan();
+    if (billingPlanValue === null) {
+      return null;
+    }
+    if (billingPlanValue === "350") {
+      return 350;
+    }
+    if (billingPlanValue === "500") {
+      return 500;
+    }
+    if (typeof resolvedBillingAmount === "number") {
+      if (Math.abs(resolvedBillingAmount - 350) < 0.01) {
+        return 350;
+      }
+      if (Math.abs(resolvedBillingAmount - 500) < 0.01) {
+        return 500;
+      }
+      return resolvedBillingAmount;
+    }
+    return current.paymentPlan ?? null;
+  };
+
   const resolveAutoBillingEnabled = (): boolean => {
     if (autoBillingEnabledPatch !== undefined) {
       return autoBillingEnabledPatch;
@@ -1723,6 +1877,13 @@ export const updateProjectRecord = async (
     }
     return current.autoOffAt ?? null;
   };
+  const resolvePaymentEnabled = (): boolean => {
+    if (patch.paymentEnabled !== undefined) {
+      return Boolean(patch.paymentEnabled);
+    }
+    return resolveBillingEnabled();
+  };
+
   const updated: ProjectRecord = {
     ...current,
     ...patch,
@@ -1738,7 +1899,10 @@ export const updateProjectRecord = async (
           : current.billingAmountUsd ?? null,
     billingPlan: resolveBillingPlan(),
     billingEnabled: resolveBillingEnabled(),
+    paymentEnabled: resolvePaymentEnabled(),
+    paymentPlan: resolvePaymentPlanValue(),
     autoBillingEnabled: resolveAutoBillingEnabled(),
+    autobilling: resolveAutoBillingEnabled(),
     autoOff: resolveAutoOff(),
     autoOffAt: resolveAutoOffAt(),
   };
@@ -3296,7 +3460,7 @@ export interface PendingMetaLinkState {
   flow?: MetaLinkFlow;
 }
 
-export type PendingBillingAction = "set-next-payment" | "set-tariff";
+export type PendingBillingAction = "manual-date" | "set-next-payment" | "set-tariff";
 
 export interface PendingBillingOperation {
   action: PendingBillingAction;

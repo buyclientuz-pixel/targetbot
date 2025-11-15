@@ -408,8 +408,11 @@ export interface ProjectRecord {
   billingStatus: ProjectBillingState;
   nextPaymentDate: string | null;
   tariff: number;
+  paymentEnabled?: boolean;
+  paymentPlan?: number | null;
   billingEnabled?: boolean;
   autoBillingEnabled?: boolean;
+  autobilling?: boolean;
   billingPlan?: "350" | "500" | "custom" | null;
   billingAmountUsd?: number | null;
   lastPaymentDate?: string | null;
