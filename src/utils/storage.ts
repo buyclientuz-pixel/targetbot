@@ -2638,13 +2638,82 @@ const normalizePortalRecord = (input: ProjectPortalRecord | Record<string, unkno
   } satisfies ProjectPortalRecord;
 };
 
-export const listPortals = async (env: EnvBindings): Promise<ProjectPortalRecord[]> => {
-  const stored = await readJsonFromR2<ProjectPortalRecord[] | Record<string, unknown>[] | null>(
-    env,
-    PORTAL_INDEX_KEY,
-    [],
+const mergePortalRecords = (first: ProjectPortalRecord, second: ProjectPortalRecord): ProjectPortalRecord => {
+  const { latest, winner } = chooseLatest(first.updatedAt, second.updatedAt);
+  const base = winner === 2 ? second : first;
+  const extra = winner === 2 ? first : second;
+
+  const combinedCampaignIds = Array.from(new Set([...extra.campaignIds, ...base.campaignIds]));
+  const combinedMetrics = sanitizePortalMetrics([...extra.metrics, ...base.metrics]);
+
+  const chooseDate = (a?: string | null, b?: string | null): string | null => {
+    const { latest } = chooseLatest(a ?? undefined, b ?? undefined);
+    return latest ?? a ?? b ?? null;
+  };
+
+  return {
+    portalId: base.portalId || extra.portalId,
+    projectId: base.projectId || extra.projectId,
+    mode: base.mode === "manual" || extra.mode === "manual" ? "manual" : "auto",
+    campaignIds: combinedCampaignIds,
+    metrics: combinedMetrics,
+    createdAt: chooseDate(base.createdAt, extra.createdAt) ?? new Date().toISOString(),
+    updatedAt: latest ?? base.updatedAt ?? extra.updatedAt ?? new Date().toISOString(),
+    lastRegeneratedAt: chooseDate(base.lastRegeneratedAt, extra.lastRegeneratedAt),
+    lastSharedAt: chooseDate(base.lastSharedAt, extra.lastSharedAt),
+    lastReportId: base.lastReportId ?? extra.lastReportId ?? null,
+  } satisfies ProjectPortalRecord;
+};
+
+const readPortalsFromKv = async (env: EnvBindings): Promise<ProjectPortalRecord[]> => {
+  const ids = await readKvIndex(env, PORTAL_KV_INDEX_KEY);
+  if (!ids.length) {
+    return [];
+  }
+  const records = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const stored = await env.DB.get(`${PORTAL_KV_PREFIX}${id}`);
+        if (!stored) {
+          return null;
+        }
+        const parsed = JSON.parse(stored) as Record<string, unknown>;
+        return normalizePortalRecord({ portalId: id, ...parsed });
+      } catch (error) {
+        console.warn("Failed to read portal from KV", id, error);
+        return null;
+      }
+    }),
   );
-  return (stored ?? []).map(normalizePortalRecord);
+  return records.filter((record): record is ProjectPortalRecord => Boolean(record));
+};
+
+export const listPortals = async (env: EnvBindings): Promise<ProjectPortalRecord[]> => {
+  const [r2Records, kvRecords] = await Promise.all([
+    readJsonFromR2<ProjectPortalRecord[] | Record<string, unknown>[] | null>(env, PORTAL_INDEX_KEY, []).catch(() => []),
+    readPortalsFromKv(env).catch(() => [] as ProjectPortalRecord[]),
+  ]);
+
+  const map = new Map<string, ProjectPortalRecord>();
+
+  kvRecords.forEach((record) => {
+    if (!record.portalId || !record.projectId) {
+      return;
+    }
+    map.set(record.portalId, record);
+  });
+
+  r2Records
+    .map((record) => normalizePortalRecord(record))
+    .forEach((record) => {
+      if (!record.portalId || !record.projectId) {
+        return;
+      }
+      const existing = map.get(record.portalId);
+      map.set(record.portalId, existing ? mergePortalRecords(existing, record) : record);
+    });
+
+  return Array.from(map.values());
 };
 
 export const savePortals = async (env: EnvBindings, portals: ProjectPortalRecord[]): Promise<void> => {
