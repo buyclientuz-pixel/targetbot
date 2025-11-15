@@ -133,9 +133,9 @@ export const renderPortal = ({
   periodOptions,
   snapshot,
   snapshotUrl,
-  statsUrl,
-  leadsUrl,
-  campaignsUrl,
+  statsUrl: _statsUrl,
+  leadsUrl: _leadsUrl,
+  campaignsUrl: _campaignsUrl,
   periodKey: _periodKey,
 }: PortalViewProps): string => {
   const periodFilters = renderPeriodFilters(periodOptions);
@@ -218,9 +218,7 @@ export const renderPortal = ({
 
   const script = `
     (function () {
-      const statsUrl = ${toScriptData(statsUrl)};
-      const leadsUrl = ${toScriptData(leadsUrl)};
-      const campaignsUrl = ${toScriptData(campaignsUrl)};
+      const snapshotUrl = ${toScriptData(snapshotUrl)};
       const initialSnapshot = ${toScriptData(snapshot)};
       const state = {
         metrics: Array.isArray(initialSnapshot.metrics) ? initialSnapshot.metrics : [],
@@ -336,6 +334,12 @@ export const renderPortal = ({
           }
           maybeScheduleRefresh();
         }
+      };
+
+      const markAllLoaded = () => {
+        markLoaded('stats');
+        markLoaded('leads');
+        markLoaded('campaigns');
       };
 
       if (loaderOverlay instanceof HTMLElement) {
@@ -672,32 +676,21 @@ export const renderPortal = ({
         }
       };
 
-      const applyMetrics = (data) => {
+      const applySnapshot = (data) => {
         if (!data) {
           return;
         }
         if (Array.isArray(data.metrics)) {
           state.metrics = data.metrics;
         }
-        if (data.statusCounts) {
-          state.statusCounts = data.statusCounts;
-        }
-        if (typeof data.periodLabel === 'string') {
-          state.periodLabel = data.periodLabel;
-        }
-        updateStateSource(data);
-        renderMetrics();
-        updateCounts();
-        updatePeriodLabel();
-        maybeScheduleRefresh();
-      };
-
-      const applyLeads = (data) => {
-        if (!data) {
-          return;
+        if (typeof window !== 'undefined') {
+          window.__portalSnapshot = data;
         }
         if (Array.isArray(data.leads)) {
           state.leads = data.leads;
+        }
+        if (Array.isArray(data.campaigns)) {
+          state.campaigns = data.campaigns;
         }
         if (data.pagination) {
           state.pagination = data.pagination;
@@ -709,24 +702,12 @@ export const renderPortal = ({
           state.periodLabel = data.periodLabel;
         }
         updateStateSource(data);
+        renderMetrics();
         renderLeads();
+        renderCampaigns();
         renderPagination();
         updateCounts();
         updatePeriodLabel();
-        toggleSkeleton(leadsSkeleton, false);
-        maybeScheduleRefresh();
-      };
-
-      const applyCampaigns = (data) => {
-        if (!data) {
-          return;
-        }
-        if (Array.isArray(data.campaigns)) {
-          state.campaigns = data.campaigns;
-        }
-        updateStateSource(data);
-        renderCampaigns();
-        toggleSkeleton(campaignsSkeleton, false);
         maybeScheduleRefresh();
       };
 
@@ -762,63 +743,26 @@ export const renderPortal = ({
         }
       };
 
-      const fetchStats = async () => {
-        try {
-          const response = await fetchWithTimeout(statsUrl, { headers: { Accept: 'application/json' } }, 7000);
-          if (!response.ok) {
-            throw new Error('HTTP ' + response.status);
-          }
-          const payload = await response.json();
-          if (payload && payload.ok && payload.data) {
-            applyMetrics(payload.data);
-          } else if (payload && payload.error) {
-            console.warn('portal:stats:error', payload.error);
-          }
-        } catch (error) {
-          console.warn('portal:stats:fetch_failed', error);
-        }
-        markLoaded('stats');
-      };
-
-      const fetchLeads = async () => {
+      const fetchSnapshot = async () => {
         toggleSkeleton(leadsSkeleton, true);
-        try {
-          const response = await fetchWithTimeout(leadsUrl, { headers: { Accept: 'application/json' } }, 7000);
-          if (!response.ok) {
-            throw new Error('HTTP ' + response.status);
-          }
-          const payload = await response.json();
-          if (payload && payload.ok && payload.data) {
-            applyLeads(payload.data);
-          } else if (payload && payload.error) {
-            console.warn('portal:leads:error', payload.error);
-          }
-        } catch (error) {
-          console.warn('portal:leads:fetch_failed', error);
-        } finally {
-          toggleSkeleton(leadsSkeleton, false);
-          markLoaded('leads');
-        }
-      };
-
-      const fetchCampaigns = async () => {
         toggleSkeleton(campaignsSkeleton, true);
         try {
-          const response = await fetchWithTimeout(campaignsUrl, { headers: { Accept: 'application/json' } }, 7000);
+          const response = await fetchWithTimeout(snapshotUrl, { headers: { Accept: 'application/json' } }, 7000);
           if (!response.ok) {
             throw new Error('HTTP ' + response.status);
           }
           const payload = await response.json();
           if (payload && payload.ok && payload.data) {
-            applyCampaigns(payload.data);
+            applySnapshot(payload.data);
           } else if (payload && payload.error) {
-            console.warn('portal:campaigns:error', payload.error);
+            console.warn('portal:snapshot:error', payload.error);
           }
         } catch (error) {
-          console.warn('portal:campaigns:fetch_failed', error);
+          console.warn('portal:snapshot:fetch_failed', error);
         } finally {
+          toggleSkeleton(leadsSkeleton, false);
           toggleSkeleton(campaignsSkeleton, false);
-          markLoaded('campaigns');
+          markAllLoaded();
         }
       };
 
@@ -839,9 +783,7 @@ export const renderPortal = ({
         state.partial = false;
         state.dataSource = null;
         startLoaderTimer();
-        fetchStats();
-        fetchLeads();
-        fetchCampaigns();
+        fetchSnapshot();
       };
 
       if (loaderRetry instanceof HTMLElement) {
@@ -858,9 +800,7 @@ export const renderPortal = ({
       updatePeriodLabel();
       maybeScheduleRefresh();
 
-      fetchStats();
-      fetchLeads();
-      fetchCampaigns();
+      fetchSnapshot();
     })();
   `;
 
