@@ -9,6 +9,7 @@ import {
 import { summarizeProjects, isProjectAutoDisabled } from "./projects";
 import { fetchAdAccounts } from "./meta";
 import { sendTelegramMessage, TelegramEnv } from "./telegram";
+import { ensureProjectTopicRoute } from "./project-topics";
 import { generateReport, composeReportText } from "./reports";
 import { detectSpendAnomalies, mergeMetaAccountLinks } from "./meta-accounts";
 import {
@@ -132,21 +133,11 @@ export const evaluateAutoReportTrigger = (
   weekly: shouldSendMondayWeekly(settings, now),
 });
 
-interface RoutingContext {
-  adminChatId: string | null;
-  clientChatId: string | null;
-}
-
-const resolveRoutingContext = (project: ProjectSummary): RoutingContext => {
-  const adminChatId = ensureChatId(project.chatId);
-  const clientChatId = ensureChatId(project.telegramChatId ?? project.chatId);
-  return { adminChatId, clientChatId };
-};
-
 interface DeliveryTarget {
   chatId: string;
   threadId?: number;
-  scope: "admin" | "chat";
+  scope: "chat";
+  project: ProjectSummary;
 }
 
 const collectTargets = (
@@ -157,22 +148,21 @@ const collectTargets = (
   if (now && isProjectAutoDisabled(project, now)) {
     return [];
   }
-  const { adminChatId, clientChatId } = resolveRoutingContext(project);
-  const targets: DeliveryTarget[] = [];
-  if (target === "none") {
-    return targets;
+  if (target !== "chat" && target !== "both") {
+    return [];
   }
-  if ((target === "admin" || target === "both") && adminChatId) {
-    targets.push({ chatId: adminChatId, scope: "admin" });
+  const chatId = ensureChatId(project.telegramChatId ?? project.chatId);
+  if (!chatId) {
+    return [];
   }
-  if ((target === "chat" || target === "both") && clientChatId) {
-    targets.push({
-      chatId: clientChatId,
+  return [
+    {
+      chatId,
       threadId: typeof project.telegramThreadId === "number" ? project.telegramThreadId : undefined,
       scope: "chat",
-    });
-  }
-  return targets;
+      project,
+    },
+  ];
 };
 
 const RU_WEEKDAYS = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
@@ -191,6 +181,22 @@ const formatWeekday = (date: Date): string => {
     return "";
   }
   return RU_WEEKDAYS[date.getUTCDay()] ?? "";
+};
+
+const formatIsoDate = (date: Date): string => {
+  const year = date.getUTCFullYear();
+  const month = pad2(date.getUTCMonth() + 1);
+  const day = pad2(date.getUTCDate());
+  return `${year}-${month}-${day}`;
+};
+
+const resolvePreviousWeekRange = (now: Date): { since: string; until: string } => {
+  const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const until = new Date(base.getTime());
+  until.setUTCDate(until.getUTCDate() - 1);
+  const since = new Date(base.getTime());
+  since.setUTCDate(since.getUTCDate() - 7);
+  return { since: formatIsoDate(since), until: formatIsoDate(until) };
 };
 
 export const buildAutoReportNotification = (
@@ -214,7 +220,7 @@ export const buildAutoReportNotification = (
 };
 
 const sendMessageToTargets = async (
-  env: TelegramEnv,
+  env: EnvBindings & TelegramEnv,
   targets: DeliveryTarget[],
   text: string,
   replyMarkup?: unknown,
@@ -223,17 +229,35 @@ const sendMessageToTargets = async (
     return 0;
   }
   await Promise.all(
-    targets.map((target) =>
-      sendTelegramMessage(env, {
-        chatId: target.chatId,
-        threadId: target.threadId,
+    targets.map(async (target) => {
+      let chatId = target.chatId;
+      let threadId = target.threadId;
+      if (target.scope === "chat") {
+        if (typeof threadId !== "number") {
+          const route = await ensureProjectTopicRoute(env, target.project);
+          if (route) {
+            chatId = route.chatId;
+            threadId = route.threadId;
+          }
+        }
+      }
+      await sendTelegramMessage(env, {
+        chatId,
+        threadId,
         text,
         replyMarkup,
-      }),
-    ),
+      });
+    }),
   );
   return targets.length;
 };
+
+interface AutoReportRangeOverride {
+  since: string;
+  until: string;
+  period?: string;
+  label?: string;
+}
 
 const sendAutoReportForProject = async (
   env: EnvBindings & TelegramEnv & Record<string, unknown>,
@@ -242,6 +266,7 @@ const sendAutoReportForProject = async (
   datePreset: string,
   now: Date,
   fallbackReason?: string | null,
+  override?: AutoReportRangeOverride,
 ): Promise<{ delivered: number; fallback: boolean; reportId?: string }> => {
   const targets = collectTargets(project, settings.autoReport.sendTarget, now);
   if (!targets.length) {
@@ -257,6 +282,13 @@ const sendAutoReportForProject = async (
     command: "schedule:auto", // reuse label for tracking
     datePreset,
   };
+
+  if (override?.since) {
+    (baseOptions as typeof baseOptions & { since: string }).since = override.since;
+  }
+  if (override?.until) {
+    (baseOptions as typeof baseOptions & { until: string }).until = override.until;
+  }
 
   const deliver = async (
     result: Awaited<ReturnType<typeof generateReport>>,
@@ -414,7 +446,8 @@ export const runAutoReportEngine = async (
     const linkedAccount = accountByProject.get(project.id);
     const accountDetail = linkedAccount ? accountDetails.get(linkedAccount.accountId) ?? null : null;
 
-    const routing = collectTargets(project, draft.alerts.target, now);
+    const routing = draft.alerts.enabled ? collectTargets(project, draft.alerts.route, now) : [];
+    const routingActive = routing.length > 0;
 
     const billingStatus = project.billing?.status ?? "missing";
     const billingDate = project.nextPaymentDate ?? null;
@@ -428,7 +461,7 @@ export const runAutoReportEngine = async (
       settingsChanged = true;
     }
 
-    draft.autoReport.alertsTarget = draft.alerts.target;
+    draft.autoReport.alertsTarget = draft.alerts.route;
 
     const evaluation = evaluateAutoReportTrigger(draft.autoReport, now);
 
@@ -442,7 +475,16 @@ export const runAutoReportEngine = async (
     }
 
     if (evaluation.weekly) {
-      const sendResult = await sendAutoReportForProject(env, project, draft, "last_7d", now, metaError);
+      const range = resolvePreviousWeekRange(now);
+      const sendResult = await sendAutoReportForProject(
+        env,
+        project,
+        draft,
+        "last_7d",
+        now,
+        metaError,
+        { ...range, period: "week" },
+      );
       if (sendResult.delivered > 0) {
         draft.autoReport.lastSentMonday = now.toISOString();
         settingsChanged = true;
@@ -451,8 +493,8 @@ export const runAutoReportEngine = async (
     }
 
     const needsBillingAlert =
-      draft.alerts.payment && (billingStatus === "overdue" || billingStatus === "cancelled");
-    if (needsBillingAlert && routing.length) {
+      routingActive && draft.autobilling.enabled && (billingStatus === "overdue" || billingStatus === "cancelled");
+    if (needsBillingAlert) {
       const previousStatus = settings.billing.status;
       if (previousStatus !== billingStatus) {
         const text = `‼️ Проблема оплаты Meta\nСтатус: ${escapeHtml(billingStatus)}`;
@@ -462,7 +504,7 @@ export const runAutoReportEngine = async (
 
     if (linkedAccount) {
       const anomaly = anomalies.get(linkedAccount.accountId);
-      if (anomaly && draft.alerts.budget && routing.length) {
+      if (anomaly && routingActive && draft.budget.enabled) {
         const currency = anomaly.currency ?? "USD";
         const text =
           `⚠️ Аномальный расход\nСегодня: ${anomaly.current.toFixed(2)} ${currency} ` +
@@ -495,15 +537,15 @@ export const runAutoReportEngine = async (
     if (draft.meta.status !== nextMetaStatus) {
       draft.meta.status = nextMetaStatus;
       settingsChanged = true;
-      if (nextMetaStatus === "error" && draft.alerts.metaApi && routing.length && settings.meta.status !== "error") {
+      if (nextMetaStatus === "error" && routingActive && draft.metaApi.enabled && settings.meta.status !== "error") {
         const text = `⚠️ Ошибка Meta API — ${escapeHtml(metaError || "неизвестная ошибка")}`;
         stats.alertsSent += await sendMessageToTargets(env, routing, text);
       }
-      if (nextMetaStatus === "missing" && draft.alerts.metaApi && routing.length && settings.meta.status !== "missing") {
+      if (nextMetaStatus === "missing" && routingActive && draft.metaApi.enabled && settings.meta.status !== "missing") {
         const text = `⚠️ Meta OAuth не настроен`;
         stats.alertsSent += await sendMessageToTargets(env, routing, text);
       }
-      if (nextMetaStatus === "paused" && draft.alerts.pause && routing.length) {
+      if (nextMetaStatus === "paused" && routingActive && draft.pause.enabled) {
         const paused = linkedAccount ? pausedCampaigns.get(linkedAccount.accountId) ?? [] : [];
         if (paused.length) {
           const body = formatCampaignList(paused);
