@@ -64,19 +64,22 @@ const buildLeadNotificationMessage = (lead: Lead): string => {
   return lines.join("\n");
 };
 
+type ProjectMessageDispatcher = typeof dispatchProjectMessage;
+
 const dispatchLeadNotifications = async (
   kv: KvClient,
   token: string | undefined,
   project: Project,
   settings: ProjectSettings,
   lead: Lead,
+  sendMessage: ProjectMessageDispatcher,
 ): Promise<boolean> => {
   if (!token || !settings.alerts.leadNotifications) {
     return false;
   }
 
   const message = buildLeadNotificationMessage(lead);
-  const result = await dispatchProjectMessage({
+  const result = await sendMessage({
     kv,
     token,
     project,
@@ -115,7 +118,16 @@ const ensureTokenBody = (body: TokenRequestBody): ValidatedTokenBody => {
   };
 };
 
-export const registerMetaRoutes = (router: Router): void => {
+export interface MetaRouteDependencies {
+  dispatchProjectMessage?: ProjectMessageDispatcher;
+}
+
+export const registerMetaRoutes = (
+  router: Router,
+  deps: MetaRouteDependencies = {},
+): void => {
+  const sendProjectMessage = deps.dispatchProjectMessage ?? dispatchProjectMessage;
+
   router.on("GET", "/api/meta/webhook", async (context) => {
     const url = new URL(context.request.url);
     const mode = url.searchParams.get("hub.mode");
@@ -194,6 +206,7 @@ export const registerMetaRoutes = (router: Router): void => {
           project,
           settings,
           lead,
+          sendProjectMessage,
         );
       }
 

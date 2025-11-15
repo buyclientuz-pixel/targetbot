@@ -10,7 +10,8 @@
     "dev": "wrangler dev",
     "lint": "eslint . --ext .js",
     "typecheck": "tsc --noEmit --project tsconfig.json",
-    "qa": "node -e \"console.log('QA suite will be introduced in iteration 9')\""
+    "test": "node --loader ./scripts/ts-loader.mjs --test \"tests/**/*.test.ts\"",
+    "qa": "node --loader ./scripts/ts-loader.mjs --test \"tests/**/*.test.ts\""
   },
   "devDependencies": {
     "eslint": "^9.39.1",

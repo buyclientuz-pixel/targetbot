@@ -41,6 +41,8 @@ class WorkerRouter implements Router {
   async handle(context: RequestContext): Promise<Response> {
     const { request } = context;
     const url = new URL(request.url);
+    const origin = request.headers.get("origin") ?? "*";
+    let allowedMethods: Set<string> | null = null;
 
     for (const route of this.routes) {
       const match = route.pattern.exec(url);
@@ -48,9 +50,14 @@ class WorkerRouter implements Router {
         continue;
       }
       if (!route.methods.has(request.method.toUpperCase())) {
-        const response = methodNotAllowed(Array.from(route.methods));
-        const origin = route.options?.cors?.allowOrigin ?? request.headers.get("origin") ?? "*";
-        return applyCors(response, origin);
+        if (!allowedMethods) {
+          allowedMethods = new Set(route.methods);
+        } else {
+          for (const method of route.methods) {
+            allowedMethods.add(method);
+          }
+        }
+        continue;
       }
       context.setParams(match.pathname.groups ?? {});
       const response = await route.handler(context);
@@ -58,7 +65,9 @@ class WorkerRouter implements Router {
       return applyCors(response, origin);
     }
 
-    const origin = request.headers.get("origin") ?? "*";
+    if (allowedMethods) {
+      return applyCors(methodNotAllowed(Array.from(allowedMethods)), origin);
+    }
     return applyCors(notFound(), origin);
   }
 }

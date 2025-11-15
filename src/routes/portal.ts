@@ -27,7 +27,7 @@ const forbidden = (message: string): Response => jsonResponse({ error: message }
 const notFound = (message: string): Response => jsonResponse({ error: message }, { status: 404 });
 const unprocessable = (message: string): Response => jsonResponse({ error: message }, { status: 422 });
 
-const renderPortalHtml = (projectId: string): string => {
+export const renderPortalHtml = (projectId: string): string => {
   const projectIdJson = JSON.stringify(projectId);
   return `<!doctype html>
 <html lang="ru">
