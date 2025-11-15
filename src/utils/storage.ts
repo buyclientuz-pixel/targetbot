@@ -632,6 +632,46 @@ const normalizeLeadRecord = (
   } satisfies LeadRecord;
 };
 
+const isBlank = (value: string | null | undefined): boolean => {
+  return typeof value !== "string" || value.trim().length === 0;
+};
+
+const mergeLeadRecords = (first: LeadRecord, second: LeadRecord): LeadRecord => {
+  const { latest, winner } = chooseLatest(first.createdAt, second.createdAt);
+  const base = winner === 2 ? second : first;
+  const extra = winner === 2 ? first : second;
+
+  const pickString = (primary: string | null | undefined, fallback: string | null | undefined): string | null => {
+    if (!isBlank(primary)) {
+      return primary as string;
+    }
+    if (!isBlank(fallback)) {
+      return fallback as string;
+    }
+    return null;
+  };
+
+  const pickNullable = <T>(primary: T | null | undefined, fallback: T | null | undefined): T | null => {
+    return primary ?? fallback ?? null;
+  };
+
+  return {
+    ...base,
+    projectId: base.projectId || extra.projectId,
+    createdAt: latest ?? base.createdAt ?? extra.createdAt,
+    name: pickString(base.name, extra.name) ?? base.name ?? extra.name,
+    phone: pickString(base.phone ?? null, extra.phone ?? null),
+    campaignId: pickNullable(base.campaignId ?? null, extra.campaignId ?? null),
+    formId: pickNullable(base.formId ?? null, extra.formId ?? null),
+    adId: pickNullable(base.adId ?? null, extra.adId ?? null),
+    campaignName: pickString(base.campaignName ?? null, extra.campaignName ?? null),
+    campaignShortName: pickString(base.campaignShortName ?? null, extra.campaignShortName ?? null),
+    campaignObjective: pickString(base.campaignObjective ?? null, extra.campaignObjective ?? null),
+    adName: pickString(base.adName ?? null, extra.adName ?? null),
+    status: base.status === "done" || extra.status === "done" ? "done" : "new",
+  } satisfies LeadRecord;
+};
+
 const sortLeads = (leads: LeadRecord[]): LeadRecord[] => {
   return leads
     .slice()
@@ -2140,14 +2180,15 @@ export const listLeads = async (env: EnvBindings, projectId: string): Promise<Le
   ]);
 
   const combined = new Map<string, LeadRecord>();
-  for (const entry of kvLeads) {
-    combined.set(entry.id, entry);
-  }
+  const upsert = (record: LeadRecord) => {
+    const existing = combined.get(record.id);
+    combined.set(record.id, existing ? mergeLeadRecords(existing, record) : record);
+  };
+
+  kvLeads.forEach(upsert);
 
   const normalizedR2 = r2Leads.map((item) => normalizeLeadRecord(projectId, item as Record<string, unknown>));
-  for (const entry of normalizedR2) {
-    combined.set(entry.id, entry);
-  }
+  normalizedR2.forEach(upsert);
 
   return sortLeads(Array.from(combined.values()));
 };
