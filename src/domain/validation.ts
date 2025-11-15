@@ -73,3 +73,28 @@ export const assertOptionalBoolean = (value: unknown, field: string): boolean | 
   }
   throw new DataValidationError(`Expected ${field} to be a boolean or null`);
 };
+
+export const assertEnum = <const T extends readonly string[]>(
+  value: unknown,
+  field: string,
+  allowed: T,
+): T[number] => {
+  const str = assertString(value, field);
+  if (allowed.includes(str as T[number])) {
+    return str as T[number];
+  }
+  throw new DataValidationError(
+    `Expected ${field} to be one of: ${allowed.join(", ")}, received '${str}'`,
+  );
+};
+
+export const assertOptionalEnum = <const T extends readonly string[]>(
+  value: unknown,
+  field: string,
+  allowed: T,
+): T[number] | null => {
+  if (value == null) {
+    return null;
+  }
+  return assertEnum(value, field, allowed);
+};

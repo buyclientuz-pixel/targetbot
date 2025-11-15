@@ -1,7 +1,12 @@
 export const KV_KEYS = {
+  fbAuth: (userId: string | number) => `fb_auth:${userId}`,
+  projectsByUser: (userId: string | number) => `projects_by_user:${userId}`,
   config: (name: string) => `config:${name}`,
   user: (telegramId: string | number) => `user:${telegramId}`,
   project: (projectId: string) => `project:${projectId}`,
+  billing: (projectId: string) => `billing:${projectId}`,
+  alerts: (projectId: string) => `alerts:${projectId}`,
+  autoreports: (projectId: string) => `autoreports:${projectId}`,
   projectSettings: (projectId: string) => `project-settings:${projectId}`,
   metaToken: (facebookUserId: string) => `meta-token:${facebookUserId}`,
   metaCache: (projectId: string, scope: string) => `meta-cache:${projectId}:${scope}`,
@@ -13,6 +18,11 @@ export const KV_KEYS = {
 } as const;
 
 export const KV_PREFIXES = {
+  fbAuth: "fb_auth:",
+  projectsByUser: "projects_by_user:",
+  billing: "billing:",
+  alerts: "alerts:",
+  autoreports: "autoreports:",
   projects: "project:",
   projectSettings: "project-settings:",
   metaTokens: "meta-token:",
