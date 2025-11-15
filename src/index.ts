@@ -1049,6 +1049,74 @@ interface PortalRouteSuccess {
   basePath: string;
 }
 
+const buildPortalPagination = (resolution: PortalRouteSuccess): PortalPagination => {
+  const { snapshot, periodSelection, basePath } = resolution;
+  const buildPortalUrl = (periodKey: string, pageNumber: number): string => {
+    const params = new URLSearchParams();
+    if (periodKey !== "today") {
+      params.set("period", periodKey);
+    }
+    if (pageNumber > 1) {
+      params.set("page", String(pageNumber));
+    }
+    const query = params.toString();
+    return `${basePath}${query ? `?${query}` : ""}`;
+  };
+
+  return {
+    page: snapshot.page,
+    totalPages: snapshot.totalPages,
+    prevUrl: snapshot.page > 1 ? buildPortalUrl(periodSelection.key, snapshot.page - 1) : null,
+    nextUrl:
+      snapshot.page < snapshot.totalPages ? buildPortalUrl(periodSelection.key, snapshot.page + 1) : null,
+  } satisfies PortalPagination;
+};
+
+const mapMetricsToRecord = (metrics: PortalMetricEntry[]): Record<string, string> => {
+  return metrics.reduce<Record<string, string>>((acc, entry) => {
+    acc[entry.key] = entry.value;
+    return acc;
+  }, {});
+};
+
+const buildPortalApiPayload = (resolution: PortalRouteSuccess) => {
+  const { project, portal, periodSelection, snapshot, snapshotSource, slug } = resolution;
+  return {
+    project: {
+      id: project.id,
+      name: project.name,
+      slug,
+      chatId: project.telegramChatId ?? project.chatId ?? null,
+      topicId: project.telegramThreadId ?? null,
+      adAccountId: project.adAccountId ?? null,
+      metaAccountId: project.metaAccountId ?? null,
+    },
+    portal: {
+      id: portal.portalId,
+      mode: portal.mode,
+      campaignIds: portal.campaignIds,
+      metrics: portal.metrics,
+    },
+    period: {
+      key: periodSelection.key,
+      label: periodSelection.label,
+      since: periodSelection.since ? periodSelection.since.toISOString() : null,
+      until: periodSelection.until ? periodSelection.until.toISOString() : null,
+    },
+    periodLabel: snapshot.periodLabel,
+    metrics: snapshot.metrics,
+    metricsMap: mapMetricsToRecord(snapshot.metrics),
+    leads: snapshot.leads,
+    campaigns: snapshot.campaigns,
+    statusCounts: snapshot.statusCounts,
+    pagination: buildPortalPagination(resolution),
+    billing: snapshot.billing,
+    updatedAt: snapshot.updatedAt,
+    partial: snapshot.partial ?? false,
+    dataSource: snapshot.dataSource ?? snapshotSource,
+  };
+};
+
 const resolvePortalRequest = async (
   bindings: EnvBindings,
   slug: string,
@@ -1147,6 +1215,18 @@ const resolvePortalRequest = async (
   };
 };
 
+const resolvePortalRequestForProject = async (
+  bindings: EnvBindings,
+  projectId: string,
+  searchParams: URLSearchParams,
+  now: Date,
+  options: PortalSnapshotLoadOptions = {},
+): Promise<PortalRouteSuccess | PortalRouteFailure> => {
+  const portalRecord = await loadPortalByProjectId(bindings, projectId).catch(() => null);
+  const slug = portalRecord?.portalId ?? projectId;
+  return resolvePortalRequest(bindings, slug, searchParams, now, options);
+};
+
 const isPortalFailure = (
   value: PortalRouteSuccess | PortalRouteFailure,
 ): value is PortalRouteFailure => {
@@ -1208,11 +1288,107 @@ export default {
       if (pathname.startsWith("/api/meta/status") && method === "GET") {
         return withCors(await handleMetaStatus(request, env));
       }
+      if (pathname.startsWith("/api/meta/stats") && method === "GET") {
+        const projectId = url.searchParams.get("projectId") ?? url.searchParams.get("project");
+        if (!projectId) {
+          return withCors(jsonResponse({ ok: false, error: "projectId is required" }, { status: 400 }));
+        }
+        const bindings = ensureEnv(env);
+        const now = new Date();
+        const portalLogger = createPortalLogger(requestId);
+        const resolution = await resolvePortalRequestForProject(bindings, projectId, url.searchParams, now, {
+          ctx: executionCtx ?? undefined,
+          logger: portalLogger,
+        });
+        if (isPortalFailure(resolution)) {
+          portalLogger("route_failure", {
+            route: "portal.stats.api",
+            slug: projectId,
+            status: resolution.status,
+            code: resolution.code,
+          });
+          const { message, status, code } = resolution;
+          return withCors(jsonResponse({ ok: false, error: message, details: { code } }, { status }));
+        }
+        portalLogger("route_success", { route: "portal.stats.api", slug: projectId });
+        const payload = {
+          metrics: resolution.snapshot.metrics,
+          metricsMap: mapMetricsToRecord(resolution.snapshot.metrics),
+          statusCounts: resolution.snapshot.statusCounts,
+          periodLabel: resolution.snapshot.periodLabel,
+          updatedAt: resolution.snapshot.updatedAt,
+          billing: resolution.snapshot.billing,
+          partial: resolution.snapshot.partial ?? false,
+          dataSource: resolution.snapshot.dataSource ?? resolution.snapshotSource,
+        };
+        return withCors(jsonResponse({ ok: true, data: payload }));
+      }
       if (pathname.startsWith("/api/meta/adaccounts") && method === "GET") {
         return withCors(await handleMetaAdAccounts(request, env));
       }
       if (pathname.startsWith("/api/meta/campaigns") && method === "GET") {
+        const projectId = url.searchParams.get("projectId") ?? url.searchParams.get("project");
+        if (projectId) {
+          const bindings = ensureEnv(env);
+          const now = new Date();
+          const portalLogger = createPortalLogger(requestId);
+          const resolution = await resolvePortalRequestForProject(bindings, projectId, url.searchParams, now, {
+            ctx: executionCtx ?? undefined,
+            logger: portalLogger,
+          });
+          if (isPortalFailure(resolution)) {
+            portalLogger("route_failure", {
+              route: "portal.campaigns.api",
+              slug: projectId,
+              status: resolution.status,
+              code: resolution.code,
+            });
+            const { message, status, code } = resolution;
+            return withCors(jsonResponse({ ok: false, error: message, details: { code } }, { status }));
+          }
+          portalLogger("route_success", { route: "portal.campaigns.api", slug: projectId });
+          const payload = {
+            campaigns: resolution.snapshot.campaigns,
+            updatedAt: resolution.snapshot.updatedAt,
+            partial: resolution.snapshot.partial ?? false,
+            dataSource: resolution.snapshot.dataSource ?? resolution.snapshotSource,
+          };
+          return withCors(jsonResponse({ ok: true, data: payload }));
+        }
         return withCors(await handleMetaCampaigns(request, env));
+      }
+      if (pathname.startsWith("/api/meta/leads") && method === "GET") {
+        const projectId = url.searchParams.get("projectId") ?? url.searchParams.get("project");
+        if (!projectId) {
+          return withCors(jsonResponse({ ok: false, error: "projectId is required" }, { status: 400 }));
+        }
+        const bindings = ensureEnv(env);
+        const now = new Date();
+        const portalLogger = createPortalLogger(requestId);
+        const resolution = await resolvePortalRequestForProject(bindings, projectId, url.searchParams, now, {
+          ctx: executionCtx ?? undefined,
+          logger: portalLogger,
+        });
+        if (isPortalFailure(resolution)) {
+          portalLogger("route_failure", {
+            route: "portal.leads.api",
+            slug: projectId,
+            status: resolution.status,
+            code: resolution.code,
+          });
+          const { message, status, code } = resolution;
+          return withCors(jsonResponse({ ok: false, error: message, details: { code } }, { status }));
+        }
+        portalLogger("route_success", { route: "portal.leads.api", slug: projectId });
+        const payload = {
+          leads: resolution.snapshot.leads,
+          statusCounts: resolution.snapshot.statusCounts,
+          pagination: buildPortalPagination(resolution),
+          updatedAt: resolution.snapshot.updatedAt,
+          partial: resolution.snapshot.partial ?? false,
+          dataSource: resolution.snapshot.dataSource ?? resolution.snapshotSource,
+        };
+        return withCors(jsonResponse({ ok: true, data: payload }));
       }
       if (pathname === "/api/meta/oauth/start" && method === "GET") {
         return withCors(await handleMetaOAuthStart(request, env));
@@ -1798,6 +1974,30 @@ export default {
 
       if (pathname.startsWith("/manage/telegram/webhook") && method === "GET") {
         return await handleTelegramWebhookRefresh(request, env);
+      }
+
+      const projectDashboardMatch = pathname.match(/^\/api\/project\/([^/]+)\/dashboard$/);
+      if (projectDashboardMatch && method === "GET") {
+        const projectId = decodeURIComponent(projectDashboardMatch[1]);
+        const bindings = ensureEnv(env);
+        const now = new Date();
+        const portalLogger = createPortalLogger(requestId);
+        const resolution = await resolvePortalRequestForProject(bindings, projectId, url.searchParams, now, {
+          ctx: executionCtx ?? undefined,
+          logger: portalLogger,
+        });
+        if (isPortalFailure(resolution)) {
+          portalLogger("route_failure", {
+            route: "portal.dashboard.api",
+            slug: projectId,
+            status: resolution.status,
+            code: resolution.code,
+          });
+          const { message, status, code } = resolution;
+          return withCors(jsonResponse({ ok: false, error: message, details: { code } }, { status }));
+        }
+        portalLogger("route_success", { route: "portal.dashboard.api", slug: projectId });
+        return withCors(jsonResponse({ ok: true, data: buildPortalApiPayload(resolution) }));
       }
 
       return notFound();
