@@ -83,7 +83,8 @@ Each phase should conclude with README updates ("Выполнено" + "След
 
 - ✅ **Phase 1 — Admin Foundations.** `/api/admin/*` маршруты задействованы, интеграционные тесты `tests/integration/admin-routes.test.ts` подтверждают CRUD-поток.
 - ✅ **Phase 2 — Telegram Bot Validation.** Интеграционные тесты `tests/integration/telegram-bot-controller.test.ts` покрывают меню, карточки проектов и сценарии биллинга (включая +30 дней и ручной ввод дат).
-- ⏭️ **Phase 3 — Portal Restoration.** Следующим шагом восстанавливаем портал (`/portal/:projectId`) и проверяем API summary/leads/campaigns вместе с платежами.
+- ✅ **Phase 3 — Portal Restoration.** Интеграционный тест `tests/integration/portal-routes.test.ts` подтверждает работу HTML-портала и API summary/leads/campaigns/payments.
+- ⏭️ **Phase 4 — Meta/Webhook Pipeline.** Следующим шагом валидируем ingest от webhook до Telegram-уведомлений и документируем проверку.
 
 ## 4. Verification Checklist
 
@@ -106,6 +107,7 @@ Before marking the system fully restored we must:
    - `GET /api/projects/{id}/summary?period=yesterday` returns metrics (cached 60s).
    - `GET /api/projects/{id}/leads?period=yesterday` and `/campaigns` deliver filtered data.
    - Payments page reflects R2 records after bot updates.
+   - Интеграционный тест `tests/integration/portal-routes.test.ts` фиксирует все четыре API и HTML-роут.
 
 4. **Meta/Webhook**
    - `GET /api/meta/webhook` handshake returns verify token.
