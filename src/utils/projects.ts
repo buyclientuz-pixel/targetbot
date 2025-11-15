@@ -181,10 +181,15 @@ export const applyProjectReportPreferencesPatch = (
   return settings;
 };
 
-const summarizeLeads = (leads: LeadRecord[]): ProjectLeadStats => {
+const summarizeLeads = (leads: LeadRecord[], now: Date = new Date()): ProjectLeadStats => {
   let latestTimestamp = 0;
   let newCount = 0;
   let doneCount = 0;
+  let todayCount = 0;
+
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const todayBoundary = startOfToday.getTime();
 
   for (const lead of leads) {
     const created = Date.parse(lead.createdAt);
@@ -197,10 +202,15 @@ const summarizeLeads = (leads: LeadRecord[]): ProjectLeadStats => {
     } else {
       newCount += 1;
     }
+
+    if (!Number.isNaN(created) && created >= todayBoundary) {
+      todayCount += 1;
+    }
   }
 
   return {
     total: leads.length,
+    today: todayCount,
     new: newCount,
     done: doneCount,
     latestAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : undefined,
@@ -335,8 +345,8 @@ export const summarizeProjects = async (
 
 export const sortProjectSummaries = (summaries: ProjectSummary[]): ProjectSummary[] => {
   return [...summaries].sort((a, b) => {
-    if (b.leadStats.new !== a.leadStats.new) {
-      return b.leadStats.new - a.leadStats.new;
+    if (b.leadStats.today !== a.leadStats.today) {
+      return b.leadStats.today - a.leadStats.today;
     }
 
     const bLatest = b.leadStats.latestAt ? Date.parse(b.leadStats.latestAt) : 0;

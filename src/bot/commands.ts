@@ -1936,7 +1936,7 @@ const handleProjectView = async (
     }`,
   );
   lines.push(
-    `💬 Лиды: ${summary.leadStats.total} (новые ${summary.leadStats.new}, завершено ${summary.leadStats.done})`,
+    `💬 Лиды: сегодня ${summary.leadStats.today} | всего ${summary.leadStats.total}`,
   );
   lines.push(describeBillingStatus(summary));
   lines.push(describePaymentSchedule(summary));
@@ -2127,9 +2127,8 @@ const handleProjectLeads = async (context: BotContext, projectId: string): Promi
   const preview = sorted.slice(0, 5);
   const lines: string[] = [];
   lines.push(`💬 Лиды — <b>${escapeHtml(summary.name)}</b>`);
-  lines.push(
-    `Всего: ${summary.leadStats.total} · Новые: ${summary.leadStats.new} · Завершено: ${summary.leadStats.done}`,
-  );
+  lines.push(`Сегодня: ${summary.leadStats.today} · Всего: ${summary.leadStats.total}`);
+  lines.push(`Завершено: ${summary.leadStats.done} · В работе: ${summary.leadStats.total - summary.leadStats.done}`);
   lines.push("\nПоследние заявки:");
   if (preview.length) {
     for (const lead of preview) {
@@ -2192,7 +2191,7 @@ const handleProjectReport = async (
     `📈 Отчёт по рекламе — <b>${escapeHtml(summary.name)}</b>`,
     `Период: <b>${escapeHtml(period.label)}</b>`,
     "",
-    `Лиды: ${leadStats.total} (новые ${leadStats.new}, закрыто ${leadStats.done})`,
+    `Лиды: ${leadStats.total} · Закрыто: ${leadStats.done} · В работе: ${leadStats.total - leadStats.done}`,
     account
       ? `Расход: ${spendLabel ? escapeHtml(spendLabel) : "—"}`
       : accountInfo.status === "valid"

@@ -81,6 +81,7 @@ import {
 import { fetchAdAccounts, fetchCampaigns, resolveMetaStatus, withMetaSettings } from "./utils/meta";
 import {
   projectBilling,
+  projectLeadStats,
   summarizeProjects,
   sortProjectSummaries,
   isProjectAutoDisabled,
@@ -423,22 +424,9 @@ const preparePortalBaseData = async (
   const paginatedLeads = leadsInPeriod.slice(offset, offset + PORTAL_PAGE_SIZE);
   const leadViews = paginatedLeads.map(toPortalLeadView);
 
-  const latestLeadTimestamp = leadsInPeriod.reduce((acc, lead) => {
-    const created = Date.parse(lead.createdAt);
-    if (!Number.isNaN(created) && created > acc) {
-      return created;
-    }
-    return acc;
-  }, 0);
-
   const summary: ProjectSummary = {
     ...project,
-    leadStats: {
-      total: statusCounts.all,
-      new: statusCounts.new,
-      done: statusCounts.done,
-      latestAt: latestLeadTimestamp ? new Date(latestLeadTimestamp).toISOString() : undefined,
-    },
+    leadStats: projectLeadStats.summarizeLeads(allLeads, now),
     billing,
   };
 

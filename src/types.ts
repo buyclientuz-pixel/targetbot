@@ -471,6 +471,7 @@ export interface ChatRegistrationRecord {
 
 export interface ProjectLeadStats {
   total: number;
+  today: number;
   new: number;
   done: number;
   latestAt?: string;

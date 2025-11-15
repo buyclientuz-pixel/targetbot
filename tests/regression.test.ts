@@ -214,7 +214,7 @@ const createSummary = (id: string): ProjectSummary => {
     ...base,
     adAccountId: base.metaAccountId,
     telegramTitle: `Client ${id}`,
-    leadStats: { total: 5, new: 3, done: 2, latestAt: base.createdAt },
+    leadStats: { total: 5, today: 2, new: 3, done: 2, latestAt: base.createdAt },
     billing: {
       status: "active",
       active: true,
