@@ -750,6 +750,12 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       ? new Date(autoOffAtSource).toISOString()
       : null;
 
+  const lastPaymentSource = data.lastPaymentDate ?? data.last_payment_date ?? null;
+  const lastPaymentDate =
+    typeof lastPaymentSource === "string" && lastPaymentSource.trim() && !Number.isNaN(Date.parse(lastPaymentSource))
+      ? new Date(lastPaymentSource).toISOString()
+      : null;
+
   const billingEnabled =
     billingEnabledExplicit !== undefined
       ? billingEnabledExplicit
@@ -768,6 +774,7 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     billingEnabled,
     billingPlan,
     billingAmountUsd,
+    lastPaymentDate,
     createdAt,
     updatedAt,
     settings,
@@ -911,6 +918,15 @@ const normalizeTelegramGroupLinkRecord = (
   const updatedAt =
     typeof updatedCandidate === "string" && updatedCandidate.trim() ? updatedCandidate.trim() : undefined;
 
+  const threadCandidate =
+    data.threadId ?? data.thread_id ?? data.messageThreadId ?? data.message_thread_id ?? data.topicId ?? data.topic_id;
+  const threadId =
+    typeof threadCandidate === "number" && Number.isFinite(threadCandidate)
+      ? threadCandidate
+      : typeof threadCandidate === "string" && threadCandidate.trim() && !Number.isNaN(Number(threadCandidate))
+        ? Number(threadCandidate)
+        : null;
+
   return {
     chatId,
     title,
@@ -918,6 +934,7 @@ const normalizeTelegramGroupLinkRecord = (
     registered,
     linkedProjectId,
     updatedAt,
+    threadId,
   };
 };
 
@@ -987,6 +1004,7 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
     billingAmountUsd: billingAmount,
     billingPlan,
     billingEnabled,
+    lastPaymentDate: coalesce(base.lastPaymentDate, extra.lastPaymentDate, null) ?? null,
     settings: { ...extra.settings, ...base.settings },
     manualKpi:
       base.manualKpi && base.manualKpi.length
@@ -1035,6 +1053,7 @@ const mergeTelegramGroupRecords = (
     members: base.members ?? extra.members ?? null,
     registered: base.registered || extra.registered,
     linkedProjectId: base.linkedProjectId ?? extra.linkedProjectId ?? null,
+    threadId: base.threadId ?? extra.threadId ?? null,
     updatedAt: latest ?? base.updatedAt ?? extra.updatedAt,
   };
 };
@@ -1333,6 +1352,7 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
           project.billingAmountUsd !== undefined && project.billingAmountUsd !== null
             ? Number(project.billingAmountUsd.toFixed(2))
             : null,
+        last_payment_date: project.lastPaymentDate ?? null,
         created_at: project.createdAt,
         manual_kpi: Array.isArray(project.manualKpi) ? project.manualKpi : [],
         portal_slug: project.portalSlug ?? project.id,
@@ -1771,6 +1791,24 @@ const normalizePaymentReminderRecord = (
       : clientPromptSource === null
         ? null
         : undefined;
+  const exchangeRateSource = data.exchangeRate ?? data.exchange_rate ?? data.rate;
+  const exchangeRateCandidate =
+    typeof exchangeRateSource === "number" && Number.isFinite(exchangeRateSource) && exchangeRateSource > 0
+      ? exchangeRateSource
+      : typeof exchangeRateSource === "string" && exchangeRateSource.trim()
+        ? Number(exchangeRateSource)
+        : null;
+  const exchangeRate =
+    exchangeRateCandidate !== null && Number.isFinite(exchangeRateCandidate) && exchangeRateCandidate > 0
+      ? Number(exchangeRateCandidate)
+      : null;
+  const nextPlannedSource = data.nextPaymentPlannedAt ?? data.next_payment_planned_at ?? data.nextPlannedPaymentAt;
+  const nextPaymentPlannedAt =
+    typeof nextPlannedSource === "string" && nextPlannedSource.trim() && !Number.isNaN(Date.parse(nextPlannedSource))
+      ? new Date(nextPlannedSource).toISOString()
+      : nextPlannedSource === null
+        ? null
+        : undefined;
   return {
     id,
     projectId,
@@ -1786,6 +1824,8 @@ const normalizePaymentReminderRecord = (
     adminChatId,
     clientChatId,
     lastClientPromptAt,
+    exchangeRate: exchangeRate ?? null,
+    nextPaymentPlannedAt: nextPaymentPlannedAt ?? null,
   };
 };
 
@@ -1892,6 +1932,8 @@ export const savePaymentReminders = async (
       admin_chat_id: record.adminChatId ?? null,
       client_chat_id: record.clientChatId ?? null,
       last_client_prompt_at: record.lastClientPromptAt ?? null,
+      exchange_rate: record.exchangeRate ?? null,
+      next_payment_planned_at: record.nextPaymentPlannedAt ?? null,
       created_at: record.createdAt,
       updated_at: record.updatedAt,
     }),
@@ -2492,6 +2534,7 @@ export const saveTelegramGroupLinks = async (
       members: record.members ?? null,
       registered: Boolean(record.registered),
       linked_project_id: record.linkedProjectId ?? null,
+      thread_id: record.threadId ?? null,
     }),
   });
 };

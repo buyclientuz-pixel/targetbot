@@ -256,24 +256,23 @@ export const buildAdminPaymentReminderMessage = (
   status: PaymentReminderStatus,
   dueDate: string,
 ): string => {
-  const lines = ["🧾 <b>Напоминание об оплате</b>"];
-  lines.push(`Проект: <b>${escapeHtml(project.name)}</b>`);
-  lines.push(`Оплата запланирована: <b>${escapeHtml(formatDate(dueDate))}</b>`);
-  if (project.tariff > 0) {
-    lines.push(`Тариф: ${escapeHtml(formatUsdAmount(project.tariff))}`);
+  const lines = ["🧾 Напоминание об оплате", "", `Оплата запланирована: ${escapeHtml(formatDate(dueDate))}`];
+  const amount = project.billingAmountUsd ?? project.tariff;
+  if (amount > 0) {
+    lines.push(`Тариф: ${escapeHtml(formatUsdAmount(amount))}`);
   }
   if (status === "overdue") {
     lines.push("Статус: просрочено.");
   }
-  lines.push("Продлеваем?");
+  lines.push("", "Продлеваем?");
   return lines.join("\n");
 };
 
 export const buildAdminPaymentReminderMarkup = (projectId: string) => ({
   inline_keyboard: [
     [
-      { text: "Продлеваем", callback_data: `proj:billing-reminder-continue:${projectId}` },
-      { text: "Не продлеваю", callback_data: `proj:billing-reminder-decline:${projectId}` },
+      { text: "Продлеваем", callback_data: `payments:renew_yes:${projectId}` },
+      { text: "Не продлеваю", callback_data: `payments:renew_no:${projectId}` },
     ],
   ],
 });
@@ -330,23 +329,26 @@ export const buildAdminPaymentReviewMessage = (
   method: PaymentReminderRecord["method"],
   dueDate: string | null,
   reminder?: boolean,
+  options?: { exchangeRate?: number | null; amountUsd?: number | null },
 ): string => {
   const lines: string[] = [];
   if (reminder) {
-    lines.push("⏰ Напоминание: проверь оплату.");
+    lines.push("⏰ Напоминание: проверьте оплату.");
   }
   if (method === "transfer") {
     lines.push("Проверь оплату переводом");
   } else if (method === "cash") {
-    lines.push("Клиент выбрал оплату наличкой. Надо забрать деньги.");
+    lines.push("Клиент выбрал оплату наличными.");
   } else {
     lines.push("Проверь оплату");
   }
   lines.push(`Проект: <b>${escapeHtml(project.name)}</b>`);
-  if (project.tariff > 0) {
-    const usdLabel = formatUsdAmount(project.tariff);
+  const baseAmount = options?.amountUsd ?? project.billingAmountUsd ?? project.tariff;
+  if (baseAmount > 0) {
+    const usdLabel = formatUsdAmount(baseAmount);
     if (method === "transfer") {
-      const uzsLabel = formatUzsAmount(project.tariff * PAYMENT_TRANSFER_RATE);
+      const rate = options?.exchangeRate ?? PAYMENT_TRANSFER_RATE;
+      const uzsLabel = formatUzsAmount(baseAmount * rate);
       lines.push(`Тариф: ${escapeHtml(`${usdLabel} / ${uzsLabel} сум`)}`);
     } else {
       lines.push(`Тариф: ${escapeHtml(usdLabel)}`);
@@ -362,18 +364,17 @@ export const buildAdminPaymentReviewMessage = (
 export const buildAdminPaymentReviewMarkup = (projectId: string) => ({
   inline_keyboard: [
     [
-      { text: "Подтвердить", callback_data: `proj:billing-reminder-confirm:${projectId}` },
-      { text: "Ошибочно", callback_data: `proj:billing-reminder-error:${projectId}` },
+      { text: "Подтвердить", callback_data: `payments:confirm:${projectId}` },
+      { text: "Ошибочно", callback_data: `payments:error:${projectId}` },
     ],
-    [{ text: "Ожидаю поступления", callback_data: `proj:billing-reminder-wait:${projectId}` }],
+    [{ text: "Ожидаю поступления", callback_data: `payments:wait:${projectId}` }],
   ],
 });
 
 const sendAdminPaymentReview = async (
   env: ReminderEnv,
   project: ProjectRecord,
-  method: PaymentReminderRecord["method"],
-  dueDate: string | null,
+  record: PaymentReminderRecord,
   reminder = false,
 ): Promise<boolean> => {
   const chatId = resolveAdminChatId(project);
@@ -383,7 +384,10 @@ const sendAdminPaymentReview = async (
   try {
     await sendTelegramMessage(env, {
       chatId,
-      text: buildAdminPaymentReviewMessage(project, method, dueDate, reminder),
+      text: buildAdminPaymentReviewMessage(project, record.method ?? null, record.dueDate ?? null, reminder, {
+        exchangeRate: record.exchangeRate ?? undefined,
+        amountUsd: project.billingAmountUsd ?? project.tariff,
+      }),
       replyMarkup: buildAdminPaymentReviewMarkup(project.id),
     });
     return true;
@@ -506,7 +510,7 @@ const processPaymentReminders = async (
     const adminChatId = resolveAdminChatId(project);
     const clientChatId = resolveClientChatId(project);
     const dueIso = project.nextPaymentDate;
-    if (!adminChatId || !dueIso) {
+    if (!project.billingEnabled || !adminChatId || !dueIso) {
       reminderMap.delete(project.id);
       continue;
     }
@@ -520,6 +524,15 @@ const processPaymentReminders = async (
         }).catch((error) => {
           console.warn("Failed to enforce auto-off", project.id, error);
         });
+        if (clientChatId) {
+          await sendTelegramMessage(env, {
+            chatId: clientChatId,
+            threadId: typeof project.telegramThreadId === "number" ? project.telegramThreadId : undefined,
+            text: "Подписка на отчёты по этому проекту не продлена. Отчёты и портал временно отключены.",
+          }).catch((error) => {
+            console.warn("Failed to notify project chat about auto-off", project.id, error);
+          });
+        }
       }
       reminderMap.delete(project.id);
       continue;
@@ -620,13 +633,7 @@ const processPaymentReminders = async (
     } else if (updatedRecord.stage === "awaiting_admin_confirmation" && updatedRecord.nextFollowUpAt) {
       const followUpMs = Date.parse(updatedRecord.nextFollowUpAt);
       if (!Number.isNaN(followUpMs) && followUpMs <= now) {
-        const delivered = await sendAdminPaymentReview(
-          env,
-          project,
-          updatedRecord.method ?? null,
-          updatedRecord.dueDate ?? null,
-          true,
-        );
+        const delivered = await sendAdminPaymentReview(env, project, updatedRecord, true);
         if (delivered) {
           sent += 1;
           const timestamp = new Date().toISOString();

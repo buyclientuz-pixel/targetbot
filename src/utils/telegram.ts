@@ -32,11 +32,11 @@ export interface TelegramEditMessageOptions {
 export const sendTelegramMessage = async (
   env: TelegramEnv,
   options: TelegramMessageOptions,
-): Promise<void> => {
+): Promise<number | null> => {
   const token = resolveToken(env);
   if (!token) {
     console.warn("Telegram token is missing");
-    return;
+    return null;
   }
   const url = new URL(`${TELEGRAM_BASE}/bot${token}/sendMessage`);
   const payload: Record<string, unknown> = {
@@ -58,7 +58,17 @@ export const sendTelegramMessage = async (
   });
   if (!response.ok) {
     console.error("Failed to send Telegram message", await response.text());
+    return null;
   }
+  try {
+    const data = (await response.json()) as { result?: { message_id?: number } };
+    if (data?.result && typeof data.result.message_id === "number") {
+      return data.result.message_id;
+    }
+  } catch (error) {
+    console.warn("Failed to parse Telegram sendMessage response", error);
+  }
+  return null;
 };
 
 export const editTelegramMessage = async (

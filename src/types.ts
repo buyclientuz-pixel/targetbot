@@ -305,6 +305,7 @@ export interface TelegramGroupLinkRecord {
   members?: number | null;
   registered: boolean;
   linkedProjectId?: string | null;
+  threadId?: number | null;
   updatedAt?: string;
 }
 
@@ -334,6 +335,7 @@ export interface ProjectRecord {
   billingEnabled?: boolean;
   billingPlan?: "350" | "500" | "custom" | null;
   billingAmountUsd?: number | null;
+  lastPaymentDate?: string | null;
   createdAt: string;
   updatedAt: string;
   settings: JsonObject;
@@ -368,6 +370,7 @@ export interface ChatRegistrationRecord {
   chatType?: string;
   chatTitle?: string;
   username?: string;
+  threadId?: number | null;
   status: "pending" | "linked";
   linkedProjectId?: string;
   createdAt: string;
@@ -501,6 +504,8 @@ export interface PaymentReminderRecord {
   adminChatId?: string | null;
   clientChatId?: string | null;
   lastClientPromptAt?: string | null;
+  exchangeRate?: number | null;
+  nextPaymentPlannedAt?: string | null;
 }
 
 export type PaymentStatus = "pending" | "active" | "overdue" | "cancelled";
