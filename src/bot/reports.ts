@@ -1,15 +1,33 @@
 import { BotContext } from "./types";
-import { escapeAttribute, escapeHtml } from "../utils/html";
+import { escapeHtml } from "../utils/html";
 import {
   ReportSessionRecord,
   deleteReportSession,
   loadReportSession,
   saveReportSession,
+  loadMetaToken,
+  loadPendingKpiSelection,
+  savePendingKpiSelection,
+  clearPendingKpiSelection,
+  updateProjectRecord,
+  loadPortalByProjectId,
+  savePortalRecord,
+  listProjectCampaignKpis,
 } from "../utils/storage";
 import { createId } from "../utils/ids";
 import { sendTelegramMessage, editTelegramMessage, answerCallbackQuery } from "../utils/telegram";
 import { generateReport } from "../utils/reports";
-import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
+import { summarizeProjects, sortProjectSummaries, applyProjectReportPreferencesPatch } from "../utils/projects";
+import { fetchCampaigns, withMetaSettings } from "../utils/meta";
+import {
+  resolveCampaignKpis,
+  persistCampaignKpis,
+  syncCampaignObjectives,
+  KPI_LABELS,
+  getCampaignKPIs,
+  applyKpiSelection,
+} from "../utils/kpi";
+import { PortalMetricKey, ProjectSummary, MetaCampaign } from "../types";
 
 const REPORT_SESSION_TTL_MS = 30 * 60 * 1000;
 
@@ -21,8 +39,324 @@ const ensureChatId = (context: BotContext): string | null => {
   return context.chatId;
 };
 
+const sendOrEditMessage = async (
+  context: BotContext,
+  text: string,
+  replyMarkup: { inline_keyboard: { text: string; callback_data?: string; url?: string }[][] },
+): Promise<void> => {
+  const chatId = ensureChatId(context);
+  if (!chatId) {
+    return;
+  }
+  if (context.update.callback_query?.message && typeof context.messageId === "number") {
+    await editTelegramMessage(context.env, {
+      chatId,
+      messageId: context.messageId,
+      text,
+      replyMarkup,
+    });
+  } else {
+    await sendTelegramMessage(context.env, {
+      chatId,
+      threadId: context.threadId,
+      text,
+      replyMarkup,
+    });
+  }
+};
+
+const loadProjectSummaryById = async (
+  context: BotContext,
+  projectId: string,
+): Promise<ProjectSummary | null> => {
+  const summaries = await summarizeProjects(context.env, { projectIds: [projectId] });
+  return summaries.length ? summaries[0] : null;
+};
+
+const loadProjectCampaigns = async (
+  context: BotContext,
+  summary: ProjectSummary,
+): Promise<MetaCampaign[]> => {
+  if (!summary.adAccountId) {
+    return [];
+  }
+  try {
+    const token = await loadMetaToken(context.env);
+    if (!token) {
+      return [];
+    }
+    const metaEnv = await withMetaSettings(context.env);
+    const campaigns = await fetchCampaigns(metaEnv, token, summary.adAccountId, {
+      limit: 50,
+      datePreset: "last_7d",
+    });
+    await syncCampaignObjectives(context.env, summary.id, campaigns);
+    try {
+      const stored = await listProjectCampaignKpis(context.env, summary.id);
+      campaigns.forEach((campaign) => {
+        const metrics = stored[campaign.id];
+        campaign.manualKpi = metrics && metrics.length ? [...metrics] : undefined;
+      });
+    } catch (error) {
+      console.warn("Failed to load campaign KPI overrides", summary.id, error);
+    }
+    return campaigns;
+  } catch (error) {
+    console.warn("Failed to load campaigns for KPI", summary.id, error);
+    return [];
+  }
+};
+
+const ensurePendingKpiSelection = async (
+  context: BotContext,
+  projectId: string,
+  campaignId: string | null,
+  metrics: PortalMetricKey[],
+): Promise<PortalMetricKey[]> => {
+  if (!context.userId) {
+    return metrics;
+  }
+  const existing = await loadPendingKpiSelection(context.env, context.userId);
+  if (existing && existing.projectId === projectId && existing.campaignId === campaignId) {
+    return existing.metrics;
+  }
+  await savePendingKpiSelection(context.env, context.userId, {
+    projectId,
+    campaignId,
+    metrics,
+    updatedAt: new Date().toISOString(),
+  });
+  return metrics;
+};
+
+const applyProjectMetrics = async (
+  context: BotContext,
+  summary: ProjectSummary,
+  metrics: PortalMetricKey[],
+): Promise<void> => {
+  const settings = applyProjectReportPreferencesPatch(summary.settings ?? {}, { metrics });
+  await updateProjectRecord(context.env, summary.id, { settings, manualKpi: metrics });
+  try {
+    const portalRecord = await loadPortalByProjectId(context.env, summary.id);
+    if (portalRecord) {
+      const updated = {
+        ...portalRecord,
+        metrics,
+        updatedAt: new Date().toISOString(),
+      };
+      await savePortalRecord(context.env, updated);
+    }
+  } catch (error) {
+    console.warn("Failed to update portal metrics", summary.id, error);
+  }
+};
+
+const KPI_BASE_ORDER: PortalMetricKey[] = [
+  "leads",
+  "cpl",
+  "spend",
+  "ctr",
+  "cpc",
+  "reach",
+  "messages",
+  "conversations",
+  "purchases",
+  "cpa",
+  "roas",
+  "cpm",
+  "conversions",
+  "engagements",
+  "cpe",
+  "thruplays",
+  "cpv",
+  "installs",
+  "cpi",
+  "freq",
+  "cpurchase",
+  "leads_total",
+  "leads_new",
+  "leads_done",
+  "impressions",
+  "clicks",
+];
+
+const buildKpiMetricOrder = (objective: string | null | undefined): PortalMetricKey[] => {
+  const ordered = [...getCampaignKPIs(objective), ...KPI_BASE_ORDER];
+  const seen = new Set<PortalMetricKey>();
+  const result: PortalMetricKey[] = [];
+  ordered.forEach((key) => {
+    if (KPI_LABELS[key] && !seen.has(key)) {
+      seen.add(key);
+      result.push(key);
+    }
+  });
+  return result;
+};
+
+const renderKpiProject = async (context: BotContext, projectId: string): Promise<void> => {
+  const summary = await loadProjectSummaryById(context, projectId);
+  if (!summary) {
+    await sendOrEditMessage(context, "❌ Проект не найден. Обновите список проектов.", {
+      inline_keyboard: [[{ text: "📊 Проекты", callback_data: "cmd:projects" }]],
+    });
+    return;
+  }
+
+  const campaigns = await loadProjectCampaigns(context, summary);
+
+  const baseMetrics = resolveProjectMetricBase(summary);
+  const selection = await ensurePendingKpiSelection(context, projectId, null, baseMetrics);
+  const currentSet = new Set(selection);
+
+  const lines: string[] = [
+    `🎛 KPI проекта — <b>${escapeHtml(summary.name)}</b>`,
+    "",
+    selection.length ? "Текущие KPI:" : "Текущие KPI: не выбрано",
+  ];
+  if (selection.length) {
+    selection.forEach((metric) => {
+      lines.push(`• ${escapeHtml(KPI_LABELS[metric] ?? metric)}`);
+    });
+  }
+  if (!summary.adAccountId) {
+    lines.push(
+      "",
+      "Рекламный кабинет не подключён. Подключите Meta, чтобы автоматически определять цели кампаний.",
+    );
+  }
+  if (!campaigns.length) {
+    lines.push("", "Кампании не найдены. Обновите данные в Meta, чтобы настроить KPI по кампаниям.");
+  } else {
+    lines.push("", "Выберите показатели или откройте кампанию для индивидуальной настройки.");
+  }
+
+  const metricKeys = buildKpiMetricOrder(null);
+  const metricButtons = metricKeys.map((metric) => ({
+    text: `${currentSet.has(metric) ? "✅" : "☑️"} ${KPI_LABELS[metric] ?? metric}`,
+    callback_data: `KPI_TOGGLE_${metric}:${projectId}`,
+  }));
+
+  const keyboard: { text: string; callback_data?: string }[][] = [];
+  for (let i = 0; i < metricButtons.length; i += 2) {
+    keyboard.push(metricButtons.slice(i, i + 2));
+  }
+
+  keyboard.push([
+    { text: "💾 Сохранить дефолтно", callback_data: `KPI_SAVE_DEFAULT:${projectId}` },
+    { text: "📄 Сохранить единоразово", callback_data: `KPI_SAVE_ONCE:${projectId}` },
+  ]);
+
+  if (campaigns.length) {
+    campaigns
+      .slice(0, 30)
+      .forEach((campaign) => {
+        const icon = campaign.manualKpi && campaign.manualKpi.length ? "⭐️" : campaign.objective ? "🎯" : "⚙️";
+        keyboard.push([
+          {
+            text: `${icon} ${truncateLabel(campaign.name)}`,
+            callback_data: `CAMPAIGN_KPI_EDIT:${projectId}:${campaign.id}`,
+          },
+        ]);
+      });
+  }
+
+  keyboard.push([
+    { text: "⬅ Проект", callback_data: `proj:view:${projectId}` },
+    { text: "🏠 Меню", callback_data: "cmd:menu" },
+  ]);
+
+  await sendOrEditMessage(context, lines.join("\n"), { inline_keyboard: keyboard });
+};
+
+const renderKpiCampaign = async (
+  context: BotContext,
+  projectId: string,
+  campaignId: string,
+): Promise<void> => {
+  const summary = await loadProjectSummaryById(context, projectId);
+  if (!summary) {
+    await sendOrEditMessage(context, "❌ Проект не найден. Вернитесь к списку проектов.", {
+      inline_keyboard: [[{ text: "📊 Проекты", callback_data: "cmd:projects" }]],
+    });
+    return;
+  }
+  const campaigns = await loadProjectCampaigns(context, summary);
+  const campaign = campaigns.find((entry) => entry.id === campaignId);
+  if (!campaign) {
+    await sendOrEditMessage(
+      context,
+      "Кампания не найдена. Обновите список кампаний и попробуйте снова.",
+      {
+        inline_keyboard: [
+          [{ text: "🔁 Обновить", callback_data: `PROJECT_KPI_EDIT:${projectId}` }],
+          [{ text: "🏗 Проект", callback_data: `proj:view:${projectId}` }],
+          [{ text: "🏠 Меню", callback_data: "cmd:menu" }],
+        ],
+      },
+    );
+    return;
+  }
+
+  const baseMetrics = await resolveCampaignKpis(
+    context.env,
+    projectId,
+    campaignId,
+    campaign.objective,
+    summary.manualKpi,
+  );
+  const selection = await ensurePendingKpiSelection(context, projectId, campaignId, baseMetrics);
+  const currentSet = new Set(selection);
+  const metricKeys = buildKpiMetricOrder(campaign.objective);
+
+  const lines: string[] = [
+    "🎛 KPI кампании",
+    "",
+    `Проект: <b>${escapeHtml(summary.name)}</b>`,
+    `Кампания: <b>${escapeHtml(campaign.name)}</b>`,
+    `Цель: <b>${escapeHtml(campaign.objective ?? "—")}</b>`,
+    "",
+    selection.length ? "Текущие KPI:" : "Текущие KPI: не выбрано",
+  ];
+  if (selection.length) {
+    selection.forEach((metric) => {
+      lines.push(`• ${escapeHtml(KPI_LABELS[metric] ?? metric)}`);
+    });
+  }
+
+  const metricButtons = metricKeys.map((metric) => ({
+    text: `${currentSet.has(metric) ? "✅" : "☑️"} ${KPI_LABELS[metric] ?? metric}`,
+    callback_data: `KPI_TOGGLE_${metric}:${projectId}:${campaignId}`,
+  }));
+
+  const keyboard: { text: string; callback_data?: string }[][] = [];
+  for (let i = 0; i < metricButtons.length; i += 2) {
+    keyboard.push(metricButtons.slice(i, i + 2));
+  }
+
+  keyboard.push([
+    { text: "💾 Сохранить дефолтно", callback_data: `KPI_SAVE_DEFAULT:${projectId}:${campaignId}` },
+    { text: "📄 Сохранить единоразово", callback_data: `KPI_SAVE_ONCE:${projectId}:${campaignId}` },
+  ]);
+  keyboard.push([
+    { text: "⬅ KPI проекта", callback_data: `PROJECT_KPI_EDIT:${projectId}` },
+    { text: "🏗 Проект", callback_data: `proj:view:${projectId}` },
+  ]);
+  keyboard.push([{ text: "🏠 Меню", callback_data: "cmd:menu" }]);
+
+  await sendOrEditMessage(context, lines.join("\n"), { inline_keyboard: keyboard });
+};
+
 const buildSelectionMessage = (session: ReportSessionRecord) => {
-  const header = session.type === "auto" ? "📥 Автоотчёт" : "📝 Краткий отчёт";
+  let header = "📝 Отчёт";
+  if (session.type === "auto") {
+    header = "📥 Автоотчёт";
+  } else if (session.type === "finance") {
+    header = "💰 Финансовый отчёт";
+  } else if (session.type === "summary") {
+    header = "📝 Краткий отчёт";
+  } else if (session.title) {
+    header = session.title;
+  }
   const period = session.filters?.datePreset
     ? session.filters.datePreset
     : session.filters?.since || session.filters?.until || "today";
@@ -33,7 +367,7 @@ const buildSelectionMessage = (session: ReportSessionRecord) => {
   lines.push("Выберите проекты, которые войдут в отчёт:");
   lines.push("");
   if (!session.projects.length) {
-    lines.push("Проекты не найдены — создайте их в веб-панели.");
+    lines.push("Проекты не найдены. Создайте их через бот.");
   } else {
     for (const project of session.projects) {
       const selected = session.projectIds.includes(project.id);
@@ -78,13 +412,212 @@ const truncateLabel = (label: string, max = 24): string => {
   return `${label.slice(0, max - 1)}…`;
 };
 
+const resolveProjectMetricBase = (summary: ProjectSummary): PortalMetricKey[] => {
+  const manual = Array.isArray(summary.manualKpi) ? summary.manualKpi : undefined;
+  const selection = applyKpiSelection({ objective: null, projectManual: manual });
+  if (selection.length) {
+    return selection;
+  }
+  return getCampaignKPIs("LEAD_GENERATION");
+};
+
+const loadKpiSelection = async (
+  context: BotContext,
+  projectId: string,
+  campaignId: string,
+  objective: string | null | undefined,
+): Promise<PortalMetricKey[]> => {
+  const summary = await loadProjectSummaryById(context, projectId);
+  const manual = summary?.manualKpi;
+  const base = await resolveCampaignKpis(context.env, projectId, campaignId, objective, manual);
+  return ensurePendingKpiSelection(context, projectId, campaignId, base);
+};
+
+const handleKpiToggle = async (
+  context: BotContext,
+  projectId: string,
+  campaignId: string | null,
+  metric: PortalMetricKey,
+): Promise<void> => {
+  if (!context.userId) {
+    await sendOrEditMessage(context, "Определите администратора для изменения KPI.", {
+      inline_keyboard: [[{ text: "🏗 Проект", callback_data: `proj:view:${projectId}` }]],
+    });
+    return;
+  }
+  const summary = await loadProjectSummaryById(context, projectId);
+  if (!summary) {
+    await sendOrEditMessage(context, "Проект не найден.", {
+      inline_keyboard: [[{ text: "📊 Проекты", callback_data: "cmd:projects" }]],
+    });
+    return;
+  }
+  if (!campaignId) {
+    const base = resolveProjectMetricBase(summary);
+    const selection = await ensurePendingKpiSelection(context, projectId, null, base);
+    const exists = selection.includes(metric);
+    const next = exists ? selection.filter((value) => value !== metric) : [...selection, metric];
+    await savePendingKpiSelection(context.env, context.userId, {
+      projectId,
+      campaignId: null,
+      metrics: next,
+      updatedAt: new Date().toISOString(),
+    });
+    if (context.update.callback_query?.id) {
+      await answerCallbackQuery(context.env, context.update.callback_query.id, exists ? "Удалено" : "Добавлено");
+    }
+    await renderKpiProject(context, projectId);
+    return;
+  }
+
+  const campaigns = await loadProjectCampaigns(context, summary);
+  const campaign = campaigns.find((entry) => entry.id === campaignId);
+  if (!campaign) {
+    await renderKpiProject(context, projectId);
+    return;
+  }
+  const selection = await loadKpiSelection(context, projectId, campaignId, campaign.objective);
+  const exists = selection.includes(metric);
+  const next = exists ? selection.filter((value) => value !== metric) : [...selection, metric];
+  await savePendingKpiSelection(context.env, context.userId, {
+    projectId,
+    campaignId,
+    metrics: next,
+    updatedAt: new Date().toISOString(),
+  });
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, exists ? "Удалено" : "Добавлено");
+  }
+  await renderKpiCampaign(context, projectId, campaignId);
+};
+
+const handleKpiSave = async (
+  context: BotContext,
+  projectId: string,
+  campaignId: string | null,
+  options: { persist: boolean },
+): Promise<void> => {
+  const summary = await loadProjectSummaryById(context, projectId);
+  if (!summary) {
+    await sendOrEditMessage(context, "Проект не найден. Обновите список проектов.", {
+      inline_keyboard: [[{ text: "📊 Проекты", callback_data: "cmd:projects" }]],
+    });
+    return;
+  }
+  if (!campaignId) {
+    const base = resolveProjectMetricBase(summary);
+    const selection = await ensurePendingKpiSelection(context, projectId, null, base);
+    if (options.persist) {
+      await applyProjectMetrics(context, summary, selection);
+      if (context.userId) {
+        await clearPendingKpiSelection(context.env, context.userId).catch((error) =>
+          console.warn("Failed to clear KPI selection", error),
+        );
+      }
+    }
+    if (context.update.callback_query?.id) {
+      await answerCallbackQuery(
+        context.env,
+        context.update.callback_query.id,
+        options.persist ? "Сохранено" : "Используйте для текущего отчёта",
+      );
+    }
+    await renderKpiProject(context, projectId);
+    return;
+  }
+  const campaigns = await loadProjectCampaigns(context, summary);
+  const campaign = campaigns.find((entry) => entry.id === campaignId);
+  if (!campaign) {
+    await renderKpiProject(context, projectId);
+    return;
+  }
+  const selection = await loadKpiSelection(context, projectId, campaignId, campaign.objective);
+  let applied = selection;
+  if (options.persist) {
+    applied = await persistCampaignKpis(context.env, projectId, campaignId, selection);
+  }
+  await applyProjectMetrics(context, summary, applied);
+  if (context.userId) {
+    await clearPendingKpiSelection(context.env, context.userId).catch((error) =>
+      console.warn("Failed to clear KPI selection", error),
+    );
+  }
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, "Сохранено");
+  }
+  await renderKpiCampaign(context, projectId, campaignId);
+};
+
+export const isSpecKpiCallback = (data: string | undefined): boolean => {
+  if (!data) {
+    return false;
+  }
+  return (
+    data.startsWith("PROJECT_KPI_EDIT") ||
+    data.startsWith("CAMPAIGN_KPI_EDIT") ||
+    data.startsWith("KPI_TOGGLE_") ||
+    data.startsWith("KPI_SAVE_DEFAULT") ||
+    data.startsWith("KPI_SAVE_ONCE")
+  );
+};
+
+export const handleSpecKpiCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (data.startsWith("PROJECT_KPI_EDIT")) {
+    const [, projectId] = data.split(":");
+    if (!projectId) {
+      return false;
+    }
+    await renderKpiProject(context, projectId);
+    return true;
+  }
+  if (data.startsWith("CAMPAIGN_KPI_EDIT")) {
+    const [, projectId, campaignId] = data.split(":");
+    if (!projectId || !campaignId) {
+      return false;
+    }
+    await renderKpiCampaign(context, projectId, campaignId);
+    return true;
+  }
+  if (data.startsWith("KPI_TOGGLE_")) {
+    const parts = data.split(":");
+    const metricKey = parts[0].slice("KPI_TOGGLE_".length);
+    const projectId = parts[1];
+    const campaignId = parts[2] ?? null;
+    if (!projectId || !metricKey || !Object.prototype.hasOwnProperty.call(KPI_LABELS, metricKey)) {
+      if (context.update.callback_query?.id) {
+        await answerCallbackQuery(context.env, context.update.callback_query.id, "Выберите KPI из списка");
+      }
+      return true;
+    }
+    await handleKpiToggle(context, projectId, campaignId, metricKey as PortalMetricKey);
+    return true;
+  }
+  if (data.startsWith("KPI_SAVE_DEFAULT")) {
+    const [, projectId, campaignId] = data.split(":");
+    if (!projectId) {
+      return false;
+    }
+    await handleKpiSave(context, projectId, campaignId ?? null, { persist: true });
+    return true;
+  }
+  if (data.startsWith("KPI_SAVE_ONCE")) {
+    const [, projectId, campaignId] = data.split(":");
+    if (!projectId) {
+      return false;
+    }
+    await handleKpiSave(context, projectId, campaignId ?? null, { persist: false });
+    return true;
+  }
+  return false;
+};
+
 interface ReportWorkflowOptions {
   projectId?: string;
 }
 
 const createSession = async (
   context: BotContext,
-  mode: "auto" | "summary",
+  mode: "auto" | "summary" | "finance" | "custom",
   options: ReportWorkflowOptions = {},
 ): Promise<ReportSessionRecord | null> => {
   const chatId = ensureChatId(context);
@@ -96,7 +629,7 @@ const createSession = async (
     await sendTelegramMessage(context.env, {
       chatId,
       threadId: context.threadId,
-      text: "Отчёт пока не из чего формировать: добавьте проекты и лиды в веб-панели.",
+      text: "Отчёт пока не из чего формировать: добавьте проекты и лиды через бот.",
     });
     return null;
   }
@@ -112,12 +645,28 @@ const createSession = async (
     userId: context.userId,
     username: context.username,
     type: mode,
-    command: mode === "auto" ? "auto_report" : "summary",
+    command:
+      mode === "auto"
+        ? "auto_report"
+        : mode === "finance"
+          ? "finance"
+          : mode === "custom"
+            ? "custom"
+            : "summary",
     projectIds: selectedProjectId ? [selectedProjectId] : summaries.map((summary) => summary.id),
     projects: summaries.map((summary) => ({ id: summary.id, name: summary.name })),
     filters: { datePreset: "today" },
-    title: mode === "auto" ? "Автоотчёт по проектам" : "Сводка по проектам",
-    format: mode === "auto" ? "pdf" : "html",
+    title:
+      mode === "auto"
+        ? "Автоотчёт по проектам"
+        : mode === "finance"
+          ? "Финансовый отчёт"
+          : mode === "summary"
+            ? "Сводка по проектам"
+            : options.projectId
+              ? "Кастомный отчёт"
+              : "Отчёт по проектам",
+    format: mode === "auto" ? "pdf" : mode === "finance" ? "text" : "text",
     createdAt: new Date(now).toISOString(),
     updatedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + REPORT_SESSION_TTL_MS).toISOString(),
@@ -128,7 +677,7 @@ const createSession = async (
 
 export const startReportWorkflow = async (
   context: BotContext,
-  mode: "auto" | "summary",
+  mode: "auto" | "summary" | "finance" | "custom",
   options: ReportWorkflowOptions = {},
 ): Promise<void> => {
   const session = await createSession(context, mode, options);
@@ -137,12 +686,22 @@ export const startReportWorkflow = async (
   }
   const chatId = session.chatId;
   const { text, replyMarkup } = buildSelectionMessage(session);
-  await sendTelegramMessage(context.env, {
-    chatId,
-    threadId: context.threadId,
-    text,
-    replyMarkup,
-  });
+  const message = context.update.callback_query?.message;
+  if (message && typeof context.messageId === "number" && context.chatId === chatId) {
+    await editTelegramMessage(context.env, {
+      chatId,
+      messageId: context.messageId,
+      text,
+      replyMarkup,
+    });
+  } else {
+    await sendTelegramMessage(context.env, {
+      chatId,
+      threadId: context.threadId,
+      text,
+      replyMarkup,
+    });
+  }
 };
 
 const resolveCallback = (data: string): { action: string; sessionId: string; argument?: string } | null => {
@@ -208,21 +767,7 @@ const sendReportSummary = async (
     return;
   }
   const record = result.record;
-  const webUrl =
-    context.env.PUBLIC_WEB_URL ||
-    context.env.PUBLIC_BASE_URL ||
-    context.env.WORKER_BASE_URL ||
-    context.env.ADMIN_BASE_URL;
-  const footer: string[] = [];
-  footer.push(`ID отчёта: <code>${escapeHtml(record.id)}</code>`);
-  if (webUrl) {
-    footer.push(
-      `Откройте <a href="${escapeAttribute(`${webUrl}/admin`)}">веб-панель</a> для скачивания и экспорта.`,
-    );
-  } else {
-    footer.push("Скачать отчёт можно в веб-панели TargetBot.");
-  }
-  const text = `${result.html}\n\n${footer.join("\n")}`;
+  const text = `${escapeHtml(result.text)}\n\nID отчёта: <code>${escapeHtml(record.id)}</code>`;
   await sendTelegramMessage(context.env, {
     chatId,
     threadId: context.threadId,
@@ -230,11 +775,74 @@ const sendReportSummary = async (
   });
 };
 
+const handleReportKpiCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  const parts = data.split(":");
+  const action = parts[1];
+  const projectId = parts[2];
+  if (!action || !projectId) {
+    return false;
+  }
+  switch (action) {
+    case "kpi_open":
+      await renderKpiProject(context, projectId);
+      return true;
+    case "kpi_campaign": {
+      const campaignId = parts[3];
+      if (!campaignId) {
+        await renderKpiProject(context, projectId);
+        return true;
+      }
+      await renderKpiCampaign(context, projectId, campaignId);
+      return true;
+    }
+    case "kpi_toggle": {
+      const campaignId = parts[3];
+      const metricKey = parts[4];
+      if (!campaignId || !metricKey || !(metricKey in KPI_LABELS)) {
+        if (context.update.callback_query?.id) {
+          await answerCallbackQuery(context.env, context.update.callback_query.id, "Выберите KPI из списка");
+        }
+        if (campaignId) {
+          await renderKpiCampaign(context, projectId, campaignId);
+        } else {
+          await renderKpiProject(context, projectId);
+        }
+        return true;
+      }
+      await handleKpiToggle(context, projectId, campaignId, metricKey as PortalMetricKey);
+      return true;
+    }
+    case "kpi_save_default": {
+      const campaignId = parts[3];
+      if (!campaignId) {
+        await renderKpiProject(context, projectId);
+        return true;
+      }
+      await handleKpiSave(context, projectId, campaignId, { persist: true });
+      return true;
+    }
+    case "kpi_save_once": {
+      const campaignId = parts[3];
+      if (!campaignId) {
+        await renderKpiProject(context, projectId);
+        return true;
+      }
+      await handleKpiSave(context, projectId, campaignId, { persist: false });
+      return true;
+    }
+    default:
+      return false;
+  }
+};
+
 export const isReportCallbackData = (data: string | undefined): boolean => {
   return !!data && data.startsWith("report:");
 };
 
 export const handleReportCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (data.startsWith("report:kpi_")) {
+    return await handleReportKpiCallback(context, data);
+  }
   const parsed = resolveCallback(data);
   if (!parsed) {
     return false;
@@ -303,9 +911,16 @@ export const handleReportCallback = async (context: BotContext, data: string): P
     }
     try {
       const result = await generateReport(context.env, {
-        type: session.type === "auto" ? "detailed" : "summary",
+        type:
+          session.type === "auto"
+            ? "detailed"
+            : session.type === "finance"
+              ? "finance"
+              : session.type === "custom"
+                ? "custom"
+                : "summary",
         projectIds: session.projectIds,
-        format: session.format === "pdf" ? "pdf" : "html",
+        format: session.format === "csv" ? "csv" : session.format === "pdf" ? "pdf" : "text",
         channel: "telegram",
         triggeredBy: context.userId,
         command: session.command,

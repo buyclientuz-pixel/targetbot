@@ -1,9 +1,185 @@
-import { LeadRecord, PaymentRecord, ProjectBillingSummary, ProjectLeadStats, ProjectSummary } from "../types";
+import {
+  JsonObject,
+  ProjectSettings,
+  ProjectReportFrequency,
+  ProjectReportPreferences,
+  PortalMetricKey,
+  LeadRecord,
+  PaymentRecord,
+  ProjectBillingSummary,
+  ProjectLeadStats,
+  ProjectSummary,
+  ProjectRecord,
+} from "../types";
 import { EnvBindings, listLeads, listPayments, listProjects } from "./storage";
+import { KPI_LABELS } from "./kpi";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface SummarizeProjectsOptions {
   projectIds?: string[];
 }
+
+const ensureObject = (value: unknown): JsonObject => {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return { ...(value as JsonObject) };
+  }
+  return {};
+};
+
+export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
+  reportFrequency: "daily",
+  quietWeekends: false,
+  silentReports: false,
+  leadAlerts: true,
+};
+
+const DEFAULT_REPORT_METRICS: PortalMetricKey[] = [
+  "leads_total",
+  "leads_new",
+  "leads_done",
+  "spend",
+  "impressions",
+  "clicks",
+];
+
+const AVAILABLE_REPORT_METRICS = new Set<PortalMetricKey>(
+  Object.keys(KPI_LABELS) as PortalMetricKey[],
+);
+
+export const DEFAULT_REPORT_PREFERENCES: ProjectReportPreferences = {
+  campaignIds: [],
+  metrics: [...DEFAULT_REPORT_METRICS],
+};
+
+const sanitizeMetrics = (values: unknown): PortalMetricKey[] => {
+  if (!Array.isArray(values)) {
+    return [...DEFAULT_REPORT_METRICS];
+  }
+  const normalized = values
+    .map((value) => String(value).trim())
+    .filter((value): value is PortalMetricKey => AVAILABLE_REPORT_METRICS.has(value as PortalMetricKey));
+  return normalized.length ? normalized : [...DEFAULT_REPORT_METRICS];
+};
+
+const sanitizeCampaignIds = (values: unknown): string[] => {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+  const unique = new Set<string>();
+  values.forEach((value) => {
+    const id = String(value).trim();
+    if (id) {
+      unique.add(id);
+    }
+  });
+  return Array.from(unique);
+};
+
+export const extractProjectSettings = (raw: unknown): ProjectSettings => {
+  const settings = ensureObject(raw);
+  const reports = ensureObject(settings["reports"]);
+  const auto = ensureObject(reports["auto"]);
+  const alerts = ensureObject(settings["alerts"]);
+  const frequency = (auto["frequency"] as ProjectReportFrequency) === "weekly" ? "weekly" : "daily";
+  return {
+    reportFrequency: frequency,
+    quietWeekends: auto["quietWeekends"] === true,
+    silentReports: auto["silent"] === true,
+    leadAlerts: alerts["leads"] !== false,
+  } satisfies ProjectSettings;
+};
+
+export const applyProjectSettingsPatch = (
+  current: unknown,
+  patch: Partial<ProjectSettings>,
+): JsonObject => {
+  const settings = ensureObject(current);
+  const reports = ensureObject(settings["reports"]);
+  const auto = ensureObject(reports["auto"]);
+  const alerts = ensureObject(settings["alerts"]);
+
+  if (patch.reportFrequency) {
+    auto["frequency"] = patch.reportFrequency;
+  }
+  if (patch.quietWeekends !== undefined) {
+    auto["quietWeekends"] = patch.quietWeekends;
+  }
+  if (patch.silentReports !== undefined) {
+    auto["silent"] = patch.silentReports;
+  }
+  if (patch.leadAlerts !== undefined) {
+    alerts["leads"] = patch.leadAlerts;
+  }
+
+  reports["auto"] = auto;
+  settings["reports"] = reports;
+  settings["alerts"] = alerts;
+
+  return settings;
+};
+
+export const extractProjectReportPreferences = (raw: unknown): ProjectReportPreferences => {
+  const settings = ensureObject(raw);
+  const reports = ensureObject(settings["reports"]);
+  const preferences = ensureObject(reports["preferences"]);
+
+  const campaignSource = Array.isArray(reports["defaultCampaignIds"])
+    ? reports["defaultCampaignIds"]
+    : Array.isArray(preferences["campaignIds"])
+      ? preferences["campaignIds"]
+      : [];
+
+  const metricsSource = Array.isArray(reports["metrics"])
+    ? reports["metrics"]
+    : Array.isArray(preferences["metrics"])
+      ? preferences["metrics"]
+      : Array.isArray((reports as { defaultMetrics?: unknown[] }).defaultMetrics)
+        ? (reports as { defaultMetrics?: unknown[] }).defaultMetrics
+        : undefined;
+
+  return {
+    campaignIds: sanitizeCampaignIds(campaignSource),
+    metrics: sanitizeMetrics(metricsSource),
+  } satisfies ProjectReportPreferences;
+};
+
+export const applyProjectReportPreferencesPatch = (
+  current: unknown,
+  patch: Partial<ProjectReportPreferences>,
+): JsonObject => {
+  if (!patch.campaignIds && !patch.metrics) {
+    return ensureObject(current);
+  }
+  const settings = ensureObject(current);
+  const reports = ensureObject(settings["reports"]);
+  const preferences = ensureObject(reports["preferences"]);
+
+  if (patch.campaignIds) {
+    const campaigns = sanitizeCampaignIds(patch.campaignIds);
+    reports["defaultCampaignIds"] = campaigns;
+    if (campaigns.length) {
+      preferences["campaignIds"] = campaigns;
+    } else {
+      delete preferences["campaignIds"];
+    }
+  }
+
+  if (patch.metrics) {
+    const metrics = sanitizeMetrics(patch.metrics);
+    reports["metrics"] = metrics;
+    preferences["metrics"] = metrics;
+  }
+
+  if (Object.keys(preferences).length) {
+    reports["preferences"] = preferences;
+  } else {
+    delete reports["preferences"];
+  }
+
+  settings["reports"] = reports;
+  return settings;
+};
 
 const summarizeLeads = (leads: LeadRecord[]): ProjectLeadStats => {
   let latestTimestamp = 0;
@@ -179,4 +355,26 @@ export const projectLeadStats = {
 
 export const projectBilling = {
   summarize: summarizeBilling,
+};
+
+export const isProjectAutoDisabled = (
+  project: ProjectRecord | ProjectSummary,
+  now: Date = new Date(),
+): boolean => {
+  if (!project.autoOff) {
+    return false;
+  }
+  if (project.nextPaymentDate) {
+    const due = Date.parse(project.nextPaymentDate);
+    if (!Number.isNaN(due)) {
+      return now.getTime() >= due + DAY_MS;
+    }
+  }
+  if (project.autoOffAt) {
+    const flagged = Date.parse(project.autoOffAt);
+    if (!Number.isNaN(flagged)) {
+      return now.getTime() >= flagged + DAY_MS;
+    }
+  }
+  return true;
 };

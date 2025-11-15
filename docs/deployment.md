@@ -68,7 +68,7 @@ curl -i https://<worker>/api/projects
 curl -i https://<worker>/api/users
 ```
 
-Дополнительно откройте `/admin` и `/portal/<projectId>` в браузере.
+Дополнительно откройте `/admin` и `/portal/<projectId>` в браузере (если `PORTAL_BASE_URL` не задан, ссылка должна открыться на workers.dev домене по умолчанию).
 
 При ошибках:
 - Проверьте логи в Cloudflare Dashboard → Workers → Logs.

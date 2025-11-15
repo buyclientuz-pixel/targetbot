@@ -48,7 +48,8 @@ export interface MetaCampaign {
   name: string;
   status?: string;
   effectiveStatus?: string;
-  objective?: string;
+  objective?: string | null;
+  manualKpi?: PortalMetricKey[];
   dailyBudget?: number;
   spend?: number;
   spendCurrency?: string;
@@ -56,7 +57,198 @@ export interface MetaCampaign {
   spendFormatted?: string;
   impressions?: number;
   clicks?: number;
+  inlineLinkClicks?: number;
+  reach?: number;
+  uniqueReach?: number;
+  leads?: number;
+  conversations?: number;
+  purchases?: number;
+  installs?: number;
+  engagements?: number;
+  thruplays?: number;
+  conversions?: number;
+  roasValue?: number;
+  revenueCurrency?: string;
+  ctr?: number;
+  cpc?: number;
+  cpm?: number;
+  cpl?: number;
+  cpa?: number;
+  roas?: number;
+  cpv?: number;
+  cpi?: number;
+  cpe?: number;
   updatedTime?: string;
+  resultLabel?: string;
+  resultValue?: number;
+  resultMetric?: string;
+  shortName?: string;
+  objectiveLabel?: string;
+  primaryMetricLabel?: string;
+  primaryMetricValue?: number;
+}
+
+export interface NormalizedCampaign {
+  id: string;
+  name: string;
+  shortName: string;
+  status?: string;
+  effectiveStatus?: string;
+  objective?: string | null;
+  objectiveLabel: string;
+  spend: number;
+  spendFormatted?: string;
+  spendCurrency?: string;
+  impressions: number;
+  clicks: number;
+  reach: number;
+  resultLabel?: string;
+  resultValue?: number;
+  resultMetric?: string;
+  primaryMetricLabel: string;
+  primaryMetricValue: number;
+  statusOrder: number;
+  raw: MetaCampaign;
+}
+
+export type PortalMode = "auto" | "manual";
+
+export type PortalMetricKey =
+  | "leads_total"
+  | "leads_new"
+  | "leads_done"
+  | "spend"
+  | "impressions"
+  | "clicks"
+  | "leads"
+  | "cpl"
+  | "ctr"
+  | "cpc"
+  | "reach"
+  | "messages"
+  | "conversations"
+  | "cpm"
+  | "purchases"
+  | "cpa"
+  | "roas"
+  | "conversions"
+  | "engagements"
+  | "cpe"
+  | "thruplays"
+  | "cpv"
+  | "installs"
+  | "cpi"
+  | "freq"
+  | "cpurchase";
+
+export type KPISet = {
+  leads_total?: number;
+  leads_new?: number;
+  leads_done?: number;
+  leads?: number;
+  spend?: number;
+  impressions?: number;
+  clicks?: number;
+  reach?: number;
+  messages?: number;
+  conversations?: number;
+  purchases?: number;
+  conversions?: number;
+  engagements?: number;
+  thruplays?: number;
+  installs?: number;
+  revenue?: number;
+  ctr?: number;
+  cpc?: number;
+  cpm?: number;
+  cpl?: number;
+  cpa?: number;
+  roas?: number;
+  cpe?: number;
+  cpv?: number;
+  cpi?: number;
+  freq?: number;
+  cpurchase?: number;
+};
+
+export interface CampaignReportBlock {
+  id: string;
+  name: string;
+  shortName: string;
+  status?: string;
+  effectiveStatus?: string;
+  objective?: string | null;
+  resultLabel?: string;
+  resultValue?: number;
+  resultMetric?: string;
+  objectiveLabel?: string;
+  primaryMetricLabel?: string;
+  primaryMetricValue?: number;
+  spend?: number;
+  impressions?: number;
+  clicks?: number;
+  kpis: KPISet;
+}
+
+export interface ProjectReport {
+  date_start: string;
+  date_end: string;
+  kpis: KPISet;
+  campaigns: CampaignReportBlock[];
+}
+
+export type ReportRoutingTarget = "chat" | "admin" | "both" | "none";
+
+export interface ProjectAutoReportSettings {
+  enabled: boolean;
+  times: string[];
+  sendTarget: ReportRoutingTarget;
+  alertsTarget: ReportRoutingTarget;
+  mondayDoubleReport: boolean;
+  lastSentDaily?: string | null;
+  lastSentMonday?: string | null;
+}
+
+export interface ProjectAlertSettings {
+  payment: boolean;
+  budget: boolean;
+  metaApi: boolean;
+  pause: boolean;
+  target: ReportRoutingTarget;
+}
+
+export interface ProjectKpiSettings {
+  default: PortalMetricKey[];
+  perCampaign: Record<string, PortalMetricKey[]>;
+}
+
+export interface ProjectSettingsRecord {
+  autoReport: ProjectAutoReportSettings;
+  alerts: ProjectAlertSettings;
+  kpi: ProjectKpiSettings;
+  billing: {
+    nextPaymentDate: string | null;
+    status: string;
+  };
+  meta: {
+    adAccountId: string;
+    status: string;
+    name: string;
+    currency: string;
+  };
+}
+
+export interface ProjectPortalRecord {
+  portalId: string;
+  projectId: string;
+  mode: PortalMode;
+  campaignIds: string[];
+  metrics: PortalMetricKey[];
+  createdAt: string;
+  updatedAt: string;
+  lastRegeneratedAt?: string | null;
+  lastSharedAt?: string | null;
+  lastReportId?: string | null;
 }
 
 export interface MetaOAuthStatePayload {
@@ -70,16 +262,104 @@ export interface MetaOAuthStatePayload {
   timestamp?: number;
 }
 
+export interface MetaAccountLinkRecord {
+  accountId: string;
+  accountName: string;
+  currency?: string | null;
+  spentToday?: number | null;
+  isLinked: boolean;
+  linkedProjectId?: string | null;
+  updatedAt?: string;
+}
+
+export interface MetaLeadDetails {
+  id: string;
+  createdAt?: string;
+  fullName?: string;
+  phone?: string;
+  email?: string;
+  formId?: string;
+  adId?: string;
+  campaignId?: string;
+  answers: JsonObject;
+}
+
+export interface MetaWebhookEventRecord {
+  id: string;
+  object: string;
+  field: string;
+  type?: string;
+  leadId?: string;
+  adAccountId?: string;
+  projectId?: string;
+  projectName?: string;
+  processed: boolean;
+  createdAt: string;
+  updatedAt: string;
+  payload: JsonObject;
+}
+
+export interface TelegramGroupLinkRecord {
+  chatId: string;
+  title?: string | null;
+  members?: number | null;
+  registered: boolean;
+  linkedProjectId?: string | null;
+  updatedAt?: string;
+}
+
+export interface MetaProjectLinkRecord {
+  projectId: string;
+  projectName: string;
+  accountId: string;
+  chatId: string;
+  chatTitle?: string | null;
+  createdAt: string;
+  billingStatus: string;
+  nextPaymentDate?: string | null;
+  settings: JsonObject;
+}
+
+export type ProjectBillingState = "active" | "overdue" | "blocked" | "pending";
+
 export interface ProjectRecord {
   id: string;
   name: string;
-  userId: string;
+  metaAccountId: string;
+  metaAccountName: string;
+  chatId: string;
+  billingStatus: ProjectBillingState;
+  nextPaymentDate: string | null;
+  tariff: number;
+  billingEnabled?: boolean;
+  billingPlan?: "350" | "500" | "custom" | null;
+  billingAmountUsd?: number | null;
+  createdAt: string;
+  updatedAt: string;
+  settings: JsonObject;
+  manualKpi?: PortalMetricKey[];
+  autoOff?: boolean;
+  autoOffAt?: string | null;
+  userId?: string;
   telegramChatId?: string;
   telegramThreadId?: number;
   telegramLink?: string;
+  telegramTitle?: string;
   adAccountId?: string;
-  createdAt: string;
-  updatedAt: string;
+  portalSlug?: string;
+}
+
+export interface ProjectDeletionSummary {
+  project: ProjectRecord;
+  metaAccount?: MetaAccountLinkRecord | null;
+  telegramGroup?: TelegramGroupLinkRecord | null;
+  removedLeads: number;
+  removedPayments: number;
+  removedReports: number;
+  clearedLeadReminders: number;
+  clearedPaymentReminders: number;
+  updatedSchedules: number;
+  portalRemoved?: boolean;
 }
 
 export interface ChatRegistrationRecord {
@@ -116,19 +396,111 @@ export interface ProjectBillingSummary {
   notes?: string;
 }
 
+export type ProjectReportFrequency = "daily" | "weekly";
+
+export interface ProjectSettings {
+  reportFrequency: ProjectReportFrequency;
+  quietWeekends: boolean;
+  silentReports: boolean;
+  leadAlerts: boolean;
+}
+
+export interface ProjectReportPreferences {
+  campaignIds: string[];
+  metrics: PortalMetricKey[];
+}
+
 export interface ProjectSummary extends ProjectRecord {
   leadStats: ProjectLeadStats;
   billing: ProjectBillingSummary;
+}
+
+export interface PendingPortalOperation {
+  projectId: string;
+  action: "metrics" | "campaigns";
+  page?: number;
+  updatedAt: string;
+}
+
+export type PendingProjectEditAction = "rename";
+
+export interface PendingProjectEditOperation {
+  action: PendingProjectEditAction;
+  projectId: string;
+  updatedAt?: string;
+}
+
+export interface PendingCampaignSelectionRecord {
+  projectId: string;
+  campaignIds: string[];
+  updatedAt: string;
+}
+
+export interface PendingKpiSelectionRecord {
+  projectId: string;
+  campaignId: string | null;
+  metrics: PortalMetricKey[];
+  updatedAt: string;
 }
 
 export interface LeadRecord {
   id: string;
   projectId: string;
   name: string;
-  phone?: string;
+  phone?: string | null;
   source: string;
+  campaignId?: string | null;
+  formId?: string | null;
+  adId?: string | null;
   status: "new" | "done";
   createdAt: string;
+  campaignName?: string | null;
+  campaignShortName?: string | null;
+  campaignObjective?: string | null;
+  adName?: string | null;
+}
+
+export type LeadReminderStatus = "pending" | "notified" | "resolved";
+
+export interface LeadReminderRecord {
+  id: string;
+  leadId: string;
+  projectId: string;
+  status: LeadReminderStatus;
+  notifiedCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastNotifiedAt?: string | null;
+}
+
+export type PaymentReminderStatus = "pending" | "upcoming" | "overdue";
+
+export type PaymentReminderStage =
+  | "pending"
+  | "admin_notified"
+  | "awaiting_client_choice"
+  | "awaiting_transfer_confirmation"
+  | "awaiting_admin_confirmation"
+  | "declined"
+  | "completed";
+
+export type PaymentReminderMethod = "cash" | "transfer" | null;
+
+export interface PaymentReminderRecord {
+  id: string;
+  projectId: string;
+  status: PaymentReminderStatus;
+  stage: PaymentReminderStage;
+  method?: PaymentReminderMethod;
+  dueDate?: string | null;
+  notifiedCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastNotifiedAt?: string | null;
+  nextFollowUpAt?: string | null;
+  adminChatId?: string | null;
+  clientChatId?: string | null;
+  lastClientPromptAt?: string | null;
 }
 
 export type PaymentStatus = "pending" | "active" | "overdue" | "cancelled";
@@ -151,6 +523,10 @@ export type ReportType = "summary" | "detailed" | "finance" | "custom";
 
 export type ReportChannel = "telegram" | "web" | "api";
 
+export type ReportScheduleType = "summary" | "detailed" | "finance" | "sla";
+
+export type ReportScheduleFrequency = "daily" | "weekly";
+
 export interface ReportFilters {
   datePreset?: string;
   since?: string;
@@ -164,12 +540,52 @@ export interface ReportTotals {
   leadsDone: number;
 }
 
+export interface AutoReportProjectBilling {
+  status: ProjectBillingSummary["status"];
+  label: string;
+  nextPaymentDate: string | null;
+  tariff: number | null;
+}
+
+export interface AutoReportProjectSpend {
+  label: string;
+  amount: number | null;
+  currency: string | null;
+  period: string | null;
+}
+
+export interface AutoReportProjectEntry {
+  projectId: string;
+  projectName: string;
+  chatId: string;
+  chatTitle: string | null;
+  chatLink: string | null;
+  portalId: string | null;
+  portalUrl: string | null;
+  metaAccountId: string;
+  metaAccountName: string;
+  adAccountId: string | null;
+  leads: ProjectLeadStats;
+  billing: AutoReportProjectBilling;
+  spend: AutoReportProjectSpend;
+  metrics: PortalMetricKey[];
+  report: ProjectReport;
+}
+
+export interface AutoReportDataset {
+  periodLabel: string;
+  generatedAt: string;
+  totals: ReportTotals;
+  kpis: KPISet;
+  projects: AutoReportProjectEntry[];
+}
+
 export interface ReportRecord {
   id: string;
   projectId: string;
   type: ReportType;
   title: string;
-  format: "pdf" | "xlsx" | "csv" | "html";
+  format: "pdf" | "xlsx" | "csv" | "text";
   url?: string;
   generatedAt: string;
   createdAt: string;
@@ -181,6 +597,73 @@ export interface ReportRecord {
   channel?: ReportChannel;
   generatedBy?: string;
   metadata?: JsonValue;
+}
+
+export interface ReportScheduleRecord {
+  id: string;
+  title: string;
+  type: ReportScheduleType;
+  frequency: ReportScheduleFrequency;
+  time: string;
+  timezone?: string;
+  weekdays?: number[];
+  projectIds: string[];
+  chatId: string;
+  format?: "text" | "pdf" | "xlsx" | "csv";
+  enabled: boolean;
+  lastRunAt?: string | null;
+  nextRunAt?: string | null;
+  lastStatus?: "success" | "error";
+  lastError?: string | null;
+  metadata?: JsonValue;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReportDeliveryRecord {
+  id: string;
+  scheduleId: string;
+  reportId?: string;
+  type: ReportScheduleType;
+  channel: ReportChannel;
+  status: "success" | "error";
+  deliveredAt: string;
+  error?: string | null;
+  details?: JsonValue;
+}
+
+export type QaIssueType = "project" | "schedule" | "lead-reminder" | "payment-reminder";
+
+export interface QaIssueRecord {
+  type: QaIssueType;
+  referenceId?: string;
+  projectId?: string;
+  message: string;
+  details?: JsonValue;
+}
+
+export interface QaCheckSummary {
+  total: number;
+  invalid: number;
+}
+
+export interface QaScheduleCheckSummary extends QaCheckSummary {
+  rescheduled: number;
+}
+
+export interface QaRunChecks {
+  projects: QaCheckSummary;
+  reportSchedules: QaScheduleCheckSummary;
+  leadReminders: QaCheckSummary;
+  paymentReminders: QaCheckSummary;
+}
+
+export interface QaRunRecord {
+  id: string;
+  createdAt: string;
+  durationMs: number;
+  checks: QaRunChecks;
+  issues: QaIssueRecord[];
 }
 
 export type SettingScope = "bot" | "portal" | "reports" | "billing" | "system";
@@ -201,14 +684,15 @@ export interface CommandLogRecord {
   createdAt: string;
 }
 
-export type UserRole = "client" | "manager" | "admin";
+export type UserRole = "owner" | "manager" | "client";
 
 export interface UserRecord {
   id: string;
-  name: string;
+  name?: string;
   username?: string;
   role: UserRole;
   createdAt: string;
+  registeredAt: string;
 }
 
 export interface ApiSuccess<T> {

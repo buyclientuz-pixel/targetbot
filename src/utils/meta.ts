@@ -6,10 +6,21 @@ import {
   MetaStatusResponse,
   MetaTokenRecord,
   MetaTokenStatus,
+  MetaLeadDetails,
+  JsonObject,
 } from "../types";
+import { assignCampaignResult, buildCampaignShortName, compareCampaigns } from "./campaigns";
 
 const GRAPH_BASE = "https://graph.facebook.com";
 const DEFAULT_GRAPH_VERSION = "v19.0";
+
+const graphVersion = (env: Record<string, unknown>): string => {
+  const raw = (env as { META_GRAPH_VERSION?: unknown }).META_GRAPH_VERSION;
+  if (typeof raw === "string" && raw.trim()) {
+    return raw.trim();
+  }
+  return DEFAULT_GRAPH_VERSION;
+};
 
 const TOKEN_KEYS = [
   "META_ACCESS_TOKEN",
@@ -57,6 +68,13 @@ const BUSINESS_ID_KEYS = [
   "META_BUSINESSES",
   "FB_BUSINESSES",
   "BUSINESS_IDS",
+] as const;
+const WEBHOOK_VERIFY_TOKEN_KEYS = [
+  "META_WEBHOOK_VERIFY_TOKEN",
+  "META_VERIFY_TOKEN",
+  "FACEBOOK_WEBHOOK_VERIFY_TOKEN",
+  "FB_WEBHOOK_VERIFY_TOKEN",
+  "FB_VERIFY_TOKEN",
 ] as const;
 
 const encodeBase64 = (value: string): string => {
@@ -171,6 +189,12 @@ const META_TOKEN_EXPIRES_SETTING_KEYS = [
   "meta.oauth.longExpires",
   "system.meta.tokenExpires",
 ] as const;
+const META_WEBHOOK_VERIFY_SETTING_KEYS = [
+  "meta.webhook.verifyToken",
+  "meta.webhook.token",
+  "meta.verifyToken",
+  "system.meta.verifyToken",
+] as const;
 
 const ACCOUNT_STATUS_MAP: Record<number, { label: string; severity: "success" | "warning" | "error" }> = {
   1: { label: "Активен", severity: "success" },
@@ -201,6 +225,8 @@ export interface FetchCampaignsOptions {
   since?: string;
   until?: string;
 }
+
+export type CampaignStatusValue = "ACTIVE" | "PAUSED";
 
 const toStringArray = (value: unknown): string[] => {
   if (!value) {
@@ -258,6 +284,10 @@ export const resolveMetaAppId = (env: Record<string, unknown>): string | undefin
 
 export const resolveMetaAppSecret = (env: Record<string, unknown>): string | undefined => {
   return resolveEnvString(env, APP_SECRET_KEYS);
+};
+
+export const resolveMetaWebhookVerifyToken = (env: Record<string, unknown>): string | undefined => {
+  return resolveEnvString(env, WEBHOOK_VERIFY_TOKEN_KEYS);
 };
 
 const extractSettingString = (
@@ -338,6 +368,17 @@ export const withMetaSettings = async (
         if (expiresAt) {
           overrides.META_ACCESS_TOKEN_EXPIRES = expiresAt;
         }
+      }
+    }
+
+    if (!resolveMetaWebhookVerifyToken(env)) {
+      const verifyToken = findSettingOverride(
+        settings,
+        META_WEBHOOK_VERIFY_SETTING_KEYS,
+        ["verifyToken", "token", "value"],
+      );
+      if (verifyToken) {
+        overrides.META_WEBHOOK_VERIFY_TOKEN = verifyToken;
       }
     }
 
@@ -609,9 +650,27 @@ interface CampaignInsightsResponse {
     spend?: string;
     impressions?: string;
     clicks?: string;
+    reach?: string;
+    inline_link_clicks?: string;
+    unique_clicks?: string;
+    unique_actions?: Array<{ action_type?: string; value?: string }>;
+    actions?: Array<{ action_type?: string; value?: string }>;
+    action_values?: Array<{ action_type?: string; value?: string }>;
     account_currency?: string;
     date_start?: string;
     date_stop?: string;
+  }>;
+}
+
+interface LeadDetailsResponse {
+  id?: string;
+  created_time?: string;
+  ad_id?: string;
+  form_id?: string;
+  campaign_id?: string;
+  field_data?: Array<{
+    name?: string;
+    values?: Array<string | number | boolean | null>;
   }>;
 }
 
@@ -869,15 +928,19 @@ export const fetchCampaigns = async (
     }
     const dailyBudgetRaw = parseNumber(item.daily_budget ?? undefined);
     const dailyBudget = dailyBudgetRaw !== undefined ? dailyBudgetRaw / 100 : undefined;
+    const objectiveRaw = typeof item.objective === "string" ? item.objective.trim() : "";
+    const objectiveNormalized =
+      objectiveRaw && !/^mixed$/i.test(objectiveRaw) && !/^none$/i.test(objectiveRaw) ? objectiveRaw : null;
     const campaign: MetaCampaign = {
       id: item.id,
       accountId: normalizedAccount,
       name: item.name,
       status: item.status || undefined,
       effectiveStatus: item.effective_status || undefined,
-      objective: item.objective || undefined,
+      objective: objectiveNormalized,
       updatedTime: item.updated_time || undefined,
       dailyBudget,
+      shortName: buildCampaignShortName(item.name),
     };
     campaigns.push(campaign);
     campaignMap.set(item.id, campaign);
@@ -899,12 +962,43 @@ export const fetchCampaigns = async (
     `${normalizedAccount}/insights`,
     {
       access_token: tokenRecord.accessToken,
-      fields: "campaign_id,campaign_name,spend,impressions,clicks,account_currency,date_start,date_stop",
+      fields:
+        "campaign_id,campaign_name,spend,impressions,clicks,reach,inline_link_clicks,unique_clicks,actions,action_values,account_currency,date_start,date_stop",
       level: "campaign",
       time_increment: "all_days",
       ...insightWindow,
     },
   );
+
+  const toActionMap = (
+    items: Array<{ action_type?: string; value?: string }> | undefined,
+  ): Map<string, number> => {
+    const map = new Map<string, number>();
+    if (!items) {
+      return map;
+    }
+    for (const entry of items) {
+      if (!entry?.action_type) {
+        continue;
+      }
+      const numeric = parseNumber(entry.value);
+      if (numeric !== undefined) {
+        map.set(entry.action_type, numeric);
+      }
+    }
+    return map;
+  };
+
+  const sumActions = (map: Map<string, number>, keys: string[]): number => {
+    let total = 0;
+    for (const key of keys) {
+      const value = map.get(key);
+      if (value !== undefined) {
+        total += value;
+      }
+    }
+    return total;
+  };
 
   for (const row of insightsResponse?.data || []) {
     const campaignId = row.campaign_id;
@@ -928,6 +1022,31 @@ export const fetchCampaigns = async (
     const spend = parseNumber(row.spend);
     const impressions = parseNumber(row.impressions);
     const clicks = parseNumber(row.clicks);
+    const inlineLinkClicks = parseNumber(row.inline_link_clicks);
+    const reach = parseNumber(row.reach);
+    const actionMap = toActionMap(row.actions);
+    const valueMap = toActionMap(row.action_values);
+
+    const leads = sumActions(actionMap, ["lead", "leadgen.other", "onsite_conversion.lead", "leadgen" ]);
+    const conversations = sumActions(actionMap, [
+      "onsite_conversion.messaging_conversation_started_7d",
+      "messaging_conversation_started_7d",
+    ]);
+    const purchases = sumActions(actionMap, ["purchase", "offsite_conversion.fb_pixel_purchase"]);
+    const installs = sumActions(actionMap, ["app_install", "mobile_app_install"]);
+    const engagements = sumActions(actionMap, ["post_engagement", "onsite_conversion.post_save"]);
+    const thruplays = sumActions(actionMap, ["thruplay", "video_play"]);
+    const conversions = sumActions(actionMap, [
+      "offsite_conversion",
+      "offsite_conversion.purchase",
+      "onsite_conversion.lead",
+    ]);
+    const revenue = sumActions(valueMap, [
+      "purchase",
+      "offsite_conversion.fb_pixel_purchase",
+      "onsite_conversion.purchase",
+    ]);
+
     target.spend = spend;
     target.spendCurrency = row.account_currency || target.spendCurrency;
     target.spendPeriod = periodLabel;
@@ -938,17 +1057,213 @@ export const fetchCampaigns = async (
     if (clicks !== undefined) {
       target.clicks = clicks;
     }
+    if (inlineLinkClicks !== undefined) {
+      target.inlineLinkClicks = inlineLinkClicks;
+    }
+    if (reach !== undefined) {
+      target.reach = reach;
+    }
+    if (leads) {
+      target.leads = leads;
+    }
+    if (conversations) {
+      target.conversations = conversations;
+    }
+    if (purchases) {
+      target.purchases = purchases;
+    }
+    if (installs) {
+      target.installs = installs;
+    }
+    if (engagements) {
+      target.engagements = engagements;
+    }
+    if (thruplays) {
+      target.thruplays = thruplays;
+    }
+    if (conversions) {
+      target.conversions = conversions;
+    }
+    if (revenue) {
+      target.roasValue = revenue;
+      target.revenueCurrency = row.account_currency || target.revenueCurrency;
+    }
+
+    if (impressions && impressions > 0 && clicks !== undefined) {
+      target.ctr = clicks > 0 ? (clicks / impressions) * 100 : 0;
+    }
+    if (clicks && clicks > 0 && spend !== undefined) {
+      target.cpc = spend ? spend / clicks : 0;
+    }
+    if (impressions && impressions > 0 && spend !== undefined) {
+      target.cpm = spend ? (spend / impressions) * 1000 : 0;
+    }
+    if (leads && leads > 0 && spend !== undefined) {
+      target.cpl = spend ? spend / leads : 0;
+    }
+    if (purchases && purchases > 0 && spend !== undefined) {
+      target.cpa = spend ? spend / purchases : 0;
+    }
+    if (revenue && spend && spend > 0) {
+      target.roas = revenue / spend;
+    }
+    if (thruplays && thruplays > 0 && spend !== undefined) {
+      target.cpv = spend ? spend / thruplays : 0;
+    }
+    if (installs && installs > 0 && spend !== undefined) {
+      target.cpi = spend ? spend / installs : 0;
+    }
+    if (engagements && engagements > 0 && spend !== undefined) {
+      target.cpe = spend ? spend / engagements : 0;
+    }
+
+    assignCampaignResult(target);
   }
 
-  campaigns.sort((a, b) => {
-    const spendDiff = (b.spend ?? 0) - (a.spend ?? 0);
-    if (spendDiff !== 0) {
-      return spendDiff;
-    }
-    return a.name.localeCompare(b.name);
-  });
+  campaigns.sort(compareCampaigns);
 
   return campaigns;
+};
+
+export const updateCampaignStatus = async (
+  env: EnvBindings & Record<string, unknown>,
+  record: MetaTokenRecord | null,
+  campaignId: string,
+  status: CampaignStatusValue,
+): Promise<boolean> => {
+  const tokenRecord = effectiveToken(env, record);
+  const freshness = ensureTokenFreshness(tokenRecord);
+  if (freshness === "missing" || !tokenRecord?.accessToken) {
+    throw new Error("Meta token is missing");
+  }
+  const version = graphVersion(env);
+  const url = new URL(`${GRAPH_BASE}/${version}/${campaignId}`);
+  const params = new URLSearchParams();
+  params.set("access_token", tokenRecord.accessToken);
+  params.set("status", status);
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    body: params,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to update campaign ${campaignId}: ${text}`);
+  }
+  const json = (await response.json()) as { success?: boolean };
+  return Boolean(json?.success);
+};
+
+export const updateCampaignStatuses = async (
+  env: EnvBindings & Record<string, unknown>,
+  record: MetaTokenRecord | null,
+  campaignIds: string[],
+  status: CampaignStatusValue,
+): Promise<{ updated: string[]; failed: { id: string; error: string }[] }> => {
+  const results: { updated: string[]; failed: { id: string; error: string }[] } = { updated: [], failed: [] };
+  for (const id of campaignIds) {
+    try {
+      await updateCampaignStatus(env, record, id, status);
+      results.updated.push(id);
+    } catch (error) {
+      results.failed.push({ id, error: (error as Error).message });
+    }
+  }
+  return results;
+};
+
+export const fetchLeadDetails = async (
+  env: EnvBindings & Record<string, unknown>,
+  record: MetaTokenRecord | null,
+  leadId: string,
+): Promise<MetaLeadDetails | null> => {
+  const tokenRecord = effectiveToken(env, record);
+  const status = ensureTokenFreshness(tokenRecord);
+  if (status === "missing" || !tokenRecord?.accessToken) {
+    return null;
+  }
+
+  const response = await safeGraphCall<LeadDetailsResponse>(env, leadId, {
+    access_token: tokenRecord.accessToken,
+    fields: "id,created_time,ad_id,form_id,campaign_id,field_data",
+  });
+
+  if (!response?.id) {
+    return null;
+  }
+
+  const answersRaw: Record<string, unknown> = {};
+  const normalizedMap = new Map<string, string[]>();
+
+  if (Array.isArray(response.field_data)) {
+    for (const field of response.field_data) {
+      if (!field || typeof field !== "object") {
+        continue;
+      }
+      const name = typeof field.name === "string" ? field.name.trim() : field.name !== undefined ? String(field.name).trim() : "";
+      if (!name) {
+        continue;
+      }
+      const values = Array.isArray(field.values)
+        ? field.values
+            .map((value) => {
+              if (value === null || value === undefined) {
+                return undefined;
+              }
+              if (typeof value === "string") {
+                const trimmed = value.trim();
+                return trimmed || undefined;
+              }
+              if (typeof value === "number" || typeof value === "boolean") {
+                return String(value);
+              }
+              return undefined;
+            })
+            .filter((item): item is string => Boolean(item && item.trim()))
+            .map((item) => item.trim())
+        : [];
+      if (!values.length) {
+        continue;
+      }
+      answersRaw[name] = values;
+      normalizedMap.set(name.toLowerCase(), values);
+    }
+  }
+
+  const takeValue = (...keys: string[]): string | undefined => {
+    for (const key of keys) {
+      const values = normalizedMap.get(key.toLowerCase());
+      if (values && values.length > 0) {
+        return values[0];
+      }
+    }
+    return undefined;
+  };
+
+  let fullName = takeValue("full_name", "name");
+  const firstName = takeValue("first_name", "firstname");
+  const lastName = takeValue("last_name", "lastname");
+  if (!fullName && (firstName || lastName)) {
+    fullName = [firstName, lastName].filter(Boolean).join(" ").trim() || undefined;
+  }
+
+  const phone = takeValue("phone_number", "phone", "phone number");
+  const email = takeValue("email", "email_address");
+
+  const createdAt = toIsoDate(response.created_time) ?? new Date().toISOString();
+
+  const details: MetaLeadDetails = {
+    id: response.id,
+    createdAt,
+    fullName: fullName || undefined,
+    phone,
+    email,
+    formId: response.form_id ? String(response.form_id) : undefined,
+    adId: response.ad_id ? String(response.ad_id) : undefined,
+    campaignId: response.campaign_id ? String(response.campaign_id) : undefined,
+    answers: answersRaw as JsonObject,
+  };
+
+  return details;
 };
 
 export const exchangeToken = async (

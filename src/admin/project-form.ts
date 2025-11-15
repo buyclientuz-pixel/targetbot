@@ -140,7 +140,7 @@ export const renderProjectForm = ({ mode, project, users, accounts }: ProjectFor
             body: JSON.stringify(payload),
           });
           const data = await response.json();
-          if (data.ok) {
+          if (data.ok || data.success) {
             window.location.href = '/admin';
           } else {
             alert('Не удалось сохранить проект: ' + (data.error || 'Ошибка'));
@@ -162,7 +162,7 @@ export const renderProjectForm = ({ mode, project, users, accounts }: ProjectFor
         try {
           const response = await fetch('/api/projects/' + projectId, { method: 'DELETE' });
           const data = await response.json();
-          if (data.ok) {
+          if (data.ok || data.success) {
             window.location.href = '/admin';
           } else {
             alert('Не удалось удалить проект: ' + (data.error || 'Ошибка'));

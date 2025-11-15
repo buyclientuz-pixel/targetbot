@@ -9,7 +9,8 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "lint": "eslint . --ext .ts,.js",
-    "typecheck": "tsc --noEmit --project tsconfig.json"
+    "typecheck": "tsc --noEmit --project tsconfig.json",
+    "qa": "node --loader ./scripts/ts-loader.mjs tests/regression.test.ts"
   },
   "devDependencies": {
     "eslint": "^9.39.1",

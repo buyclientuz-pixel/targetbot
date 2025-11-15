@@ -1,6 +1,6 @@
 import { jsonResponse } from "../utils/http";
 import { createId } from "../utils/ids";
-import { EnvBindings, listPayments, savePayments } from "../utils/storage";
+import { EnvBindings, listPayments, savePayments, clearPaymentReminder } from "../utils/storage";
 import { ApiError, ApiSuccess, PaymentRecord, PaymentStatus } from "../types";
 
 const ensureEnv = (env: unknown): EnvBindings => {
@@ -113,6 +113,9 @@ export const handlePaymentsCreate = async (request: Request, env: unknown): Prom
     }
     payments.push(payment);
     await savePaymentCollection(bindings, payments);
+    await clearPaymentReminder(bindings, payment.projectId).catch((error) => {
+      console.warn("Failed to refresh payment reminder", payment.projectId, error);
+    });
     const payload: ApiSuccess<PaymentRecord> = { ok: true, data: payment };
     return jsonResponse(payload, { status: 201 });
   } catch (error) {
@@ -159,6 +162,9 @@ export const handlePaymentUpdate = async (
     };
     payments[index] = updated;
     await savePaymentCollection(bindings, payments);
+    await clearPaymentReminder(bindings, updated.projectId).catch((error) => {
+      console.warn("Failed to refresh payment reminder", updated.projectId, error);
+    });
     const payload: ApiSuccess<PaymentRecord> = { ok: true, data: updated };
     return jsonResponse(payload);
   } catch (error) {
@@ -175,11 +181,15 @@ export const handlePaymentDelete = async (
   try {
     const bindings = ensureEnv(env);
     const payments = await listPayments(bindings);
-    const filtered = payments.filter((entry) => entry.id !== paymentId);
-    if (filtered.length === payments.length) {
+    const target = payments.find((entry) => entry.id === paymentId);
+    if (!target) {
       return jsonResponse({ ok: false, error: "Payment not found" }, { status: 404 });
     }
+    const filtered = payments.filter((entry) => entry.id !== paymentId);
     await savePaymentCollection(bindings, filtered);
+    await clearPaymentReminder(bindings, target.projectId).catch((error) => {
+      console.warn("Failed to refresh payment reminder", target.projectId, error);
+    });
     const payload: ApiSuccess<{ id: string }> = { ok: true, data: { id: paymentId } };
     return jsonResponse(payload);
   } catch (error) {

@@ -1,5 +1,12 @@
 import { jsonResponse, parseJsonRequest } from "../utils/http";
-import { EnvBindings, deleteLeads, listProjects, loadProject, saveProjects } from "../utils/storage";
+import {
+  EnvBindings,
+  clearPaymentReminder,
+  deleteProjectCascade,
+  listProjects,
+  loadProject,
+  saveProjects,
+} from "../utils/storage";
 import { ApiSuccess, ProjectRecord, ProjectSummary } from "../types";
 import { createId } from "../utils/ids";
 import { summarizeProjects, sortProjectSummaries } from "../utils/projects";
@@ -52,18 +59,76 @@ export const handleProjectsCreate = async (request: Request, env: unknown): Prom
     if (!body.userId) {
       throw new Error("userId is required");
     }
+    const metaAccountId = body.metaAccountId ?? body.adAccountId;
+    if (!metaAccountId) {
+      throw new Error("metaAccountId is required");
+    }
+    const chatIdentifier = body.chatId ?? body.telegramChatId;
+    if (!chatIdentifier) {
+      throw new Error("chatId is required");
+    }
     const projects = await listProjects(bindings);
-    const id = createId();
+    const id = `p_${createId(10)}`;
+    const now = nowIso();
+    const tariffSource = (body as Record<string, unknown>).tariff ?? body.tariff;
+    const tariff =
+      typeof tariffSource === "number" && Number.isFinite(tariffSource)
+        ? tariffSource
+        : typeof tariffSource === "string" && tariffSource.trim() && !Number.isNaN(Number(tariffSource))
+          ? Number(tariffSource)
+          : 0;
+    const amountSource =
+      (body as Record<string, unknown>).billingAmountUsd ??
+      (body as Record<string, unknown>).billing_amount_usd ??
+      tariff;
+    const billingAmount =
+      typeof amountSource === "number" && Number.isFinite(amountSource)
+        ? Number(amountSource.toFixed(2))
+        : typeof amountSource === "string" && amountSource.trim() && !Number.isNaN(Number(amountSource))
+          ? Number(Number(amountSource).toFixed(2))
+          : tariff;
+    const planSource =
+      (body as Record<string, unknown>).billingPlan ??
+      (body as Record<string, unknown>).billing_plan ??
+      (billingAmount > 0
+        ? Math.abs(billingAmount - 350) < 0.01
+          ? "350"
+          : Math.abs(billingAmount - 500) < 0.01
+            ? "500"
+            : "custom"
+        : null);
+    const billingPlan =
+      planSource === "350" || planSource === "500" || planSource === "custom" ? planSource : billingAmount > 0 ? "custom" : null;
+    const billingEnabled =
+      typeof body.billingEnabled === "boolean"
+        ? body.billingEnabled
+        : Boolean(body.nextPaymentDate || billingAmount > 0);
     const record: ProjectRecord = {
       id,
       name: String(body.name),
+      metaAccountId: String(metaAccountId),
+      metaAccountName: body.metaAccountName ? String(body.metaAccountName) : String(body.name),
+      chatId: String(chatIdentifier),
+      billingStatus:
+        body.billingStatus === "active" || body.billingStatus === "overdue" || body.billingStatus === "blocked"
+          ? body.billingStatus
+          : "pending",
+      nextPaymentDate: body.nextPaymentDate ?? null,
+      tariff,
+      billingAmountUsd: billingAmount,
+      billingPlan,
+      billingEnabled,
+      createdAt: now,
+      updatedAt: now,
+      settings:
+        body.settings && typeof body.settings === "object" && !Array.isArray(body.settings)
+          ? (body.settings as ProjectRecord["settings"])
+          : {},
       userId: String(body.userId),
-      telegramChatId: body.telegramChatId,
+      telegramChatId: body.telegramChatId ? String(body.telegramChatId) : String(chatIdentifier),
       telegramThreadId: body.telegramThreadId,
       telegramLink: body.telegramLink,
-      adAccountId: body.adAccountId,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
+      adAccountId: body.adAccountId ? String(body.adAccountId) : String(metaAccountId),
     };
     projects.push(record);
     await saveProjects(bindings, projects);
@@ -107,6 +172,11 @@ export const handleProjectUpdate = async (
     };
     projects[index] = updated;
     await saveProjects(bindings, projects);
+    if (body.nextPaymentDate !== undefined || body.billingStatus !== undefined) {
+      await clearPaymentReminder(bindings, projectId).catch((error) => {
+        console.warn("Failed to clear payment reminder", projectId, error);
+      });
+    }
     return jsonResponse({ ok: true, data: updated });
   } catch (error) {
     return jsonResponse({ ok: false, error: (error as Error).message }, { status: 400 });
@@ -120,16 +190,14 @@ export const handleProjectDelete = async (
 ): Promise<Response> => {
   try {
     const bindings = ensureEnv(env);
-    const projects = await listProjects(bindings);
-    const filtered = projects.filter((project) => project.id !== projectId);
-    if (filtered.length === projects.length) {
+    const result = await deleteProjectCascade(bindings, projectId);
+    if (!result) {
       return jsonResponse({ ok: false, error: "Project not found" }, { status: 404 });
     }
-    await saveProjects(bindings, filtered);
-    await deleteLeads(bindings, projectId).catch((error) => {
-      console.warn("Failed to delete project leads", projectId, error);
+    const payload = { success: true, data: result };
+    return new Response(JSON.stringify(payload, null, 2), {
+      headers: { "content-type": "application/json; charset=utf-8" },
     });
-    return jsonResponse({ ok: true, data: { id: projectId } });
   } catch (error) {
     return jsonResponse({ ok: false, error: (error as Error).message }, { status: 500 });
   }
