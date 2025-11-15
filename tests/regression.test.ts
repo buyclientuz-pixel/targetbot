@@ -48,12 +48,22 @@ import { normalizeCampaigns } from "../src/utils/campaigns";
 import { ensureTelegramUrl, ensureTelegramUrlFromId, resolveChatLink } from "../src/utils/chat-links";
 import { evaluateQaDataset } from "../src/utils/qa";
 import { appendProjectPayment } from "../src/utils/payments";
-import { summarizeProjects } from "../src/utils/projects";
+import { applyProjectSettingsPatch, extractProjectSettings, summarizeProjects } from "../src/utils/projects";
 import { handlePaymentsCreate } from "../src/api/payments";
-import { EnvBindings, listPayments, listProjects, saveProjects } from "../src/utils/storage";
+import {
+  EnvBindings,
+  listLeads,
+  listPayments,
+  listProjects,
+  readPortalSnapshotCache,
+  saveLeads,
+  saveProjects,
+  writePortalSnapshotCache,
+} from "../src/utils/storage";
 import {
   ApiSuccess,
   AutoReportDataset,
+  NormalizedCampaign,
   MetaAdAccount,
   MetaCampaign,
   LeadRecord,
@@ -61,6 +71,8 @@ import {
   PaymentReminderRecord,
   ProjectRecord,
   ProjectSummary,
+  PortalComputationResult,
+  PortalSnapshotCacheDescriptor,
   ReportScheduleRecord,
 } from "../src/types";
 
@@ -399,6 +411,114 @@ test("evaluateAutoReportTrigger respects cooldown and monday double", () => {
     new Date("2025-02-24T15:02:00Z"),
   );
   expect.equal(mondayResult.weekly, "15:00");
+});
+
+test("project settings patch toggles lead alerts and persists flag", () => {
+  const extracted = extractProjectSettings({
+    alerts: { leads: false },
+    reports: { auto: { frequency: "weekly", quietWeekends: true, silent: true } },
+  });
+  expect.equal(extracted.leadAlerts, false);
+  expect.equal(extracted.reportFrequency, "weekly");
+  expect.equal(extracted.quietWeekends, true);
+
+  const patched = applyProjectSettingsPatch({}, { leadAlerts: false, silentReports: true });
+  const alerts = (patched.alerts as { leads?: boolean } | undefined) ?? {};
+  expect.equal(alerts.leads, false);
+  const reports = (patched.reports as { auto?: { silent?: boolean } } | undefined)?.auto ?? {};
+  expect.equal(reports.silent, true);
+
+  const restored = applyProjectSettingsPatch(patched, { leadAlerts: true });
+  const restoredAlerts = (restored.alerts as { leads?: boolean } | undefined) ?? {};
+  expect.equal(restoredAlerts.leads, true);
+});
+
+test("listLeads merges KV overlays and preserves processed status", async () => {
+  const env = createTestEnv();
+  const project = createProject("p-leads-merge");
+  await saveProjects(env, [project]);
+
+  const baseLead = {
+    ...createLead("lead-1", project.id),
+    createdAt: "2025-02-20T09:00:00.000Z",
+    status: "new" as const,
+  } satisfies LeadRecord;
+  await saveLeads(env, project.id, [baseLead]);
+
+  const kvKey = `leads:${project.id}:${baseLead.id}`;
+  await env.DB.put(
+    kvKey,
+    JSON.stringify({
+      id: baseLead.id,
+      project_id: project.id,
+      name: "Lead KV Override",
+      phone: "+998901112233",
+      source: "facebook",
+      campaign_id: "camp-override",
+      form_id: null,
+      ad_id: "ad-override",
+      ad_name: "Ad Override",
+      campaign_name: "Campaign Override",
+      campaign_short_name: "Override",
+      campaign_objective: "LEAD_GENERATION",
+      created_at: "2025-02-21T10:30:00.000Z",
+      status: "processed",
+    }),
+  );
+
+  const leads = await listLeads(env, project.id);
+  expect.equal(leads.length, 1);
+  const [merged] = leads;
+  expect.equal(merged.status, "done");
+  expect.equal(merged.campaignName, "Campaign Override");
+  expect.equal(merged.adName, "Ad Override");
+  expect.equal(merged.phone, "+998901112233");
+  expect.equal(merged.createdAt, "2025-02-21T10:30:00.000Z");
+});
+
+test("portal snapshot cache roundtrip retains partial data source", async () => {
+  const env = createTestEnv();
+  const descriptor: PortalSnapshotCacheDescriptor = {
+    key: "today",
+    datePreset: "today",
+    since: null,
+    until: null,
+    page: 1,
+  };
+
+  const now = new Date("2025-02-22T11:00:00Z").toISOString();
+  const snapshot: PortalComputationResult = {
+    billing: {
+      status: "pending",
+      active: true,
+      overdue: false,
+      amount: 350,
+      currency: "USD",
+      amountFormatted: "$350",
+      updatedAt: now,
+    },
+    statusCounts: { all: 2, new: 1, done: 1 },
+    page: 1,
+    totalPages: 1,
+    leads: [],
+    metrics: [
+      { key: "spend", label: "Расход", value: "9.90$" },
+      { key: "leads_total", label: "Лиды", value: "2" },
+    ],
+    campaigns: [] as NormalizedCampaign[],
+    periodLabel: "Сегодня",
+    updatedAt: now,
+    partial: true,
+    dataSource: "fallback",
+  };
+
+  await writePortalSnapshotCache(env, "p-cache", descriptor, snapshot, 180);
+  const cached = await readPortalSnapshotCache(env, "p-cache", descriptor);
+  expect.ok(cached, "cache entry should be readable");
+  expect.equal(cached?.data.partial, true);
+  expect.equal(cached?.data.dataSource, "fallback");
+  expect.equal(cached?.data.metrics.length, 2);
+  expect.equal(cached?.data.billing.amount, 350);
 });
 
 test("buildAutoReportDataset builds portal link and project report", () => {
