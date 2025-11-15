@@ -148,7 +148,8 @@ export const renderPortal = ({
     <div class="portal-loader" data-role="portal-loader">
       <div class="portal-loader__content">
         <div class="portal-loader__spinner"></div>
-        <p>Готовим данные…<br>Это может занять 3–5 секунд.</p>
+        <p class="portal-loader__message" data-role="loader-message">Готовим данные…<br>Это может занять 3–5 секунд.</p>
+        <button type="button" class="btn btn-primary portal-loader__retry hidden" data-role="loader-retry">🔄 Обновить вручную</button>
       </div>
     </div>
     <section class="card card-compact portal-header">
@@ -245,11 +246,41 @@ export const renderPortal = ({
       const countAll = document.querySelector('[data-role="count-all"]');
       const countNew = document.querySelector('[data-role="count-new"]');
       const loaderOverlay = document.querySelector('[data-role="portal-loader"]');
+      const loaderMessage = document.querySelector('[data-role="loader-message"]');
+      const loaderRetry = document.querySelector('[data-role="loader-retry"]');
+      const loaderInitialMessage = 'Готовим данные…<br>Это может занять 3–5 секунд.';
       const loadState = { stats: false, leads: false, campaigns: false };
+      let loaderTimeoutId = 0;
+
+      const resetLoaderOverlay = () => {
+        if (loaderMessage instanceof HTMLElement) {
+          loaderMessage.innerHTML = loaderInitialMessage;
+        }
+        if (loaderRetry instanceof HTMLElement) {
+          loaderRetry.classList.add('hidden');
+        }
+      };
+
+      const startLoaderTimer = () => {
+        window.clearTimeout(loaderTimeoutId);
+        loaderTimeoutId = window.setTimeout(() => {
+          if (loadState.stats && loadState.leads && loadState.campaigns) {
+            return;
+          }
+          if (loaderMessage instanceof HTMLElement) {
+            loaderMessage.innerHTML = '❗ Мы используем Meta API — иногда ответ задерживается.<br>Обновляем данные…';
+          }
+          if (loaderRetry instanceof HTMLElement) {
+            loaderRetry.classList.remove('hidden');
+          }
+        }, 5000);
+      };
 
       const markLoaded = (key) => {
         loadState[key] = true;
         if (loadState.stats && loadState.leads && loadState.campaigns) {
+          window.clearTimeout(loaderTimeoutId);
+          resetLoaderOverlay();
           if (loaderOverlay instanceof HTMLElement) {
             loaderOverlay.classList.add('hidden');
           }
@@ -259,6 +290,8 @@ export const renderPortal = ({
       if (loaderOverlay instanceof HTMLElement) {
         loaderOverlay.classList.remove('hidden');
       }
+      resetLoaderOverlay();
+      startLoaderTimer();
 
       const formatDate = (value) => {
         const timestamp = Date.parse(value);
@@ -720,6 +753,31 @@ export const renderPortal = ({
         }
       };
 
+      const restartLoading = () => {
+        loadState.stats = false;
+        loadState.leads = false;
+        loadState.campaigns = false;
+        if (loaderOverlay instanceof HTMLElement) {
+          loaderOverlay.classList.remove('hidden');
+        }
+        if (loaderMessage instanceof HTMLElement) {
+          loaderMessage.innerHTML = 'Обновляем данные…';
+        }
+        if (loaderRetry instanceof HTMLElement) {
+          loaderRetry.classList.add('hidden');
+        }
+        startLoaderTimer();
+        fetchStats();
+        fetchLeads();
+        fetchCampaigns();
+      };
+
+      if (loaderRetry instanceof HTMLElement) {
+        loaderRetry.addEventListener('click', () => {
+          restartLoading();
+        });
+      }
+
       renderMetrics();
       renderLeads();
       renderCampaigns();
@@ -753,6 +811,9 @@ export const renderPortal = ({
     .portal-loader.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
     .portal-loader__content { background: rgba(255, 255, 255, 0.95); padding: 24px 32px; border-radius: 18px; box-shadow: 0 24px 48px rgba(15, 23, 42, 0.28); max-width: 320px; text-align: center; font-size: 15px; line-height: 1.4; color: #102a43; }
     .portal-loader__spinner { width: 36px; height: 36px; margin: 0 auto 14px; border-radius: 50%; border: 4px solid rgba(31, 117, 254, 0.2); border-top-color: #1f75fe; animation: portal-spin 0.9s linear infinite; }
+    .portal-loader__message { margin: 0; }
+    .portal-loader__retry { margin-top: 12px; width: 100%; font-size: 14px; }
+    .portal-loader__retry.hidden { display: none; }
     @keyframes portal-spin { to { transform: rotate(360deg); } }
     .table-row .extra-data { display: none; font-size: 13px; color: #334e68; }
     .table-row.open .extra-data { display: block; margin-top: 8px; }

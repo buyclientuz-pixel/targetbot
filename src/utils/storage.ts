@@ -16,6 +16,9 @@ import {
   PendingPortalOperation,
   PendingProjectEditOperation,
   PortalMetricKey,
+  PortalSnapshotCacheDescriptor,
+  PortalSnapshotCacheEntry,
+  PortalComputationResult,
   ProjectBillingState,
   ProjectDeletionSummary,
   ProjectPortalRecord,
@@ -93,6 +96,7 @@ const CAMPAIGN_KPI_KV_PREFIX = "project_campaign_kpis:";
 const KPI_PENDING_PREFIX = "kpi/pending/";
 const PROJECT_SETTINGS_KV_PREFIX = "project_settings:";
 const PORTAL_REPORT_CACHE_PREFIX = "reports:";
+const PORTAL_SNAPSHOT_CACHE_PREFIX = "portal_snapshot:";
 const LEAD_NOTIFICATION_INDEX_PREFIX = "lead_notifications:";
 
 interface PortalReportCacheEntry {
@@ -2552,6 +2556,60 @@ export const writePortalReportCache = async (
     campaigns,
     fetchedAt: new Date().toISOString(),
     period,
+  };
+  await env.DB.put(key, JSON.stringify(entry, null, 0), {
+    expirationTtl: Math.max(60, ttlSeconds),
+  });
+};
+
+const portalSnapshotCacheKey = (
+  projectId: string,
+  descriptor: PortalSnapshotCacheDescriptor,
+): string => {
+  const base = normalizePeriodSegment(descriptor.key || "current");
+  const preset = descriptor.datePreset ? normalizePeriodSegment(descriptor.datePreset) : base;
+  const since = descriptor.since ? normalizePeriodSegment(descriptor.since) : "none";
+  const until = descriptor.until ? normalizePeriodSegment(descriptor.until) : "none";
+  const page = Number.isFinite(descriptor.page) && descriptor.page > 0 ? Math.floor(descriptor.page) : 1;
+  return `${PORTAL_SNAPSHOT_CACHE_PREFIX}${projectId}:${base}:${preset}:${since}:${until}:p${page}`;
+};
+
+export const readPortalSnapshotCache = async (
+  env: EnvBindings,
+  projectId: string,
+  descriptor: PortalSnapshotCacheDescriptor,
+): Promise<PortalSnapshotCacheEntry | null> => {
+  const key = portalSnapshotCacheKey(projectId, descriptor);
+  const stored = await env.DB.get(key);
+  if (!stored) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(stored) as PortalSnapshotCacheEntry;
+    if (!parsed?.data || typeof parsed.fetchedAt !== "string") {
+      throw new Error("Invalid portal snapshot cache payload");
+    }
+    return parsed;
+  } catch (error) {
+    console.warn("Failed to parse portal snapshot cache", { key, error });
+    await env.DB.delete(key).catch(() => undefined);
+    return null;
+  }
+};
+
+export const writePortalSnapshotCache = async (
+  env: EnvBindings,
+  projectId: string,
+  descriptor: PortalSnapshotCacheDescriptor,
+  data: PortalComputationResult,
+  ttlSeconds = 120,
+): Promise<void> => {
+  const key = portalSnapshotCacheKey(projectId, descriptor);
+  const entry: PortalSnapshotCacheEntry = {
+    fetchedAt: new Date().toISOString(),
+    projectId,
+    descriptor,
+    data,
   };
   await env.DB.put(key, JSON.stringify(entry, null, 0), {
     expirationTtl: Math.max(60, ttlSeconds),

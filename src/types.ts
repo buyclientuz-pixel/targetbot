@@ -152,6 +152,33 @@ export interface PortalSnapshotPayload {
   updatedAt: string;
 }
 
+export interface PortalComputationResult {
+  billing: ProjectBillingSummary;
+  statusCounts: PortalStatusCounts;
+  page: number;
+  totalPages: number;
+  leads: PortalLeadView[];
+  metrics: PortalMetricEntry[];
+  campaigns: NormalizedCampaign[];
+  periodLabel: string;
+  updatedAt: string;
+}
+
+export interface PortalSnapshotCacheDescriptor {
+  key: string;
+  datePreset?: string | null;
+  since?: string | null;
+  until?: string | null;
+  page: number;
+}
+
+export interface PortalSnapshotCacheEntry {
+  fetchedAt: string;
+  projectId: string;
+  descriptor: PortalSnapshotCacheDescriptor;
+  data: PortalComputationResult;
+}
+
 export type PortalMode = "auto" | "manual";
 
 export type PortalMetricKey =
