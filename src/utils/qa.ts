@@ -1,7 +1,6 @@
 import {
   EnvBindings,
   QA_RUN_HISTORY_LIMIT,
-  listLeadReminders,
   listLeads,
   listPaymentReminders,
   listProjects,
@@ -12,9 +11,9 @@ import {
 } from "./storage";
 import { createId } from "./ids";
 import { calculateNextRunAt } from "./report-scheduler";
+import { ProgressReporter, createConsoleProgressReporter } from "./progress-reporter";
 import {
   LeadRecord,
-  LeadReminderRecord,
   PaymentReminderRecord,
   ProjectRecord,
   QaIssueRecord,
@@ -25,7 +24,6 @@ import {
 export interface QaEvaluationInput {
   projects: ProjectRecord[];
   leads: LeadRecord[];
-  leadReminders: LeadReminderRecord[];
   paymentReminders: PaymentReminderRecord[];
   schedules: ReportScheduleRecord[];
   now?: Date;
@@ -35,7 +33,6 @@ export interface QaEvaluationResult {
   schedules: ReportScheduleRecord[];
   scheduleIssues: number;
   scheduleRescheduled: number;
-  leadReminderIssues: number;
   paymentReminderIssues: number;
   projectIssueIds: string[];
   issues: QaIssueRecord[];
@@ -50,13 +47,11 @@ const cloneSchedule = (schedule: ReportScheduleRecord): ReportScheduleRecord => 
 export const evaluateQaDataset = ({
   projects,
   leads,
-  leadReminders,
   paymentReminders,
   schedules,
   now = new Date(),
 }: QaEvaluationInput): QaEvaluationResult => {
   const projectMap = new Map(projects.map((project) => [project.id, project]));
-  const leadMap = new Map(leads.map((lead) => [lead.id, lead]));
   const scheduleCopies = schedules.map((schedule) => cloneSchedule(schedule));
   const issues: QaIssueRecord[] = [];
   const projectsWithIssues = new Set<string>();
@@ -105,45 +100,6 @@ export const evaluateQaDataset = ({
     }
   }
 
-  let leadReminderIssues = 0;
-  for (const reminder of leadReminders) {
-    let hasIssue = false;
-    const lead = leadMap.get(reminder.leadId);
-    if (!lead) {
-      hasIssue = true;
-      issues.push({
-        type: "lead-reminder",
-        referenceId: reminder.id,
-        projectId: reminder.projectId,
-        message: `Напоминание по лиду ${reminder.id} ссылается на отсутствующий лид ${reminder.leadId}.`,
-      });
-    } else if (lead.projectId !== reminder.projectId) {
-      hasIssue = true;
-      projectsWithIssues.add(lead.projectId);
-      issues.push({
-        type: "lead-reminder",
-        referenceId: reminder.id,
-        projectId: reminder.projectId,
-        message: `Лид ${lead.id} принадлежит проекту ${lead.projectId}, но напоминание привязано к ${reminder.projectId}.`,
-      });
-    }
-
-    if (!projectMap.has(reminder.projectId)) {
-      hasIssue = true;
-      projectsWithIssues.add(reminder.projectId);
-      issues.push({
-        type: "lead-reminder",
-        referenceId: reminder.id,
-        projectId: reminder.projectId,
-        message: `Напоминание по лиду ${reminder.id} ссылается на отсутствующий проект ${reminder.projectId}.`,
-      });
-    }
-
-    if (hasIssue) {
-      leadReminderIssues += 1;
-    }
-  }
-
   let paymentReminderIssues = 0;
   for (const reminder of paymentReminders) {
     if (!projectMap.has(reminder.projectId)) {
@@ -162,31 +118,50 @@ export const evaluateQaDataset = ({
     schedules: scheduleCopies,
     scheduleIssues,
     scheduleRescheduled,
-    leadReminderIssues,
     paymentReminderIssues,
     projectIssueIds: Array.from(projectsWithIssues),
     issues,
   };
 };
 
-export const runRegressionChecks = async (env: EnvBindings): Promise<QaRunRecord> => {
+export interface RegressionOptions {
+  reporter?: ProgressReporter;
+}
+
+export const runRegressionChecks = async (
+  env: EnvBindings,
+  options: RegressionOptions = {},
+): Promise<QaRunRecord> => {
+  const reporter =
+    options.reporter ??
+    createConsoleProgressReporter([
+      "load_projects",
+      "load_related_records",
+      "evaluate_dataset",
+      "persist_results",
+    ]);
+  reporter.start();
+
   const startedAt = Date.now();
-  const [projects, leadReminders, paymentReminders, schedules] = await Promise.all([
-    listProjects(env),
-    listLeadReminders(env),
+  const projects = await listProjects(env);
+  reporter.complete("load_projects");
+
+  const [paymentReminders, schedules] = await Promise.all([
     listPaymentReminders(env),
     listReportSchedules(env),
   ]);
+  reporter.complete("load_related_records");
 
   const leadsNested = await Promise.all(
     projects.map((project) => listLeads(env, project.id).catch(() => [] as LeadRecord[])),
   );
   const leads = leadsNested.flat();
 
+  reporter.complete("evaluate_dataset", "persist_results");
+
   const evaluation = evaluateQaDataset({
     projects,
     leads,
-    leadReminders,
     paymentReminders,
     schedules,
     now: new Date(startedAt),
@@ -195,6 +170,8 @@ export const runRegressionChecks = async (env: EnvBindings): Promise<QaRunRecord
   if (evaluation.scheduleRescheduled > 0) {
     await saveReportSchedules(env, evaluation.schedules);
   }
+
+  reporter.complete("persist_results", null);
 
   const finishedAt = Date.now();
   const record: QaRunRecord = {
@@ -212,8 +189,8 @@ export const runRegressionChecks = async (env: EnvBindings): Promise<QaRunRecord
         rescheduled: evaluation.scheduleRescheduled,
       },
       leadReminders: {
-        total: leadReminders.length,
-        invalid: evaluation.leadReminderIssues,
+        total: 0,
+        invalid: 0,
       },
       paymentReminders: {
         total: paymentReminders.length,

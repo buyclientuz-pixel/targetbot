@@ -110,3 +110,89 @@ export const resolveChatLink = (
   }
   return ensureTelegramUrlFromId(chatId ?? undefined);
 };
+
+const extractForumChatId = (input: string): string | null => {
+  const match = input.match(/\/c\/(\-?\d+)\//i);
+  if (!match) {
+    return null;
+  }
+  const raw = match[1];
+  if (!raw) {
+    return null;
+  }
+  return raw.startsWith("-100") ? raw : `-100${raw}`;
+};
+
+const extractDomainFromResolve = (input: string): string | null => {
+  const match = input.match(/domain=([^&]+)/i);
+  if (!match) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+};
+
+const trimTelegramUrl = (value: string): string => {
+  const lower = value.toLowerCase();
+  if (lower.startsWith("http://")) {
+    return `https://${value.slice(7)}`;
+  }
+  if (lower.startsWith("https://")) {
+    return value;
+  }
+  if (lower.startsWith("tg://")) {
+    return value;
+  }
+  return value;
+};
+
+export const parseTelegramChatIdentifier = (value: string): string | null => {
+  if (!value) {
+    return null;
+  }
+  const text = value.trim();
+  if (!text) {
+    return null;
+  }
+  if (/^-?\d+$/.test(text)) {
+    return text;
+  }
+  if (text.startsWith("@")) {
+    return text;
+  }
+  const normalized = trimTelegramUrl(text);
+  const lower = normalized.toLowerCase();
+  if (lower.startsWith("tg://openmessage")) {
+    return extractChatIdFromOpenMessage(normalized) ?? null;
+  }
+  if (lower.startsWith("tg://resolve")) {
+    const domain = extractDomainFromResolve(normalized);
+    return domain ? (domain.startsWith("@") ? domain : `@${domain}`) : null;
+  }
+  if (lower.startsWith("tg://")) {
+    return null;
+  }
+  if (lower.includes("/c/")) {
+    const forumId = extractForumChatId(lower);
+    if (forumId) {
+      return forumId;
+    }
+  }
+  const usernameMatch = normalized.match(/t\.me\/(?:joinchat\/)?(@?[a-z0-9_]+)/i);
+  if (usernameMatch && usernameMatch[1]) {
+    const candidate = usernameMatch[1];
+    if (candidate.startsWith("@")) {
+      return candidate;
+    }
+    if (!candidate.startsWith("+")) {
+      return `@${candidate}`;
+    }
+  }
+  if (normalized.includes("joinchat") || normalized.includes("+")) {
+    return null;
+  }
+  return null;
+};
