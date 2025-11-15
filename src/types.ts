@@ -331,6 +331,9 @@ export interface ProjectRecord {
   billingStatus: ProjectBillingState;
   nextPaymentDate: string | null;
   tariff: number;
+  billingEnabled?: boolean;
+  billingPlan?: "350" | "500" | "custom" | null;
+  billingAmountUsd?: number | null;
   createdAt: string;
   updatedAt: string;
   settings: JsonObject;

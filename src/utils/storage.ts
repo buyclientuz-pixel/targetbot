@@ -622,12 +622,66 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     typeof nextPaymentCandidate === "string" && nextPaymentCandidate.trim() ? nextPaymentCandidate : null;
 
   const tariffCandidate = data.tariff;
-  const tariff =
+  const tariffValue =
     typeof tariffCandidate === "number" && Number.isFinite(tariffCandidate)
       ? tariffCandidate
       : typeof tariffCandidate === "string" && tariffCandidate.trim() && !Number.isNaN(Number(tariffCandidate))
         ? Number(tariffCandidate)
-        : 0;
+        : undefined;
+
+  const billingAmountCandidate =
+    data.billingAmountUsd ?? data.billing_amount_usd ?? data.billingAmountUSD ?? tariffValue ?? null;
+  const billingAmount =
+    typeof billingAmountCandidate === "number" && Number.isFinite(billingAmountCandidate)
+      ? Number(billingAmountCandidate.toFixed(2))
+      : typeof billingAmountCandidate === "string" && billingAmountCandidate.trim() && !Number.isNaN(Number(billingAmountCandidate))
+        ? Number(Number(billingAmountCandidate).toFixed(2))
+        : tariffValue ?? null;
+
+  const planCandidate = (data.billingPlan ?? data.billing_plan ?? null) as string | null;
+  const normalizedPlan = typeof planCandidate === "string" ? planCandidate.trim().toLowerCase() : null;
+  let billingPlan: "350" | "500" | "custom" | null = null;
+  if (normalizedPlan === "350") {
+    billingPlan = "350";
+  } else if (normalizedPlan === "500") {
+    billingPlan = "500";
+  } else if (normalizedPlan === "custom") {
+    billingPlan = "custom";
+  }
+  if (!billingPlan && typeof billingAmount === "number" && billingAmount > 0) {
+    if (Math.abs(billingAmount - 350) < 0.01) {
+      billingPlan = "350";
+    } else if (Math.abs(billingAmount - 500) < 0.01) {
+      billingPlan = "500";
+    } else {
+      billingPlan = "custom";
+    }
+  }
+
+  const tariff = typeof billingAmount === "number" ? billingAmount : tariffValue ?? 0;
+
+  const resolveBoolean = (value: unknown): boolean => {
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "number") {
+      return value !== 0;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) {
+        return false;
+      }
+      return ["1", "true", "yes", "on"].includes(normalized);
+    }
+    return false;
+  };
+
+  const billingEnabledSource = data.billingEnabled ?? data.billing_enabled ?? null;
+  const billingEnabledExplicit =
+    billingEnabledSource !== null && billingEnabledSource !== undefined
+      ? resolveBoolean(billingEnabledSource)
+      : undefined;
 
   const createdCandidate = data.createdAt ?? data.created_at;
   const createdAt =
@@ -689,29 +743,18 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
       ? portalSlugSource.trim()
       : derivedSlug;
 
-  const resolveBoolean = (value: unknown): boolean => {
-    if (typeof value === "boolean") {
-      return value;
-    }
-    if (typeof value === "number") {
-      return value !== 0;
-    }
-    if (typeof value === "string") {
-      const normalized = value.trim().toLowerCase();
-      if (!normalized) {
-        return false;
-      }
-      return ["1", "true", "yes", "on"].includes(normalized);
-    }
-    return false;
-  };
-
   const autoOff = resolveBoolean(data.autoOff ?? data.auto_off);
   const autoOffAtSource = data.autoOffAt ?? data.auto_off_at ?? null;
   const autoOffAt =
     typeof autoOffAtSource === "string" && autoOffAtSource.trim() && !Number.isNaN(Date.parse(autoOffAtSource))
       ? new Date(autoOffAtSource).toISOString()
       : null;
+
+  const billingEnabled =
+    billingEnabledExplicit !== undefined
+      ? billingEnabledExplicit
+      : Boolean(nextPaymentDate || (typeof billingAmount === "number" && billingAmount > 0));
+  const billingAmountUsd = typeof billingAmount === "number" ? billingAmount : null;
 
   return {
     id,
@@ -722,6 +765,9 @@ const normalizeProjectRecord = (input: ProjectRecord | Record<string, unknown>):
     billingStatus,
     nextPaymentDate,
     tariff,
+    billingEnabled,
+    billingPlan,
+    billingAmountUsd,
     createdAt,
     updatedAt,
     settings,
@@ -907,6 +953,28 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
   const base = winner === 2 ? second : first;
   const extra = winner === 2 ? first : second;
   const tariff = base.tariff && base.tariff > 0 ? base.tariff : extra.tariff ?? base.tariff ?? 0;
+  const billingAmount =
+    base.billingAmountUsd !== undefined && base.billingAmountUsd !== null
+      ? base.billingAmountUsd
+      : extra.billingAmountUsd !== undefined && extra.billingAmountUsd !== null
+        ? extra.billingAmountUsd
+        : tariff > 0
+          ? tariff
+          : null;
+  const billingPlan =
+    base.billingPlan ??
+    extra.billingPlan ??
+    (billingAmount && Math.abs(billingAmount - 350) < 0.01
+      ? "350"
+      : billingAmount && Math.abs(billingAmount - 500) < 0.01
+        ? "500"
+        : billingAmount && billingAmount > 0
+          ? "custom"
+          : null);
+  const billingEnabled =
+    base.billingEnabled ??
+    extra.billingEnabled ??
+    Boolean(base.nextPaymentDate || extra.nextPaymentDate || (billingAmount ?? 0) > 0);
   return {
     ...base,
     metaAccountId: base.metaAccountId || extra.metaAccountId,
@@ -916,6 +984,9 @@ const mergeProjectRecords = (first: ProjectRecord, second: ProjectRecord): Proje
     billingStatus: base.billingStatus || extra.billingStatus,
     nextPaymentDate: coalesce(base.nextPaymentDate, extra.nextPaymentDate, null) ?? null,
     tariff,
+    billingAmountUsd: billingAmount,
+    billingPlan,
+    billingEnabled,
     settings: { ...extra.settings, ...base.settings },
     manualKpi:
       base.manualKpi && base.manualKpi.length
@@ -1256,6 +1327,12 @@ export const saveProjects = async (env: EnvBindings, projects: ProjectRecord[]):
         billing_status: project.billingStatus ?? "pending",
         next_payment_date: project.nextPaymentDate ?? null,
         tariff: project.tariff ?? 0,
+        billing_enabled: project.billingEnabled ?? null,
+        billing_plan: project.billingPlan ?? null,
+        billing_amount_usd:
+          project.billingAmountUsd !== undefined && project.billingAmountUsd !== null
+            ? Number(project.billingAmountUsd.toFixed(2))
+            : null,
         created_at: project.createdAt,
         manual_kpi: Array.isArray(project.manualKpi) ? project.manualKpi : [],
         portal_slug: project.portalSlug ?? project.id,
@@ -1360,6 +1437,119 @@ export const updateProjectRecord = async (
     const sanitized = sanitizeManualKpis(manualPatch);
     manualPatch = sanitized !== null ? sanitized : current.manualKpi;
   }
+
+  const sanitizeBillingPlan = (value: unknown): "350" | "500" | "custom" | null | undefined => {
+    if (value === null) {
+      return null;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "350" || normalized === "500") {
+        return normalized as "350" | "500";
+      }
+      if (normalized === "custom") {
+        return "custom";
+      }
+    }
+    return undefined;
+  };
+
+  const sanitizeBillingAmount = (value: unknown): number | null | undefined => {
+    if (value === null) {
+      return null;
+    }
+    if (value === undefined) {
+      return undefined;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Number(value.toFixed(2));
+    }
+    if (typeof value === "string" && value.trim() && !Number.isNaN(Number(value))) {
+      return Number(Number(value).toFixed(2));
+    }
+    return undefined;
+  };
+
+  let billingAmountPatch = sanitizeBillingAmount(patch.billingAmountUsd);
+  if (billingAmountPatch === undefined && patch.tariff !== undefined) {
+    billingAmountPatch = sanitizeBillingAmount(patch.tariff);
+  }
+
+  let billingPlanPatch = sanitizeBillingPlan(patch.billingPlan);
+
+  if (billingPlanPatch === undefined && billingAmountPatch !== undefined) {
+    if (billingAmountPatch === null) {
+      billingPlanPatch = null;
+    } else if (Math.abs(billingAmountPatch - 350) < 0.01) {
+      billingPlanPatch = "350";
+    } else if (Math.abs(billingAmountPatch - 500) < 0.01) {
+      billingPlanPatch = "500";
+    } else if (billingAmountPatch > 0) {
+      billingPlanPatch = "custom";
+    }
+  }
+
+  if (billingPlanPatch !== undefined && billingAmountPatch === undefined) {
+    if (billingPlanPatch === null) {
+      billingAmountPatch = null;
+    } else if (billingPlanPatch === "350") {
+      billingAmountPatch = 350;
+    } else if (billingPlanPatch === "500") {
+      billingAmountPatch = 500;
+    }
+  }
+
+  let billingEnabledPatch: boolean | undefined;
+  if (patch.billingEnabled !== undefined) {
+    billingEnabledPatch = Boolean(patch.billingEnabled);
+  }
+
+  const resolvedBillingAmount =
+    billingAmountPatch !== undefined
+      ? billingAmountPatch
+      : current.billingAmountUsd !== undefined
+        ? current.billingAmountUsd
+        : current.tariff;
+
+  const resolvedTariff =
+    resolvedBillingAmount === null
+      ? 0
+      : typeof resolvedBillingAmount === "number"
+        ? resolvedBillingAmount
+        : current.tariff;
+
+  const resolveBillingEnabled = (): boolean => {
+    if (billingEnabledPatch !== undefined) {
+      return billingEnabledPatch;
+    }
+    const base = current.billingEnabled ?? Boolean(current.nextPaymentDate || current.tariff > 0);
+    if (resolvedBillingAmount === null) {
+      return base && Boolean(current.nextPaymentDate);
+    }
+    if (typeof resolvedBillingAmount === "number") {
+      return resolvedBillingAmount > 0 || base;
+    }
+    return base;
+  };
+
+  const resolveBillingPlan = (): "350" | "500" | "custom" | null => {
+    if (billingPlanPatch !== undefined) {
+      return billingPlanPatch;
+    }
+    if (current.billingPlan) {
+      return current.billingPlan;
+    }
+    if (typeof resolvedBillingAmount === "number" && resolvedBillingAmount > 0) {
+      if (Math.abs(resolvedBillingAmount - 350) < 0.01) {
+        return "350";
+      }
+      if (Math.abs(resolvedBillingAmount - 500) < 0.01) {
+        return "500";
+      }
+      return "custom";
+    }
+    return null;
+  };
   const resolveAutoOff = (): boolean => {
     if (typeof patch.autoOff === "boolean") {
       return patch.autoOff;
@@ -1388,6 +1578,15 @@ export const updateProjectRecord = async (
     id: current.id,
     updatedAt: new Date().toISOString(),
     manualKpi: manualPatch ?? current.manualKpi,
+    tariff: resolvedTariff,
+    billingAmountUsd:
+      resolvedBillingAmount === null
+        ? null
+        : typeof resolvedBillingAmount === "number"
+          ? Number(resolvedBillingAmount.toFixed(2))
+          : current.billingAmountUsd ?? null,
+    billingPlan: resolveBillingPlan(),
+    billingEnabled: resolveBillingEnabled(),
     autoOff: resolveAutoOff(),
     autoOffAt: resolveAutoOffAt(),
   };

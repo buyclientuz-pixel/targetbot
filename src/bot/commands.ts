@@ -3004,6 +3004,83 @@ const BILLING_STATUS_LABELS: Record<ProjectBillingState, string> = {
   blocked: "⛔️ Блокирован",
 };
 
+const PAYMENT_DAY_MS = 24 * 60 * 60 * 1000;
+
+const addDaysToIso = (source: string | null, days: number): string => {
+  const base = source && !Number.isNaN(Date.parse(source)) ? new Date(source) : new Date();
+  const next = new Date(base.getTime() + days * PAYMENT_DAY_MS);
+  return next.toISOString();
+};
+
+const handlePaymentsAddDays = async (
+  context: BotContext,
+  projectId: string,
+  days: number,
+): Promise<void> => {
+  const summary = await ensureProjectSummary(context, projectId);
+  if (!summary) {
+    return;
+  }
+  const currentDate = summary.nextPaymentDate ?? null;
+  const nextDate = addDaysToIso(currentDate, days);
+  const updated = await updateProjectRecord(context.env, projectId, {
+    nextPaymentDate: nextDate,
+    billingEnabled: true,
+  });
+  if (!updated) {
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    return;
+  }
+  await clearPaymentReminder(context.env, projectId).catch((error) => {
+    console.warn("Failed to clear payment reminder from payments:add", projectId, error);
+  });
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, "Дата обновлена");
+  }
+  await handleProjectBilling(context, projectId);
+};
+
+const handlePaymentsSetPlan = async (
+  context: BotContext,
+  projectId: string,
+  amount: number,
+  plan: "350" | "500",
+): Promise<void> => {
+  const updated = await updateProjectRecord(context.env, projectId, {
+    billingPlan: plan,
+    billingAmountUsd: amount,
+    billingEnabled: true,
+  });
+  if (!updated) {
+    await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
+    return;
+  }
+  await clearPaymentReminder(context.env, projectId).catch((error) => {
+    console.warn("Failed to clear payment reminder from payments:set", projectId, error);
+  });
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id, `Тариф ${amount}$`);
+  }
+  await handleProjectBilling(context, projectId);
+};
+
+const promptPaymentDateInput = async (context: BotContext, projectId: string): Promise<void> => {
+  const adminId = context.userId;
+  if (!adminId) {
+    await sendMessage(context, "❌ Пользователь не определён. Отправьте команду из приватного чата.");
+    return;
+  }
+  await savePendingBillingOperation(context.env, adminId, {
+    action: "set-next-payment",
+    projectId,
+  });
+  await sendMessage(context, "📅 Отправьте дату следующего платежа в формате YYYY-MM-DD или DD.MM.YYYY.", {
+    replyMarkup: {
+      inline_keyboard: [[{ text: "⬅ К оплате", callback_data: `proj:billing:${projectId}` }]],
+    },
+  });
+};
+
 const handleProjectBilling = async (context: BotContext, projectId: string): Promise<void> => {
   const summary = await ensureProjectSummary(context, projectId);
   if (!summary) {
@@ -3044,17 +3121,36 @@ const handleProjectBilling = async (context: BotContext, projectId: string): Pro
   lines.push("", "Настройте дату следующего платежа и тариф прямо отсюда — кнопки ниже.");
   const replyMarkup = {
     inline_keyboard: [
-      [{ text: "📅 +30 дней", callback_data: `proj:billing-next:${projectId}:30` }],
+      [{ text: "📅 +30 дней", callback_data: `payments:add_30_days:${projectId}` }],
       [
-        { text: "350$", callback_data: `proj:billing-tariff-preset:${projectId}:350` },
-        { text: "500$", callback_data: `proj:billing-tariff-preset:${projectId}:500` },
+        { text: "350$", callback_data: `payments:set_plan_350:${projectId}` },
+        { text: "500$", callback_data: `payments:set_plan_500:${projectId}` },
       ],
-      [{ text: "📅 Указать дату оплаты", callback_data: `proj:billing-next:${projectId}:custom` }],
-      [{ text: "📝 Ввести дату вручную", callback_data: `proj:billing-next:${projectId}:manual` }],
+      [{ text: "📅 Указать дату оплаты", callback_data: `payments:ask_date_picker:${projectId}` }],
+      [{ text: "📝 Ввести дату вручную", callback_data: `payments:ask_date_manual:${projectId}` }],
       [{ text: "⬅ Назад", callback_data: `proj:view:${projectId}` }],
     ],
   };
   await sendMessage(context, lines.join("\n"), { replyMarkup });
+};
+
+const handlePaymentsAddThirtyDays = async (context: BotContext, projectId: string): Promise<void> => {
+  await handlePaymentsAddDays(context, projectId, 30);
+};
+
+const handlePaymentsSetPlan350 = async (context: BotContext, projectId: string): Promise<void> => {
+  await handlePaymentsSetPlan(context, projectId, 350, "350");
+};
+
+const handlePaymentsSetPlan500 = async (context: BotContext, projectId: string): Promise<void> => {
+  await handlePaymentsSetPlan(context, projectId, 500, "500");
+};
+
+const handlePaymentsAskDate = async (context: BotContext, projectId: string): Promise<void> => {
+  if (context.update.callback_query?.id) {
+    await answerCallbackQuery(context.env, context.update.callback_query.id);
+  }
+  await promptPaymentDateInput(context, projectId);
 };
 
 const VALID_BILLING_STATUSES: ProjectBillingState[] = ["active", "pending", "overdue", "blocked"];
@@ -3176,6 +3272,7 @@ const handleProjectBillingNext = async (
   const nextPaymentDate = computeNextPaymentDate(preset);
   const updated = await updateProjectRecord(context.env, projectId, {
     nextPaymentDate,
+    billingEnabled: true,
   });
   if (!updated) {
     await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
@@ -3223,7 +3320,14 @@ const handleProjectBillingTariffPreset = async (
     await sendMessage(context, "❌ Не удалось распознать сумму. Выберите другой вариант.");
     return;
   }
-  const updated = await updateProjectRecord(context.env, projectId, { tariff: Number(amount.toFixed(2)) });
+  const normalizedAmount = Number(amount.toFixed(2));
+  const plan = Math.abs(normalizedAmount - 350) < 0.01 ? "350" : Math.abs(normalizedAmount - 500) < 0.01 ? "500" : "custom";
+  const updated = await updateProjectRecord(context.env, projectId, {
+    tariff: normalizedAmount,
+    billingAmountUsd: normalizedAmount,
+    billingPlan: plan,
+    billingEnabled: true,
+  });
   if (!updated) {
     await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
     return;
@@ -3257,7 +3361,10 @@ export const handlePendingBillingInput = async (context: BotContext): Promise<bo
       await sendMessage(context, "❌ Не удалось распознать дату. Используйте формат YYYY-MM-DD или DD.MM.YYYY.");
       return true;
     }
-    const updated = await updateProjectRecord(context.env, pending.projectId, { nextPaymentDate: iso });
+    const updated = await updateProjectRecord(context.env, pending.projectId, {
+      nextPaymentDate: iso,
+      billingEnabled: true,
+    });
     if (!updated) {
       await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
       return true;
@@ -3273,7 +3380,13 @@ export const handlePendingBillingInput = async (context: BotContext): Promise<bo
       await sendMessage(context, "❌ Не удалось распознать сумму. Пример: 350 или 1200.50.");
       return true;
     }
-    const updated = await updateProjectRecord(context.env, pending.projectId, { tariff: amount });
+    const plan = Math.abs(amount - 350) < 0.01 ? "350" : Math.abs(amount - 500) < 0.01 ? "500" : "custom";
+    const updated = await updateProjectRecord(context.env, pending.projectId, {
+      tariff: amount,
+      billingAmountUsd: amount,
+      billingPlan: plan,
+      billingEnabled: true,
+    });
     if (!updated) {
       await sendMessage(context, "❌ Проект не найден. Обновите список проектов.");
       return true;
@@ -5390,6 +5503,44 @@ export const handleProjectCallback = async (context: BotContext, data: string): 
       }
     default:
       return false;
+  }
+};
+
+export const handlePaymentsCallback = async (context: BotContext, data: string): Promise<boolean> => {
+  if (!data.startsWith("payments:")) {
+    return false;
+  }
+  await ensureAdminUser(context);
+  const [, action, ...rest] = data.split(":");
+  if (!action) {
+    return false;
+  }
+  const projectId = rest[0];
+  if (!projectId) {
+    await sendMessage(context, "Не удалось определить проект. Обновите список проектов.");
+    return true;
+  }
+  switch (action) {
+    case "add_30_days":
+      await handlePaymentsAddThirtyDays(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    case "set_plan_350":
+      await handlePaymentsSetPlan350(context, projectId);
+      await logProjectAction(context, action, projectId, "350");
+      return true;
+    case "set_plan_500":
+      await handlePaymentsSetPlan500(context, projectId);
+      await logProjectAction(context, action, projectId, "500");
+      return true;
+    case "ask_date_picker":
+    case "ask_date_manual":
+      await handlePaymentsAskDate(context, projectId);
+      await logProjectAction(context, action, projectId);
+      return true;
+    default:
+      await sendMessage(context, "Команда оплаты пока не поддерживается.");
+      return true;
   }
 };
 

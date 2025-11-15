@@ -77,6 +77,32 @@ export const handleProjectsCreate = async (request: Request, env: unknown): Prom
         : typeof tariffSource === "string" && tariffSource.trim() && !Number.isNaN(Number(tariffSource))
           ? Number(tariffSource)
           : 0;
+    const amountSource =
+      (body as Record<string, unknown>).billingAmountUsd ??
+      (body as Record<string, unknown>).billing_amount_usd ??
+      tariff;
+    const billingAmount =
+      typeof amountSource === "number" && Number.isFinite(amountSource)
+        ? Number(amountSource.toFixed(2))
+        : typeof amountSource === "string" && amountSource.trim() && !Number.isNaN(Number(amountSource))
+          ? Number(Number(amountSource).toFixed(2))
+          : tariff;
+    const planSource =
+      (body as Record<string, unknown>).billingPlan ??
+      (body as Record<string, unknown>).billing_plan ??
+      (billingAmount > 0
+        ? Math.abs(billingAmount - 350) < 0.01
+          ? "350"
+          : Math.abs(billingAmount - 500) < 0.01
+            ? "500"
+            : "custom"
+        : null);
+    const billingPlan =
+      planSource === "350" || planSource === "500" || planSource === "custom" ? planSource : billingAmount > 0 ? "custom" : null;
+    const billingEnabled =
+      typeof body.billingEnabled === "boolean"
+        ? body.billingEnabled
+        : Boolean(body.nextPaymentDate || billingAmount > 0);
     const record: ProjectRecord = {
       id,
       name: String(body.name),
@@ -89,6 +115,9 @@ export const handleProjectsCreate = async (request: Request, env: unknown): Prom
           : "pending",
       nextPaymentDate: body.nextPaymentDate ?? null,
       tariff,
+      billingAmountUsd: billingAmount,
+      billingPlan,
+      billingEnabled,
       createdAt: now,
       updatedAt: now,
       settings:
