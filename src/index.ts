@@ -701,9 +701,34 @@ const computePortalSnapshot = async (
           value = raw !== undefined ? formatNumber(raw) : "—";
           break;
       }
-      return { key, label: KPI_LABELS[key], value } satisfies PortalMetricEntry;
+      const label = KPI_LABELS[key] ?? key;
+      return { key, label, value } satisfies PortalMetricEntry;
     })
     .filter((entry) => entry.value && entry.value !== "—");
+
+  const leadFormatter = new Intl.NumberFormat("ru-RU");
+  const leadEntries: PortalMetricEntry[] = [
+    {
+      key: "leads_total",
+      label: KPI_LABELS.leads_total ?? "Лиды (всего)",
+      value: leadFormatter.format(base.statusCounts.all),
+    },
+    {
+      key: "leads_new",
+      label: KPI_LABELS.leads_new ?? "Новые лиды",
+      value: leadFormatter.format(base.statusCounts.new),
+    },
+    {
+      key: "leads_done",
+      label: KPI_LABELS.leads_done ?? "Закрытые лиды",
+      value: leadFormatter.format(base.statusCounts.done),
+    },
+  ];
+
+  const combinedMetrics = [
+    ...leadEntries,
+    ...metrics.filter((entry) => !leadEntries.some((lead) => lead.key === entry.key)),
+  ];
 
   const normalizedCampaigns = normalizeCampaigns(selectedCampaigns);
 
@@ -713,7 +738,7 @@ const computePortalSnapshot = async (
     page: base.page,
     totalPages: base.totalPages,
     leads: base.leads,
-    metrics,
+    metrics: combinedMetrics,
     campaigns: normalizedCampaigns,
     periodLabel: base.periodLabel,
     updatedAt: campaignLoad.fetchedAt,
@@ -1072,11 +1097,16 @@ const buildPortalPagination = (resolution: PortalRouteSuccess): PortalPagination
   } satisfies PortalPagination;
 };
 
-const mapMetricsToRecord = (metrics: PortalMetricEntry[]): Record<string, string> => {
-  return metrics.reduce<Record<string, string>>((acc, entry) => {
+const mapMetricsToRecord = (snapshot: PortalComputationResult): Record<string, string> => {
+  const countsFormatter = new Intl.NumberFormat("ru-RU");
+  const base = snapshot.metrics.reduce<Record<string, string>>((acc, entry) => {
     acc[entry.key] = entry.value;
     return acc;
   }, {});
+  base.leads_total = countsFormatter.format(snapshot.statusCounts.all);
+  base.leads_new = countsFormatter.format(snapshot.statusCounts.new);
+  base.leads_done = countsFormatter.format(snapshot.statusCounts.done);
+  return base;
 };
 
 const buildPortalApiPayload = (resolution: PortalRouteSuccess) => {
@@ -1105,7 +1135,7 @@ const buildPortalApiPayload = (resolution: PortalRouteSuccess) => {
     },
     periodLabel: snapshot.periodLabel,
     metrics: snapshot.metrics,
-    metricsMap: mapMetricsToRecord(snapshot.metrics),
+    metricsMap: mapMetricsToRecord(snapshot),
     leads: snapshot.leads,
     campaigns: snapshot.campaigns,
     statusCounts: snapshot.statusCounts,
@@ -1313,7 +1343,7 @@ export default {
         portalLogger("route_success", { route: "portal.stats.api", slug: projectId });
         const payload = {
           metrics: resolution.snapshot.metrics,
-          metricsMap: mapMetricsToRecord(resolution.snapshot.metrics),
+          metricsMap: mapMetricsToRecord(resolution.snapshot),
           statusCounts: resolution.snapshot.statusCounts,
           periodLabel: resolution.snapshot.periodLabel,
           updatedAt: resolution.snapshot.updatedAt,
