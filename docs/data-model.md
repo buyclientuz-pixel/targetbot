@@ -49,6 +49,9 @@
     "pauseAlerts": true,
     "route": "CHAT"
   },
+  "meta": {
+    "facebookUserId": "1234567890"
+  },
   "createdAt": "2025-11-01T10:00:00.000Z",
   "updatedAt": "2025-11-15T10:00:00.000Z"
 }
@@ -57,6 +60,7 @@
 * `parseProjectSettings` заполняет отсутствующие поля значениями из `createDefaultProjectSettings`.
 * `ensureProjectSettings` создаёт дефолтный JSON при первом запросе и сохраняет его в KV.
 * PUT `/api/projects/:id/settings` делает безопасный merge вложенных секций и повторно валидирует payload.
+* `meta.facebookUserId` используется порталом и Meta-прокси. Если значение не задано, API возвращает 422.
 
 ## Portal Session (KV: `portal-session:{sessionId}`)
 
@@ -115,7 +119,9 @@
       "leads": 5,
       "leadsToday": 5,
       "leadsTotal": 168,
-      "cpa": 3.23
+      "cpa": 3.23,
+      "spendToday": 16.15,
+      "cpaToday": 3.23
     },
     "source": { "data": [...] }
   }
@@ -124,7 +130,40 @@
 
 * `createMetaCacheEntry` выставляет `fetchedAt` и TTL, а `saveMetaCache` дублирует TTL в `expirationTtl`.
 * `isMetaCacheEntryFresh` проверяет свежесть без повторной десериализации.
-* Ключевые scope’ы: `insights:{period}` (сырые данные Graph API) и `summary:{period}`/`campaigns:{period}` для подготовленных ответов портала.
+* Ключевые scope’ы: `insights:{period}` (сырые данные Graph API), `summary:{period}`/`campaigns:{period}` для подготовленных ответов портала и `campaign-status` для кеша статусов кампаний при отправке алертов.
+
+## Report State (KV: `report-state:{projectId}`)
+
+```json
+{
+  "projectId": "birlash",
+  "lastRunAt": "2025-11-15T06:00:00.000Z",
+  "slots": {
+    "10:00": "2025-11-15T10:00:12.000Z",
+    "18:00": "2025-11-15T18:00:07.000Z"
+  },
+  "updatedAt": "2025-11-15T18:00:07.000Z"
+}
+```
+
+* Состояние автоотчётов: `slots` хранит последний запуск каждого таймслота.
+* `markReportSlotDispatched` обновляет `slots[slot]` и `lastRunAt` при успешной отправке отчёта, предотвращая дубликаты.
+
+## Alert State (KV: `alert-state:{projectId}:{type}`)
+
+```json
+{
+  "projectId": "birlash",
+  "type": "billing",
+  "lastSentAt": "2025-11-15T08:00:00.000Z",
+  "lastEventKey": "due:2025-12-15T00:00:00.000Z",
+  "updatedAt": "2025-11-15T08:00:00.000Z"
+}
+```
+
+* `type` принимает значения `billing`, `budget`, `meta-api`, `pause`.
+* `shouldSendAlert` сравнивает `eventKey` и таймаут для подавления повторных уведомлений.
+* `markAlertSent` обновляет запись после успешного пуша в Telegram.
 
 ## Lead (R2: `leads/{projectId}/{leadId}.json`)
 
@@ -196,6 +235,9 @@
 | `PUT /api/meta/tokens/:facebookUserId` | Сохраняет access/refresh токены Meta Ads        |
 | `GET /api/meta/projects/:projectId/summary` | Возвращает кешированный summary по показателям |
 | `GET /api/meta/projects/:projectId/campaigns` | Отдаёт сырые данные кампаний (level=campaign) |
+| `GET /api/projects/:projectId/leads`  | Лиды за период для клиентского портала         |
+| `GET /api/projects/:projectId/campaigns` | Нормализованные кампании для портала          |
+| `GET /portal/:projectId`              | HTML-портал с прелоадером и табами периодов    |
 | `POST /api/meta/webhook` | Принимает webhook Meta Ads, импортирует лиды и запускает уведомления |
 | `POST /api/telegram/webhook`            | Обрабатывает команды Telegram-бота (меню, карточки, биллинг) |
 

@@ -8,6 +8,8 @@ export const KV_KEYS = {
   portalSession: (sessionId: string) => `portal-session:${sessionId}`,
   telemetry: (key: string) => `telemetry:${key}`,
   botSession: (telegramId: number | string) => `bot-session:${telegramId}`,
+  reportState: (projectId: string) => `report-state:${projectId}`,
+  alertState: (projectId: string, type: string) => `alert-state:${projectId}:${type}`,
 } as const;
 
 export const KV_PREFIXES = {
@@ -17,4 +19,6 @@ export const KV_PREFIXES = {
   metaCache: "meta-cache:",
   portalSessions: "portal-session:",
   botSessions: "bot-session:",
+  reportStates: "report-state:",
+  alertStates: "alert-state:",
 } as const;

@@ -85,8 +85,8 @@ const extractMetrics = (metrics: MetaSummaryMetrics | undefined | null): Project
     return { spendToday: null, cpaToday: null, leadsToday: null, leadsTotal: null };
   }
   return {
-    spendToday: metrics.spend ?? null,
-    cpaToday: metrics.cpa ?? null,
+    spendToday: metrics.spendToday ?? metrics.spend ?? null,
+    cpaToday: metrics.cpaToday ?? metrics.cpa ?? null,
     leadsToday: metrics.leadsToday ?? null,
     leadsTotal: metrics.leadsTotal ?? null,
   };

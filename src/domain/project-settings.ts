@@ -40,6 +40,10 @@ export interface ProjectAlertSettings {
   route: ProjectAlertRoute;
 }
 
+export interface ProjectMetaSettings {
+  facebookUserId: string | null;
+}
+
 export interface ProjectSettings {
   projectId: string;
   chatId: number | null;
@@ -49,6 +53,7 @@ export interface ProjectSettings {
   kpi: ProjectKpiSettings;
   reports: ProjectReportSettings;
   alerts: ProjectAlertSettings;
+  meta: ProjectMetaSettings;
   createdAt: string;
   updatedAt: string;
 }
@@ -108,6 +113,16 @@ const parseReports = (value: unknown, defaults: ProjectReportSettings): ProjectR
     ),
     timeSlots: assertStringArray(record.timeSlots ?? defaults.timeSlots, "projectSettings.reports.timeSlots"),
     mode: assertString(record.mode ?? defaults.mode, "projectSettings.reports.mode"),
+  };
+};
+
+const parseMetaSettings = (value: unknown, defaults: ProjectMetaSettings): ProjectMetaSettings => {
+  const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return {
+    facebookUserId: assertOptionalString(
+      record.facebookUserId ?? defaults.facebookUserId,
+      "projectSettings.meta.facebookUserId",
+    ),
   };
 };
 
@@ -174,6 +189,7 @@ export const parseProjectSettings = (raw: unknown, projectId: string): ProjectSe
     kpi: parseKpi(record.kpi, defaults.kpi),
     reports: parseReports(record.reports, defaults.reports),
     alerts: parseAlerts(record.alerts, defaults.alerts),
+    meta: parseMetaSettings(record.meta, defaults.meta),
     createdAt,
     updatedAt,
   };
@@ -188,6 +204,7 @@ export const serialiseProjectSettings = (settings: ProjectSettings): Record<stri
   kpi: settings.kpi,
   reports: settings.reports,
   alerts: settings.alerts,
+  meta: settings.meta,
   createdAt: settings.createdAt,
   updatedAt: settings.updatedAt,
 });
@@ -221,6 +238,9 @@ export const createDefaultProjectSettings = (projectId: string): ProjectSettings
       metaApiAlerts: true,
       pauseAlerts: true,
       route: "CHAT",
+    },
+    meta: {
+      facebookUserId: null,
     },
     createdAt: now,
     updatedAt: now,

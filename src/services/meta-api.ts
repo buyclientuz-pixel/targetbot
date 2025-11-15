@@ -43,6 +43,17 @@ const DEFAULT_FIELDS = [
 const DEFAULT_LEVEL = "account";
 const GRAPH_API_BASE = "https://graph.facebook.com";
 const GRAPH_API_VERSION = "v18.0";
+const CAMPAIGN_FIELDS = [
+  "id",
+  "name",
+  "status",
+  "effective_status",
+  "daily_budget",
+  "budget_remaining",
+  "lifetime_budget",
+  "updated_time",
+  "configured_status",
+];
 
 const parseNumber = (value: unknown): number => {
   if (value == null) {
@@ -55,7 +66,7 @@ const parseNumber = (value: unknown): number => {
   return num;
 };
 
-const extractLeads = (actions: unknown): number => {
+export const countLeadsFromActions = (actions: unknown): number => {
   if (!Array.isArray(actions)) {
     return 0;
   }
@@ -94,6 +105,17 @@ const buildInsightsUrl = (options: MetaFetchOptions): URL => {
   return url;
 };
 
+const buildCampaignsUrl = (accountId: string, accessToken: string, after?: string | null): URL => {
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${accountId}/campaigns`);
+  url.searchParams.set("access_token", accessToken);
+  url.searchParams.set("fields", CAMPAIGN_FIELDS.join(","));
+  url.searchParams.set("limit", "200");
+  if (after) {
+    url.searchParams.set("after", after);
+  }
+  return url;
+};
+
 export const fetchMetaInsightsRaw = async (options: MetaFetchOptions): Promise<MetaInsightsRawResponse> => {
   const url = buildInsightsUrl(options);
   const response = await fetch(url);
@@ -111,7 +133,7 @@ export const summariseMetaInsights = (raw: MetaInsightsRawResponse): MetaInsight
   const spend = parseNumber(aggregate.spend);
   const impressions = parseNumber(aggregate.impressions);
   const clicks = parseNumber(aggregate.clicks);
-  const leads = extractLeads(aggregate.actions);
+  const leads = countLeadsFromActions(aggregate.actions);
   return { spend, impressions, clicks, leads };
 };
 
@@ -121,6 +143,33 @@ export const fetchMetaInsights = async (options: MetaFetchOptions): Promise<Meta
     raw,
     summary: summariseMetaInsights(raw),
   };
+};
+
+export const fetchMetaCampaignStatuses = async (
+  accountId: string,
+  accessToken: string,
+): Promise<Record<string, unknown>[]> => {
+  let after: string | undefined;
+  const campaigns: Record<string, unknown>[] = [];
+
+  do {
+    const url = buildCampaignsUrl(accountId, accessToken, after);
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Meta campaign request failed with ${response.status}: ${errorBody}`);
+    }
+    const json = (await response.json()) as {
+      data?: Record<string, unknown>[];
+      paging?: { cursors?: { after?: string | null } };
+    };
+    if (Array.isArray(json.data)) {
+      campaigns.push(...json.data);
+    }
+    after = json.paging?.cursors?.after ?? undefined;
+  } while (after);
+
+  return campaigns;
 };
 
 export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {

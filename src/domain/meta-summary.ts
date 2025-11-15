@@ -6,6 +6,8 @@ export interface MetaSummaryMetrics {
   leadsToday: number;
   leadsTotal: number;
   cpa: number | null;
+  spendToday: number;
+  cpaToday: number | null;
 }
 
 export interface MetaSummaryPayload {

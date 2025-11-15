@@ -72,6 +72,10 @@ export const registerProjectRoutes = (router: Router): void => {
           ...existing.alerts,
           ...(payload.alerts as Record<string, unknown> | undefined),
         },
+        meta: {
+          ...existing.meta,
+          ...(payload.meta as Record<string, unknown> | undefined),
+        },
         updatedAt: new Date().toISOString(),
         projectId,
       };

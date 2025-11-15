@@ -94,3 +94,86 @@ export const getLead = async (r2: R2Client, projectId: string, leadId: string): 
   const key = R2_KEYS.lead(projectId, leadId);
   return r2.getJson<Lead>(key);
 };
+
+const parseLeadStatus = (value: unknown): LeadStatus => {
+  if (value === "NEW" || value === "IN_PROGRESS" || value === "DONE") {
+    return value;
+  }
+  return "NEW";
+};
+
+export const parseStoredLead = (raw: unknown): Lead => {
+  if (!raw || typeof raw !== "object") {
+    throw new DataValidationError("Stored lead payload must be an object");
+  }
+  const record = raw as Record<string, unknown>;
+  const createdAt = ensureIsoTimestamp(record.createdAt as string | null | undefined);
+  const lastStatusUpdateValue = (record.lastStatusUpdate as string | null | undefined) ?? createdAt;
+  const lastStatusUpdate = ensureIsoTimestamp(lastStatusUpdateValue);
+  return {
+    id: requireString(record.id as string | null | undefined, "lead.id"),
+    projectId: requireString(record.projectId as string | null | undefined, "lead.projectId"),
+    name: normaliseString(record.name as string | null | undefined, "Без имени"),
+    phone: normaliseOptionalString(record.phone as string | null | undefined),
+    source: normaliseString((record.source as string | null | undefined) ?? "facebook", "facebook"),
+    campaign: normaliseOptionalString(record.campaign as string | null | undefined),
+    adset: normaliseOptionalString(record.adset as string | null | undefined),
+    ad: normaliseOptionalString(record.ad as string | null | undefined),
+    createdAt,
+    status: parseLeadStatus(record.status),
+    lastStatusUpdate,
+    metaRaw: record.metaRaw ?? null,
+  };
+};
+
+const compareByCreatedAtDesc = (a: Lead, b: Lead): number => {
+  if (a.createdAt === b.createdAt) {
+    return 0;
+  }
+  return a.createdAt > b.createdAt ? -1 : 1;
+};
+
+export const listLeads = async (r2: R2Client, projectId: string): Promise<Lead[]> => {
+  const prefix = `leads/${projectId}/`;
+  let cursor: string | undefined;
+  const leads: Lead[] = [];
+
+  do {
+    const { objects, cursor: nextCursor } = await r2.list(prefix, { cursor, limit: 1000 });
+    if (objects.length > 0) {
+      const page = await Promise.all(
+        objects.map(async (object) => {
+          const data = await r2.getJson<unknown>(object.key);
+          if (!data) {
+            return null;
+          }
+          try {
+            return parseStoredLead(data);
+          } catch {
+            return null;
+          }
+        }),
+      );
+      for (const lead of page) {
+        if (lead) {
+          leads.push(lead);
+        }
+      }
+    }
+    cursor = nextCursor;
+  } while (cursor);
+
+  return leads.sort(compareByCreatedAtDesc);
+};
+
+export const filterLeadsByDateRange = (leads: Lead[], from: Date, to: Date): Lead[] => {
+  const fromTime = from.getTime();
+  const toTime = to.getTime();
+  return leads.filter((lead) => {
+    const createdAt = new Date(lead.createdAt).getTime();
+    if (Number.isNaN(createdAt)) {
+      return false;
+    }
+    return createdAt >= fromTime && createdAt <= toTime;
+  });
+};

@@ -1,23 +1,14 @@
-import {
-  createMetaCacheEntry,
-  getMetaCache,
-  isMetaCacheEntryFresh,
-  saveMetaCache,
-  type MetaCacheEntry,
-} from "../domain/meta-cache";
 import { createMetaToken, getMetaToken, parseMetaToken, upsertMetaToken } from "../domain/meta-tokens";
 import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
 import { getProject, type Project } from "../domain/projects";
 import { getLead, saveLead, type Lead } from "../domain/leads";
-import type { MetaSummaryPayload } from "../domain/meta-summary";
 import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
-import { fetchMetaInsights, fetchMetaInsightsRaw, resolveDatePreset } from "../services/meta-api";
+import { loadProjectCampaigns, loadProjectSummary } from "../services/project-insights";
 import { parseMetaWebhookPayload } from "../services/meta-webhook";
-import { sendTelegramMessage } from "../services/telegram";
+import { dispatchProjectMessage } from "../services/project-messaging";
 import type { Router } from "../worker/router";
-
-const CACHE_TTL_SECONDS = 60;
+import type { KvClient } from "../infra/kv";
 
 const escapeHtml = (value: string): string =>
   value
@@ -73,54 +64,28 @@ const buildLeadNotificationMessage = (lead: Lead): string => {
   return lines.join("\n");
 };
 
-const shouldNotifyChat = (settings: ProjectSettings): boolean => {
-  return (
-    settings.chatId != null &&
-    (settings.alerts.route === "CHAT" || settings.alerts.route === "BOTH")
-  );
-};
-
-const shouldNotifyAdmin = (settings: ProjectSettings): boolean => {
-  return settings.alerts.route === "ADMIN" || settings.alerts.route === "BOTH";
-};
-
-const dispatchLeadNotifications = (
+const dispatchLeadNotifications = async (
+  kv: KvClient,
   token: string | undefined,
   project: Project,
   settings: ProjectSettings,
   lead: Lead,
-): Promise<void>[] => {
+): Promise<boolean> => {
   if (!token || !settings.alerts.leadNotifications) {
-    return [];
+    return false;
   }
 
   const message = buildLeadNotificationMessage(lead);
-  const promises: Promise<void>[] = [];
+  const result = await dispatchProjectMessage({
+    kv,
+    token,
+    project,
+    settings,
+    text: message,
+    parseMode: "HTML",
+  });
 
-  if (shouldNotifyChat(settings)) {
-    promises.push(
-      sendTelegramMessage(token, {
-        chatId: settings.chatId!,
-        messageThreadId: settings.topicId ?? undefined,
-        text: message,
-        parseMode: "HTML",
-        disableWebPagePreview: true,
-      }).then(() => undefined),
-    );
-  }
-
-  if (shouldNotifyAdmin(settings)) {
-    promises.push(
-      sendTelegramMessage(token, {
-        chatId: project.ownerTelegramId,
-        text: message,
-        parseMode: "HTML",
-        disableWebPagePreview: true,
-      }).then(() => undefined),
-    );
-  }
-
-  return promises;
+  return result.delivered.chat || result.delivered.admin;
 };
 
 interface TokenRequestBody {
@@ -134,48 +99,6 @@ interface ValidatedTokenBody {
   refreshToken: string | null;
   expiresAt: string | null;
 }
-
-const toIsoDate = (date: Date): string => date.toISOString().split("T")[0] ?? date.toISOString();
-
-const startOfDay = (date: Date): Date => {
-  const copy = new Date(date);
-  copy.setUTCHours(0, 0, 0, 0);
-  return copy;
-};
-
-const addDays = (date: Date, days: number): Date => {
-  const copy = new Date(date);
-  copy.setUTCDate(copy.getUTCDate() + days);
-  return copy;
-};
-
-const resolveCachePeriod = (periodKey: string): { from: string; to: string } => {
-  const now = new Date();
-  const today = startOfDay(now);
-  switch (periodKey) {
-    case "today": {
-      const from = toIsoDate(today);
-      return { from, to: from };
-    }
-    case "yesterday": {
-      const from = toIsoDate(addDays(today, -1));
-      return { from, to: from };
-    }
-    case "week": {
-      const from = toIsoDate(addDays(today, -6));
-      return { from, to: toIsoDate(today) };
-    }
-    case "month": {
-      const from = toIsoDate(addDays(today, -29));
-      return { from, to: toIsoDate(today) };
-    }
-    case "max": {
-      return { from: "1970-01-01", to: toIsoDate(today) };
-    }
-    default:
-      return { from: toIsoDate(today), to: toIsoDate(today) };
-  }
-};
 
 const badRequest = (message: string): Response => jsonResponse({ error: message }, { status: 400 });
 const notFound = (message: string): Response => jsonResponse({ error: message }, { status: 404 });
@@ -265,16 +188,13 @@ export const registerMetaRoutes = (router: Router): void => {
 
       let notificationsDispatched = false;
       if (!duplicate) {
-        const tasks = dispatchLeadNotifications(
+        notificationsDispatched = await dispatchLeadNotifications(
+          context.kv,
           context.env.TELEGRAM_BOT_TOKEN,
           project,
           settings,
           lead,
         );
-        if (tasks.length > 0) {
-          notificationsDispatched = true;
-          context.waitUntil(Promise.allSettled(tasks));
-        }
       }
 
       processed.push({
@@ -349,74 +269,11 @@ export const registerMetaRoutes = (router: Router): void => {
     if (!facebookUserId) {
       return badRequest("facebookUserId query param is required");
     }
-
-    const summaryScope = `summary:${periodKey}`;
-
     try {
-      const cachedSummary = await getMetaCache<MetaSummaryPayload>(context.kv, projectId, summaryScope);
-      if (cachedSummary && isMetaCacheEntryFresh(cachedSummary)) {
-        return jsonResponse(cachedSummary);
-      }
-
-      const project = await getProject(context.kv, projectId);
-      if (!project.adsAccountId) {
-        return unprocessable("Project is missing adsAccountId for Meta insights");
-      }
-
-      const token = await getMetaToken(context.kv, facebookUserId);
-
-      type MetaInsightsEntry = MetaCacheEntry<Awaited<ReturnType<typeof fetchMetaInsights>>>;
-
-      const ensureInsights = async (key: string): Promise<MetaInsightsEntry> => {
-        const scope = `insights:${key}`;
-        const cached = await getMetaCache<Awaited<ReturnType<typeof fetchMetaInsights>>>(
-          context.kv,
-          projectId,
-          scope,
-        );
-        if (cached && isMetaCacheEntryFresh(cached)) {
-          return cached;
-        }
-        const result = await fetchMetaInsights({
-          accountId: project.adsAccountId!,
-          accessToken: token.accessToken,
-          period: resolveDatePreset(key),
-        });
-        const entry = createMetaCacheEntry(projectId, scope, resolveCachePeriod(key), result, CACHE_TTL_SECONDS);
-        await saveMetaCache(context.kv, entry);
-        return entry;
-      };
-
-      const requestedInsights = await ensureInsights(periodKey);
-      const lifetimeInsights = await ensureInsights("max");
-      const todayInsights = periodKey === "today" ? requestedInsights : await ensureInsights("today");
-
-      const metrics = {
-        spend: requestedInsights.payload.summary.spend,
-        impressions: requestedInsights.payload.summary.impressions,
-        clicks: requestedInsights.payload.summary.clicks,
-        leads: requestedInsights.payload.summary.leads,
-        leadsToday: todayInsights.payload.summary.leads,
-        leadsTotal: lifetimeInsights.payload.summary.leads,
-        cpa:
-          requestedInsights.payload.summary.leads > 0
-            ? requestedInsights.payload.summary.spend / requestedInsights.payload.summary.leads
-            : null,
-      };
-
-      const summaryEntry = createMetaCacheEntry<MetaSummaryPayload>(
-        projectId,
-        summaryScope,
-        resolveCachePeriod(periodKey),
-        {
-          periodKey,
-          metrics,
-          source: requestedInsights.payload.raw,
-        },
-        CACHE_TTL_SECONDS,
-      );
-      await saveMetaCache(context.kv, summaryEntry);
-      return jsonResponse(summaryEntry);
+      const { entry } = await loadProjectSummary(context.kv, projectId, periodKey, {
+        facebookUserId,
+      });
+      return jsonResponse(entry);
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
@@ -441,35 +298,10 @@ export const registerMetaRoutes = (router: Router): void => {
       return badRequest("facebookUserId query param is required");
     }
 
-    const scope = `campaigns:${periodKey}`;
     try {
-      const cached = await getMetaCache<unknown>(context.kv, projectId, scope);
-      if (cached && isMetaCacheEntryFresh(cached)) {
-        return jsonResponse(cached);
-      }
-
-      const project = await getProject(context.kv, projectId);
-      if (!project.adsAccountId) {
-        return unprocessable("Project is missing adsAccountId for Meta insights");
-      }
-      const token = await getMetaToken(context.kv, facebookUserId);
-
-      const raw = await fetchMetaInsightsRaw({
-        accountId: project.adsAccountId,
-        accessToken: token.accessToken,
-        period: resolveDatePreset(periodKey),
-        level: "campaign",
-        fields: [
-          "campaign_id",
-          "campaign_name",
-          "spend",
-          "impressions",
-          "clicks",
-          "actions",
-        ].join(","),
+      const { entry } = await loadProjectCampaigns(context.kv, projectId, periodKey, {
+        facebookUserId,
       });
-      const entry = createMetaCacheEntry(projectId, scope, resolveCachePeriod(periodKey), raw, CACHE_TTL_SECONDS);
-      await saveMetaCache(context.kv, entry);
       return jsonResponse(entry);
     } catch (error) {
       if (error instanceof EntityNotFoundError) {

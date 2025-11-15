@@ -51,6 +51,14 @@ interface ExecutionContext {
   passThroughOnException?(): void;
 }
 
+interface ScheduledEvent {
+  scheduledTime: number;
+  cron?: string;
+  type?: string;
+  noRetry?: boolean;
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 interface URLPatternResult {
   pathname: {
     input: string;
