@@ -531,7 +531,7 @@ export const buildWebhookStatusMessage = (status: WebhookStatusMessage): string 
     }
   }
   lines.push("");
-  lines.push("Для переустановки выполните команду setWebhook из инструкции в README.");
+  lines.push("Нажмите «🔄 Обновить вебхук», чтобы переустановить адрес автоматически.");
   return lines.join("\n");
 };
 

@@ -132,6 +132,9 @@ const resolvePanel = (panelId: string): ResolveResult => {
   return { renderer: renderMain, params: [], id: "main" };
 };
 
+const PANEL_ERROR_MESSAGE =
+  "⚠️ Не удалось загрузить панель. Нажмите /start и попробуйте снова.";
+
 interface RenderRequest {
   runtime: PanelRuntime;
   userId: number;
@@ -142,7 +145,22 @@ interface RenderRequest {
 export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRequest): Promise<void> => {
   const session = await getBotSession(runtime.kv, userId);
   const resolved = resolvePanel(panelId);
-  const result = await resolved.renderer({ runtime, userId, chatId, panelId: resolved.id, params: resolved.params });
+  let result;
+  try {
+    result = await resolved.renderer({ runtime, userId, chatId, panelId: resolved.id, params: resolved.params });
+  } catch (error) {
+    console.error(`[telegram] Failed to render panel ${resolved.id}:`, error);
+    await sendTelegramMessage(runtime.telegramToken, {
+      chatId,
+      text: PANEL_ERROR_MESSAGE,
+    });
+    await saveBotSession(runtime.kv, {
+      ...session,
+      panel: undefined,
+      state: { type: "idle" },
+    });
+    return;
+  }
   let messageId = session.panel?.chatId === chatId ? session.panel?.messageId ?? null : null;
   if (messageId) {
     try {

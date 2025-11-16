@@ -8,6 +8,8 @@ export const render: PanelRenderer = async ({ runtime }) => {
   const info = await getWebhookInfo(runtime.telegramToken);
   const baseUrl = runtime.workerUrl || WORKER_FALLBACK;
   const expectedUrl = `${baseUrl}/tg-webhook?secret=${runtime.telegramSecret}`;
+  const encodedUrl = encodeURIComponent(expectedUrl);
+  const refreshUrl = `https://api.telegram.org/bot${runtime.telegramToken}/setWebhook?url=${encodedUrl}`;
   return {
     text: buildWebhookStatusMessage({
       currentUrl: info?.url ?? null,
@@ -16,6 +18,12 @@ export const render: PanelRenderer = async ({ runtime }) => {
       lastError: info?.last_error_message ?? null,
       lastErrorDate: info?.last_error_date ? new Date(info.last_error_date * 1000).toISOString() : null,
     }),
-    keyboard: { inline_keyboard: [[{ text: "⬅️ Назад", callback_data: "panel:main" }]] },
+    keyboard: {
+      inline_keyboard: [
+        [{ text: "🔄 Обновить вебхук", url: refreshUrl }],
+        [{ text: "📋 Проверить статус", callback_data: "panel:webhooks" }],
+        [{ text: "⬅️ Назад", callback_data: "panel:main" }],
+      ],
+    },
   };
 };

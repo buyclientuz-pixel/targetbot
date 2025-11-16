@@ -437,12 +437,48 @@ test("cmd:webhooks normalises worker URL", async () => {
 
     const lastMessage = findLastSendMessage(stub.requests);
     assert.ok(lastMessage);
-    assert.ok(
-      String(lastMessage.body.text).includes(
-        "https://th-reports.buyclientuz.workers.dev/tg-webhook?secret=secret",
-      ),
+    const text = String(lastMessage.body.text);
+    assert.ok(text.includes("https://th-reports.buyclientuz.workers.dev/tg-webhook?secret=secret"));
+    assert.ok(!text.includes("https://https://"));
+    assert.ok(text.includes("Нажмите «🔄 Обновить вебхук»"));
+
+    const keyboard = lastMessage.body.reply_markup as {
+      inline_keyboard: { text: string; url?: string; callback_data?: string }[][];
+    };
+    assert.ok(Array.isArray(keyboard.inline_keyboard));
+    const flattened = keyboard.inline_keyboard.flat();
+    const refreshButton = flattened.find((button) => button.text === "🔄 Обновить вебхук");
+    assert.ok(refreshButton);
+    const encoded = encodeURIComponent(
+      "https://th-reports.buyclientuz.workers.dev/tg-webhook?secret=secret",
     );
-    assert.ok(!String(lastMessage.body.text).includes("https://https://"));
+    assert.equal(
+      refreshButton?.url,
+      `https://api.telegram.org/bottest-token/setWebhook?url=${encoded}`,
+    );
+  } finally {
+    stub.restore();
+  }
+});
+
+test("panel renderer fallback notifies chat on failure", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-error",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "project:card:proj_missing",
+      },
+    } as unknown as TelegramUpdate);
+
+    const lastMessage = findLastSendMessage(stub.requests);
+    assert.ok(lastMessage);
+    assert.ok(String(lastMessage.body.text).includes("Не удалось загрузить панель"));
   } finally {
     stub.restore();
   }
