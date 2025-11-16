@@ -175,6 +175,7 @@ test("Telegram bot controller serves menu and project list", async () => {
   await putFreeChatRecord(kv, {
     chatId: -1007001,
     chatTitle: "Birlash Leads",
+    topicId: null,
     ownerId: 100,
     registeredAt: new Date().toISOString(),
   });
@@ -278,6 +279,7 @@ test("Group chats ignore commands except /reg and /stat", async () => {
   await putOccupiedChatRecord(kv, {
     chatId: -100555666777,
     chatTitle: "Bir Group",
+    topicId: null,
     ownerId: 100,
     projectId: "proj_a",
     projectName: "BirLash",
@@ -376,14 +378,17 @@ test("/reg command registers a chat group", async () => {
         chat: { id: -1005001, type: "supergroup", title: "Target Group" },
         from: { id: 555 },
         text: "/reg",
+        message_thread_id: 777,
       },
     } as unknown as TelegramUpdate);
 
     const record = await getFreeChatRecord(kv, -1005001);
     assert.equal(record?.ownerId, 555);
+    assert.equal(record?.topicId, 777);
     const groupMessage = stub.requests.find((entry) => entry.url.includes("sendMessage") && entry.body.chat_id === -1005001);
     assert.ok(groupMessage);
     assert.match(String(groupMessage?.body.text), /Группа зарегистрирована/);
+    assert.equal(groupMessage?.body.message_thread_id, 777);
   } finally {
     stub.restore();
   }
@@ -403,6 +408,7 @@ test("ad account binding creates a new project and occupies chat", async () => {
   await putFreeChatRecord(kv, {
     chatId: -1009001,
     chatTitle: "Fresh Group",
+    topicId: null,
     ownerId: 100,
     registeredAt: new Date().toISOString(),
   });
@@ -756,12 +762,14 @@ test("Telegram bot controller updates chat bindings via selection and manual inp
   await putFreeChatRecord(kv, {
     chatId: -1001234,
     chatTitle: "Bir Group",
+    topicId: null,
     ownerId: 100,
     registeredAt: new Date().toISOString(),
   });
   await putFreeChatRecord(kv, {
     chatId: -1007001,
     chatTitle: "Manual Chat",
+    topicId: null,
     ownerId: 100,
     registeredAt: new Date().toISOString(),
   });
