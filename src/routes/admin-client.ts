@@ -1,0 +1,539 @@
+const extractScriptBlock = (factory: () => void): string => {
+  const source = factory.toString();
+  const start = source.indexOf("/*");
+  const end = source.lastIndexOf("*/");
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error("Failed to extract admin client script block");
+  }
+  return source.slice(start + 2, end).trim();
+};
+
+export const buildAdminClientScript = (workerUrl: string | null): string => {
+  const workerUrlJson = JSON.stringify(workerUrl ?? "");
+  const template = extractScriptBlock(() => {
+    /*
+(() => {
+  const STORAGE_KEY = 'targetbot.admin.key';
+  const API_BASE = '/api/admin';
+  const WORKER_URL = WORKER_URL_PLACEHOLDER;
+  const state = {
+    key: localStorage.getItem(STORAGE_KEY),
+    view: 'projects',
+    projects: [],
+    selectedProjectId: null,
+    selectedProject: null,
+  };
+  const els = {
+    app: document.querySelector('[data-app]'),
+    navButtons: document.querySelectorAll('[data-nav]'),
+    sections: document.querySelectorAll('[data-section]'),
+    status: document.querySelector('[data-status]'),
+    viewTitle: document.querySelector('[data-view-title]'),
+    loginPanel: document.querySelector('[data-login-panel]'),
+    loginForm: document.querySelector('[data-login-form]'),
+    loginInput: document.querySelector('[data-admin-key]'),
+    logoutButtons: document.querySelectorAll('[data-action="logout"]'),
+    refreshButtons: document.querySelectorAll('[data-action="refresh"]'),
+    projectsBody: document.querySelector('[data-projects-body]'),
+    projectDetail: document.querySelector('[data-project-detail]'),
+    projectDetailTitle: document.querySelector('[data-project-detail-title]'),
+    projectDetailMeta: document.querySelector('[data-project-detail-meta]'),
+    leadsTable: document.querySelector('[data-leads-body]'),
+    campaignsTable: document.querySelector('[data-campaigns-body]'),
+    paymentsTable: document.querySelector('[data-payments-body]'),
+    paymentForm: document.querySelector('[data-payment-form]'),
+    settingsForm: document.querySelector('[data-settings-form]'),
+    analyticsTotals: document.querySelector('[data-analytics-totals]'),
+    analyticsProjects: document.querySelector('[data-analytics-projects]'),
+    analyticsCampaigns: document.querySelector('[data-analytics-campaigns]'),
+    financeTotals: document.querySelector('[data-finance-totals]'),
+    financeProjects: document.querySelector('[data-finance-projects]'),
+    usersTable: document.querySelector('[data-users-body]'),
+    metaTable: document.querySelector('[data-meta-body]'),
+    webhookInfo: document.querySelector('[data-webhook-info]'),
+    webhookButton: document.querySelector('[data-webhook-reset]'),
+    settingsInfo: document.querySelector('[data-settings-info]'),
+  };
+
+  const setStatus = (message) => {
+    if (els.status) {
+      els.status.textContent = message;
+    }
+  };
+
+  const showLogin = () => {
+    els.loginPanel?.classList.add('admin-login--visible');
+    els.loginInput?.focus();
+  };
+
+  const hideLogin = () => {
+    els.loginPanel?.classList.remove('admin-login--visible');
+  };
+
+  const handleUnauthorized = (message = 'Необходимо ввести ключ администратора') => {
+    localStorage.removeItem(STORAGE_KEY);
+    state.key = null;
+    setStatus(message);
+    showLogin();
+  };
+
+  const request = async (path, options = {}) => {
+    if (!state.key) {
+      handleUnauthorized();
+      throw new Error('Требуется ключ администратора');
+    }
+    const response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        'content-type': 'application/json',
+        'x-admin-key': state.key,
+        ...(options.headers ?? {}),
+      },
+    });
+    let payload = null;
+    try {
+      payload = await response.clone().json();
+    } catch {
+      payload = null;
+    }
+    if (response.status === 401) {
+      handleUnauthorized();
+      throw new Error('Неверный ключ администратора');
+    }
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error ?? `Ошибка ${response.status}`);
+    }
+    return payload.data;
+  };
+
+  const highlightNav = (view) => {
+    els.navButtons.forEach((button) => {
+      if (button.dataset.nav === view) {
+        button.classList.add('admin-nav__item--active');
+      } else {
+        button.classList.remove('admin-nav__item--active');
+      }
+    });
+  };
+  const showSection = (view) => {
+    els.sections.forEach((section) => {
+      section.toggleAttribute('hidden', section.dataset.section !== view);
+    });
+  };
+
+  const formatCurrency = (value, currency) => {
+    if (!currency) {
+      return `${value ?? 0}`;
+    }
+    try {
+      return new Intl.NumberFormat('ru-RU', { style: 'currency', currency }).format(value ?? 0);
+    } catch {
+      return `${value ?? 0} ${currency}`;
+    }
+  };
+
+  const renderProjects = (projects) => {
+    state.projects = projects;
+    if (!els.projectsBody) {
+      return;
+    }
+    els.projectsBody.innerHTML = '';
+    projects.forEach((project) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${project.name}</td>
+        <td>${project.adAccountId ?? '—'}</td>
+        <td>${project.chatTitle ?? project.chatId ?? '—'}</td>
+        <td>${project.currency}</td>
+        <td>${project.kpiLabel}</td>
+        <td>${project.createdAt ? new Date(project.createdAt).toLocaleDateString('ru-RU') : '—'}</td>
+        <td>${project.status === 'active' ? 'Активен' : 'Ожидает'}</td>
+        <td>${project.leadsToday} / ${project.leadsTotal}</td>
+      `;
+      tr.addEventListener('click', () => selectProject(project.id));
+      if (project.id === state.selectedProjectId) {
+        tr.classList.add('is-selected');
+      }
+      els.projectsBody?.appendChild(tr);
+    });
+  };
+
+  const renderLeads = (leads) => {
+    if (!els.leadsTable) {
+      return;
+    }
+    els.leadsTable.innerHTML = '';
+    leads.leads.forEach((lead) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${lead.name}</td>
+        <td>${lead.phone}</td>
+        <td>${lead.type ?? '—'}</td>
+        <td>${new Date(lead.createdAt).toLocaleString('ru-RU')}</td>
+        <td>${lead.campaignName}</td>
+        <td>${lead.status}</td>
+      `;
+      els.leadsTable?.appendChild(tr);
+    });
+  };
+
+  const renderCampaigns = (campaigns) => {
+    if (!els.campaignsTable) {
+      return;
+    }
+    els.campaignsTable.innerHTML = '';
+    campaigns.campaigns.forEach((campaign) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${campaign.name}</td>
+        <td>${campaign.objective}</td>
+        <td>${campaign.status ?? '—'}</td>
+        <td>${campaign.kpiType ?? '—'}</td>
+        <td>${campaign.spend ?? 0}</td>
+        <td>${campaign.leads ?? campaign.messages ?? 0}</td>
+        <td>${campaign.clicks ?? 0}</td>
+      `;
+      els.campaignsTable?.appendChild(tr);
+    });
+  };
+
+  const renderPayments = (billing, payments) => {
+    if (!els.paymentsTable) {
+      return;
+    }
+    els.paymentsTable.innerHTML = '';
+    payments.forEach((payment) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${payment.periodFrom} → ${payment.periodTo}</td>
+        <td>${formatCurrency(payment.amount, payment.currency)}</td>
+        <td>${payment.status}</td>
+        <td>${payment.paidAt ? new Date(payment.paidAt).toLocaleString('ru-RU') : '—'}</td>
+        <td>${payment.comment ?? '—'}</td>
+      `;
+      els.paymentsTable?.appendChild(tr);
+    });
+    const subtitle = document.querySelector('[data-payments-subtitle]');
+    if (subtitle) {
+      subtitle.textContent = `Следующий платёж: ${billing?.nextPaymentDate ?? '—'} | Автобиллинг: ${billing?.autobilling ? 'вкл' : 'выкл'}`;
+    }
+  };
+
+  const fillSettingsForm = (detail) => {
+    if (!els.settingsForm || !detail) {
+      return;
+    }
+    els.settingsForm.elements.kpiMode.value = detail.project.settings.kpi.mode;
+    els.settingsForm.elements.kpiType.value = detail.project.settings.kpi.type;
+    els.settingsForm.elements.kpiLabel.value = detail.project.settings.kpi.label;
+    els.settingsForm.elements.alertsEnabled.checked = detail.alerts.enabled;
+    els.settingsForm.elements.alertsChannel.value = detail.alerts.channel;
+    els.settingsForm.elements.alertLead.checked = detail.alerts.types.leadInQueue;
+    els.settingsForm.elements.alertPause.checked = detail.alerts.types.pause24h;
+    els.settingsForm.elements.alertPayment.checked = detail.alerts.types.paymentReminder;
+    els.settingsForm.elements.autoreportsEnabled.checked = detail.autoreports.enabled;
+    els.settingsForm.elements.autoreportsTime.value = detail.autoreports.time;
+    els.settingsForm.elements.autoreportsSendTo.value = detail.autoreports.sendTo;
+  };
+  const renderProjectDetail = (detail) => {
+    state.selectedProject = detail;
+    if (!detail || !els.projectDetail) {
+      els.projectDetail?.setAttribute('hidden', '');
+      return;
+    }
+    els.projectDetail.removeAttribute('hidden');
+    els.projectDetailTitle.textContent = detail.project.name;
+    const stats = detail.campaigns.summary;
+    const leads = `${detail.leads.stats.today} / ${detail.leads.stats.total}`;
+    const cpa = stats.leads ? (stats.spend ?? 0) / Math.max(stats.leads, 1) : null;
+    els.projectDetailMeta.textContent = `${detail.project.adAccountId ?? 'Без аккаунта'} • CPA: ${cpa ? cpa.toFixed(2) : '—'} • Лиды ${leads}`;
+    renderLeads(detail.leads);
+    renderCampaigns(detail.campaigns);
+    renderPayments(detail.billing, detail.payments.payments ?? []);
+    fillSettingsForm(detail);
+  };
+
+  const loadProjects = async () => {
+    try {
+      setStatus('Загружаем проекты...');
+      const data = await request('/projects');
+      renderProjects(data.projects ?? []);
+      setStatus('Проекты загружены');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const selectProject = async (projectId) => {
+    state.selectedProjectId = projectId;
+    try {
+      const detail = await request(`/projects/${projectId}`);
+      renderProjectDetail(detail.project);
+      const leads = await request(`/projects/${projectId}/leads`);
+      renderLeads(leads);
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const loadAnalytics = async () => {
+    try {
+      const data = await request('/analytics');
+      if (els.analyticsTotals) {
+        const totals = Object.entries(data.totals.spendByCurrency ?? {})
+          .map(([currency, spend]) => `${currency}: ${spend.toFixed(2)}`)
+          .join(' · ');
+        els.analyticsTotals.textContent = `Расходы: ${totals || '—'} | Лиды: ${data.totals.leads} | Сообщения: ${data.totals.messages}`;
+      }
+      if (els.analyticsProjects) {
+        els.analyticsProjects.innerHTML = '';
+        data.topProjects.forEach((project) => {
+          const li = document.createElement('li');
+          li.textContent = `${project.name}: ${project.leads} лидов • ${project.spend.toFixed(2)} $`;
+          els.analyticsProjects.appendChild(li);
+        });
+      }
+      if (els.analyticsCampaigns) {
+        els.analyticsCampaigns.innerHTML = '';
+        data.topCampaigns.forEach((campaign) => {
+          const li = document.createElement('li');
+          li.textContent = `${campaign.name}: KPI ${campaign.kpi} • ${campaign.spend.toFixed(2)} $`;
+          els.analyticsCampaigns.appendChild(li);
+        });
+      }
+      setStatus('Аналитика обновлена');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const loadFinance = async () => {
+    try {
+      const data = await request('/finance');
+      if (els.financeTotals) {
+        const totals = Object.entries(data.totals.spendByCurrency ?? {})
+          .map(([currency, spend]) => `${currency}: ${spend.toFixed(2)}`)
+          .join(' · ');
+        els.financeTotals.textContent = `Тарифы: ${totals || '—'}`;
+      }
+      if (els.financeProjects) {
+        els.financeProjects.innerHTML = '';
+        data.projects.forEach((project) => {
+          const li = document.createElement('li');
+          li.textContent = `${project.name}: ${formatCurrency(project.tariff, project.currency)} | Следующий платёж ${project.nextPaymentDate ?? '—'}`;
+          els.financeProjects.appendChild(li);
+        });
+      }
+      setStatus('Финансы обновлены');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const loadUsers = async () => {
+    try {
+      const data = await request('/users');
+      if (!els.usersTable) {
+        return;
+      }
+      els.usersTable.innerHTML = '';
+      data.users.forEach((user) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${user.userId}</td>
+          <td>${user.projectCount}</td>
+          <td>${user.language}</td>
+          <td>${user.timezone}</td>
+          <td>${user.projects.join(', ') || '—'}</td>
+        `;
+        els.usersTable.appendChild(tr);
+      });
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+  const loadMetaAccounts = async () => {
+    try {
+      const data = await request('/meta/accounts');
+      if (!els.metaTable) {
+        return;
+      }
+      els.metaTable.innerHTML = '';
+      data.accounts.forEach((account) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${account.userId}</td>
+          <td>${new Date(account.expiresAt).toLocaleString('ru-RU')}</td>
+          <td>${account.adAccounts.map((item) => `${item.name} (${item.id})`).join(', ')}</td>
+        `;
+        els.metaTable.appendChild(tr);
+      });
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const loadWebhookStatus = async () => {
+    try {
+      const data = await request('/webhook-status');
+      if (els.webhookInfo) {
+        els.webhookInfo.textContent = `Текущий URL: ${data.info?.url ?? '—'} | Ожидаемый: ${data.expectedUrl ?? '—'}`;
+      }
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const submitPayment = async (event) => {
+    event.preventDefault();
+    if (!state.selectedProjectId) {
+      return;
+    }
+    const form = event.currentTarget;
+    const payload = {
+      amount: Number(form.elements.amount.value),
+      currency: form.elements.currency.value,
+      periodFrom: form.elements.periodFrom.value,
+      periodTo: form.elements.periodTo.value,
+      paidAt: form.elements.paidAt.value || null,
+      status: form.elements.status.value,
+      comment: form.elements.comment.value || null,
+    };
+    try {
+      await request(`/projects/${state.selectedProjectId}/payments/add`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      await selectProject(state.selectedProjectId);
+      form.reset();
+      setStatus('Платёж сохранён');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const submitSettings = async (event) => {
+    event.preventDefault();
+    if (!state.selectedProjectId) {
+      return;
+    }
+    const form = event.currentTarget;
+    const payload = {
+      kpi: {
+        mode: form.elements.kpiMode.value,
+        type: form.elements.kpiType.value,
+        label: form.elements.kpiLabel.value,
+      },
+      alerts: {
+        enabled: form.elements.alertsEnabled.checked,
+        channel: form.elements.alertsChannel.value,
+        types: {
+          leadInQueue: form.elements.alertLead.checked,
+          pause24h: form.elements.alertPause.checked,
+          paymentReminder: form.elements.alertPayment.checked,
+        },
+      },
+      autoreports: {
+        enabled: form.elements.autoreportsEnabled.checked,
+        time: form.elements.autoreportsTime.value,
+        sendTo: form.elements.autoreportsSendTo.value,
+      },
+    };
+    try {
+      await request(`/projects/${state.selectedProjectId}/settings`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+      setStatus('Настройки обновлены');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const resetWebhook = async () => {
+    try {
+      await request('/webhook-reset', { method: 'POST' });
+      await loadWebhookStatus();
+      setStatus('Webhook обновлён');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const setView = async (view) => {
+    state.view = view;
+    highlightNav(view);
+    showSection(view);
+    if (els.viewTitle) {
+      const label = document.querySelector(`[data-nav="${view}"]`)?.textContent ?? 'Админка';
+      els.viewTitle.textContent = label;
+    }
+    switch (view) {
+      case 'projects':
+        await loadProjects();
+        break;
+      case 'analytics':
+        await loadAnalytics();
+        break;
+      case 'finance':
+        await loadFinance();
+        break;
+      case 'users':
+        await loadUsers();
+        break;
+      case 'meta':
+        await loadMetaAccounts();
+        break;
+      case 'webhooks':
+        await loadWebhookStatus();
+        break;
+      default:
+        break;
+    }
+  };
+
+  els.navButtons.forEach((button) => {
+    button.addEventListener('click', () => setView(button.dataset.nav));
+  });
+
+  els.refreshButtons.forEach((button) => {
+    button.addEventListener('click', () => setView(state.view));
+  });
+
+  els.logoutButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      localStorage.removeItem(STORAGE_KEY);
+      state.key = null;
+      handleUnauthorized('Ключ очищен');
+    });
+  });
+  els.loginForm?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const key = els.loginInput?.value.trim();
+    if (!key) {
+      return;
+    }
+    localStorage.setItem(STORAGE_KEY, key);
+    state.key = key;
+    hideLogin();
+    setView('projects');
+  });
+
+  els.paymentForm?.addEventListener('submit', submitPayment);
+  els.settingsForm?.addEventListener('submit', submitSettings);
+  els.webhookButton?.addEventListener('click', resetWebhook);
+
+  if (els.settingsInfo && WORKER_URL) {
+    els.settingsInfo.textContent = `WORKER_URL: ${WORKER_URL}`;
+  }
+
+  if (!state.key) {
+    showLogin();
+  } else {
+    setView('projects');
+  }
+})();
+    */
+  });
+  return template.replace(/WORKER_URL_PLACEHOLDER/g, workerUrlJson);
+};

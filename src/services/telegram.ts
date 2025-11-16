@@ -250,6 +250,31 @@ export const getWebhookInfo = async (token: string): Promise<TelegramWebhookInfo
   }
 };
 
+export const setWebhook = async (token: string, webhookUrl: string): Promise<boolean> => {
+  const url = `https://api.telegram.org/bot${token}/setWebhook`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ url: webhookUrl }),
+  });
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw new TelegramError(`Telegram setWebhook failed with status ${response.status}`, response.status, bodyText);
+  }
+  try {
+    const data = JSON.parse(bodyText) as TelegramResponse<{ result: boolean }>;
+    if (!data.ok) {
+      throw new TelegramError(`Telegram API error: ${data.description ?? "unknown"}`, response.status, bodyText);
+    }
+    return Boolean(data.result);
+  } catch (error) {
+    if (error instanceof TelegramError) {
+      throw error;
+    }
+    throw new TelegramError("Failed to parse Telegram response", response.status, bodyText);
+  }
+};
+
 export const createForumTopic = async (
   token: string,
   options: CreateForumTopicOptions,

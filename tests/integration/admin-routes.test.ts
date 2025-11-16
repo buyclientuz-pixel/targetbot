@@ -10,10 +10,27 @@ const { getProject } = await import("../../src/domain/projects.ts");
 const { ensureProjectSettings } = await import("../../src/domain/project-settings.ts");
 const { getMetaToken } = await import("../../src/domain/meta-tokens.ts");
 
+const ADMIN_KEY = "secret";
+
 const createEnv = () => ({
   KV: new MemoryKVNamespace(),
   R2: new MemoryR2Bucket(),
+  ADMIN_KEY,
 }) as import("../../src/worker/types.ts").TargetBotEnv;
+
+const createAdminRequest = (url: string, init?: RequestInit): Request =>
+  new Request(url, {
+    ...init,
+    headers: {
+      ...(init?.headers ?? {}),
+      "x-admin-key": ADMIN_KEY,
+    },
+  });
+
+const readData = async <T>(response: Response): Promise<T> => {
+  const payload = (await response.clone().json()) as { data: T };
+  return payload.data;
+};
 
 test("admin routes allow managing projects, settings, and Meta tokens", async () => {
   const env = createEnv();
@@ -23,7 +40,7 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   const execution = new TestExecutionContext();
 
   const createResponse = await router.dispatch(
-    new Request("https://example.com/api/admin/projects", {
+    createAdminRequest("https://example.com/api/admin/projects", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -38,24 +55,19 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   );
 
   assert.equal(createResponse.status, 201);
-  const createdBody = (await createResponse.clone().json()) as {
-    project: { id: string; name: string; ownerTelegramId: number };
-    settings: { projectId: string };
-  };
+  const createdBody = await readData<{ project: { id: string; name: string; ownerTelegramId: number }; settings: { projectId: string } }>(
+    createResponse,
+  );
   assert.equal(createdBody.project.id, "birlash");
   assert.equal(createdBody.settings.projectId, "birlash");
 
-  const listResponse = await router.dispatch(
-    new Request("https://example.com/api/admin/projects"),
-    env,
-    execution,
-  );
-  const listBody = (await listResponse.clone().json()) as { projects: Array<{ id: string }> };
+  const listResponse = await router.dispatch(createAdminRequest("https://example.com/api/admin/projects"), env, execution);
+  const listBody = await readData<{ projects: Array<{ id: string }> }>(listResponse);
   assert.equal(listBody.projects.length, 1);
   assert.equal(listBody.projects[0].id, "birlash");
 
   const updateResponse = await router.dispatch(
-    new Request("https://example.com/api/admin/projects/birlash", {
+    createAdminRequest("https://example.com/api/admin/projects/birlash", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "Birlash Updated" }),
@@ -69,7 +81,7 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   assert.equal(storedProject.name, "Birlash Updated");
 
   const settingsResponse = await router.dispatch(
-    new Request("https://example.com/api/admin/projects/birlash/settings", {
+    createAdminRequest("https://example.com/api/admin/projects/birlash/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -87,7 +99,7 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   assert.equal(updatedSettings.billing.nextPaymentDate, "2025-12-15");
 
   const metaResponse = await router.dispatch(
-    new Request("https://example.com/api/admin/meta-tokens/123", {
+    createAdminRequest("https://example.com/api/admin/meta-tokens/123", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ accessToken: "access", refreshToken: "refresh" }),

@@ -6,6 +6,8 @@ export interface TargetBotEnv {
   TELEGRAM_SECRET?: string;
   WORKER_URL?: string;
   DEFAULT_TZ?: string;
+  ADMIN_KEY?: string;
+  ADMIN_ID?: string;
   ADMIN_IDS?: string;
   FB_APP_ID?: string;
   FB_APP_SECRET?: string;

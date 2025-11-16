@@ -57,6 +57,8 @@ export const serialiseProject = (project: Project): Record<string, unknown> => (
   ownerTelegramId: project.ownerTelegramId,
   createdAt: project.createdAt,
   updatedAt: project.updatedAt,
+  owner_id: project.ownerTelegramId,
+  ad_account_id: project.adsAccountId,
 });
 
 export const getProject = async (kv: KvClient, projectId: string): Promise<Project> => {
@@ -70,7 +72,8 @@ export const getProject = async (kv: KvClient, projectId: string): Promise<Proje
 
 export const putProject = async (kv: KvClient, project: Project): Promise<void> => {
   const key = KV_KEYS.project(project.id);
-  await kv.putJson(key, serialiseProject(project));
+  const existing = (await kv.getJson<Record<string, unknown>>(key)) ?? {};
+  await kv.putJson(key, { ...existing, ...serialiseProject(project) });
 };
 
 export const createProject = (input: Omit<Project, "createdAt" | "updatedAt">): Project => {
