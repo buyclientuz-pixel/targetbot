@@ -1464,6 +1464,36 @@ const handleCallback = async (
   const parts = data.split(":");
   const scope = parts[0];
   switch (scope) {
+    case "cmd": {
+      const action = parts[1] ?? "main";
+      const targetPanel = (() => {
+        switch (action) {
+          case "main":
+          case "menu":
+            return "panel:main";
+          case "auth":
+            return "panel:fb-auth";
+          case "projects":
+            return "panel:projects";
+          case "analytics":
+            return "panel:analytics";
+          case "finance":
+            return "panel:finance";
+          case "users":
+            return "panel:users";
+          case "settings":
+            return "panel:settings";
+          case "webhooks":
+            return "panel:webhooks";
+          case "meta":
+            return "panel:meta";
+          default:
+            return "panel:main";
+        }
+      })();
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: targetPanel });
+      break;
+    }
     case "project": {
       const action = parts[1];
       switch (action) {

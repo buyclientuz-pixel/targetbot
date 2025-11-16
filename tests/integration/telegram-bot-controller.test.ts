@@ -217,6 +217,43 @@ test("Telegram bot controller serves menu and project list", async () => {
   }
 });
 
+test("Inline main menu buttons route through cmd:* callbacks", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await putFbAuthRecord(kv, {
+    userId: 100,
+    accessToken: "token",
+    expiresAt: "2025-01-01T00:00:00.000Z",
+    adAccounts: [{ id: "act_inline", name: "Inline Ads", currency: "USD", status: 1 }],
+  });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "/start" },
+    } as unknown as TelegramUpdate);
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb_cmd_projects",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 42 },
+        data: "cmd:projects",
+      },
+    } as unknown as TelegramUpdate);
+
+    const request = stub.requests.find((entry) => entry.url.includes("sendMessage") || entry.url.includes("editMessage"));
+    assert.ok(request, "panel render should send or edit a message");
+    assert.match(String(request?.body.text), /Выберите рекламный аккаунт/);
+  } finally {
+    stub.restore();
+  }
+});
+
 test("Telegram bot warns group chats to switch to private chat", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());
