@@ -44,7 +44,7 @@ import { addDaysIso, parseDateInput, todayIsoDate } from "./dates";
 import { renderPanel } from "./panel-engine";
 import type { TelegramUpdate } from "./types";
 
-import { KV_KEYS } from "../config/kv";
+import { KV_KEYS, KV_PREFIXES } from "../config/kv";
 import { R2_KEYS } from "../config/r2";
 import { clearBotSession, getBotSession, saveBotSession, type BotSession } from "../domain/bot-sessions";
 import { recordKnownChat } from "../domain/chat-registry";
@@ -125,11 +125,6 @@ interface CreateTelegramBotControllerOptions {
 
 const DEFAULT_WORKER_DOMAIN = "th-reports.buyclientuz.workers.dev";
 const FACEBOOK_AUTH_GUIDE_FALLBACK = "https://developers.facebook.com/tools/explorer/";
-const GROUP_NOTICE_INTERVAL_MS = 5 * 60 * 1000;
-const GROUP_NOTICE_DM_TEXT =
-  "⚠️ Команды и настройки работают только в личном чате с ботом.\nОткройте диалог с ботом и отправьте /start.";
-const GROUP_NOTICE_CHAT_TEXT =
-  `${GROUP_NOTICE_DM_TEXT}\n\nВ группах бот реагирует только на команду /reg — здесь будут только уведомления о лидах и отчётах.`;
 
 const escapeHtml = (value: string): string =>
   value
@@ -493,6 +488,65 @@ const handleGroupRegistration = async (
     text:
       "Группа зарегистрирована!\nТеперь вы можете привязать её к проекту в разделе «Проекты».",
   });
+};
+
+const handleGroupStatCommand = async (
+  ctx: BotContext,
+  chat: NonNullable<TelegramUpdate["message"]>["chat"],
+): Promise<void> => {
+  if (!chat || chat.type === "private") {
+    return;
+  }
+  const projectId = await resolveProjectIdByChatId(ctx, chat.id);
+  if (!projectId) {
+    await sendTelegramMessage(ctx.token, {
+      chatId: chat.id,
+      text: "❌ Чат ещё не привязан к проекту. Используйте /reg и завершите настройку в личном кабинете.",
+    });
+    return;
+  }
+  try {
+    const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+    const message = buildReportMessage(bundle.project, bundle.campaigns);
+    await sendTelegramMessage(ctx.token, { chatId: chat.id, text: message });
+  } catch (error) {
+    console.error(`[telegram] Failed to render /stat for chat ${chat.id}:`, error);
+    await sendTelegramMessage(ctx.token, {
+      chatId: chat.id,
+      text: "⚠️ Не удалось собрать отчёт. Попробуйте позже.",
+    });
+  }
+};
+
+const resolveProjectIdByChatId = async (ctx: BotContext, chatId: number): Promise<string | null> => {
+  try {
+    const occupied = await getOccupiedChatRecord(ctx.kv, chatId);
+    if (occupied?.projectId) {
+      return occupied.projectId;
+    }
+  } catch (error) {
+    console.warn(`[telegram] Failed to read occupied chat ${chatId}:`, error);
+  }
+  try {
+    const { keys } = await ctx.kv.list(KV_PREFIXES.projects);
+    for (const key of keys) {
+      const projectId = key.slice(KV_PREFIXES.projects.length);
+      if (!projectId) {
+        continue;
+      }
+      try {
+        const record = await getProjectRecord(ctx.kv, projectId);
+        if (record?.chatId === chatId) {
+          return record.id;
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch (error) {
+    console.warn(`[telegram] Failed to list projects while resolving chat ${chatId}:`, error);
+  }
+  return null;
 };
 
 const sendProjectCard = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
@@ -1309,56 +1363,6 @@ const sendChatUnlinkConfirm = async (ctx: BotContext, chatId: number, projectId:
   });
 };
 
-const shouldSendGroupNotice = (session: BotSession): boolean => {
-  if (!session.lastGroupNoticeAt) {
-    return true;
-  }
-  const last = Date.parse(session.lastGroupNoticeAt);
-  if (!Number.isFinite(last)) {
-    return true;
-  }
-  return Date.now() - last > GROUP_NOTICE_INTERVAL_MS;
-};
-
-const sendGroupCommandNotice = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
-  let deliveredToDm = false;
-  try {
-    await sendTelegramMessage(ctx.token, { chatId: userId, text: GROUP_NOTICE_DM_TEXT });
-    deliveredToDm = true;
-  } catch (error) {
-    if (error instanceof TelegramError && error.status === 403) {
-      // user has not started a private chat yet – fall back to group notice
-    } else {
-      console.warn(
-        `[telegram] Failed to notify user ${userId} about private-only commands: ${(error as Error).message}`,
-      );
-    }
-  }
-  if (deliveredToDm) {
-    return;
-  }
-  try {
-    await sendTelegramMessage(ctx.token, { chatId, text: GROUP_NOTICE_CHAT_TEXT });
-  } catch (error) {
-    console.error(
-      `[telegram] Failed to send private-only reminder to group ${chatId}: ${(error as Error).message}`,
-    );
-  }
-};
-
-const notifyGroupCommandRestriction = async (
-  ctx: BotContext,
-  chatId: number,
-  userId: number,
-  session: BotSession,
-): Promise<void> => {
-  if (!shouldSendGroupNotice(session)) {
-    return;
-  }
-  await sendGroupCommandNotice(ctx, chatId, userId);
-  await saveBotSession(ctx.kv, { ...session, lastGroupNoticeAt: new Date().toISOString() });
-};
-
 const handleTextCommand = async (
   ctx: BotContext,
   chatId: number,
@@ -1366,11 +1370,22 @@ const handleTextCommand = async (
   text: string,
   panelRuntime: ReturnType<typeof buildPanelRuntime>,
 ): Promise<void> => {
-  switch (text) {
-    case "/start":
-    case "Меню":
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
-      return;
+  const normalized = text.trim();
+  const lower = normalized.toLowerCase();
+  const commandToken = lower.split(/\s+/)[0] ?? lower;
+  const baseCommand = commandToken.split("@")[0];
+  if (
+    baseCommand === "/start" ||
+    baseCommand === "start" ||
+    baseCommand === "/menu" ||
+    baseCommand === "/меню" ||
+    lower === "меню" ||
+    lower === "menu"
+  ) {
+    await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
+    return;
+  }
+  switch (normalized) {
     case "Авторизация Facebook":
       await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:fb-auth" });
       return;
@@ -1813,11 +1828,11 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
       const isGroupChat = chatType === "group" || chatType === "supergroup";
       if (isGroupChat && update.message?.text) {
         const text = update.message.text.trim();
-        if (text.startsWith("/reg")) {
+        const lowered = text.toLowerCase();
+        if (lowered.startsWith("/reg")) {
           await handleGroupRegistration(ctx, update.message.chat, userId);
-        } else {
-          cachedSession = await getBotSession(ctx.kv, userId);
-          await notifyGroupCommandRestriction(ctx, chatId, userId, cachedSession);
+        } else if (lowered.startsWith("/stat")) {
+          await handleGroupStatCommand(ctx, update.message.chat);
         }
         return;
       }

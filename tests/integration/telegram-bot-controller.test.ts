@@ -8,7 +8,7 @@ const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
 const { createTelegramBotController } = await import("../../src/bot/controller.ts");
 const { recordKnownChat } = await import("../../src/domain/chat-registry.ts");
-const { putFreeChatRecord, getFreeChatRecord, getOccupiedChatRecord } = await import(
+const { putFreeChatRecord, getFreeChatRecord, getOccupiedChatRecord, putOccupiedChatRecord } = await import(
   "../../src/domain/project-chats.ts",
 );
 const { putProjectsByUser, getProjectsByUser } = await import("../../src/domain/spec/projects-by-user.ts");
@@ -254,47 +254,47 @@ test("Inline main menu buttons route through cmd:* callbacks", async () => {
   }
 });
 
-test("Telegram bot warns group chats to switch to private chat", async () => {
+test("Group chats ignore commands except /reg and /stat", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());
-  const controller = createController(kv, r2);
-  let sendAttempts = 0;
-  const stub = installFetchStub((url) => {
-    if (url.includes("sendMessage")) {
-      sendAttempts += 1;
-      if (sendAttempts === 1) {
-        return { status: 403, body: { ok: false, description: "Forbidden" } };
-      }
-    }
-    return undefined;
+  await seedProject(kv, r2);
+  await putOccupiedChatRecord(kv, {
+    chatId: -100555666777,
+    chatTitle: "Bir Group",
+    ownerId: 100,
+    projectId: "proj_a",
+    projectName: "BirLash",
+    boundAt: new Date().toISOString(),
   });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
 
   try {
     await controller.handleUpdate({
       message: {
-        chat: { id: -100777, type: "supergroup", title: "Team" },
-        from: { id: 555 },
+        chat: { id: -100555666777, type: "supergroup", title: "Bir" },
+        from: { id: 200 },
         text: "/start",
       },
     } as unknown as TelegramUpdate);
 
-    assert.equal(stub.requests.length, 2);
-    assert.equal(stub.requests[0]?.body.chat_id, 555);
-    assert.match(String(stub.requests[0]?.body.text), /личном чате/);
-    assert.equal(stub.requests[1]?.body.chat_id, -100777);
-    assert.match(String(stub.requests[1]?.body.text), /В группах бот реагирует только на команду \/reg/);
+    assert.equal(stub.requests.length, 0, "non-whitelisted commands stay silent in groups");
 
     stub.requests.length = 0;
 
     await controller.handleUpdate({
       message: {
-        chat: { id: -100777, type: "supergroup", title: "Team" },
-        from: { id: 555 },
-        text: "/start",
+        chat: { id: -100555666777, type: "supergroup", title: "Bir" },
+        from: { id: 200 },
+        text: "/stat",
       },
     } as unknown as TelegramUpdate);
 
-    assert.equal(stub.requests.length, 0, "repeat messages are throttled");
+    const statMessage = stub.requests.find((entry) => entry.url.includes("sendMessage"));
+    assert.ok(statMessage, "/stat should send a report to the group");
+    assert.equal(statMessage?.body.chat_id, -100555666777);
+    assert.match(String(statMessage?.body.text), /Отчёт по рекламе/);
   } finally {
     stub.restore();
   }

@@ -231,10 +231,22 @@ const adminClientFactory = () => {
     els.settingsForm.elements.autoreportsTime.value = detail.autoreports.time;
     els.settingsForm.elements.autoreportsSendTo.value = detail.autoreports.sendTo;
   };
+  const clearProjectDetailTables = () => {
+    if (els.leadsTable) {
+      els.leadsTable.innerHTML = '';
+    }
+    if (els.campaignsTable) {
+      els.campaignsTable.innerHTML = '';
+    }
+    if (els.paymentsTable) {
+      els.paymentsTable.innerHTML = '';
+    }
+  };
   const renderProjectDetail = (detail) => {
     state.selectedProject = detail;
     if (!detail || !els.projectDetail) {
       els.projectDetail?.setAttribute('hidden', '');
+      clearProjectDetailTables();
       return;
     }
     els.projectDetail.removeAttribute('hidden');
@@ -324,9 +336,7 @@ const adminClientFactory = () => {
     state.selectedProjectId = projectId;
     try {
       const detail = await request(`/projects/${projectId}`);
-      renderProjectDetail(detail.project);
-      const leads = await request(`/projects/${projectId}/leads`);
-      renderLeads(leads);
+      renderProjectDetail(detail);
     } catch (error) {
       setStatus(error.message);
     }
