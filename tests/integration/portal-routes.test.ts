@@ -174,5 +174,13 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   const portalHtml = await portalResponse.text();
   assert.ok(portalHtml.includes("Ключевые показатели"));
 
+  const shortPortalResponse = await router.dispatch(
+    new Request("https://example.com/p/birlash"),
+    env,
+    execution,
+  );
+  assert.equal(shortPortalResponse.status, 200);
+  assert.equal(shortPortalResponse.headers.get("content-type"), "text/html; charset=utf-8");
+
   await execution.flush();
 });

@@ -1142,22 +1142,25 @@ ${portalScript}
 </html>`;
 };
 
+const renderPortalPage = async (context: RequestContext): Promise<Response> => {
+  const projectId = context.state.params.projectId;
+  if (!projectId) {
+    return badRequest("Project ID is required");
+  }
+  try {
+    await requireProjectRecord(context.kv, projectId);
+    return htmlResponse(renderPortalHtml(projectId));
+  } catch (error) {
+    if (error instanceof EntityNotFoundError) {
+      return notFound(error.message);
+    }
+    throw error;
+  }
+};
+
 export const registerPortalRoutes = (router: Router): void => {
-  router.on("GET", "/portal/:projectId", async (context) => {
-    const projectId = context.state.params.projectId;
-    if (!projectId) {
-      return badRequest("Project ID is required");
-    }
-    try {
-      await requireProjectRecord(context.kv, projectId);
-      return htmlResponse(renderPortalHtml(projectId));
-    } catch (error) {
-      if (error instanceof EntityNotFoundError) {
-        return notFound(error.message);
-      }
-      throw error;
-    }
-  });
+  router.on("GET", "/portal/:projectId", renderPortalPage);
+  router.on("GET", "/p/:projectId", renderPortalPage);
 
   router.on("GET", "/api/projects/:projectId", async (context) => {
     const projectId = context.state.params.projectId;

@@ -6,9 +6,14 @@ const adminClientFactory = () => {
     const WORKER_URL = "WORKER_URL_PLACEHOLDER";
     const apiHost = WORKER_URL && WORKER_URL.length ? WORKER_URL.trim() : '';
     const hasScheme = apiHost.startsWith('http://') || apiHost.startsWith('https://');
-    const isAbsoluteHost = !!apiHost && !apiHost.startsWith('/');
     const baseHost = hasScheme ? apiHost.replace(/\/$/, '') : apiHost ? `https://${apiHost.replace(/\/$/, '')}` : '';
-    const API_BASE = isAbsoluteHost && baseHost ? `${baseHost}/api/admin` : '/api/admin';
+    const originBase = typeof window !== 'undefined' && window.location ? window.location.origin.replace(/\/$/, '') : '';
+    const candidates = [
+      originBase ? `${originBase}/api/admin` : null,
+      baseHost ? `${baseHost}/api/admin` : null,
+      '/api/admin',
+    ].filter((value, index, array) => typeof value === 'string' && value && array.indexOf(value) === index);
+    let primaryApiBase = (candidates[0] ?? '/api/admin');
     const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
     const sections = Array.from(document.querySelectorAll('[data-section]'));
     const refreshButtons = Array.from(document.querySelectorAll('[data-action="refresh"]'));
@@ -81,29 +86,41 @@ const adminClientFactory = () => {
         handleUnauthorized();
         throw new Error('Требуется ключ администратора');
       }
-      const response = await fetch(`${API_BASE}${path}`, {
-        ...options,
-      headers: {
-        'content-type': 'application/json',
-        'x-admin-key': state.key,
-        ...(options.headers ?? {}),
-      },
-    });
-    let payload = null;
-    try {
-      payload = await response.clone().json();
-    } catch {
-      payload = null;
-    }
-    if (response.status === 401) {
-      handleUnauthorized();
-      throw new Error('Неверный ключ администратора');
-    }
-    if (!response.ok || !payload?.ok) {
-      throw new Error(payload?.error ?? `Ошибка ${response.status}`);
-    }
-    return payload.data;
-  };
+      const baseOrder = [primaryApiBase, ...candidates.filter((candidate) => candidate !== primaryApiBase)];
+      let lastError = null;
+      for (const base of baseOrder) {
+        try {
+          const response = await fetch(`${base}${path}`, {
+            ...options,
+            headers: {
+              'content-type': 'application/json',
+              'x-admin-key': state.key,
+              authorization: `Bearer ${state.key}`,
+              ...(options.headers ?? {}),
+            },
+          });
+          let payload = null;
+          try {
+            payload = await response.clone().json();
+          } catch {
+            payload = null;
+          }
+          if (response.status === 401) {
+            handleUnauthorized();
+            throw new Error('Неверный ключ администратора');
+          }
+          if (!response.ok || !payload?.ok) {
+            throw new Error(payload?.error ?? `Ошибка ${response.status}`);
+          }
+          primaryApiBase = base;
+          return payload.data;
+        } catch (error) {
+          lastError = error;
+          continue;
+        }
+      }
+      throw lastError ?? new Error('API недоступно');
+    };
 
     const highlightNav = (view) => {
       els.navButtons.forEach((button) => {
