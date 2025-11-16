@@ -11,6 +11,7 @@ export interface DispatchProjectMessageOptions {
   text: string;
   route?: ProjectSettings["alerts"]["route"];
   parseMode?: "MarkdownV2" | "Markdown" | "HTML";
+  replyMarkup?: unknown;
 }
 
 export interface DispatchResult {
@@ -60,6 +61,7 @@ export const dispatchProjectMessage = async (
         text: options.text,
         parseMode: options.parseMode ?? "HTML",
         disableWebPagePreview: true,
+        replyMarkup: options.replyMarkup,
       })
         .then(() => {
           chatDelivered = true;
@@ -75,6 +77,7 @@ export const dispatchProjectMessage = async (
         text: options.text,
         parseMode: options.parseMode ?? "HTML",
         disableWebPagePreview: true,
+        replyMarkup: options.replyMarkup,
       })
         .then(() => {
           adminDelivered = true;

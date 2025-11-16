@@ -4,6 +4,11 @@ export interface MetaSummaryMetrics {
   clicks: number;
   leads: number;
   messages: number;
+  purchases: number;
+  addToCart: number;
+  calls: number;
+  registrations: number;
+  engagement: number;
   leadsToday: number;
   leadsTotal: number;
   cpa: number | null;

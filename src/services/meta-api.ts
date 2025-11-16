@@ -26,6 +26,11 @@ export interface MetaInsightsSummary {
   clicks: number;
   leads: number;
   messages: number;
+  purchases: number;
+  addToCart: number;
+  calls: number;
+  registrations: number;
+  engagement: number;
 }
 
 export interface MetaInsightsResult {
@@ -81,7 +86,16 @@ const parseNumber = (value: unknown): number => {
   return num;
 };
 
-export const countLeadsFromActions = (actions: unknown): number => {
+const normaliseActionType = (value: unknown): string => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.toLowerCase();
+};
+
+type ActionMatcher = (actionType: string) => boolean;
+
+const countActionsByMatcher = (actions: unknown, matcher: ActionMatcher): number => {
   if (!Array.isArray(actions)) {
     return 0;
   }
@@ -90,36 +104,51 @@ export const countLeadsFromActions = (actions: unknown): number => {
       return total;
     }
     const record = action as Record<string, unknown>;
-    const type = record.action_type;
-    if (type === "lead" || type === "onsite_conversion.lead_grouped") {
+    const type = normaliseActionType(record.action_type);
+    if (type && matcher(type)) {
       return total + parseNumber(record.value);
     }
     return total;
   }, 0);
 };
 
-const isMessageAction = (type: unknown): boolean => {
-  if (typeof type !== "string") {
-    return false;
-  }
+const includesAny = (value: string, keywords: string[]): boolean => {
+  return keywords.some((keyword) => value.includes(keyword));
+};
+
+export const countLeadsFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) =>
+    type === "lead" || type.includes("lead") || type.includes("submit_application"),
+  );
+};
+
+const isMessageAction = (type: string): boolean => {
   const lower = type.toLowerCase();
   return lower.includes("message") || lower.includes("messaging");
 };
 
 export const countMessagesFromActions = (actions: unknown): number => {
-  if (!Array.isArray(actions)) {
-    return 0;
-  }
-  return actions.reduce((total, action) => {
-    if (!action || typeof action !== "object") {
-      return total;
-    }
-    const record = action as Record<string, unknown>;
-    if (isMessageAction(record.action_type)) {
-      return total + parseNumber(record.value);
-    }
-    return total;
-  }, 0);
+  return countActionsByMatcher(actions, (type) => isMessageAction(type));
+};
+
+export const countPurchasesFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["purchase", "sale", "conversion"]));
+};
+
+export const countAddToCartFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["add_to_cart", "addtocart"]));
+};
+
+export const countCallsFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["call", "phone_call"]));
+};
+
+export const countRegistrationsFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["subscribe", "registration", "complete_registration"]));
+};
+
+export const countEngagementFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["engagement", "view_content", "post_engagement"]));
 };
 
 const buildInsightsUrl = (options: MetaFetchOptions): URL => {
@@ -174,7 +203,12 @@ export const summariseMetaInsights = (raw: MetaInsightsRawResponse): MetaInsight
   const clicks = parseNumber(aggregate.clicks);
   const leads = countLeadsFromActions(aggregate.actions);
   const messages = countMessagesFromActions(aggregate.actions);
-  return { spend, impressions, clicks, leads, messages };
+  const purchases = countPurchasesFromActions(aggregate.actions);
+  const addToCart = countAddToCartFromActions(aggregate.actions);
+  const calls = countCallsFromActions(aggregate.actions);
+  const registrations = countRegistrationsFromActions(aggregate.actions);
+  const engagement = countEngagementFromActions(aggregate.actions);
+  return { spend, impressions, clicks, leads, messages, purchases, addToCart, calls, registrations, engagement };
 };
 
 export const fetchMetaInsights = async (options: MetaFetchOptions): Promise<MetaInsightsResult> => {
