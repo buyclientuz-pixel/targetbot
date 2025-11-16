@@ -1778,42 +1778,6 @@ const handleCallback = async (
       }
       break;
     }
-    case "cmd": {
-      const action = parts[1];
-      switch (action) {
-        case "menu":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
-          break;
-        case "auth":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:fb-auth" });
-          break;
-        case "projects":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects" });
-          break;
-        case "analytics":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:analytics" });
-          break;
-        case "users":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:users" });
-          break;
-        case "finance":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:finance" });
-          break;
-        case "settings":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:settings" });
-          break;
-        case "meta":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:meta" });
-          break;
-        case "webhooks":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:webhooks" });
-          break;
-        default:
-          await sendMenu(ctx, chatId, userId);
-          break;
-      }
-      break;
-    }
     default:
       break;
   }
