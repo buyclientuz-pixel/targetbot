@@ -18,8 +18,32 @@ const adminClientFactory = () => {
     const sections = Array.from(document.querySelectorAll('[data-section]'));
     const refreshButtons = Array.from(document.querySelectorAll('[data-action="refresh"]'));
     const logoutButtons = Array.from(document.querySelectorAll('[data-action="logout"]'));
+    const resolveSearchParams = () => {
+      try {
+        if (typeof window === 'undefined' || !window.location) {
+          return null;
+        }
+        return new URLSearchParams(window.location.search ?? '');
+      } catch {
+        return null;
+      }
+    };
+
+    const searchParams = resolveSearchParams();
+    const queryAdminKey = (() => {
+      if (!searchParams) {
+        return null;
+      }
+      const value = searchParams.get('adminKey');
+      if (!value) {
+        return null;
+      }
+      const trimmed = value.trim();
+      return trimmed.length ? trimmed : null;
+    })();
+
     const state = {
-      key: localStorage.getItem(STORAGE_KEY),
+      key: queryAdminKey ?? localStorage.getItem(STORAGE_KEY),
       view: 'projects',
       projects: [],
       selectedProjectId: null,
@@ -813,6 +837,21 @@ const adminClientFactory = () => {
     }
 
     const boot = () => {
+      if (queryAdminKey && state.key === queryAdminKey) {
+        localStorage.setItem(STORAGE_KEY, queryAdminKey);
+        try {
+          if (searchParams && typeof window !== 'undefined' && window.history && window.location) {
+            searchParams.delete('adminKey');
+            const params = searchParams.toString();
+            const nextUrl = params.length
+              ? `${window.location.pathname}?${params}${window.location.hash ?? ''}`
+              : `${window.location.pathname}${window.location.hash ?? ''}`;
+            window.history.replaceState({}, document.title, nextUrl);
+          }
+        } catch {
+          // ignore history replacement errors
+        }
+      }
       if (!state.key) {
         showLogin();
       } else {
