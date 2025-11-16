@@ -241,6 +241,7 @@ test(
           type: null,
         },
       ],
+      syncedAt: "2025-01-11T08:45:00.000Z",
     });
 
     const campaignEntry = createMetaCacheEntry(
@@ -376,6 +377,7 @@ test(
           type: null,
         },
       ],
+      syncedAt: "2025-01-14T10:05:00.000Z",
     });
 
     const freshEntry = createMetaCacheEntry(

@@ -24,6 +24,7 @@ test("mergeProjectLeadsList deduplicates leads and tracks stats", async () => {
         type: "lead",
       },
     ],
+    syncedAt: "2025-11-15T09:05:00.000Z",
   });
 
   const now = new Date().toISOString();
@@ -43,4 +44,5 @@ test("mergeProjectLeadsList deduplicates leads and tracks stats", async () => {
   assert.equal(merged.leads[1]?.status, "processing");
   assert.equal(merged.stats.total, 2);
   assert.ok(merged.stats.today >= 1);
+  assert.ok(typeof merged.syncedAt === "string");
 });

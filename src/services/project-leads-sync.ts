@@ -2,11 +2,12 @@ import { getMetaToken } from "../domain/meta-tokens";
 import { createLead, saveLead, type Lead } from "../domain/leads";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
-import type { Project } from "../domain/projects";
-import type { ProjectSettings } from "../domain/project-settings";
+import { getProject, type Project } from "../domain/projects";
+import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
 import { fetchMetaLeads, type MetaLeadRecord } from "./meta-api";
-import { mergeProjectLeadsList } from "./project-leads-list";
+import { markProjectLeadsSynced, mergeProjectLeadsList } from "./project-leads-list";
 import { getLeadRetentionDays } from "../domain/config";
+import { DataValidationError } from "../errors";
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const LEAD_SYNC_LIMIT = 400;
@@ -72,6 +73,30 @@ export interface ProjectLeadSyncResult {
   stored: number;
 }
 
+const requireFacebookUserId = (settings: ProjectSettings, provided?: string | null): string => {
+  if (provided && provided.trim().length > 0) {
+    return provided;
+  }
+  if (!settings.meta.facebookUserId) {
+    throw new DataValidationError("Проекту не назначен Meta-аккаунт для лидов");
+  }
+  return settings.meta.facebookUserId;
+};
+
+const ensureProjectLeadSyncOptions = async (
+  kv: KvClient,
+  projectId: string,
+  options?: Partial<ProjectLeadSyncOptions>,
+): Promise<ProjectLeadSyncOptions> => {
+  const project = options?.project ?? (await getProject(kv, projectId));
+  if (!project.adsAccountId) {
+    throw new DataValidationError("У проекта нет подключённого рекламного аккаунта Meta");
+  }
+  const settings = options?.settings ?? (await ensureProjectSettings(kv, projectId));
+  const facebookUserId = requireFacebookUserId(settings, options?.facebookUserId);
+  return { project, settings, facebookUserId };
+};
+
 export const syncProjectLeadsFromMeta = async (
   kv: KvClient,
   r2: R2Client,
@@ -91,6 +116,7 @@ export const syncProjectLeadsFromMeta = async (
     since,
   });
   if (rawLeads.length === 0) {
+    await markProjectLeadsSynced(r2, projectId);
     return { fetched: 0, stored: 0 };
   }
   const created: Lead[] = [];
@@ -112,4 +138,14 @@ export const syncProjectLeadsFromMeta = async (
     await mergeProjectLeadsList(r2, projectId, created);
   }
   return { fetched: rawLeads.length, stored: created.length };
+};
+
+export const refreshProjectLeads = async (
+  kv: KvClient,
+  r2: R2Client,
+  projectId: string,
+  options?: Partial<ProjectLeadSyncOptions>,
+): Promise<ProjectLeadSyncResult> => {
+  const resolved = await ensureProjectLeadSyncOptions(kv, projectId, options);
+  return syncProjectLeadsFromMeta(kv, r2, projectId, resolved);
 };

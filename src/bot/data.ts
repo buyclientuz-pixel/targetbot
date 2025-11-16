@@ -48,6 +48,7 @@ const createDefaultAutoreports = (): AutoreportsRecord => ({
 const createEmptyLeadsList = (): ProjectLeadsListRecord => ({
   stats: { total: 0, today: 0 },
   leads: [],
+  syncedAt: null,
 });
 
 const createEmptyMetaCampaigns = (): MetaCampaignsDocument => ({

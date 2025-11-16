@@ -42,6 +42,7 @@ test("buildProjectCardMessage renders project snapshot", () => {
           type: null,
         },
       ],
+      syncedAt: new Date().toISOString(),
     },
     campaigns: {
       period: { from: "2025-11-14", to: "2025-11-14" },

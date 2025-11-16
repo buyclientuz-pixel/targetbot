@@ -73,6 +73,7 @@ const cleanupLeadSummaries = async (
   await putProjectLeadsList(r2, projectId, {
     stats: { total: filtered.length, today: todayCount },
     leads: filtered,
+    syncedAt: record.syncedAt ?? null,
   });
   return removed;
 };

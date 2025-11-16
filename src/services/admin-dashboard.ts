@@ -300,5 +300,5 @@ export const listAdminMetaAccounts = async (kv: KvClient): Promise<AdminMetaAcco
 
 export const listAdminProjectLeads = async (r2: R2Client, projectId: string) => {
   const list = await getProjectLeadsList(r2, projectId);
-  return list ?? { stats: { total: 0, today: 0 }, leads: [] };
+  return list ?? { stats: { total: 0, today: 0 }, leads: [], syncedAt: null };
 };

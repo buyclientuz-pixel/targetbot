@@ -13,6 +13,7 @@ import { requireProjectRecord } from "../domain/spec/project";
 import type { Router } from "../worker/router";
 import type { RequestContext } from "../worker/context";
 import { translateMetaObjective } from "../services/meta-objectives";
+import { refreshProjectLeads } from "../services/project-leads-sync";
 
 const htmlResponse = (body: string): Response =>
   new Response(body, {
@@ -168,6 +169,7 @@ export const renderPortalHtml = (projectId: string): string => {
         const API_BASE = '/api/projects/' + encodeURIComponent(PROJECT_ID);
         const TOKEN = new URLSearchParams(window.location.search).get('token');
         const REQUEST_TIMEOUT = 12000;
+        const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
         const elements = {
           preloader: document.querySelector('[data-preloader]'),
           error: document.querySelector('[data-error]'),
@@ -327,9 +329,9 @@ export const renderPortalHtml = (projectId: string): string => {
             }
           }
         };
-        const fetchJson = async (path) => {
+        const requestJson = async (path, options = {}) => {
           try {
-            const response = await fetchWithTimeout(path);
+            const response = await fetchWithTimeout(path, options);
             const payload = await response
               .clone()
               .json()
@@ -350,10 +352,13 @@ export const renderPortalHtml = (projectId: string): string => {
             throw error;
           }
         };
+        const fetchJson = (path) => requestJson(path);
+        const postJson = (path) => requestJson(path, { method: 'POST' });
         const portalClient = {
           project: () => fetchJson(API_BASE),
           summary: (period) => fetchJson(API_BASE + '/summary?period=' + encodeURIComponent(period)),
           leads: (period) => fetchJson(API_BASE + '/leads?period=' + encodeURIComponent(period)),
+          refreshLeads: (period) => postJson(API_BASE + '/leads/sync?period=' + encodeURIComponent(period)),
           campaigns: (period) => fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period)),
           payments: () => fetchJson(API_BASE + '/payments'),
         };
@@ -463,6 +468,16 @@ export const renderPortalHtml = (projectId: string): string => {
               elements.leadsEmpty.textContent = 'За выбранный период лидов нет.';
             }
           }
+        };
+        const shouldAutoRefreshLeads = (payload) => {
+          if (!payload) {
+            return true;
+          }
+          const syncedAt = payload.syncedAt ? Date.parse(payload.syncedAt) : NaN;
+          if (!Number.isFinite(syncedAt)) {
+            return true;
+          }
+          return Date.now() - syncedAt > LEADS_REFRESH_WINDOW_MS;
         };
         const campaignKpiValue = (campaign, type) => {
           switch (type) {
@@ -664,12 +679,16 @@ export const renderPortalHtml = (projectId: string): string => {
           renderMetrics(summary);
           updateExportButtons();
         };
-        const loadLeads = async (period) => {
+        const loadLeads = async (period, options = {}) => {
+          const { refresh = false, skipAuto = false } = options;
           setSectionLoading('leads', true);
           try {
-            const leads = await portalClient.leads(period);
+            const leads = refresh ? await portalClient.refreshLeads(period) : await portalClient.leads(period);
             state.leads = leads;
             renderLeads(leads);
+            if (!refresh && !skipAuto && shouldAutoRefreshLeads(leads)) {
+              await loadLeads(period, { refresh: true, skipAuto: true });
+            }
           } catch (error) {
             handleSectionError('leads', error?.message);
           } finally {
@@ -728,7 +747,7 @@ export const renderPortalHtml = (projectId: string): string => {
         elements.retryButtons?.forEach?.((button) => {
           button.addEventListener('click', () => bootstrap());
         });
-        elements.retryLeads?.addEventListener('click', () => loadLeads(state.period));
+        elements.retryLeads?.addEventListener('click', () => loadLeads(state.period, { refresh: true }));
         elements.retryCampaigns?.addEventListener('click', () => loadCampaigns(state.period));
         elements.retryPayments?.addEventListener('click', () => loadPayments());
         elements.periodButtons?.forEach?.((button) => {
@@ -1411,6 +1430,7 @@ export const registerPortalRoutes = (router: Router): void => {
         periodKey,
         leads: filtered.leads,
         stats: bundle.leads.stats,
+        syncedAt: bundle.leads.syncedAt ?? null,
       });
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
@@ -1423,6 +1443,37 @@ export const registerPortalRoutes = (router: Router): void => {
     }
   });
   router.on("OPTIONS", "/api/projects/:projectId/leads", (context) => preflight(context.request));
+
+  router.on("POST", "/api/projects/:projectId/leads/sync", async (context) => {
+    const projectId = context.state.params.projectId;
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    const url = new URL(context.request.url);
+    const periodKey = url.searchParams.get("period") ?? "today";
+    try {
+      await refreshProjectLeads(context.kv, context.r2, projectId);
+      const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      const filtered = filterLeadsForPeriod(bundle, periodKey);
+      return jsonOk({
+        projectId,
+        period: filtered.period,
+        periodKey,
+        leads: filtered.leads,
+        stats: bundle.leads.stats,
+        syncedAt: bundle.leads.syncedAt ?? null,
+      });
+    } catch (error) {
+      if (error instanceof EntityNotFoundError) {
+        return notFound(error.message);
+      }
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+  router.on("OPTIONS", "/api/projects/:projectId/leads/sync", (context) => preflight(context.request));
 
   router.on("GET", "/api/projects/:projectId/campaigns", async (context) => {
     const projectId = context.state.params.projectId;

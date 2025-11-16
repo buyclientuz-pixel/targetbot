@@ -90,7 +90,64 @@ test("syncProjectLeadsFromMeta persists leads and updates summary", async () => 
     assert.equal(summary?.leads.length, 2);
     assert.equal(summary?.leads[0]?.id, "lead-sync-2");
     assert.equal(summary?.leads[0]?.type, "message");
+    assert.ok(summary?.syncedAt);
   } finally {
     restore();
+  }
+});
+
+test("syncProjectLeadsFromMeta marks syncedAt even when no new leads arrive", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const project = createProject({ id: "proj-empty-sync", name: "Empty", adsAccountId: "act_empty", ownerTelegramId: 2 });
+  await putProject(kv, project);
+  const settings = createDefaultProjectSettings("proj-empty-sync");
+  await upsertProjectSettings(kv, {
+    ...settings,
+    projectId: "proj-empty-sync",
+    portalEnabled: true,
+    meta: { facebookUserId: "fb_empty" },
+  });
+  const token = createMetaToken({ facebookUserId: "fb_empty", accessToken: "token_empty" });
+  await upsertMetaToken(kv, token);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target = typeof input === "string" ? input : input instanceof Request ? input.url : input instanceof URL ? input.toString() : String(input);
+    const url = new URL(target);
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-empty" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leads")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+
+  try {
+    const result = await syncProjectLeadsFromMeta(kv, r2, "proj-empty-sync", {
+      project,
+      settings: { ...settings, meta: { facebookUserId: "fb_empty" } },
+      facebookUserId: "fb_empty",
+    });
+    assert.equal(result.fetched, 0);
+    assert.equal(result.stored, 0);
+    const summary = await getProjectLeadsList(r2, "proj-empty-sync");
+    assert.equal(summary?.leads.length, 0);
+    assert.ok(summary?.syncedAt);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

@@ -384,6 +384,7 @@ test("portal hides preloader and renders sections when data loads", async () => 
         periodKey: "today",
         period: { from: "2025-11-15T00:00:00.000Z", to: "2025-11-15T23:59:59.000Z" },
         stats: { total: 168, today: 2 },
+        syncedAt: "2025-11-15T12:00:00.000Z",
         leads: [
           {
             id: "lead-1",

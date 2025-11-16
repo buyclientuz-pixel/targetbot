@@ -64,6 +64,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
         type: "lead",
       },
     ],
+    syncedAt: recentLeadDate,
   });
 
   await putMetaCampaignsDocument(r2, projectRecord.id, {
@@ -209,7 +210,12 @@ test("portal summary and campaigns prefer Meta cache entries when available", as
     },
   };
   await putProjectRecord(kv, projectRecord);
-  await putProjectLeadsList(r2, projectRecord.id, { stats: { total: 50, today: 2 }, leads: [] });
+  const cachedLeadDate = new Date().toISOString();
+  await putProjectLeadsList(r2, projectRecord.id, {
+    stats: { total: 50, today: 2 },
+    leads: [],
+    syncedAt: cachedLeadDate,
+  });
   await putMetaCampaignsDocument(r2, projectRecord.id, {
     period: { from: "2025-01-01", to: "2025-01-01" },
     summary: { spend: 5, impressions: 100, clicks: 10, leads: 1, messages: 0 },

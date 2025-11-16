@@ -73,6 +73,7 @@ const seedProjectData = async (kv: InstanceType<typeof KvClient>, r2: InstanceTy
         type: null,
       },
     ],
+    syncedAt: "2025-11-15T09:05:00Z",
   });
   await putMetaCampaignsDocument(r2, "proj_acceptance", {
     period: { from: "2025-11-15", to: "2025-11-15" },

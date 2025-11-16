@@ -35,7 +35,7 @@ const mapLeadToSummary = (lead: Lead): ProjectLeadsListRecord["leads"][number] =
   type: lead.phone ? "lead" : "message",
 });
 
-const createEmptyList = (): ProjectLeadsListRecord => ({ stats: { total: 0, today: 0 }, leads: [] });
+const createEmptyList = (): ProjectLeadsListRecord => ({ stats: { total: 0, today: 0 }, leads: [], syncedAt: null });
 
 const sortByCreatedAtDesc = (
   a: ProjectLeadsListRecord["leads"][number],
@@ -67,6 +67,17 @@ export const mergeProjectLeadsList = async (
   const nextRecord: ProjectLeadsListRecord = {
     stats: { total: limited.length, today },
     leads: limited,
+    syncedAt: new Date().toISOString(),
+  };
+  await putProjectLeadsList(r2, projectId, nextRecord);
+  return nextRecord;
+};
+
+export const markProjectLeadsSynced = async (r2: R2Client, projectId: string): Promise<ProjectLeadsListRecord> => {
+  const current = (await getProjectLeadsList(r2, projectId)) ?? createEmptyList();
+  const nextRecord: ProjectLeadsListRecord = {
+    ...current,
+    syncedAt: new Date().toISOString(),
   };
   await putProjectLeadsList(r2, projectId, nextRecord);
   return nextRecord;

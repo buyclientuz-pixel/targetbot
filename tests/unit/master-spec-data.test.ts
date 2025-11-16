@@ -165,6 +165,7 @@ test("project leads list", () => {
         status: "new",
       },
     ],
+    synced_at: "2025-11-14T17:00:00Z",
   };
   const parsed = parseProjectLeadsListRecord(sample);
   assert.equal(parsed.leads[0].status, "new");

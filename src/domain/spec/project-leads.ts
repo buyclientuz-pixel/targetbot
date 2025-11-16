@@ -25,6 +25,7 @@ export interface ProjectLeadSummary {
 export interface ProjectLeadsListRecord {
   stats: LeadListStats;
   leads: ProjectLeadSummary[];
+  syncedAt: string | null;
 }
 
 export interface LeadDetailRecord extends ProjectLeadSummary {
@@ -79,6 +80,7 @@ export const parseProjectLeadsListRecord = (raw: unknown): ProjectLeadsListRecor
   return {
     stats: parseStats(record.stats ?? record["stats"]),
     leads: leads.map((entry, index) => parseLeadSummary(entry, index)),
+    syncedAt: assertOptionalString(record.synced_at ?? record["synced_at"], "project-leads.synced_at"),
   };
 };
 
@@ -128,6 +130,7 @@ export const putProjectLeadsList = async (
       status: lead.status,
       type: lead.type,
     })),
+    synced_at: record.syncedAt,
   });
 };
 
