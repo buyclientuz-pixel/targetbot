@@ -2,37 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MemoryKVNamespace, MemoryR2Bucket, TestExecutionContext } from "../utils/mocks.ts";
-
-class SimpleURLPattern {
-  private readonly segments: string[];
-
-  constructor(init: { pathname: string }) {
-    this.segments = init.pathname.split("/").filter(Boolean);
-  }
-
-  exec(input: string | URL) {
-    const url = typeof input === "string" ? new URL(input) : input;
-    const segments = url.pathname.split("/").filter(Boolean);
-    if (segments.length !== this.segments.length) {
-      return null;
-    }
-    const groups: Record<string, string> = {};
-    for (let index = 0; index < this.segments.length; index += 1) {
-      const pattern = this.segments[index]!;
-      const value = segments[index]!;
-      if (pattern.startsWith(":")) {
-        groups[pattern.slice(1)] = value;
-        continue;
-      }
-      if (pattern !== value) {
-        return null;
-      }
-    }
-    return { pathname: { input: url.pathname, groups } };
-  }
-}
-
-(globalThis as unknown as { URLPattern?: unknown }).URLPattern ||= SimpleURLPattern;
+import "../utils/url-pattern.ts";
 
 const { createRouter } = await import("../../src/worker/router.ts");
 const { registerMetaRoutes } = await import("../../src/routes/meta.ts");
