@@ -52,7 +52,7 @@ const parseLeadSummary = (raw: unknown, index: number): ProjectLeadSummary => {
   return {
     id: assertString(record.id ?? record["id"], `project-leads.leads[${index}].id`),
     name: assertString(record.name ?? record["name"], `project-leads.leads[${index}].name`),
-    phone: assertString(record.phone ?? record["phone"], `project-leads.leads[${index}].phone`),
+    phone: assertString(record.phone ?? record["phone"], `project-leads.leads[${index}].phone`, { allowEmpty: true }),
     createdAt: assertIsoDate(
       record.created_at ?? record["created_at"],
       `project-leads.leads[${index}].created_at`,

@@ -1,11 +1,12 @@
 import { KV_KEYS, KV_PREFIXES } from "../config/kv";
 import type { KvClient } from "../infra/kv";
 import { DataValidationError } from "../errors";
-import { assertIsoDate, assertNumber, assertOptionalString, assertString } from "./validation";
+import { assertIsoDate, assertNumber, assertOptionalNumber, assertOptionalString, assertString } from "./validation";
 
 export interface FreeChatRecord {
   chatId: number;
   chatTitle: string | null;
+  topicId: number | null;
   ownerId: number;
   registeredAt: string;
 }
@@ -13,6 +14,7 @@ export interface FreeChatRecord {
 export interface OccupiedChatRecord {
   chatId: number;
   chatTitle: string | null;
+  topicId: number | null;
   ownerId: number;
   projectId: string;
   projectName: string;
@@ -27,6 +29,7 @@ const parseFreeChatRecord = (raw: unknown): FreeChatRecord => {
   return {
     chatId: assertNumber(record.chatId ?? record["chat_id"], "free-chat.chatId"),
     chatTitle: assertOptionalString(record.chatTitle ?? record["chat_title"], "free-chat.chatTitle"),
+    topicId: assertOptionalNumber(record.topicId ?? record["topic_id"], "free-chat.topicId"),
     ownerId: assertNumber(record.ownerId ?? record["owner_id"], "free-chat.ownerId"),
     registeredAt: assertIsoDate(record.registeredAt ?? record["registered_at"], "free-chat.registeredAt"),
   };
@@ -35,6 +38,7 @@ const parseFreeChatRecord = (raw: unknown): FreeChatRecord => {
 const serialiseFreeChatRecord = (record: FreeChatRecord): Record<string, unknown> => ({
   chatId: record.chatId,
   chatTitle: record.chatTitle,
+  topicId: record.topicId,
   ownerId: record.ownerId,
   registeredAt: record.registeredAt,
 });
@@ -47,6 +51,7 @@ const parseOccupiedChatRecord = (raw: unknown): OccupiedChatRecord => {
   return {
     chatId: assertNumber(record.chatId ?? record["chat_id"], "occupied-chat.chatId"),
     chatTitle: assertOptionalString(record.chatTitle ?? record["chat_title"], "occupied-chat.chatTitle"),
+    topicId: assertOptionalNumber(record.topicId ?? record["topic_id"], "occupied-chat.topicId"),
     ownerId: assertNumber(record.ownerId ?? record["owner_id"], "occupied-chat.ownerId"),
     projectId: assertString(record.projectId ?? record["project_id"], "occupied-chat.projectId"),
     projectName: assertString(record.projectName ?? record["project_name"], "occupied-chat.projectName"),
@@ -57,6 +62,7 @@ const parseOccupiedChatRecord = (raw: unknown): OccupiedChatRecord => {
 const serialiseOccupiedChatRecord = (record: OccupiedChatRecord): Record<string, unknown> => ({
   chatId: record.chatId,
   chatTitle: record.chatTitle,
+  topicId: record.topicId,
   ownerId: record.ownerId,
   projectId: record.projectId,
   projectName: record.projectName,

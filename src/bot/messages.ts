@@ -10,6 +10,7 @@ import type { FbAuthRecord } from "../domain/spec/fb-auth";
 import type { FreeChatRecord } from "../domain/project-chats";
 
 import type { AnalyticsOverview, FinanceOverview, ProjectBundle } from "./data";
+import { translateMetaObjective } from "../services/meta-objectives";
 
 const escapeHtml = (value: string): string =>
   value
@@ -362,12 +363,13 @@ export const buildReportMessage = (
     lines.push("Топ-3 кампании по KPI:");
     campaigns.campaigns
       .slice(0, 3)
-      .forEach((campaign, index) =>
+      .forEach((campaign, index) => {
+        const objectiveLabel = translateMetaObjective(campaign.objective);
         lines.push(
           `${index + 1}️⃣ <b>${escapeHtml(campaign.name)}</b> — ${campaign.leads} ` +
-            `${campaign.objective} за ${formatMoney(campaign.spend, project.settings.currency, 2)}`,
-        ),
-      );
+            `${objectiveLabel} за ${formatMoney(campaign.spend, project.settings.currency, 2)}`,
+        );
+      });
   }
   return lines.join("\n");
 };
@@ -387,7 +389,7 @@ export const buildCampaignsMessage = (
       if (index > 0) {
         lines.push("");
       }
-      lines.push(`• <b>${escapeHtml(campaign.name)}</b> (${campaign.objective})`);
+      lines.push(`• <b>${escapeHtml(campaign.name)}</b> (${translateMetaObjective(campaign.objective)})`);
       lines.push(
         `  Показатель: ${campaign.leads} | Расход: ${formatMoney(
           campaign.spend,

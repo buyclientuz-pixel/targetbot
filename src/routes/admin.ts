@@ -15,8 +15,11 @@ import {
   getPaymentsHistoryDocument,
   type PaymentRecord,
 } from "../domain/spec/payments-history";
+import { requireProjectRecord, putProjectRecord } from "../domain/spec/project";
+import { getPortalSyncState, deletePortalSyncState, type PortalSyncState } from "../domain/portal-sync";
 import { DataValidationError, EntityConflictError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
+import type { KvClient } from "../infra/kv";
 import type { Router } from "../worker/router";
 import type { TargetBotEnv } from "../worker/types";
 import { ensureAdminRequest } from "../services/admin-auth";
@@ -31,6 +34,7 @@ import {
 } from "../services/admin-dashboard";
 import { getWebhookInfo, setWebhook } from "../services/telegram";
 import { deleteProjectCascade } from "../services/project-lifecycle";
+import { PORTAL_PERIOD_KEYS, syncPortalMetrics, type PortalSyncResult } from "../services/portal-sync";
 import { buildAdminClientScript } from "./admin-client";
 
 const ADMIN_CORS_HEADERS = {
@@ -91,6 +95,48 @@ const resolvePortalUrl = (env: TargetBotEnv, projectId: string): string => {
     return `https://${env.WORKER_URL}/p/${projectId}`;
   }
   return `/p/${projectId}`;
+};
+
+const SYNC_KEY_LABELS: Record<string, string> = {
+  today: "сегодня",
+  yesterday: "вчера",
+  week: "неделя",
+  month: "месяц",
+  max: "максимум",
+  leads: "лиды",
+};
+
+const describePortalSyncResult = (result: PortalSyncResult): string => {
+  const successful = result.periods.filter((entry) => entry.ok).length;
+  const failed = result.periods.filter((entry) => !entry.ok);
+  if (failed.length === 0) {
+    return `Портал обновлён (${successful}/${result.periods.length}).`;
+  }
+  const issues = failed
+    .map((entry) => `${SYNC_KEY_LABELS[entry.periodKey] ?? entry.periodKey}: ${entry.error ?? "ошибка"}`)
+    .join(", ");
+  return `Обновлено ${successful}/${result.periods.length}. Проблемы: ${issues}`;
+};
+
+interface PortalStatusPayload {
+  projectId: string;
+  portalUrl: string;
+  enabled: boolean;
+  sync: PortalSyncState;
+}
+
+const loadPortalStatus = async (kv: KvClient, projectId: string): Promise<PortalStatusPayload> => {
+  const [project, settings, sync] = await Promise.all([
+    requireProjectRecord(kv, projectId),
+    ensureProjectSettings(kv, projectId),
+    getPortalSyncState(kv, projectId),
+  ]);
+  return {
+    projectId,
+    portalUrl: project.portalUrl,
+    enabled: settings.portalEnabled,
+    sync,
+  } satisfies PortalStatusPayload;
 };
 
 const buildStoredProjectPayload = (
@@ -217,6 +263,22 @@ const renderAdminHtml = (workerUrl: string | null): string => {
           border: 1px solid var(--border);
           border-radius: 16px;
           padding: 24px;
+        }
+        .portal-panel {
+          border: 1px dashed rgba(255, 255, 255, 0.2);
+          border-radius: 12px;
+          padding: 16px;
+          margin-bottom: 24px;
+          background: rgba(255, 255, 255, 0.02);
+        }
+        .portal-panel--disabled {
+          opacity: 0.7;
+        }
+        .portal-status-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          gap: 8px 16px;
+          margin: 12px 0 16px;
         }
         .admin-toolbar {
           display: flex;
@@ -382,6 +444,24 @@ const renderAdminHtml = (workerUrl: string | null): string => {
             <div class="admin-section" data-project-detail hidden>
               <h3 data-project-detail-title></h3>
               <p data-project-detail-meta class="muted"></p>
+              <div class="portal-panel" data-portal-panel>
+                <h4>Клиентский портал</h4>
+                <p data-portal-description class="muted">Создайте портал, чтобы делиться показателями с клиентом.</p>
+                <div class="portal-status-grid">
+                  <div><span class="muted">Ссылка:</span> <a data-portal-link target="_blank" rel="noreferrer noopener">—</a></div>
+                  <div><span class="muted">Автообновление:</span> <span data-portal-auto>—</span></div>
+                  <div><span class="muted">Последний запуск:</span> <span data-portal-run>—</span></div>
+                  <div><span class="muted">Последний успех:</span> <span data-portal-success>—</span></div>
+                  <div><span class="muted">Последняя ошибка:</span> <span data-portal-error>—</span></div>
+                </div>
+                <div class="admin-actions" data-portal-actions>
+                  <button type="button" class="admin-btn" data-portal-action="create" data-portal-create>Создать портал</button>
+                  <button type="button" class="admin-btn admin-btn--ghost" data-portal-action="open" data-portal-open>Открыть портал</button>
+                  <button type="button" class="admin-btn admin-btn--ghost" data-portal-action="toggle" data-portal-toggle>Остановить автообновление</button>
+                  <button type="button" class="admin-btn admin-btn--ghost" data-portal-action="sync" data-portal-sync>Обновить данные</button>
+                  <button type="button" class="admin-btn admin-btn--danger" data-portal-action="delete" data-portal-delete>Удалить портал</button>
+                </div>
+              </div>
               <h4>Лиды</h4>
               <table>
                 <thead>
@@ -505,8 +585,8 @@ const renderAdminHtml = (workerUrl: string | null): string => {
       <div class="admin-login admin-login--visible" data-login-panel>
         <form class="admin-login__form" data-login-form>
           <h2>Админ-доступ</h2>
-          <p>Введите ADMIN_KEY, чтобы открыть панель управления.</p>
-          <input type="password" name="adminKey" data-admin-key placeholder="ADMIN_KEY" required />
+          <p>Введите код доступа, чтобы открыть панель управления.</p>
+          <input type="password" name="adminKey" data-admin-key placeholder="••••" required />
           <button class="admin-btn" type="submit">Войти</button>
         </form>
       </div>
@@ -550,6 +630,8 @@ interface UpdateFbAuthBody {
   accessToken?: string;
   expiresAt?: string;
   accounts?: FbAdAccount[];
+  facebookUserId?: string | null;
+  facebookName?: string | null;
 }
 
 const registerAdminRoute = (
@@ -703,6 +785,140 @@ export const registerAdminRoutes = (router: Router): void => {
     return jsonOk({ ok: true });
   });
 
+  registerAdminRoute(router, "POST", ["/api/admin/projects/:projectId/portal/create"], async (context) => {
+    const projectId = context.state.params.projectId;
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    try {
+      let project = await requireProjectRecord(context.kv, projectId);
+      if (!project.portalUrl) {
+        const portalUrl = resolvePortalUrl(context.env, projectId);
+        project = { ...project, portalUrl };
+        await putProjectRecord(context.kv, project);
+      }
+      const settings = await ensureProjectSettings(context.kv, projectId);
+      if (!settings.portalEnabled) {
+        await upsertProjectSettings(context.kv, {
+          ...settings,
+          portalEnabled: true,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      let message = "Портал включён";
+      try {
+        const result = await syncPortalMetrics(context.kv, context.r2, projectId, { allowPartial: true });
+        message = describePortalSyncResult(result);
+      } catch (error) {
+        message = `Портал включён, но не удалось обновить данные: ${(error as Error).message}`;
+      }
+      const portal = await loadPortalStatus(context.kv, projectId);
+      return jsonOk({ portal, message });
+    } catch (error) {
+      if (error instanceof EntityNotFoundError) {
+        return notFound(error.message);
+      }
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+
+  registerAdminRoute(router, "POST", ["/api/admin/projects/:projectId/portal/toggle"], async (context) => {
+    const projectId = context.state.params.projectId;
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    try {
+      const project = await requireProjectRecord(context.kv, projectId);
+      if (!project.portalUrl) {
+        return unprocessable("Сначала создайте портал");
+      }
+      const settings = await ensureProjectSettings(context.kv, projectId);
+      const nextValue = !settings.portalEnabled;
+      await upsertProjectSettings(context.kv, {
+        ...settings,
+        portalEnabled: nextValue,
+        updatedAt: new Date().toISOString(),
+      });
+      const portal = await loadPortalStatus(context.kv, projectId);
+      return jsonOk({
+        portal,
+        message: nextValue ? "Автообновление портала включено." : "Автообновление портала остановлено.",
+      });
+    } catch (error) {
+      if (error instanceof EntityNotFoundError) {
+        return notFound(error.message);
+      }
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+
+  registerAdminRoute(router, "POST", ["/api/admin/projects/:projectId/portal/sync"], async (context) => {
+    const projectId = context.state.params.projectId;
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    try {
+      const project = await requireProjectRecord(context.kv, projectId);
+      if (!project.portalUrl) {
+        return unprocessable("Сначала создайте портал");
+      }
+      const result = await syncPortalMetrics(context.kv, context.r2, projectId, {
+        allowPartial: true,
+        periods: PORTAL_PERIOD_KEYS,
+      });
+      const portal = await loadPortalStatus(context.kv, projectId);
+      return jsonOk({ portal, message: describePortalSyncResult(result) });
+    } catch (error) {
+      if (error instanceof EntityNotFoundError) {
+        return notFound(error.message);
+      }
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+
+  registerAdminRoute(router, "DELETE", ["/api/admin/projects/:projectId/portal"], async (context) => {
+    const projectId = context.state.params.projectId;
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    try {
+      const project = await requireProjectRecord(context.kv, projectId);
+      if (!project.portalUrl) {
+        const portal = await loadPortalStatus(context.kv, projectId);
+        return jsonOk({ portal, message: "Портал уже удалён." });
+      }
+      await putProjectRecord(context.kv, { ...project, portalUrl: "" });
+      const settings = await ensureProjectSettings(context.kv, projectId);
+      if (settings.portalEnabled) {
+        await upsertProjectSettings(context.kv, {
+          ...settings,
+          portalEnabled: false,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      await deletePortalSyncState(context.kv, projectId).catch(() => {});
+      const portal = await loadPortalStatus(context.kv, projectId);
+      return jsonOk({ portal, message: "Портал отключён и ссылка удалена." });
+    } catch (error) {
+      if (error instanceof EntityNotFoundError) {
+        return notFound(error.message);
+      }
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+
   registerAdminRoute(router, "GET", ["/api/admin/analytics", "/api/analytics"], async (context) => {
     const analytics = await buildAdminAnalyticsOverview(context.kv, context.r2);
     return jsonOk(analytics);
@@ -738,6 +954,8 @@ export const registerAdminRoutes = (router: Router): void => {
       accessToken: body.accessToken,
       expiresAt: body.expiresAt,
       adAccounts: body.accounts ?? [],
+      facebookUserId: body.facebookUserId ?? null,
+      facebookName: body.facebookName ?? null,
     };
     await putFbAuthRecord(context.kv, record);
     return jsonOk({ ok: true });

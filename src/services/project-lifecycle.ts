@@ -55,6 +55,7 @@ export const releaseProjectChat = async (
   await putFreeChatRecord(kv, {
     chatId,
     chatTitle: occupied?.chatTitle ?? null,
+    topicId: occupied?.topicId ?? null,
     ownerId: resolvedOwner,
     registeredAt: new Date().toISOString(),
   });

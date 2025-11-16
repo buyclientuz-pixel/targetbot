@@ -2,9 +2,16 @@ import type { Router } from "../worker/router";
 import { normaliseBaseUrl } from "../utils/url";
 import { DEFAULT_WORKER_DOMAIN, resolveWorkerBaseUrl } from "../config/worker";
 import { putFbAuthRecord } from "../domain/spec/fb-auth";
-import { fetchFacebookAdAccounts, exchangeOAuthCode, exchangeLongLivedToken } from "../services/facebook-auth";
+import {
+  fetchFacebookAdAccounts,
+  fetchFacebookProfile,
+  exchangeOAuthCode,
+  exchangeLongLivedToken,
+} from "../services/facebook-auth";
 import { resolveTelegramToken } from "../config/telegram";
 import { sendTelegramMessage } from "../services/telegram";
+import { upsertMetaTokenRecord } from "../domain/meta-tokens";
+import { syncUserProjectsMetaAccount } from "../services/project-meta";
 
 const GRAPH_EXPLORER_URL = "https://developers.facebook.com/tools/explorer/";
 
@@ -99,12 +106,21 @@ export const registerAuthRoutes = (router: Router): void => {
       const longToken = await exchangeLongLivedToken({ appId, appSecret, shortLivedToken: shortToken.accessToken });
       const expiresAt = new Date(Date.now() + longToken.expiresIn * 1000).toISOString();
       const accounts = await fetchFacebookAdAccounts(longToken.accessToken);
+      const profile = await fetchFacebookProfile(longToken.accessToken);
       await putFbAuthRecord(context.kv, {
         userId,
         accessToken: longToken.accessToken,
         expiresAt,
         adAccounts: accounts,
+        facebookUserId: profile.id,
+        facebookName: profile.name,
       });
+      await upsertMetaTokenRecord(context.kv, {
+        facebookUserId: profile.id,
+        accessToken: longToken.accessToken,
+        expiresAt,
+      });
+      await syncUserProjectsMetaAccount(context.kv, userId, profile.id);
 
       const telegramToken = resolveTelegramToken(context.env);
       if (telegramToken) {

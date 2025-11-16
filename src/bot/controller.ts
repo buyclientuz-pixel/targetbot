@@ -54,6 +54,7 @@ import {
   getOccupiedChatRecord,
   putFreeChatRecord,
   putOccupiedChatRecord,
+  type FreeChatRecord,
 } from "../domain/project-chats";
 import { appendPaymentRecord, type PaymentRecord } from "../domain/spec/payments-history";
 import { putBillingRecord } from "../domain/spec/billing";
@@ -75,6 +76,8 @@ import {
 } from "../domain/spec/project";
 import { getProjectsByUser, putProjectsByUser } from "../domain/spec/projects-by-user";
 import { getUserSettingsRecord, updateUserSettingsRecord, type UserSettingsRecord } from "../domain/spec/user-settings";
+import { ensureProjectSettings, upsertProjectSettings } from "../domain/project-settings";
+import { deletePortalSyncState } from "../domain/portal-sync";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
 import {
@@ -85,8 +88,13 @@ import {
   sendTelegramMessage,
   TelegramError,
 } from "../services/telegram";
-import { fetchFacebookAdAccounts } from "../services/facebook-auth";
+import { fetchFacebookAdAccounts, fetchFacebookProfile } from "../services/facebook-auth";
 import { deleteProjectCascade, releaseProjectChat } from "../services/project-lifecycle";
+import { PORTAL_PERIOD_KEYS, syncPortalMetrics, type PortalSyncResult } from "../services/portal-sync";
+import { sendAutoReportNow } from "../services/auto-reports";
+import { translateMetaObjective } from "../services/meta-objectives";
+import { syncProjectMetaAccount, syncUserProjectsMetaAccount } from "../services/project-meta";
+import { upsertMetaTokenRecord } from "../domain/meta-tokens";
 import { normaliseBaseUrl } from "../utils/url";
 
 interface BotContext {
@@ -210,15 +218,22 @@ const addProjectToUserMembership = async (ctx: BotContext, userId: number, proje
   await putProjectsByUser(ctx.kv, userId, { projects: nextProjects });
 };
 
+interface ProjectChatBinding {
+  chatId: number;
+  chatTitle: string | null;
+  topicId: number | null;
+}
+
 const reserveChatForProject = async (
   ctx: BotContext,
   project: ProjectRecord,
-  chat: { chatId: number; chatTitle: string | null },
+  chat: ProjectChatBinding,
 ): Promise<void> => {
   await deleteFreeChatRecord(ctx.kv, chat.chatId);
   await putOccupiedChatRecord(ctx.kv, {
     chatId: chat.chatId,
     chatTitle: chat.chatTitle,
+    topicId: chat.topicId,
     ownerId: project.ownerId,
     projectId: project.id,
     projectName: project.name,
@@ -226,11 +241,29 @@ const reserveChatForProject = async (
   });
 };
 
+const syncProjectChatSettings = async (
+  ctx: BotContext,
+  projectId: string,
+  chat: { chatId: number | null; topicId: number | null },
+): Promise<void> => {
+  const settings = await ensureProjectSettings(ctx.kv, projectId);
+  if (settings.chatId === chat.chatId && settings.topicId === chat.topicId) {
+    return;
+  }
+  await upsertProjectSettings(ctx.kv, {
+    ...settings,
+    chatId: chat.chatId,
+    topicId: chat.topicId,
+    updatedAt: new Date().toISOString(),
+  });
+};
+
 const createProjectFromAccount = async (
   ctx: BotContext,
   userId: number,
   account: FbAuthRecord["adAccounts"][number],
-  chat: { chatId: number; chatTitle: string | null },
+  chat: ProjectChatBinding,
+  fbAuth: FbAuthRecord,
 ): Promise<ProjectRecord> => {
   const projectId = await generateProjectId(ctx, account.name);
   const portalUrl = ctx.workerBaseUrl ? `${ctx.workerBaseUrl}/p/${projectId}` : `/p/${projectId}`;
@@ -253,13 +286,15 @@ const createProjectFromAccount = async (
   await putAlertsRecord(ctx.kv, projectId, buildDefaultAlertsRecord());
   await putAutoreportsRecord(ctx.kv, projectId, buildDefaultAutoreportsRecord());
   await reserveChatForProject(ctx, project, chat);
+  await syncProjectChatSettings(ctx, projectId, { chatId: chat.chatId, topicId: chat.topicId });
+  await syncProjectMetaAccount(ctx.kv, projectId, fbAuth.facebookUserId ?? null);
   return project;
 };
 
 const setProjectChatBinding = async (
   ctx: BotContext,
   projectId: string,
-  chat: { chatId: number; chatTitle: string | null } | null,
+  chat: ProjectChatBinding | null,
 ): Promise<void> => {
   const current = await requireProjectRecord(ctx.kv, projectId);
   if (current.chatId && (!chat || current.chatId !== chat.chatId)) {
@@ -271,6 +306,10 @@ const setProjectChatBinding = async (
   if (chat) {
     await reserveChatForProject(ctx, updated, chat);
   }
+  await syncProjectChatSettings(ctx, projectId, {
+    chatId: chat ? chat.chatId : null,
+    topicId: chat ? chat.topicId : null,
+  });
 };
 
 const sendMenu = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
@@ -413,11 +452,13 @@ const completeProjectBinding = async (
   chatId: number,
   userId: number,
   account: FbAuthRecord["adAccounts"][number],
-  freeChat: { chatId: number; chatTitle: string | null; ownerId: number },
+  freeChat: FreeChatRecord,
+  fbAuth: FbAuthRecord,
 ): Promise<void> => {
-  const project = await createProjectFromAccount(ctx, userId, account, freeChat);
+  const project = await createProjectFromAccount(ctx, userId, account, freeChat, fbAuth);
   await sendTelegramMessage(ctx.token, {
     chatId: freeChat.chatId,
+    messageThreadId: freeChat.topicId ?? undefined,
     text:
       `👍 Группа успешно подключена к проекту «${escapeHtml(project.name)}».\n` +
       "Теперь здесь будут приходить лиды, алерты и отчёты.",
@@ -461,7 +502,7 @@ const handleProjectBind = async (
     await sendTelegramMessage(ctx.token, { chatId, text: buildChatAlreadyUsedMessage() });
     return;
   }
-  await completeProjectBinding(ctx, chatId, userId, account, freeChat);
+  await completeProjectBinding(ctx, chatId, userId, account, freeChat, fbAuth);
 };
 
 const handleProjectManualBindInput = async (
@@ -497,7 +538,7 @@ const handleProjectManualBindInput = async (
       });
       return;
     }
-    await completeProjectBinding(ctx, chatId, userId, account, freeChat);
+    await completeProjectBinding(ctx, chatId, userId, account, freeChat, fbAuth);
   } catch (error) {
     await sendTelegramMessage(ctx.token, {
       chatId,
@@ -508,9 +549,10 @@ const handleProjectManualBindInput = async (
 
 const handleGroupRegistration = async (
   ctx: BotContext,
-  chat: NonNullable<TelegramUpdate["message"]>["chat"],
+  message: NonNullable<TelegramUpdate["message"]>,
   userId: number,
 ): Promise<void> => {
+  const chat = message.chat;
   if (!chat || chat.type === "private") {
     return;
   }
@@ -518,6 +560,7 @@ const handleGroupRegistration = async (
   if (existing) {
     await sendTelegramMessage(ctx.token, {
       chatId: chat.id,
+      messageThreadId: message.message_thread_id ?? undefined,
       text: "❌ Эта чат-группа уже используется другим проектом. Выберите другую.",
     });
     return;
@@ -525,11 +568,13 @@ const handleGroupRegistration = async (
   await putFreeChatRecord(ctx.kv, {
     chatId: chat.id,
     chatTitle: chat.title ?? null,
+    topicId: message.message_thread_id ?? null,
     ownerId: userId,
     registeredAt: new Date().toISOString(),
   });
   await sendTelegramMessage(ctx.token, {
     chatId: chat.id,
+    messageThreadId: message.message_thread_id ?? undefined,
     text:
       "Группа зарегистрирована!\nТеперь вы можете привязать её к проекту в разделе «Проекты».",
   });
@@ -537,8 +582,9 @@ const handleGroupRegistration = async (
 
 const handleGroupStatCommand = async (
   ctx: BotContext,
-  chat: NonNullable<TelegramUpdate["message"]>["chat"],
+  message: NonNullable<TelegramUpdate["message"]>,
 ): Promise<void> => {
+  const chat = message.chat;
   if (!chat || chat.type === "private") {
     return;
   }
@@ -546,18 +592,24 @@ const handleGroupStatCommand = async (
   if (!projectId) {
     await sendTelegramMessage(ctx.token, {
       chatId: chat.id,
+      messageThreadId: message.message_thread_id ?? undefined,
       text: "❌ Чат ещё не привязан к проекту. Используйте /reg и завершите настройку в личном кабинете.",
     });
     return;
   }
   try {
     const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-    const message = buildReportMessage(bundle.project, bundle.campaigns);
-    await sendTelegramMessage(ctx.token, { chatId: chat.id, text: message });
+    const messageText = buildReportMessage(bundle.project, bundle.campaigns);
+    await sendTelegramMessage(ctx.token, {
+      chatId: chat.id,
+      messageThreadId: message.message_thread_id ?? undefined,
+      text: messageText,
+    });
   } catch (error) {
     console.error(`[telegram] Failed to render /stat for chat ${chat.id}:`, error);
     await sendTelegramMessage(ctx.token, {
       chatId: chat.id,
+      messageThreadId: message.message_thread_id ?? undefined,
       text: "⚠️ Не удалось собрать отчёт. Попробуйте позже.",
     });
   }
@@ -797,12 +849,148 @@ const sendPortalLink = async (ctx: BotContext, chatId: number, projectId: string
   });
 };
 
+const renderPortalPanel = async (
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  await renderPanel({ runtime, userId, chatId, panelId: `project:portal:${projectId}` });
+};
+
+const PORTAL_SYNC_KEY_LABELS: Record<string, string> = {
+  today: "сегодня",
+  yesterday: "вчера",
+  week: "неделя",
+  month: "месяц",
+  max: "максимум",
+  leads: "лиды",
+};
+
+const describePortalSyncResult = (result: PortalSyncResult): string => {
+  const success = result.periods.filter((entry) => entry.ok).length;
+  const total = result.periods.length;
+  const failed = result.periods.filter((entry) => !entry.ok);
+  if (failed.length === 0) {
+    return `Портал обновлён (${success}/${total}).`;
+  }
+  const issues = failed
+    .map((entry) => `${PORTAL_SYNC_KEY_LABELS[entry.periodKey] ?? entry.periodKey}: ${entry.error ?? "ошибка"}`)
+    .join(", ");
+  return `Обновлено ${success}/${total}. Проблемы: ${issues}`;
+};
+
 const sendExportMenu = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: "Экспорт данных проекта. Выберите формат:",
     replyMarkup: buildExportKeyboard(projectId),
   });
+};
+
+const handlePortalCreate = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    let project = await requireProjectRecord(ctx.kv, projectId);
+    if (!project.portalUrl) {
+      const portalUrl = ctx.workerBaseUrl ? `${ctx.workerBaseUrl}/p/${projectId}` : `/p/${projectId}`;
+      project = { ...project, portalUrl };
+      await putProjectRecord(ctx.kv, project);
+      await sendTelegramMessage(ctx.token, { chatId, text: `Портал создан: ${portalUrl}` });
+    }
+    const settings = await ensureProjectSettings(ctx.kv, projectId);
+    if (!settings.portalEnabled) {
+      await upsertProjectSettings(ctx.kv, { ...settings, portalEnabled: true, updatedAt: new Date().toISOString() });
+    }
+    try {
+      const result = await syncPortalMetrics(ctx.kv, ctx.r2, projectId, { allowPartial: true });
+      await sendTelegramMessage(ctx.token, { chatId, text: describePortalSyncResult(result) });
+    } catch (error) {
+      await sendTelegramMessage(ctx.token, {
+        chatId,
+        text: `Портал включён, но не удалось обновить данные: ${(error as Error).message}`,
+      });
+    }
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, { chatId, text: `Не удалось создать портал: ${(error as Error).message}` });
+  }
+  await renderPortalPanel(runtime, userId, chatId, projectId);
+};
+
+const handlePortalToggle = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    const settings = await ensureProjectSettings(ctx.kv, projectId);
+    const nextValue = !settings.portalEnabled;
+    await upsertProjectSettings(ctx.kv, { ...settings, portalEnabled: nextValue, updatedAt: new Date().toISOString() });
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: nextValue ? "Автообновление портала включено." : "Автообновление портала остановлено.",
+    });
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, { chatId, text: `Не удалось изменить состояние портала: ${(error as Error).message}` });
+  }
+  await renderPortalPanel(runtime, userId, chatId, projectId);
+};
+
+const handlePortalSyncRequest = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    const project = await requireProjectRecord(ctx.kv, projectId);
+    if (!project.portalUrl) {
+      await sendTelegramMessage(ctx.token, { chatId, text: "Сначала создайте портал." });
+    } else {
+      const result = await syncPortalMetrics(ctx.kv, ctx.r2, projectId, {
+        allowPartial: true,
+        periods: PORTAL_PERIOD_KEYS,
+      });
+      await sendTelegramMessage(ctx.token, { chatId, text: describePortalSyncResult(result) });
+    }
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, { chatId, text: `Не удалось обновить данные портала: ${(error as Error).message}` });
+  }
+  await renderPortalPanel(runtime, userId, chatId, projectId);
+};
+
+const handlePortalDelete = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    const project = await requireProjectRecord(ctx.kv, projectId);
+    if (!project.portalUrl) {
+      await sendTelegramMessage(ctx.token, { chatId, text: "Портал уже удалён." });
+    } else {
+      await putProjectRecord(ctx.kv, { ...project, portalUrl: "" });
+      const settings = await ensureProjectSettings(ctx.kv, projectId);
+      if (settings.portalEnabled) {
+        await upsertProjectSettings(ctx.kv, { ...settings, portalEnabled: false, updatedAt: new Date().toISOString() });
+      }
+      await deletePortalSyncState(ctx.kv, projectId).catch(() => {});
+      await sendTelegramMessage(ctx.token, { chatId, text: "Портал отключён и ссылка удалена." });
+    }
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, { chatId, text: `Не удалось удалить портал: ${(error as Error).message}` });
+  }
+  await renderPortalPanel(runtime, userId, chatId, projectId);
 };
 
 const buildCsv = (rows: string[][]): string =>
@@ -859,7 +1047,7 @@ const sendCsvExport = async (
         ...bundle.campaigns.campaigns.map((campaign) => [
           campaign.id,
           campaign.name,
-          campaign.objective,
+          translateMetaObjective(campaign.objective),
           String(campaign.spend),
           String(campaign.impressions),
           String(campaign.clicks),
@@ -1114,13 +1302,22 @@ const handleFacebookTokenInput = async (
   try {
     const trimmed = tokenValue.trim();
     const accounts = await fetchFacebookAdAccounts(trimmed);
+    const profile = await fetchFacebookProfile(trimmed);
     const expiresAt = addDaysIso(todayIsoDate(), 90);
     await putFbAuthRecord(ctx.kv, {
       userId,
       accessToken: trimmed,
       expiresAt: `${expiresAt}T00:00:00.000Z`,
       adAccounts: accounts,
+      facebookUserId: profile.id,
+      facebookName: profile.name,
     });
+    await upsertMetaTokenRecord(ctx.kv, {
+      facebookUserId: profile.id,
+      accessToken: trimmed,
+      expiresAt: `${expiresAt}T00:00:00.000Z`,
+    });
+    await syncUserProjectsMetaAccount(ctx.kv, userId, profile.id);
     const accountLines = ["", formatAdAccounts(accounts)];
     await sendTelegramMessage(ctx.token, {
       chatId,
@@ -1178,7 +1375,11 @@ const handleChatManualInput = async (
       });
       return;
     }
-    await setProjectChatBinding(ctx, projectId, { chatId: freeChat.chatId, chatTitle: freeChat.chatTitle });
+    await setProjectChatBinding(ctx, projectId, {
+      chatId: freeChat.chatId,
+      chatTitle: freeChat.chatTitle,
+      topicId: freeChat.topicId,
+    });
     await recordKnownChat(ctx.kv, chat);
     await renderChatPanel(runtime, userId, chatId, projectId);
   } catch (error) {
@@ -1202,7 +1403,11 @@ const handleChatSelect = async (
     await sendTelegramMessage(ctx.token, { chatId, text: buildChatAlreadyUsedMessage() });
     return;
   }
-  await setProjectChatBinding(ctx, projectId, { chatId: freeChat.chatId, chatTitle: freeChat.chatTitle });
+  await setProjectChatBinding(ctx, projectId, {
+    chatId: freeChat.chatId,
+    chatTitle: freeChat.chatTitle,
+    topicId: freeChat.topicId,
+  });
   await renderChatPanel(runtime, userId, chatId, projectId);
 };
 
@@ -1264,6 +1469,25 @@ const handleAutoreportsRouteSet = async (
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   await putAutoreportsRecord(ctx.kv, projectId, { ...bundle.autoreports, sendTo: route });
   await renderAutoreportsPanel(runtime, userId, chatId, projectId, "route");
+};
+
+const handleAutoreportsSendNow = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    await sendAutoReportNow(ctx.kv, ctx.token, projectId);
+  } catch (error) {
+    console.error("auto-report manual send failed", { projectId, error });
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: "Не удалось отправить автоотчёт. Проверьте подключение Meta и попробуйте позже.",
+    });
+  }
+  await renderAutoreportsPanel(runtime, userId, chatId, projectId);
 };
 
 const handleAlertsToggle = async (
@@ -1545,6 +1769,18 @@ const handleCallback = async (
         case "portal":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:portal:${parts[2]!}` });
           break;
+        case "portal-create":
+          await handlePortalCreate(ctx, panelRuntime, userId, chatId, parts[2]!);
+          break;
+        case "portal-toggle":
+          await handlePortalToggle(ctx, panelRuntime, userId, chatId, parts[2]!);
+          break;
+        case "portal-sync":
+          await handlePortalSyncRequest(ctx, panelRuntime, userId, chatId, parts[2]!);
+          break;
+        case "portal-delete":
+          await handlePortalDelete(ctx, panelRuntime, userId, chatId, parts[2]!);
+          break;
         case "export":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:export:${parts[2]!}` });
           break;
@@ -1798,6 +2034,13 @@ const handleCallback = async (
       }
       break;
     }
+    case "auto_send_now": {
+      const projectId = parts[1];
+      if (projectId) {
+        await handleAutoreportsSendNow(ctx, panelRuntime, userId, chatId, projectId);
+      }
+      break;
+    }
     default:
       break;
   }
@@ -1840,9 +2083,9 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
         const text = update.message.text.trim();
         const lowered = text.toLowerCase();
         if (lowered.startsWith("/reg")) {
-          await handleGroupRegistration(ctx, update.message.chat, userId);
+          await handleGroupRegistration(ctx, update.message, userId);
         } else if (lowered.startsWith("/stat")) {
-          await handleGroupStatCommand(ctx, update.message.chat);
+          await handleGroupStatCommand(ctx, update.message);
         }
         return;
       }

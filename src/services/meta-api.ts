@@ -25,11 +25,31 @@ export interface MetaInsightsSummary {
   impressions: number;
   clicks: number;
   leads: number;
+  messages: number;
+  purchases: number;
+  addToCart: number;
+  calls: number;
+  registrations: number;
+  engagement: number;
 }
 
 export interface MetaInsightsResult {
   summary: MetaInsightsSummary;
   raw: MetaInsightsRawResponse;
+}
+
+export interface MetaLeadFieldValue {
+  name?: string | null;
+  values?: Array<{ value?: string | null } | string> | null;
+}
+
+export interface MetaLeadRecord {
+  id: string;
+  created_time?: string | null;
+  campaign_name?: string | null;
+  adset_name?: string | null;
+  ad_name?: string | null;
+  field_data?: MetaLeadFieldValue[] | null;
 }
 
 const DEFAULT_FIELDS = [
@@ -53,6 +73,7 @@ const CAMPAIGN_FIELDS = [
   "lifetime_budget",
   "updated_time",
   "configured_status",
+  "promoted_object",
 ];
 
 const parseNumber = (value: unknown): number => {
@@ -66,7 +87,16 @@ const parseNumber = (value: unknown): number => {
   return num;
 };
 
-export const countLeadsFromActions = (actions: unknown): number => {
+const normaliseActionType = (value: unknown): string => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.toLowerCase();
+};
+
+type ActionMatcher = (actionType: string) => boolean;
+
+const countActionsByMatcher = (actions: unknown, matcher: ActionMatcher): number => {
   if (!Array.isArray(actions)) {
     return 0;
   }
@@ -75,12 +105,51 @@ export const countLeadsFromActions = (actions: unknown): number => {
       return total;
     }
     const record = action as Record<string, unknown>;
-    const type = record.action_type;
-    if (type === "lead" || type === "onsite_conversion.lead_grouped") {
+    const type = normaliseActionType(record.action_type);
+    if (type && matcher(type)) {
       return total + parseNumber(record.value);
     }
     return total;
   }, 0);
+};
+
+const includesAny = (value: string, keywords: string[]): boolean => {
+  return keywords.some((keyword) => value.includes(keyword));
+};
+
+export const countLeadsFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) =>
+    type === "lead" || type.includes("lead") || type.includes("submit_application"),
+  );
+};
+
+const isMessageAction = (type: string): boolean => {
+  const lower = type.toLowerCase();
+  return lower.includes("message") || lower.includes("messaging");
+};
+
+export const countMessagesFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => isMessageAction(type));
+};
+
+export const countPurchasesFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["purchase", "sale", "conversion"]));
+};
+
+export const countAddToCartFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["add_to_cart", "addtocart"]));
+};
+
+export const countCallsFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["call", "phone_call"]));
+};
+
+export const countRegistrationsFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["subscribe", "registration", "complete_registration"]));
+};
+
+export const countEngagementFromActions = (actions: unknown): number => {
+  return countActionsByMatcher(actions, (type) => includesAny(type, ["engagement", "view_content", "post_engagement"]));
 };
 
 const buildInsightsUrl = (options: MetaFetchOptions): URL => {
@@ -134,7 +203,13 @@ export const summariseMetaInsights = (raw: MetaInsightsRawResponse): MetaInsight
   const impressions = parseNumber(aggregate.impressions);
   const clicks = parseNumber(aggregate.clicks);
   const leads = countLeadsFromActions(aggregate.actions);
-  return { spend, impressions, clicks, leads };
+  const messages = countMessagesFromActions(aggregate.actions);
+  const purchases = countPurchasesFromActions(aggregate.actions);
+  const addToCart = countAddToCartFromActions(aggregate.actions);
+  const calls = countCallsFromActions(aggregate.actions);
+  const registrations = countRegistrationsFromActions(aggregate.actions);
+  const engagement = countEngagementFromActions(aggregate.actions);
+  return { spend, impressions, clicks, leads, messages, purchases, addToCart, calls, registrations, engagement };
 };
 
 export const fetchMetaInsights = async (options: MetaFetchOptions): Promise<MetaInsightsResult> => {
@@ -172,6 +247,23 @@ export const fetchMetaCampaignStatuses = async (
   return campaigns;
 };
 
+const formatDateOnly = (date: Date): string => {
+  const iso = date.toISOString();
+  return iso.split("T")[0] ?? iso;
+};
+
+const META_TIME_RANGE_MONTH_LIMIT = 37;
+
+const clampToMetaTimeRangeLimit = (requestedFrom: Date, today: Date): Date => {
+  const earliestAllowed = new Date(today);
+  earliestAllowed.setMonth(earliestAllowed.getMonth() - META_TIME_RANGE_MONTH_LIMIT);
+  earliestAllowed.setDate(earliestAllowed.getDate() + 1); // stay strictly inside Meta's 37-month window
+  if (requestedFrom < earliestAllowed) {
+    return earliestAllowed;
+  }
+  return requestedFrom;
+};
+
 export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
   switch (periodKey) {
     case "today":
@@ -182,9 +274,263 @@ export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
       return { preset: "last_7d" };
     case "month":
       return { preset: "last_30d" };
-    case "max":
-      return { preset: "lifetime" };
+    case "max": {
+      const today = new Date();
+      const from = clampToMetaTimeRangeLimit(new Date(0), today);
+      return { preset: "time_range", from: formatDateOnly(from), to: formatDateOnly(today) };
+    }
     default:
       return { preset: "today" };
   }
+};
+
+interface MetaLeadFetchOptions {
+  accountId: string;
+  accessToken: string;
+  limit?: number;
+  since?: Date;
+}
+
+const buildLeadUrl = (nodeId: string, options: MetaLeadFetchOptions, cursor?: string): URL => {
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${nodeId}/leads`);
+  url.searchParams.set("access_token", options.accessToken);
+  url.searchParams.set("fields", ["id", "created_time", "campaign_name", "adset_name", "ad_name", "field_data"].join(","));
+  url.searchParams.set("limit", "100");
+  if (cursor) {
+    url.searchParams.set("after", cursor);
+  }
+  if (options.since) {
+    const sinceTs = Math.floor(options.since.getTime() / 1000);
+    if (Number.isFinite(sinceTs)) {
+      url.searchParams.set("filtering", JSON.stringify([{ field: "time_created", operator: "GREATER_THAN", value: sinceTs }]));
+    }
+  }
+  return url;
+};
+
+const normaliseLeadRecord = (record: Record<string, unknown>): MetaLeadRecord | null => {
+  const idValue = record.id ?? record["id"];
+  if (typeof idValue !== "string" || !idValue.trim()) {
+    return null;
+  }
+  return {
+    id: idValue.trim(),
+    created_time: typeof record.created_time === "string" ? record.created_time : null,
+    campaign_name: typeof record.campaign_name === "string" ? record.campaign_name : null,
+    adset_name: typeof record.adset_name === "string" ? record.adset_name : null,
+    ad_name: typeof record.ad_name === "string" ? record.ad_name : null,
+    field_data: Array.isArray(record.field_data) ? (record.field_data as MetaLeadFieldValue[]) : null,
+  } satisfies MetaLeadRecord;
+};
+
+const fetchLeadGenForms = async (nodeId: string, accessToken: string): Promise<string[]> => {
+  const forms: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${nodeId}/leadgen_forms`);
+    url.searchParams.set("access_token", accessToken);
+    url.searchParams.set("limit", "100");
+    url.searchParams.set("fields", "id");
+    if (cursor) {
+      url.searchParams.set("after", cursor);
+    }
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Meta leadgen forms request failed with ${response.status}: ${errorBody}`);
+    }
+    const payload = (await response.json()) as {
+      data?: Array<{ id?: string }>;
+      paging?: { cursors?: { after?: string | null } };
+    };
+    if (Array.isArray(payload.data)) {
+      for (const entry of payload.data) {
+        if (entry && typeof entry.id === "string" && entry.id.trim()) {
+          forms.push(entry.id.trim());
+        }
+      }
+    }
+    cursor = payload.paging?.cursors?.after ?? undefined;
+  } while (cursor);
+  return forms;
+};
+
+interface MetaPageRecord {
+  id: string;
+  accessToken?: string;
+}
+
+const normaliseId = (value: unknown): string | null => {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return null;
+};
+
+const buildManagedPagesUrl = (accessToken: string, after?: string | null): URL => {
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/me/accounts`);
+  url.searchParams.set("access_token", accessToken);
+  url.searchParams.set("fields", "id,name,access_token");
+  url.searchParams.set("limit", "100");
+  if (after) {
+    url.searchParams.set("after", after);
+  }
+  return url;
+};
+
+const fetchManagedPages = async (accessToken: string): Promise<MetaPageRecord[]> => {
+  const pages: MetaPageRecord[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = buildManagedPagesUrl(accessToken, cursor);
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Meta managed pages request failed with ${response.status}: ${errorBody}`);
+    }
+    const payload = (await response.json()) as {
+      data?: Array<{ id?: string | number; access_token?: string }>;
+      paging?: { cursors?: { after?: string | null } };
+    };
+    if (Array.isArray(payload.data)) {
+      for (const entry of payload.data) {
+        const id = normaliseId(entry?.id);
+        if (!id) {
+          continue;
+        }
+        pages.push({ id, accessToken: typeof entry?.access_token === "string" ? entry.access_token : undefined });
+      }
+    }
+    cursor = payload.paging?.cursors?.after ?? undefined;
+  } while (cursor);
+  return pages;
+};
+
+const extractPromotedPageIds = (campaigns: Record<string, unknown>[]): string[] => {
+  const ids = new Set<string>();
+  for (const campaign of campaigns) {
+    const promoted = campaign?.promoted_object;
+    if (!promoted || typeof promoted !== "object") {
+      continue;
+    }
+    const pageId = normaliseId((promoted as Record<string, unknown>).page_id);
+    if (pageId) {
+      ids.add(pageId);
+    }
+  }
+  return Array.from(ids);
+};
+
+const fetchLeadGenFormsViaPages = async (accountId: string, accessToken: string): Promise<string[]> => {
+  const campaigns = await fetchMetaCampaignStatuses(accountId, accessToken);
+  const pageIds = extractPromotedPageIds(campaigns);
+  if (pageIds.length === 0) {
+    return [];
+  }
+  const managedPages = await fetchManagedPages(accessToken);
+  const tokenByPageId = managedPages.reduce((map, page) => {
+    if (page.accessToken) {
+      map.set(page.id, page.accessToken);
+    }
+    return map;
+  }, new Map<string, string>());
+  const forms = new Set<string>();
+  for (const pageId of pageIds) {
+    const token = tokenByPageId.get(pageId) ?? accessToken;
+    try {
+      const pageForms = await fetchLeadGenForms(pageId, token);
+      pageForms.forEach((formId) => forms.add(formId));
+    } catch (error) {
+      console.warn(`[meta] Failed to load leadgen forms for page ${pageId}: ${(error as Error).message}`);
+    }
+  }
+  return Array.from(forms);
+};
+
+const fetchLeadsForNode = async (
+  nodeId: string,
+  options: MetaLeadFetchOptions,
+  limit?: number,
+): Promise<MetaLeadRecord[]> => {
+  const collected: MetaLeadRecord[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = buildLeadUrl(nodeId, options, cursor);
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Meta leads request failed with ${response.status}: ${errorBody}`);
+    }
+    const payload = (await response.json()) as {
+      data?: Record<string, unknown>[];
+      paging?: { cursors?: { after?: string | null } };
+    };
+    if (Array.isArray(payload.data)) {
+      for (const entry of payload.data) {
+        if (entry && typeof entry === "object") {
+          const normalised = normaliseLeadRecord(entry as Record<string, unknown>);
+          if (normalised) {
+            collected.push(normalised);
+          }
+        }
+      }
+    }
+    cursor = payload.paging?.cursors?.after ?? undefined;
+    if (limit && collected.length >= limit) {
+      return collected.slice(0, limit);
+    }
+  } while (cursor);
+  return limit ? collected.slice(0, limit) : collected;
+};
+
+export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<MetaLeadRecord[]> => {
+  if (!options.accountId) {
+    throw new DataValidationError("Meta Ads account id is required for leads");
+  }
+  if (!options.accessToken) {
+    throw new DataValidationError("Meta access token is required for leads");
+  }
+  let primaryError: Error | null = null;
+  let fallbackError: Error | null = null;
+  let fallbackAttempted = false;
+  let forms: string[] = [];
+  try {
+    forms = await fetchLeadGenForms(options.accountId, options.accessToken);
+  } catch (error) {
+    primaryError = error as Error;
+  }
+  if (forms.length === 0) {
+    fallbackAttempted = true;
+    try {
+      forms = await fetchLeadGenFormsViaPages(options.accountId, options.accessToken);
+    } catch (error) {
+      fallbackError = error as Error;
+    }
+  }
+  if (forms.length === 0) {
+    if (fallbackError) {
+      throw fallbackError;
+    }
+    if (primaryError && !fallbackAttempted) {
+      throw primaryError;
+    }
+    return [];
+  }
+  const limit = options.limit;
+  const collected: MetaLeadRecord[] = [];
+  for (const formId of forms) {
+    const remaining = typeof limit === "number" ? Math.max(limit - collected.length, 0) : undefined;
+    if (remaining === 0) {
+      break;
+    }
+    const leads = await fetchLeadsForNode(formId, options, remaining);
+    collected.push(...leads);
+    if (limit && collected.length >= limit) {
+      break;
+    }
+  }
+  return limit ? collected.slice(0, limit) : collected;
 };

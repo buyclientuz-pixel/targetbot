@@ -7,8 +7,11 @@ const { createRouter } = await import("../../src/worker/router.ts");
 const { registerAdminRoutes } = await import("../../src/routes/admin.ts");
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { getProject } = await import("../../src/domain/projects.ts");
-const { ensureProjectSettings } = await import("../../src/domain/project-settings.ts");
+const { ensureProjectSettings, createDefaultProjectSettings, upsertProjectSettings } = await import(
+  "../../src/domain/project-settings.ts",
+);
 const { getMetaToken } = await import("../../src/domain/meta-tokens.ts");
+const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 
 const ADMIN_KEY = "secret";
 
@@ -128,6 +131,69 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   );
   const emptyList = await readData<{ projects: Array<{ id: string }> }>(afterDelete);
   assert.equal(emptyList.projects.length, 0);
+
+  await execution.flush();
+});
+
+test("admin portal routes manage lifecycle", async () => {
+  const env = createEnv();
+  const router = createRouter();
+  registerAdminRoutes(router);
+  const execution = new TestExecutionContext();
+  const kv = new KvClient(env.KV);
+
+  const projectRecord: import("../../src/domain/spec/project.ts").ProjectRecord = {
+    id: "portal_case",
+    name: "Portal Case",
+    ownerId: 42,
+    adAccountId: "act_portal",
+    chatId: null,
+    portalUrl: "",
+    settings: {
+      currency: "USD",
+      timezone: "Asia/Tashkent",
+      kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
+    },
+  };
+  await putProjectRecord(kv, projectRecord);
+  const defaults = createDefaultProjectSettings(projectRecord.id);
+  await upsertProjectSettings(kv, { ...defaults, portalEnabled: false });
+
+  const createResponse = await router.dispatch(
+    createAdminRequest(`https://example.com/api/admin/projects/${projectRecord.id}/portal/create`, { method: "POST" }),
+    env,
+    execution,
+  );
+  assert.equal(createResponse.status, 200);
+  const createdPortal = await readData<{ portal: { portalUrl: string; enabled: boolean } }>(createResponse);
+  assert.ok(createdPortal.portal.portalUrl.endsWith(`/p/${projectRecord.id}`));
+  assert.equal(createdPortal.portal.enabled, true);
+
+  const toggleResponse = await router.dispatch(
+    createAdminRequest(`https://example.com/api/admin/projects/${projectRecord.id}/portal/toggle`, { method: "POST" }),
+    env,
+    execution,
+  );
+  assert.equal(toggleResponse.status, 200);
+  const toggled = await readData<{ portal: { enabled: boolean } }>(toggleResponse);
+  assert.equal(toggled.portal.enabled, false);
+
+  const syncResponse = await router.dispatch(
+    createAdminRequest(`https://example.com/api/admin/projects/${projectRecord.id}/portal/sync`, { method: "POST" }),
+    env,
+    execution,
+  );
+  assert.equal(syncResponse.status, 422);
+
+  const deleteResponse = await router.dispatch(
+    createAdminRequest(`https://example.com/api/admin/projects/${projectRecord.id}/portal`, { method: "DELETE" }),
+    env,
+    execution,
+  );
+  assert.equal(deleteResponse.status, 200);
+  const deleted = await readData<{ portal: { portalUrl: string; enabled: boolean } }>(deleteResponse);
+  assert.equal(deleted.portal.portalUrl, "");
+  assert.equal(deleted.portal.enabled, false);
 
   await execution.flush();
 });

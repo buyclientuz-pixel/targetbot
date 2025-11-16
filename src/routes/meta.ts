@@ -9,6 +9,7 @@ import { parseMetaWebhookPayload } from "../services/meta-webhook";
 import { dispatchProjectMessage } from "../services/project-messaging";
 import { resolveTelegramToken } from "../config/telegram";
 import { resolveWorkerBaseUrl } from "../config/worker";
+import { mergeProjectLeadsList } from "../services/project-leads-list";
 import type { Router } from "../worker/router";
 import type { KvClient } from "../infra/kv";
 
@@ -229,6 +230,7 @@ export const registerMetaRoutes = (
       const duplicate = Boolean(existing);
 
       await saveLead(context.r2, lead);
+      await mergeProjectLeadsList(context.r2, projectId, [lead]).catch(() => {});
 
       let notificationsDispatched = false;
       if (!duplicate) {

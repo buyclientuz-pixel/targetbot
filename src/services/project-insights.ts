@@ -15,8 +15,6 @@ import {
   fetchMetaCampaignStatuses,
   resolveDatePreset,
   summariseMetaInsights,
-  countLeadsFromActions,
-  countMessagesFromActions,
 } from "./meta-api";
 import { DataValidationError } from "../errors";
 import type { MetaInsightsRawResponse } from "./meta-api";
@@ -31,7 +29,7 @@ interface CampaignStatusPayload {
 
 type CampaignStatusEntry = MetaCacheEntry<CampaignStatusPayload>;
 
-const CACHE_TTL_SECONDS = 60;
+const CACHE_TTL_SECONDS = 600;
 const CAMPAIGN_STATUS_TTL_SECONDS = 300;
 
 const toIsoDate = (date: Date): string => date.toISOString().split("T")[0] ?? date.toISOString();
@@ -178,6 +176,12 @@ export const loadProjectSummary = async (
     impressions: requestedInsights.payload.summary.impressions,
     clicks: requestedInsights.payload.summary.clicks,
     leads: requestedInsights.payload.summary.leads,
+    messages: requestedInsights.payload.summary.messages,
+    purchases: requestedInsights.payload.summary.purchases,
+    addToCart: requestedInsights.payload.summary.addToCart,
+    calls: requestedInsights.payload.summary.calls,
+    registrations: requestedInsights.payload.summary.registrations,
+    engagement: requestedInsights.payload.summary.engagement,
     leadsToday: todayInsights.payload.summary.leads,
     leadsTotal: lifetimeInsights.payload.summary.leads,
     cpa:
@@ -251,6 +255,11 @@ export interface CampaignRow {
   clicks: number;
   leads: number;
   messages: number;
+  purchases: number;
+  addToCart: number;
+  calls: number;
+  registrations: number;
+  engagement: number;
   cpa: number | null;
 }
 
@@ -264,10 +273,30 @@ export const mapCampaignRows = (raw: MetaInsightsRawResponse): CampaignRow[] => 
     const spend = summary.spend;
     const impressions = summary.impressions;
     const clicks = summary.clicks;
-    const leads = countLeadsFromActions(record.actions);
-    const messages = countMessagesFromActions(record.actions);
+    const leads = summary.leads;
+    const messages = summary.messages;
+    const purchases = summary.purchases;
+    const addToCart = summary.addToCart;
+    const calls = summary.calls;
+    const registrations = summary.registrations;
+    const engagement = summary.engagement;
     const cpa = leads > 0 ? spend / leads : null;
-    return { id, name, objective, spend, impressions, clicks, leads, messages, cpa };
+    return {
+      id,
+      name,
+      objective,
+      spend,
+      impressions,
+      clicks,
+      leads,
+      messages,
+      purchases,
+      addToCart,
+      calls,
+      registrations,
+      engagement,
+      cpa,
+    } satisfies CampaignRow;
   });
 };
 

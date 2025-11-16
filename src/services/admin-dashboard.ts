@@ -9,6 +9,9 @@ import { getUserSettingsRecord } from "../domain/spec/user-settings";
 import { getFbAuthRecord, type FbAuthRecord } from "../domain/spec/fb-auth";
 import { getProjectLeadsList } from "../domain/spec/project-leads";
 import { getPaymentsHistoryDocument } from "../domain/spec/payments-history";
+import { ensureProjectSettings } from "../domain/project-settings";
+import { getPortalSyncState, type PortalSyncState } from "../domain/portal-sync";
+import { translateMetaObjective } from "./meta-objectives";
 
 const stripPrefix = (key: string, prefix: string): string =>
   key.startsWith(prefix) ? key.slice(prefix.length) : key;
@@ -98,6 +101,10 @@ export interface AdminProjectDetail extends ProjectBundle {
   chatTitle: string | null;
   createdAt: string | null;
   updatedAt: string | null;
+  portal: {
+    enabled: boolean;
+    sync: PortalSyncState;
+  };
 }
 
 export const loadAdminProjectDetail = async (
@@ -110,11 +117,25 @@ export const loadAdminProjectDetail = async (
   const chatRecord = bundle.project.chatId
     ? await getOccupiedChatRecord(kv, bundle.project.chatId).catch(() => null)
     : null;
+  const settings = await ensureProjectSettings(kv, projectId);
+  const portalSync = await getPortalSyncState(kv, projectId);
+  const campaignsWithLabels = {
+    ...bundle.campaigns,
+    campaigns: bundle.campaigns.campaigns.map((campaign) => ({
+      ...campaign,
+      objectiveLabel: translateMetaObjective(campaign.objective),
+    })),
+  };
   return {
     ...bundle,
+    campaigns: campaignsWithLabels,
     chatTitle: chatRecord?.chatTitle ?? null,
     createdAt: meta?.createdAt ?? null,
     updatedAt: meta?.updatedAt ?? null,
+    portal: {
+      enabled: settings.portalEnabled,
+      sync: portalSync,
+    },
   } satisfies AdminProjectDetail;
 };
 

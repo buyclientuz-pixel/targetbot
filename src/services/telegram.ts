@@ -52,17 +52,6 @@ interface TelegramWebhookInfo {
   last_error_message?: string;
 }
 
-export interface CreateForumTopicOptions {
-  chatId: number;
-  name: string;
-  iconColor?: number;
-}
-
-interface TelegramForumTopic {
-  message_thread_id: number;
-  name: string;
-}
-
 interface TelegramResponse<T> {
   ok: boolean;
   result?: T;
@@ -324,48 +313,3 @@ export const setWebhook = async (token: string, webhookUrl: string): Promise<boo
   }
 };
 
-export const createForumTopic = async (
-  token: string,
-  options: CreateForumTopicOptions,
-): Promise<TelegramForumTopic | null> => {
-  const url = `https://api.telegram.org/bot${token}/createForumTopic`;
-  const payload: Record<string, unknown> = {
-    chat_id: options.chatId,
-    name: options.name,
-  };
-  if (options.iconColor != null) {
-    payload.icon_color = options.iconColor;
-  }
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  const bodyText = await response.text();
-  if (!response.ok) {
-    throw new TelegramError(
-      `Telegram createForumTopic failed with status ${response.status}`,
-      response.status,
-      bodyText,
-    );
-  }
-
-  try {
-    const data = JSON.parse(bodyText) as TelegramResponse<TelegramForumTopic>;
-    if (!data.ok) {
-      throw new TelegramError(
-        `Telegram API error: ${data.description ?? "unknown"}`,
-        response.status,
-        bodyText,
-      );
-    }
-    return data.result ?? null;
-  } catch (error) {
-    if (error instanceof TelegramError) {
-      throw error;
-    }
-    throw new TelegramError("Failed to parse Telegram response", response.status, bodyText);
-  }
-};

@@ -19,6 +19,8 @@ test("fb auth record matches schema", () => {
     user_id: 7623982602,
     access_token: "EAAG",
     expires_at: "2026-01-13T08:23:00Z",
+    facebook_user_id: "fb_7623982602",
+    facebook_name: "Meta User",
     ad_accounts: [
       { id: "act_1", name: "birlash", currency: "USD", account_status: 1 },
       { id: "act_2", name: "test", currency: "USD", account_status: 2 },
@@ -28,6 +30,8 @@ test("fb auth record matches schema", () => {
   const parsedSnake = parseFbAuthRecord(snakeCase);
   assert.equal(parsedSnake.userId, 7623982602);
   assert.equal(parsedSnake.adAccounts.length, 2);
+  assert.equal(parsedSnake.facebookUserId, "fb_7623982602");
+  assert.equal(parsedSnake.facebookName, "Meta User");
 
   const serialised = serialiseFbAuthRecord(parsedSnake);
   assert.equal(serialised.user_id, 7623982602);
@@ -35,17 +39,23 @@ test("fb auth record matches schema", () => {
   assert.equal(serialised.access_token, "EAAG");
   assert.equal(serialised.longToken, "EAAG");
   assert.equal(serialised.accounts?.length, 2);
+  assert.equal(serialised.facebook_user_id, "fb_7623982602");
+  assert.equal(serialised.facebook_name, "Meta User");
 
   const camelCase = {
     userId: 100,
     longToken: "token",
     expiresAt: "2026-01-01T00:00:00Z",
     accounts: [{ id: "act_1", name: "Test", currency: "USD", account_status: 1 }],
+    facebookUserId: "fb_100",
+    facebookName: "FB Test",
   };
   const parsedCamel = parseFbAuthRecord(camelCase);
   assert.equal(parsedCamel.userId, 100);
   assert.equal(parsedCamel.accessToken, "token");
   assert.equal(parsedCamel.adAccounts[0]?.name, "Test");
+  assert.equal(parsedCamel.facebookUserId, "fb_100");
+  assert.equal(parsedCamel.facebookName, "FB Test");
 });
 
 test("project record round trip", () => {

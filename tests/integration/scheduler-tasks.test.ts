@@ -51,6 +51,12 @@ test(
   async () => {
     const kvNamespace = new MemoryKVNamespace();
     const kv = new KvClient(kvNamespace);
+    await putProject(kv, createProject({
+      id: "proj-auto",
+      name: "Auto Reports",
+      adsAccountId: "act_1",
+      ownerTelegramId: 777000,
+    }));
     await putProjectRecord(kv, {
       id: "proj-auto",
       name: "Auto Reports",
@@ -80,6 +86,12 @@ test(
         impressions: 1500,
         clicks: 120,
         leads: 4,
+        messages: 2,
+        purchases: 1,
+        addToCart: 0,
+        calls: 0,
+        registrations: 0,
+        engagement: 0,
         leadsToday: 4,
         leadsTotal: 200,
         cpa: 5,
@@ -89,6 +101,59 @@ test(
       source: {},
     }, 3600);
     await saveMetaCache(kv, summaryEntry);
+    for (const periodKey of ["yesterday", "week", "month"]) {
+      const entry = createMetaCacheEntry(
+        "proj-auto",
+        `summary:${periodKey}`,
+        { from: "2024-12-25", to: "2024-12-31" },
+        {
+          periodKey,
+          metrics: {
+            spend: 20,
+            impressions: 1500,
+            clicks: 120,
+            leads: 4,
+            messages: 2,
+            purchases: 1,
+            addToCart: 0,
+            calls: 0,
+            registrations: 0,
+            engagement: 0,
+            leadsToday: 4,
+            leadsTotal: 200,
+            cpa: 5,
+            spendToday: 20,
+            cpaToday: 5,
+          },
+          source: {},
+        },
+        3600,
+      );
+      await saveMetaCache(kv, entry);
+    }
+
+    const campaignsEntry = createMetaCacheEntry(
+      "proj-auto",
+      "campaigns:today",
+      { from: "2025-01-01", to: "2025-01-01" },
+      {
+        data: [
+          {
+            campaign_id: "cmp-auto",
+            campaign_name: "Авто",
+            spend: "20",
+            impressions: "800",
+            clicks: "100",
+            actions: [
+              { action_type: "lead", value: "4" },
+              { action_type: "onsite_conversion.messaging_conversation_started_7d", value: "2" },
+            ],
+          },
+        ],
+      },
+      3600,
+    );
+    await saveMetaCache(kv, campaignsEntry);
 
     const now = new Date("2025-01-01T12:02:00.000Z");
     const telegram = stubTelegramFetch();
@@ -101,7 +166,12 @@ test(
 
     assert.equal(telegram.calls.length, 1);
     assert.ok(telegram.calls[0].url.includes("sendMessage"));
-    assert.match(String(telegram.calls[0].body.text ?? ""), /Автоотчёт/);
+    const messageText = String(telegram.calls[0].body.text ?? "");
+    assert.match(messageText, /📊 Отчёт/);
+    assert.match(messageText, /Топ кампании/);
+    assert.deepEqual(telegram.calls[0].body.reply_markup, {
+      inline_keyboard: [[{ text: "Открыть портал", url: "https://th-reports.buyclientuz.workers.dev/p/proj-auto" }]],
+    });
     assert.equal(telegram.calls[0].body.chat_id, 777000);
 
     const state = await kv.getJson<{ slots?: Record<string, string | null> }>(KV_KEYS.reportState("proj-auto"));
@@ -312,7 +382,27 @@ test(
       project.id,
       "summary:today",
       { from: "2025-01-14", to: "2025-01-14" },
-      { periodKey: "today", metrics: { spend: 1, impressions: 1, clicks: 1, leads: 1, leadsToday: 1, leadsTotal: 1, cpa: 1, spendToday: 1, cpaToday: 1 }, source: {} },
+      {
+        periodKey: "today",
+        metrics: {
+          spend: 1,
+          impressions: 1,
+          clicks: 1,
+          leads: 1,
+          messages: 0,
+          purchases: 0,
+          addToCart: 0,
+          calls: 0,
+          registrations: 0,
+          engagement: 0,
+          leadsToday: 1,
+          leadsTotal: 1,
+          cpa: 1,
+          spendToday: 1,
+          cpaToday: 1,
+        },
+        source: {},
+      },
       3600,
     );
     await saveMetaCache(kv, freshEntry);
@@ -321,7 +411,27 @@ test(
       project.id,
       "summary:week",
       { from: "2025-01-07", to: "2025-01-13" },
-      { periodKey: "week", metrics: { spend: 1, impressions: 1, clicks: 1, leads: 1, leadsToday: 1, leadsTotal: 1, cpa: 1, spendToday: 1, cpaToday: 1 }, source: {} },
+      {
+        periodKey: "week",
+        metrics: {
+          spend: 1,
+          impressions: 1,
+          clicks: 1,
+          leads: 1,
+          messages: 0,
+          purchases: 0,
+          addToCart: 0,
+          calls: 0,
+          registrations: 0,
+          engagement: 0,
+          leadsToday: 1,
+          leadsTotal: 1,
+          cpa: 1,
+          spendToday: 1,
+          cpaToday: 1,
+        },
+        source: {},
+      },
       3600,
     );
     staleEntry.fetchedAt = new Date("2025-01-05T00:00:00.000Z").toISOString();

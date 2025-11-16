@@ -1,7 +1,7 @@
-import { ensureProjectSettings, type ProjectSettings, upsertProjectSettings } from "../domain/project-settings";
+import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
 import type { Project } from "../domain/projects";
 import type { KvClient } from "../infra/kv";
-import { createForumTopic, sendTelegramMessage } from "./telegram";
+import { sendTelegramMessage } from "./telegram";
 
 export interface DispatchProjectMessageOptions {
   kv: KvClient;
@@ -11,6 +11,7 @@ export interface DispatchProjectMessageOptions {
   text: string;
   route?: ProjectSettings["alerts"]["route"];
   parseMode?: "MarkdownV2" | "Markdown" | "HTML";
+  replyMarkup?: unknown;
 }
 
 export interface DispatchResult {
@@ -27,37 +28,6 @@ const ensureSettings = async (
     return settings;
   }
   return ensureProjectSettings(kv, project.id);
-};
-
-const ensureTopic = async (
-  kv: KvClient,
-  token: string | undefined,
-  project: Project,
-  settings: ProjectSettings,
-): Promise<ProjectSettings> => {
-  if (!token || settings.chatId == null || settings.topicId != null) {
-    return settings;
-  }
-
-  try {
-    const result = await createForumTopic(token, {
-      chatId: settings.chatId,
-      name: "Таргет",
-      iconColor: 0x4a90e2,
-    });
-    if (!result?.message_thread_id) {
-      return settings;
-    }
-    const updated: ProjectSettings = {
-      ...settings,
-      topicId: result.message_thread_id,
-      updatedAt: new Date().toISOString(),
-    };
-    await upsertProjectSettings(kv, updated);
-    return updated;
-  } catch {
-    return settings;
-  }
 };
 
 const shouldSendToChat = (route: ProjectSettings["alerts"]["route"]): boolean => {
@@ -79,23 +49,19 @@ export const dispatchProjectMessage = async (
     return { settings: baseSettings, delivered: { chat: false, admin: false } };
   }
 
-  let settings = baseSettings;
-  if (shouldSendToChat(route)) {
-    settings = await ensureTopic(options.kv, token, options.project, baseSettings);
-  }
-
   const tasks: Promise<void>[] = [];
   let chatDelivered = false;
   let adminDelivered = false;
 
-  if (shouldSendToChat(route) && settings.chatId != null) {
+  if (shouldSendToChat(route) && baseSettings.chatId != null) {
     tasks.push(
       sendTelegramMessage(token, {
-        chatId: settings.chatId,
-        messageThreadId: settings.topicId ?? undefined,
+        chatId: baseSettings.chatId,
+        messageThreadId: baseSettings.topicId ?? undefined,
         text: options.text,
         parseMode: options.parseMode ?? "HTML",
         disableWebPagePreview: true,
+        replyMarkup: options.replyMarkup,
       })
         .then(() => {
           chatDelivered = true;
@@ -111,6 +77,7 @@ export const dispatchProjectMessage = async (
         text: options.text,
         parseMode: options.parseMode ?? "HTML",
         disableWebPagePreview: true,
+        replyMarkup: options.replyMarkup,
       })
         .then(() => {
           adminDelivered = true;
@@ -123,5 +90,5 @@ export const dispatchProjectMessage = async (
     await Promise.all(tasks);
   }
 
-  return { settings, delivered: { chat: chatDelivered, admin: adminDelivered } };
+  return { settings: baseSettings, delivered: { chat: chatDelivered, admin: adminDelivered } };
 };

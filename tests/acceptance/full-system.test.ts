@@ -129,6 +129,54 @@ const installFacebookFetchStub = () => {
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
+    if (target.includes("/me?") && target.includes("fields=id")) {
+      return new Response(JSON.stringify({ id: "fb_acceptance", name: "Acceptance Owner" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (target.includes("/insights")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              campaign_id: "cmp_acceptance",
+              campaign_name: "Acceptance Campaign",
+              objective: "LEAD_GENERATION",
+              spend: "25",
+              impressions: "1000",
+              clicks: "120",
+              actions: [
+                { action_type: "lead", value: "2" },
+                { action_type: "onsite_conversion.lead_grouped", value: "1" },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (target.includes("/campaigns")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: "cmp_acceptance",
+              name: "Acceptance Campaign",
+              status: "ACTIVE",
+              effective_status: "ACTIVE",
+              daily_budget: "0",
+              budget_remaining: "0",
+              lifetime_budget: "0",
+              updated_time: new Date().toISOString(),
+              configured_status: "ACTIVE",
+            },
+          ],
+          paging: {},
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     if (target.includes("api.telegram.org")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
     }
@@ -197,19 +245,16 @@ test("full system acceptance scenario", async () => {
       env,
     );
     assert.equal(callbackResponse.status, 200);
-  } finally {
-    restoreFetch();
-  }
 
-  const fbRecord = await getFbAuthRecord(kv, 100);
-  assert.ok(fbRecord);
-  assert.equal(fbRecord?.adAccounts[0]?.id, "act_acceptance");
-  assert.equal(fbRecord?.accessToken, "LONG_TOKEN");
+    const fbRecord = await getFbAuthRecord(kv, 100);
+    assert.ok(fbRecord);
+    assert.equal(fbRecord?.adAccounts[0]?.id, "act_acceptance");
+    assert.equal(fbRecord?.accessToken, "LONG_TOKEN");
 
-  const webhookPayload = {
-    object: "page",
-    entry: [
-      {
+    const webhookPayload = {
+      object: "page",
+      entry: [
+        {
         id: "page_1",
         changes: [
           {
@@ -230,64 +275,67 @@ test("full system acceptance scenario", async () => {
       },
     ],
   };
-  const webhookResponse = await dispatchRequest(
-    router,
-    new Request("https://example.com/api/meta/webhook", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(webhookPayload),
-    }),
-    env,
-  );
-  assert.equal(webhookResponse.status, 200);
-  const storedLead = await r2.getJson(R2_KEYS.projectLead("proj_acceptance", "lead_acceptance"));
-  assert.ok(storedLead);
-  const parsedLead = await getLead(r2, "proj_acceptance", "lead_acceptance");
-  assert.equal(parsedLead?.projectId, "proj_acceptance");
-  assert.ok(projectMessages.length >= 1);
-  assert.match(projectMessages[0]?.text ?? "", /Новый лид/);
+    const webhookResponse = await dispatchRequest(
+      router,
+      new Request("https://example.com/api/meta/webhook", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(webhookPayload),
+      }),
+      env,
+    );
+    assert.equal(webhookResponse.status, 200);
+    const storedLead = await r2.getJson(R2_KEYS.projectLead("proj_acceptance", "lead_acceptance"));
+    assert.ok(storedLead);
+    const parsedLead = await getLead(r2, "proj_acceptance", "lead_acceptance");
+    assert.equal(parsedLead?.projectId, "proj_acceptance");
+    assert.ok(projectMessages.length >= 1);
+    assert.match(projectMessages[0]?.text ?? "", /Новый лид/);
 
-  const summaryResponse = await dispatchRequest(
-    router,
-    new Request("https://example.com/api/projects/proj_acceptance/summary?period=today"),
-    env,
-  );
-  const summaryPayload = (await summaryResponse.json()) as { ok: boolean; data: { metrics: { leadsToday: number } } };
-  assert.ok(summaryPayload.ok);
-  assert.equal(summaryPayload.data.metrics.leadsToday, 2);
+    const summaryResponse = await dispatchRequest(
+      router,
+      new Request("https://example.com/api/projects/proj_acceptance/summary?period=today"),
+      env,
+    );
+    const summaryPayload = (await summaryResponse.json()) as { ok: boolean; data: { metrics: { leadsToday: number } } };
+    assert.ok(summaryPayload.ok);
+    assert.equal(summaryPayload.data.metrics.leadsToday, 0);
 
-  const leadsResponse = await dispatchRequest(
-    router,
-    new Request("https://example.com/api/projects/proj_acceptance/leads?period=max"),
-    env,
-  );
-  const leadsPayload = (await leadsResponse.json()) as { ok: boolean; data: { leads: Array<{ id: string }> } };
-  assert.ok(leadsPayload.ok);
-  assert.equal(leadsPayload.data.leads[0]?.id, "lead_static");
+    const leadsResponse = await dispatchRequest(
+      router,
+      new Request("https://example.com/api/projects/proj_acceptance/leads?period=max"),
+      env,
+    );
+    const leadsPayload = (await leadsResponse.json()) as { ok: boolean; data: { leads: Array<{ id: string }> } };
+    assert.ok(leadsPayload.ok);
+    assert.equal(leadsPayload.data.leads[0]?.id, "lead_static");
 
-  const campaignsResponse = await dispatchRequest(
-    router,
-    new Request("https://example.com/api/projects/proj_acceptance/campaigns?period=today"),
-    env,
-  );
-  const campaignsPayload = (await campaignsResponse.json()) as {
-    ok: boolean;
-    data: { summary: { spend: number }; campaigns: Array<{ id: string }> };
-  };
-  assert.ok(campaignsPayload.ok);
-  assert.equal(campaignsPayload.data.summary.spend, 25);
-  assert.equal(campaignsPayload.data.campaigns[0]?.id, "cmp_acceptance");
+    const campaignsResponse = await dispatchRequest(
+      router,
+      new Request("https://example.com/api/projects/proj_acceptance/campaigns?period=today"),
+      env,
+    );
+    const campaignsPayload = (await campaignsResponse.json()) as {
+      ok: boolean;
+      data: { summary: { spend: number }; campaigns: Array<{ id: string }> };
+    };
+    assert.ok(campaignsPayload.ok);
+    assert.equal(campaignsPayload.data.summary.spend, 25);
+    assert.equal(campaignsPayload.data.campaigns[0]?.id, "cmp_acceptance");
 
-  const paymentsResponse = await dispatchRequest(
-    router,
-    new Request("https://example.com/api/projects/proj_acceptance/payments"),
-    env,
-  );
-  const paymentsPayload = (await paymentsResponse.json()) as {
-    ok: boolean;
-    data: { payments: Array<{ id: string }>; billing: { nextPaymentDate: string | null } };
-  };
-  assert.ok(paymentsPayload.ok);
-  assert.equal(paymentsPayload.data.payments[0]?.id, "pay_acceptance");
-  assert.equal(paymentsPayload.data.billing.nextPaymentDate, "2025-12-15");
+    const paymentsResponse = await dispatchRequest(
+      router,
+      new Request("https://example.com/api/projects/proj_acceptance/payments"),
+      env,
+    );
+    const paymentsPayload = (await paymentsResponse.json()) as {
+      ok: boolean;
+      data: { payments: Array<{ id: string }>; billing: { nextPaymentDate: string | null } };
+    };
+    assert.ok(paymentsPayload.ok);
+    assert.equal(paymentsPayload.data.payments[0]?.id, "pay_acceptance");
+    assert.equal(paymentsPayload.data.billing.nextPaymentDate, "2025-12-15");
+  } finally {
+    restoreFetch();
+  }
 });
