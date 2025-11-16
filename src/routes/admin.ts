@@ -177,33 +177,56 @@ const renderAdminHtml = (workerUrl: string | null): string => {
       <style>
         :root {
           color-scheme: dark;
-          --bg: #0f1115;
-          --panel: #191c24;
+          --bg: #05070d;
+          --surface: #0d111a;
+          --panel: #141a26;
           --border: rgba(255, 255, 255, 0.08);
-          --text: #f6f7fb;
-          --muted: #99a2b4;
-          --accent: #00a86b;
+          --muted: #9aa6bf;
+          --text: #f8f9ff;
+          --accent: #4cf1c0;
+          --danger: #ff6b6b;
+        }
+        * {
+          box-sizing: border-box;
         }
         body {
           margin: 0;
+          min-height: 100vh;
           font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
           background: var(--bg);
           color: var(--text);
         }
-        .admin-app {
+        a {
+          color: var(--accent);
+        }
+        button {
+          font: inherit;
+        }
+        .admin-shell {
           display: flex;
           min-height: 100vh;
         }
-        .admin-sidebar {
-          width: 240px;
-          background: #0b0d12;
-          padding: 24px 16px;
+        .admin-shell__sidebar {
+          width: 260px;
+          background: var(--surface);
           border-right: 1px solid var(--border);
+          padding: 24px 20px;
+          display: flex;
+          flex-direction: column;
+          gap: 24px;
         }
         .admin-logo {
-          font-size: 1.1rem;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+        .admin-logo__title {
           font-weight: 600;
-          margin-bottom: 24px;
+          letter-spacing: 0.04em;
+        }
+        .admin-logo__subtitle {
+          font-size: 0.85rem;
+          color: var(--muted);
         }
         .admin-nav {
           display: flex;
@@ -211,64 +234,148 @@ const renderAdminHtml = (workerUrl: string | null): string => {
           gap: 8px;
         }
         .admin-nav__item {
-          background: transparent;
           border: 1px solid transparent;
-          border-radius: 8px;
+          border-radius: 10px;
           padding: 10px 14px;
-          color: var(--text);
+          background: transparent;
+          color: inherit;
           text-align: left;
           cursor: pointer;
           transition: background 0.2s, border 0.2s;
         }
         .admin-nav__item:hover,
         .admin-nav__item--active {
-          background: rgba(0, 168, 107, 0.15);
-          border-color: rgba(0, 168, 107, 0.3);
+          background: rgba(76, 241, 192, 0.15);
+          border-color: rgba(76, 241, 192, 0.35);
         }
-        .admin-main {
+        .admin-sidebar__actions {
+          margin-top: auto;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .admin-shell__content {
           flex: 1;
-          padding: 24px;
+          padding: 32px clamp(16px, 4vw, 48px);
           display: flex;
           flex-direction: column;
           gap: 24px;
         }
         .admin-header {
           display: flex;
+          flex-wrap: wrap;
           justify-content: space-between;
-          align-items: center;
+          gap: 16px;
+          align-items: flex-end;
         }
         .admin-header h1 {
-          margin: 0;
-          font-size: 1.5rem;
-        }
-        .admin-header p {
           margin: 4px 0 0;
+          font-size: clamp(1.4rem, 2vw, 1.8rem);
+        }
+        .admin-status {
+          margin: 0;
           color: var(--muted);
-          font-size: 0.9rem;
-        }
-        .admin-btn {
-          border: 1px solid rgba(255, 255, 255, 0.2);
-          background: transparent;
-          color: var(--text);
-          padding: 8px 14px;
-          border-radius: 8px;
-          cursor: pointer;
-          margin-left: 8px;
-        }
-        .admin-btn--ghost {
-          border-color: var(--border);
         }
         .admin-section {
           background: var(--panel);
           border: 1px solid var(--border);
+          border-radius: 20px;
+          padding: clamp(16px, 3vw, 28px);
+        }
+        .admin-section + .admin-section {
+          margin-top: 16px;
+        }
+        .admin-panel__header {
+          display: flex;
+          justify-content: space-between;
+          gap: 16px;
+          align-items: center;
+        }
+        .admin-panel__header h2,
+        .admin-panel__header h3 {
+          margin: 0;
+        }
+        .admin-btn {
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          padding: 8px 14px;
+          background: transparent;
+          color: inherit;
+          cursor: pointer;
+          transition: border 0.2s, transform 0.2s;
+        }
+        .admin-btn:hover:not(:disabled) {
+          border-color: var(--accent);
+          transform: translateY(-1px);
+        }
+        .admin-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .admin-btn--ghost {
+          border-color: rgba(255, 255, 255, 0.2);
+        }
+        .admin-btn--danger {
+          border-color: rgba(255, 107, 107, 0.6);
+          color: var(--danger);
+        }
+        .muted {
+          color: var(--muted);
+        }
+        .table-wrapper {
+          overflow-x: auto;
+          border: 1px solid rgba(255, 255, 255, 0.05);
           border-radius: 16px;
-          padding: 24px;
+          margin: 12px 0 0;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          min-width: 520px;
+        }
+        th,
+        td {
+          padding: 12px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+          text-align: left;
+        }
+        th {
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: var(--muted);
+        }
+        .form-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 14px 18px;
+          margin-top: 16px;
+        }
+        .form-grid label {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          font-size: 0.85rem;
+          color: var(--muted);
+        }
+        .form-grid input,
+        .form-grid select,
+        .form-grid textarea {
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          border-radius: 10px;
+          padding: 9px 11px;
+          color: inherit;
+          font: inherit;
+        }
+        .grid-full {
+          grid-column: 1 / -1;
         }
         .portal-panel {
+          margin-top: 24px;
           border: 1px dashed rgba(255, 255, 255, 0.2);
-          border-radius: 12px;
-          padding: 16px;
-          margin-bottom: 24px;
+          border-radius: 16px;
+          padding: 18px;
           background: rgba(255, 255, 255, 0.02);
         }
         .portal-panel--disabled {
@@ -276,316 +383,330 @@ const renderAdminHtml = (workerUrl: string | null): string => {
         }
         .portal-status-grid {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-          gap: 8px 16px;
-          margin: 12px 0 16px;
-        }
-        .admin-toolbar {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 12px;
-          margin-bottom: 16px;
-          align-items: flex-end;
-        }
-        .admin-input,
-        .admin-select {
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          border-radius: 8px;
-          padding: 8px 10px;
-          color: var(--text);
-          font: inherit;
-        }
-        .admin-input::placeholder {
-          color: var(--muted);
-        }
-        .admin-actions {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-        }
-        .admin-btn--danger {
-          border-color: rgba(255, 99, 132, 0.6);
-          color: #ff6384;
-        }
-        .section-title {
-          margin-top: 0;
-          margin-bottom: 16px;
-        }
-        table {
-          width: 100%;
-          border-collapse: collapse;
-        }
-        th,
-        td {
-          padding: 10px 8px;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-          text-align: left;
-          font-size: 0.9rem;
-        }
-        tr.is-selected {
-          background: rgba(0, 168, 107, 0.12);
-        }
-        form label {
-          display: flex;
-          flex-direction: column;
-          font-size: 0.85rem;
-          color: var(--muted);
-          gap: 6px;
-        }
-        form input,
-        form select,
-        form textarea {
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          border-radius: 8px;
-          padding: 10px;
-          color: var(--text);
-          font-size: 0.95rem;
-        }
-        form .form-grid {
-          display: grid;
-          gap: 16px;
-        }
-        .grid-2 {
           grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 12px 18px;
+          margin-top: 12px;
         }
-        .grid-full {
-          grid-column: 1 / -1;
+        .portal-status-grid strong {
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+          color: var(--muted);
         }
-        .admin-login {
-          position: fixed;
-          inset: 0;
+        .portal-actions {
           display: flex;
-          align-items: center;
-          justify-content: center;
-          background: rgba(0, 0, 0, 0.7);
-          visibility: hidden;
-          opacity: 0;
-          transition: opacity 0.2s ease;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 16px;
         }
-        .admin-login--visible {
-          visibility: visible;
-          opacity: 1;
+        .projects-grid {
+          display: grid;
+          grid-template-columns: minmax(320px, 1fr) minmax(360px, 2fr);
+          gap: 24px;
+          margin-top: 24px;
         }
-        .admin-login__form {
-          background: var(--panel);
-          padding: 32px;
-          border-radius: 16px;
-          border: 1px solid var(--border);
-          min-width: 320px;
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
+        [data-project-detail][hidden] {
+          display: none;
+        }
+        hr {
+          border: none;
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+          margin: 28px 0;
         }
         ul {
           padding-left: 18px;
         }
-        ul li {
-          margin-bottom: 4px;
-          color: var(--muted);
+        .admin-login {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.75);
+          display: none;
+          align-items: center;
+          justify-content: center;
+          z-index: 100;
+        }
+        .admin-login--visible {
+          display: flex;
+        }
+        .admin-login__form {
+          background: var(--panel);
+          padding: 32px;
+          border-radius: 20px;
+          width: min(420px, 92vw);
+          display: flex;
+          flex-direction: column;
+          gap: 14px;
+          border: 1px solid var(--border);
+        }
+        .admin-login__form input {
+          width: 100%;
+        }
+        .admin-login__form button {
+          margin-left: 0;
+        }
+        @media (max-width: 960px) {
+          .admin-shell {
+            flex-direction: column;
+          }
+          .admin-shell__sidebar {
+            width: 100%;
+            border-right: none;
+            border-bottom: 1px solid var(--border);
+          }
+          .admin-sidebar__actions {
+            flex-direction: row;
+            flex-wrap: wrap;
+          }
+          .projects-grid {
+            grid-template-columns: 1fr;
+          }
+          table {
+            min-width: 100%;
+          }
         }
       </style>
     </head>
     <body>
-      <div class="admin-app" data-app>
-        <aside class="admin-sidebar">
-          <div class="admin-logo">TargetBot Admin</div>
+      <div class="admin-shell" data-app>
+        <aside class="admin-shell__sidebar">
+          <div class="admin-logo">
+            <span class="admin-logo__title">TargetBot</span>
+            <span class="admin-logo__subtitle">Панель администратора</span>
+          </div>
           <nav class="admin-nav">
             <button class="admin-nav__item admin-nav__item--active" data-nav="projects">Проекты</button>
             <button class="admin-nav__item" data-nav="analytics">Аналитика</button>
             <button class="admin-nav__item" data-nav="finance">Финансы</button>
             <button class="admin-nav__item" data-nav="users">Пользователи</button>
-            <button class="admin-nav__item" data-nav="meta">Meta-аккаунты</button>
-            <button class="admin-nav__item" data-nav="webhooks">Webhooks</button>
+            <button class="admin-nav__item" data-nav="meta">Meta / Facebook</button>
+            <button class="admin-nav__item" data-nav="webhooks">Webhook</button>
             <button class="admin-nav__item" data-nav="settings">Настройки</button>
           </nav>
+          <div class="admin-sidebar__actions">
+            <button class="admin-btn admin-btn--ghost" data-action="refresh">Обновить</button>
+            <button class="admin-btn admin-btn--danger" data-action="logout">Выйти</button>
+          </div>
         </aside>
-        <main class="admin-main">
+        <main class="admin-shell__content">
           <header class="admin-header">
             <div>
+              <p class="admin-status" data-status>Готово</p>
               <h1 data-view-title>Проекты</h1>
-              <p data-status>Готово</p>
             </div>
-            <div>
-              <button class="admin-btn admin-btn--ghost" data-action="refresh">Обновить</button>
-              <button class="admin-btn admin-btn--ghost" data-action="logout">Выйти</button>
+            <div class="admin-header__actions">
+              <button class="admin-btn admin-btn--ghost" data-action="refresh">↻ Обновить</button>
             </div>
           </header>
           <section class="admin-section" data-section="projects">
-            <h2 class="section-title">Проекты</h2>
-            <div class="admin-toolbar">
-              <form data-project-create>
-                <input class="admin-input" name="projectId" placeholder="ID проекта" required />
-                <input class="admin-input" name="projectName" placeholder="Название" required />
-                <input class="admin-input" name="ownerId" placeholder="ID владельца" type="number" required />
-                <input class="admin-input" name="adAccountId" placeholder="act_... (опционально)" />
-                <button class="admin-btn" type="submit">Создать</button>
-              </form>
+            <div class="admin-panel__header">
+              <div>
+                <h2>Проекты</h2>
+                <p class="muted">Создавайте и управляйте проектами TargetBot</p>
+              </div>
             </div>
+            <form class="form-grid" data-project-create>
+              <label>ID проекта<input name="projectId" placeholder="proj_example" required /></label>
+              <label>Название<input name="projectName" placeholder="Название" required /></label>
+              <label>ID владельца<input type="number" name="ownerTelegramId" placeholder="123456" required /></label>
+              <label>Ad account<input name="adsAccountId" placeholder="act_123" /></label>
+              <button class="admin-btn" type="submit">Создать проект</button>
+            </form>
             <div class="table-wrapper">
               <table>
                 <thead>
                   <tr>
+                    <th>ID</th>
                     <th>Название</th>
-                    <th>Ad Account</th>
-                    <th>Чат</th>
-                    <th>Валюта</th>
-                    <th>KPI</th>
-                    <th>Создан</th>
-                    <th>Статус</th>
-                    <th>Лиды</th>
+                    <th>Владелец</th>
+                    <th>Кабинет</th>
+                    <th>Портал</th>
                     <th>Действия</th>
                   </tr>
                 </thead>
                 <tbody data-projects-body></tbody>
               </table>
             </div>
-            <div class="admin-section" data-project-detail hidden>
-              <h3 data-project-detail-title></h3>
-              <p data-project-detail-meta class="muted"></p>
-              <div class="portal-panel" data-portal-panel>
-                <h4>Клиентский портал</h4>
-                <p data-portal-description class="muted">Создайте портал, чтобы делиться показателями с клиентом.</p>
-                <div class="portal-status-grid">
-                  <div><span class="muted">Ссылка:</span> <a data-portal-link target="_blank" rel="noreferrer noopener">—</a></div>
-                  <div><span class="muted">Автообновление:</span> <span data-portal-auto>—</span></div>
-                  <div><span class="muted">Последний запуск:</span> <span data-portal-run>—</span></div>
-                  <div><span class="muted">Последний успех:</span> <span data-portal-success>—</span></div>
-                  <div><span class="muted">Последняя ошибка:</span> <span data-portal-error>—</span></div>
+            <div class="projects-grid">
+              <div class="project-detail" data-project-detail hidden>
+                <div class="admin-panel__header">
+                  <div>
+                    <h3 data-project-detail-title>Выберите проект</h3>
+                    <p class="muted" data-project-detail-meta>Метрики, лиды и оплаты появятся после выбора</p>
+                  </div>
                 </div>
-                <div class="admin-actions" data-portal-actions>
-                  <button type="button" class="admin-btn" data-portal-action="create" data-portal-create>Создать портал</button>
-                  <button type="button" class="admin-btn admin-btn--ghost" data-portal-action="open" data-portal-open>Открыть портал</button>
-                  <button type="button" class="admin-btn admin-btn--ghost" data-portal-action="toggle" data-portal-toggle>Остановить автообновление</button>
-                  <button type="button" class="admin-btn admin-btn--ghost" data-portal-action="sync" data-portal-sync>Обновить данные</button>
-                  <button type="button" class="admin-btn admin-btn--danger" data-portal-action="delete" data-portal-delete>Удалить портал</button>
+                <div class="portal-panel portal-panel--disabled" data-portal-panel>
+                  <div>
+                    <p class="muted" data-portal-description>Выберите проект, чтобы управлять порталом.</p>
+                    <a data-portal-link href="#" target="_blank" rel="noopener noreferrer">—</a>
+                  </div>
+                  <div class="portal-status-grid">
+                    <div><strong>Автообновление</strong><div data-portal-auto>—</div></div>
+                    <div><strong>Последний запуск</strong><div data-portal-run>—</div></div>
+                    <div><strong>Успешно</strong><div data-portal-success>—</div></div>
+                    <div><strong>Ошибка</strong><div data-portal-error>—</div></div>
+                  </div>
+                  <div class="portal-actions" data-portal-actions>
+                    <button class="admin-btn" type="button" data-portal-create>Создать портал</button>
+                    <button class="admin-btn" type="button" data-portal-open>Открыть</button>
+                    <button class="admin-btn" type="button" data-portal-toggle>Остановить автообновление</button>
+                    <button class="admin-btn" type="button" data-portal-sync>Синхронизировать</button>
+                    <button class="admin-btn admin-btn--danger" type="button" data-portal-delete>Удалить</button>
+                  </div>
                 </div>
+                <h4>Лиды</h4>
+                <div class="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Имя</th>
+                        <th>Контакт</th>
+                        <th>Статус</th>
+                        <th>Дата</th>
+                        <th>Кампания</th>
+                      </tr>
+                    </thead>
+                    <tbody data-leads-body></tbody>
+                  </table>
+                </div>
+                <h4>Кампании</h4>
+                <div class="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Название</th>
+                        <th>Цель</th>
+                        <th>Статус</th>
+                        <th>KPI</th>
+                        <th>Расход</th>
+                        <th>Результат</th>
+                        <th>Клики</th>
+                      </tr>
+                    </thead>
+                    <tbody data-campaigns-body></tbody>
+                  </table>
+                </div>
+                <h4>Оплаты</h4>
+                <p class="muted" data-payments-subtitle>—</p>
+                <div class="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Период</th>
+                        <th>Сумма</th>
+                        <th>Статус</th>
+                        <th>Оплачено</th>
+                        <th>Комментарий</th>
+                      </tr>
+                    </thead>
+                    <tbody data-payments-body></tbody>
+                  </table>
+                </div>
+                <form class="form-grid" data-payment-form>
+                  <label>Сумма<input name="amount" type="number" min="0" step="0.01" required /></label>
+                  <label>Валюта<input name="currency" value="USD" required /></label>
+                  <label>Период с<input name="periodFrom" type="date" required /></label>
+                  <label>Период до<input name="periodTo" type="date" required /></label>
+                  <label>Дата оплаты<input name="paidAt" type="datetime-local" /></label>
+                  <label>Статус<select name="status"><option value="planned">Запланирован</option><option value="paid">Оплачен</option><option value="cancelled">Отменён</option></select></label>
+                  <label class="grid-full">Комментарий<textarea name="comment" rows="2"></textarea></label>
+                  <button class="admin-btn" type="submit">Добавить платёж</button>
+                </form>
+                <hr />
+                <form class="form-grid" data-settings-form>
+                  <label>Режим KPI<select name="kpiMode"><option value="auto">Авто</option><option value="manual">Ручной</option></select></label>
+                  <label>Тип KPI<select name="kpiType"><option value="LEAD">Лиды</option><option value="MESSAGE">Сообщения</option><option value="CLICK">Клики</option><option value="VIEW">Просмотры</option><option value="PURCHASE">Покупки</option></select></label>
+                  <label>Название KPI<input name="kpiLabel" /></label>
+                  <label>Канал алертов<select name="alertsChannel"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="alertsEnabled" /> Включить</span></label>
+                  <label><input type="checkbox" name="alertLead" /> Напоминать о лидах</label>
+                  <label><input type="checkbox" name="alertPause" /> Кампании на паузе</label>
+                  <label><input type="checkbox" name="alertPayment" /> Напоминать об оплате</label>
+                  <label>Автоотчёты<select name="autoreportsSendTo"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="autoreportsEnabled" /> Включить</span></label>
+                  <label>Время отчёта<input type="time" name="autoreportsTime" value="10:00" /></label>
+                  <button class="admin-btn" type="submit">Сохранить настройки</button>
+                </form>
               </div>
-              <h4>Лиды</h4>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Имя</th>
-                    <th>Телефон</th>
-                    <th>Тип</th>
-                    <th>Дата</th>
-                    <th>Реклама</th>
-                    <th>Статус</th>
-                  </tr>
-                </thead>
-                <tbody data-leads-body></tbody>
-              </table>
-              <h4>Кампании</h4>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Название</th>
-                    <th>Цель</th>
-                    <th>Статус</th>
-                    <th>KPI</th>
-                    <th>Расход</th>
-                    <th>Результат</th>
-                    <th>Клики</th>
-                  </tr>
-                </thead>
-                <tbody data-campaigns-body></tbody>
-              </table>
-              <h4>Оплаты</h4>
-              <p data-payments-subtitle class="muted"></p>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Период</th>
-                    <th>Сумма</th>
-                    <th>Статус</th>
-                    <th>Оплачено</th>
-                    <th>Комментарий</th>
-                  </tr>
-                </thead>
-                <tbody data-payments-body></tbody>
-              </table>
-              <form class="form-grid grid-2" data-payment-form>
-                <label>Сумма<input name="amount" type="number" min="0" step="0.01" required /></label>
-                <label>Валюта<input name="currency" value="USD" required /></label>
-                <label>Период с<input name="periodFrom" type="date" required /></label>
-                <label>Период до<input name="periodTo" type="date" required /></label>
-                <label>Дата оплаты<input name="paidAt" type="datetime-local" /></label>
-                <label>Статус<select name="status"><option value="planned">Запланирован</option><option value="paid">Оплачен</option><option value="cancelled">Отменён</option></select></label>
-                <label class="grid-full">Комментарий<textarea name="comment" rows="2"></textarea></label>
-                <button class="admin-btn" type="submit">Добавить платёж</button>
-              </form>
-              <hr />
-              <form class="form-grid grid-2" data-settings-form>
-                <label>Режим KPI<select name="kpiMode"><option value="auto">Авто</option><option value="manual">Ручной</option></select></label>
-                <label>Тип KPI<select name="kpiType"><option value="LEAD">Лиды</option><option value="MESSAGE">Сообщения</option><option value="CLICK">Клики</option><option value="VIEW">Просмотры</option><option value="PURCHASE">Покупки</option></select></label>
-                <label>Название KPI<input name="kpiLabel" /></label>
-                <label>Канал алертов<select name="alertsChannel"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="alertsEnabled" /> Включить</span></label>
-                <label><input type="checkbox" name="alertLead" /> Напоминать о лидах</label>
-                <label><input type="checkbox" name="alertPause" /> Кампании на паузе</label>
-                <label><input type="checkbox" name="alertPayment" /> Напоминать об оплате</label>
-                <label>Автоотчёты<select name="autoreportsSendTo"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="autoreportsEnabled" /> Включить</span></label>
-                <label>Время отчёта<input type="time" name="autoreportsTime" value="10:00" /></label>
-                <button class="admin-btn" type="submit">Сохранить настройки</button>
-              </form>
             </div>
           </section>
           <section class="admin-section" data-section="analytics" hidden>
-            <h2 class="section-title">Аналитика</h2>
-            <p data-analytics-totals class="muted"></p>
+            <div class="admin-panel__header">
+              <div>
+                <h2>Аналитика</h2>
+                <p class="muted" data-analytics-totals></p>
+              </div>
+            </div>
             <h4>ТОП проектов</h4>
             <ul data-analytics-projects></ul>
             <h4>ТОП кампаний</h4>
             <ul data-analytics-campaigns></ul>
           </section>
           <section class="admin-section" data-section="finance" hidden>
-            <h2 class="section-title">Финансы</h2>
-            <p data-finance-totals class="muted"></p>
+            <div class="admin-panel__header">
+              <div>
+                <h2>Финансы</h2>
+                <p class="muted" data-finance-totals></p>
+              </div>
+            </div>
             <ul data-finance-projects></ul>
           </section>
           <section class="admin-section" data-section="users" hidden>
-            <h2 class="section-title">Пользователи</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>User ID</th>
-                  <th>Проекты</th>
-                  <th>Язык</th>
-                  <th>Таймзона</th>
-                  <th>Список</th>
-                </tr>
-              </thead>
-              <tbody data-users-body></tbody>
-            </table>
+            <div class="admin-panel__header">
+              <h2>Пользователи</h2>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>User ID</th>
+                    <th>Проекты</th>
+                    <th>Язык</th>
+                    <th>Таймзона</th>
+                    <th>Список</th>
+                  </tr>
+                </thead>
+                <tbody data-users-body></tbody>
+              </table>
+            </div>
           </section>
           <section class="admin-section" data-section="meta" hidden>
-            <h2 class="section-title">Meta / Facebook</h2>
-            <table>
-              <thead>
-                <tr>
-                  <th>User ID</th>
-                  <th>Токен до</th>
-                  <th>Аккаунты</th>
-                </tr>
-              </thead>
-              <tbody data-meta-body></tbody>
-            </table>
+            <div class="admin-panel__header">
+              <h2>Meta / Facebook</h2>
+            </div>
+            <div class="table-wrapper">
+              <table>
+                <thead>
+                  <tr>
+                    <th>User ID</th>
+                    <th>Токен до</th>
+                    <th>Аккаунты</th>
+                  </tr>
+                </thead>
+                <tbody data-meta-body></tbody>
+              </table>
+            </div>
           </section>
           <section class="admin-section" data-section="webhooks" hidden>
-            <h2 class="section-title">Telegram Webhook</h2>
-            <p data-webhook-info class="muted"></p>
-            <button class="admin-btn" data-webhook-reset>Пересоздать webhook</button>
+            <div class="admin-panel__header">
+              <div>
+                <h2>Telegram Webhook</h2>
+                <p class="muted" data-webhook-info></p>
+              </div>
+              <button class="admin-btn" data-webhook-reset>Пересоздать webhook</button>
+            </div>
           </section>
           <section class="admin-section" data-section="settings" hidden>
-            <h2 class="section-title">Настройки</h2>
-            <p data-settings-info class="muted"></p>
+            <div class="admin-panel__header">
+              <div>
+                <h2>Настройки</h2>
+                <p class="muted" data-settings-info></p>
+              </div>
+            </div>
           </section>
         </main>
       </div>
       <div class="admin-login admin-login--visible" data-login-panel>
         <form class="admin-login__form" data-login-form>
           <h2>Админ-доступ</h2>
-          <p>Введите код доступа, чтобы открыть панель управления.</p>
+          <p class="muted">Введите код доступа, чтобы разблокировать панель.</p>
           <input type="password" name="adminKey" data-admin-key placeholder="••••" required />
           <button class="admin-btn" type="submit">Войти</button>
         </form>
