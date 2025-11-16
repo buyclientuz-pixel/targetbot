@@ -206,8 +206,15 @@ export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
       return { preset: "last_7d" };
     case "month":
       return { preset: "last_30d" };
-    case "max":
-      return { preset: "lifetime" };
+    case "max": {
+      const epoch = new Date(0);
+      const today = new Date();
+      const format = (date: Date): string => {
+        const iso = date.toISOString();
+        return iso.split("T")[0] ?? iso;
+      };
+      return { preset: "time_range", from: format(epoch), to: format(today) };
+    }
     default:
       return { preset: "today" };
   }
