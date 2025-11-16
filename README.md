@@ -108,7 +108,7 @@ npm run deploy
 
 ### CI/CD auto-deploy
 
-* Ветка `work` деплоится автоматически: GitHub Actions workflow [`Cloudflare Auto Deploy (work)`](.github/workflows/wrangler-auto-deploy.yml) срабатывает при каждом `push`/`Update branch`, прогоняет `npm run lint`, `npm run typecheck`, `npm test` и завершает `npm run deploy` с использованием секретов `CF_API_TOKEN`/`CF_ACCOUNT_ID`.
+* Ветка `work` деплоится автоматически: GitHub Actions workflow [`Cloudflare Auto Deploy (work)`](.github/workflows/wrangler-auto-deploy.yml) срабатывает при каждом `push`/`Update branch`, прогоняет `npm run lint`, `npm run typecheck`, `npm test` и завершает `npm run deploy` с использованием секретов `CLOUD_FLARE_API_TOKEN`/`CLOUD_FLARE_AC_ID` (их значения совпадают с одноимёнными переменными в `.env`).
 * Если нужно мгновенно форсировать выкладку без ожидания пуша, запустите workflow вручную через `Actions → Cloudflare Auto Deploy (work) → Run workflow`.
 
 ## QA & Regression
