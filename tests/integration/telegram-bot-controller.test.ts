@@ -648,6 +648,38 @@ test("Telegram bot controller updates billing date via prompt", async () => {
   }
 });
 
+test("Telegram bot controller exits manual mode when a command arrives", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-cancel",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "billing:set-date:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "/start" },
+    } as unknown as TelegramUpdate);
+
+    const reply = findLastSendMessage(stub.requests);
+    assert.ok(reply);
+    assert.match(String(reply.body.text), /Главное меню/);
+  } finally {
+    stub.restore();
+  }
+});
+
 test("Telegram bot controller serves analytics, users, finance and webhook sections", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());

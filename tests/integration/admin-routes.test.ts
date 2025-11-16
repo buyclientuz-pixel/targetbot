@@ -112,5 +112,22 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   assert.equal(token.accessToken, "access");
   assert.equal(token.refreshToken, "refresh");
 
+  const deleteResponse = await router.dispatch(
+    createAdminRequest("https://example.com/api/admin/projects/birlash", {
+      method: "DELETE",
+    }),
+    env,
+    execution,
+  );
+  assert.equal(deleteResponse.status, 200);
+
+  const afterDelete = await router.dispatch(
+    createAdminRequest("https://example.com/api/admin/projects"),
+    env,
+    execution,
+  );
+  const emptyList = await readData<{ projects: Array<{ id: string }> }>(afterDelete);
+  assert.equal(emptyList.projects.length, 0);
+
   await execution.flush();
 });

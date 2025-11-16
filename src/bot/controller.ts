@@ -50,7 +50,6 @@ import { clearBotSession, getBotSession, saveBotSession, type BotSession } from 
 import { recordKnownChat } from "../domain/chat-registry";
 import {
   deleteFreeChatRecord,
-  deleteOccupiedChatRecord,
   getFreeChatRecord,
   getOccupiedChatRecord,
   putFreeChatRecord,
@@ -70,7 +69,6 @@ import {
 } from "../domain/spec/project-leads";
 import {
   putProjectRecord,
-  deleteProjectRecord,
   requireProjectRecord,
   getProjectRecord,
   type ProjectRecord,
@@ -88,6 +86,7 @@ import {
   TelegramError,
 } from "../services/telegram";
 import { fetchFacebookAdAccounts } from "../services/facebook-auth";
+import { deleteProjectCascade, releaseProjectChat } from "../services/project-lifecycle";
 import { normaliseBaseUrl } from "../utils/url";
 
 interface BotContext {
@@ -232,25 +231,6 @@ const reserveChatForProject = async (
   });
 };
 
-const releaseChatOccupancy = async (
-  ctx: BotContext,
-  chatId: number,
-  ownerId: number,
-): Promise<void> => {
-  const occupied = await getOccupiedChatRecord(ctx.kv, chatId);
-  await deleteOccupiedChatRecord(ctx.kv, chatId);
-  const actualOwner = occupied?.ownerId ?? ownerId;
-  if (!actualOwner) {
-    return;
-  }
-  await putFreeChatRecord(ctx.kv, {
-    chatId,
-    chatTitle: occupied?.chatTitle ?? null,
-    ownerId: actualOwner,
-    registeredAt: new Date().toISOString(),
-  });
-};
-
 const createProjectFromAccount = async (
   ctx: BotContext,
   userId: number,
@@ -288,7 +268,7 @@ const setProjectChatBinding = async (
 ): Promise<void> => {
   const current = await requireProjectRecord(ctx.kv, projectId);
   if (current.chatId && (!chat || current.chatId !== chat.chatId)) {
-    await releaseChatOccupancy(ctx, current.chatId, current.ownerId);
+    await releaseProjectChat(ctx.kv, current.chatId, current.ownerId);
   }
   const updated = await updateProject(ctx, projectId, (project) => {
     project.chatId = chat ? chat.chatId : null;
@@ -1275,42 +1255,8 @@ const handleKpiTypeChange = async (
   await renderKpiPanel(runtime, userId, chatId, projectId);
 };
 
-const cleanupProjectData = async (ctx: BotContext, projectId: string): Promise<void> => {
-  await ctx.kv.delete(KV_KEYS.billing(projectId));
-  await ctx.kv.delete(KV_KEYS.autoreports(projectId));
-  await ctx.kv.delete(KV_KEYS.alerts(projectId));
-
-  const deletePrefix = async (prefix: string): Promise<void> => {
-    let cursor: string | undefined;
-    do {
-      const { objects, cursor: nextCursor } = await ctx.r2.list(prefix, { cursor, limit: 100 });
-      for (const object of objects) {
-        await ctx.r2.delete(object.key);
-      }
-      cursor = nextCursor;
-    } while (cursor);
-  };
-
-  await ctx.r2.delete(R2_KEYS.projectLeadsList(projectId));
-  await deletePrefix(`project-leads/${projectId}/`);
-  await ctx.r2.delete(R2_KEYS.metaCampaigns(projectId));
-  await ctx.r2.delete(R2_KEYS.paymentsHistory(projectId));
-  await deletePrefix(`payments/${projectId}/`);
-};
-
 const handleProjectDelete = async (ctx: BotContext, chatId: number, projectId: string, userId: number): Promise<void> => {
-  const project = await requireProjectRecord(ctx.kv, projectId);
-  const membership = await getProjectsByUser(ctx.kv, userId);
-  if (project.chatId) {
-    await releaseChatOccupancy(ctx, project.chatId, project.ownerId);
-  }
-  await deleteProjectRecord(ctx.kv, projectId);
-  await cleanupProjectData(ctx, projectId);
-  if (membership) {
-    await putProjectsByUser(ctx.kv, userId, {
-      projects: membership.projects.filter((id) => id !== projectId),
-    });
-  }
+  await deleteProjectCascade(ctx.kv, ctx.r2, projectId);
   await sendTelegramMessage(ctx.token, { chatId, text: "✅ Проект удалён." });
   await sendExistingProjectsList(ctx, chatId, userId);
 };
@@ -1910,45 +1856,58 @@ const handleSessionInput = async (
   if (!sessionState || !sessionState.state || sessionState.state.type === "idle") {
     return false;
   }
-  switch (sessionState.state.type) {
-    case "billing:set-date":
-      await handleBillingDateInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, text);
-      await clearBotSession(ctx.kv, userId);
-      return true;
-    case "billing:manual":
-      await handleBillingManualInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, text);
-      await clearBotSession(ctx.kv, userId);
-      return true;
-    case "facebook:token":
-      await handleFacebookTokenInput(ctx, chatId, userId, text);
-      await clearBotSession(ctx.kv, userId);
-      return true;
-    case "project:edit":
-      await handleProjectEditInput(
-        ctx,
-        panelRuntime,
-        userId,
-        chatId,
-        sessionState.state.projectId,
-        sessionState.state.field,
-        text,
-      );
-      await clearBotSession(ctx.kv, userId);
-      return true;
-    case "project:create-manual":
-      await handleProjectManualBindInput(ctx, chatId, userId, sessionState.state.accountId, text);
-      await clearBotSession(ctx.kv, userId);
-      return true;
-    case "chat:manual":
-      await handleChatManualInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, text);
-      await clearBotSession(ctx.kv, userId);
-      return true;
-    case "autoreports:set-time":
-      await handleAutoreportsTimeInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, text);
-      await clearBotSession(ctx.kv, userId);
-      return true;
-    default:
-      return false;
+  const trimmed = text.trim();
+  if (trimmed.startsWith("/")) {
+    await clearBotSession(ctx.kv, userId);
+    return false;
+  }
+  try {
+    switch (sessionState.state.type) {
+      case "billing:set-date":
+        await handleBillingDateInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, trimmed);
+        await clearBotSession(ctx.kv, userId);
+        return true;
+      case "billing:manual":
+        await handleBillingManualInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, trimmed);
+        await clearBotSession(ctx.kv, userId);
+        return true;
+      case "facebook:token":
+        await handleFacebookTokenInput(ctx, chatId, userId, trimmed);
+        await clearBotSession(ctx.kv, userId);
+        return true;
+      case "project:edit":
+        await handleProjectEditInput(
+          ctx,
+          panelRuntime,
+          userId,
+          chatId,
+          sessionState.state.projectId,
+          sessionState.state.field,
+          trimmed,
+        );
+        await clearBotSession(ctx.kv, userId);
+        return true;
+      case "project:create-manual":
+        await handleProjectManualBindInput(ctx, chatId, userId, sessionState.state.accountId, trimmed);
+        await clearBotSession(ctx.kv, userId);
+        return true;
+      case "chat:manual":
+        await handleChatManualInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, trimmed);
+        await clearBotSession(ctx.kv, userId);
+        return true;
+      case "autoreports:set-time":
+        await handleAutoreportsTimeInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, trimmed);
+        await clearBotSession(ctx.kv, userId);
+        return true;
+      default:
+        return false;
+    }
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: `⚠️ ${((error as Error).message ?? 'Не удалось обработать ввод').slice(0, 300)}`,
+    });
+    return true;
   }
 };
 

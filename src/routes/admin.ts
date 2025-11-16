@@ -30,6 +30,7 @@ import {
   listAdminProjectLeads,
 } from "../services/admin-dashboard";
 import { getWebhookInfo, setWebhook } from "../services/telegram";
+import { deleteProjectCascade } from "../services/project-lifecycle";
 import { buildAdminClientScript } from "./admin-client";
 
 const htmlResponse = (body: string): Response =>
@@ -84,13 +85,17 @@ const buildStoredProjectPayload = (
     id: body.id,
     name: body.name,
     adsAccountId: body.adsAccountId ?? null,
+    adAccountId: body.adsAccountId ?? null,
     ownerTelegramId: body.ownerTelegramId,
+    ownerId: body.ownerTelegramId,
     createdAt: now,
     updatedAt: now,
     owner_id: body.ownerTelegramId,
     ad_account_id: body.adsAccountId ?? null,
     chat_id: null,
+    chatId: null,
     portal_url: resolvePortalUrl(env, body.id),
+    portalUrl: resolvePortalUrl(env, body.id),
     settings: {
       currency: DEFAULT_PROJECT_CURRENCY,
       timezone: env.DEFAULT_TZ ?? DEFAULT_PROJECT_TIMEZONE,
@@ -195,6 +200,34 @@ const renderAdminHtml = (workerUrl: string | null): string => {
           border: 1px solid var(--border);
           border-radius: 16px;
           padding: 24px;
+        }
+        .admin-toolbar {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 12px;
+          margin-bottom: 16px;
+          align-items: flex-end;
+        }
+        .admin-input,
+        .admin-select {
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          border-radius: 8px;
+          padding: 8px 10px;
+          color: var(--text);
+          font: inherit;
+        }
+        .admin-input::placeholder {
+          color: var(--muted);
+        }
+        .admin-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+        .admin-btn--danger {
+          border-color: rgba(255, 99, 132, 0.6);
+          color: #ff6384;
         }
         .section-title {
           margin-top: 0;
@@ -302,6 +335,15 @@ const renderAdminHtml = (workerUrl: string | null): string => {
           </header>
           <section class="admin-section" data-section="projects">
             <h2 class="section-title">Проекты</h2>
+            <div class="admin-toolbar">
+              <form data-project-create>
+                <input class="admin-input" name="projectId" placeholder="ID проекта" required />
+                <input class="admin-input" name="projectName" placeholder="Название" required />
+                <input class="admin-input" name="ownerId" placeholder="ID владельца" type="number" required />
+                <input class="admin-input" name="adAccountId" placeholder="act_... (опционально)" />
+                <button class="admin-btn" type="submit">Создать</button>
+              </form>
+            </div>
             <div class="table-wrapper">
               <table>
                 <thead>
@@ -314,6 +356,7 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                     <th>Создан</th>
                     <th>Статус</th>
                     <th>Лиды</th>
+                    <th>Действия</th>
                   </tr>
                 </thead>
                 <tbody data-projects-body></tbody>
@@ -793,6 +836,22 @@ export const registerAdminRoutes = (router: Router): void => {
       }
       if (error instanceof DataValidationError) {
         return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+
+  registerAdminRoute(router, "DELETE", ["/api/admin/projects/:projectId"], async (context) => {
+    const projectId = context.state.params.projectId;
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    try {
+      await deleteProjectCascade(context.kv, context.r2, projectId);
+      return jsonOk({ ok: true });
+    } catch (error) {
+      if (error instanceof EntityNotFoundError) {
+        return notFound(error.message);
       }
       throw error;
     }

@@ -37,6 +37,15 @@ export interface ProjectRecord {
   settings: ProjectSettings;
 }
 
+const pickField = <T>(record: Record<string, unknown>, keys: readonly string[]): T | undefined => {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) {
+      return record[key] as T;
+    }
+  }
+  return undefined;
+};
+
 const parseSettings = (raw: unknown): ProjectSettings => {
   if (!raw || typeof raw !== "object") {
     throw new DataValidationError("project.settings must be an object");
@@ -63,13 +72,18 @@ export const parseProjectRecord = (raw: unknown): ProjectRecord => {
     throw new DataValidationError("project record must be an object");
   }
   const record = raw as Record<string, unknown>;
+  const ownerRaw =
+    pickField(record, ["owner_id", "ownerId", "ownerID", "ownerTelegramId", "ownerTelegramID", "owner"] as const);
+  const adAccountRaw = pickField(record, ["ad_account_id", "adAccountId", "adsAccountId", "adAccountID"] as const);
+  const chatRaw = pickField(record, ["chat_id", "chatId", "chatID"] as const);
+  const portalRaw = pickField(record, ["portal_url", "portalUrl", "portalURL"] as const);
   return {
     id: assertString(record.id ?? record["id"], "project.id"),
     name: assertString(record.name ?? record["name"], "project.name"),
-    ownerId: assertNumber(record.owner_id ?? record["owner_id"], "project.owner_id"),
-    adAccountId: assertOptionalString(record.ad_account_id ?? record["ad_account_id"], "project.ad_account_id"),
-    chatId: assertOptionalNumber(record.chat_id ?? record["chat_id"], "project.chat_id"),
-    portalUrl: assertString(record.portal_url ?? record["portal_url"], "project.portal_url"),
+    ownerId: assertNumber(ownerRaw, "project.owner_id"),
+    adAccountId: assertOptionalString(adAccountRaw, "project.ad_account_id"),
+    chatId: assertOptionalNumber(chatRaw, "project.chat_id"),
+    portalUrl: assertString(portalRaw ?? record.portal_url ?? record["portal_url"], "project.portal_url"),
     settings: parseSettings(record.settings ?? record["settings"]),
   };
 };
@@ -78,9 +92,15 @@ export const serialiseProjectRecord = (record: ProjectRecord): Record<string, un
   id: record.id,
   name: record.name,
   owner_id: record.ownerId,
+  ownerId: record.ownerId,
+  ownerTelegramId: record.ownerId,
+  adsAccountId: record.adAccountId,
+  adAccountId: record.adAccountId,
   ad_account_id: record.adAccountId,
   chat_id: record.chatId,
+  chatId: record.chatId,
   portal_url: record.portalUrl,
+  portalUrl: record.portalUrl,
   settings: {
     currency: record.settings.currency,
     timezone: record.settings.timezone,

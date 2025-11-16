@@ -39,11 +39,17 @@ const createDefaultSession = (userId: number): BotSession => ({
 
 export const getBotSession = async (kv: KvClient, userId: number): Promise<BotSession> => {
   const key = KV_KEYS.botSession(userId);
-  const stored = await kv.getJson<BotSession>(key);
-  if (!stored) {
+  try {
+    const stored = await kv.getJson<BotSession>(key);
+    if (!stored) {
+      return createDefaultSession(userId);
+    }
+    return stored;
+  } catch (error) {
+    console.warn(`[bot-session] Failed to parse session for ${userId}: ${(error as Error).message}`);
+    await kv.delete(key);
     return createDefaultSession(userId);
   }
-  return stored;
 };
 
 export const saveBotSession = async (kv: KvClient, session: BotSession): Promise<void> => {

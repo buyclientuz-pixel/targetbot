@@ -30,6 +30,7 @@ const adminClientFactory = () => {
     campaignsTable: document.querySelector('[data-campaigns-body]'),
     paymentsTable: document.querySelector('[data-payments-body]'),
     paymentForm: document.querySelector('[data-payment-form]'),
+    projectCreateForm: document.querySelector('[data-project-create]'),
     settingsForm: document.querySelector('[data-settings-form]'),
     analyticsTotals: document.querySelector('[data-analytics-totals]'),
     analyticsProjects: document.querySelector('[data-analytics-projects]'),
@@ -128,6 +129,7 @@ const adminClientFactory = () => {
     els.projectsBody.innerHTML = '';
     projects.forEach((project) => {
       const tr = document.createElement('tr');
+      tr.dataset.projectRow = project.id;
       tr.innerHTML = `
         <td>${project.name}</td>
         <td>${project.adAccountId ?? '—'}</td>
@@ -137,8 +139,14 @@ const adminClientFactory = () => {
         <td>${project.createdAt ? new Date(project.createdAt).toLocaleDateString('ru-RU') : '—'}</td>
         <td>${project.status === 'active' ? 'Активен' : 'Ожидает'}</td>
         <td>${project.leadsToday} / ${project.leadsTotal}</td>
+        <td>
+          <div class="admin-actions">
+            <button type="button" class="admin-btn admin-btn--ghost" data-project-action="open" data-project-id="${project.id}">Открыть</button>
+            <button type="button" class="admin-btn admin-btn--ghost" data-project-action="refresh" data-project-id="${project.id}">Обновить</button>
+            <button type="button" class="admin-btn admin-btn--danger" data-project-action="delete" data-project-id="${project.id}">Удалить</button>
+          </div>
+        </td>
       `;
-      tr.addEventListener('click', () => selectProject(project.id));
       if (project.id === state.selectedProjectId) {
         tr.classList.add('is-selected');
       }
@@ -245,10 +253,70 @@ const adminClientFactory = () => {
     try {
       setStatus('Загружаем проекты...');
       const data = await request('/projects');
-      renderProjects(data.projects ?? []);
+      const list = data.projects ?? [];
+      renderProjects(list);
+      if (list.length === 0) {
+        state.selectedProjectId = null;
+        renderProjectDetail(null);
+      } else {
+        const exists = list.some((project) => project.id === state.selectedProjectId);
+        const targetId = exists ? state.selectedProjectId : list[0].id;
+        if (targetId) {
+          state.selectedProjectId = targetId;
+          await selectProject(targetId);
+        }
+      }
       setStatus('Проекты загружены');
     } catch (error) {
       setStatus(error.message);
+    }
+  };
+
+  const refreshProject = async (projectId) => {
+    try {
+      await request(`/projects/${projectId}/refresh`, { method: 'POST' });
+      await selectProject(projectId);
+      setStatus('Данные проекта обновлены');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const deleteProject = async (projectId) => {
+    if (!window.confirm('Удалить проект и связанные данные?')) {
+      return;
+    }
+    try {
+      await request(`/projects/${projectId}`, { method: 'DELETE' });
+      state.selectedProjectId = null;
+      await loadProjects();
+      setStatus('Проект удалён');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const handleProjectTableClick = (event) => {
+    const button = event.target.closest('[data-project-action]');
+    if (button) {
+      event.stopPropagation();
+      const projectId = button.dataset.projectId;
+      if (!projectId) {
+        return;
+      }
+      const action = button.dataset.projectAction;
+      if (action === 'open') {
+        void selectProject(projectId);
+      } else if (action === 'refresh') {
+        void refreshProject(projectId);
+      } else if (action === 'delete') {
+        void deleteProject(projectId);
+      }
+      return;
+    }
+    const row = event.target.closest('[data-project-row]');
+    if (row?.dataset.projectRow) {
+      void selectProject(row.dataset.projectRow);
     }
   };
 
@@ -259,6 +327,33 @@ const adminClientFactory = () => {
       renderProjectDetail(detail.project);
       const leads = await request(`/projects/${projectId}/leads`);
       renderLeads(leads);
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+  const submitProjectCreate = async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const payload = {
+      id: form.elements.projectId.value.trim(),
+      name: form.elements.projectName.value.trim(),
+      ownerTelegramId: Number(form.elements.ownerId.value),
+      adsAccountId: form.elements.adAccountId.value.trim() || null,
+    };
+    if (!payload.id || !payload.name || !Number.isFinite(payload.ownerTelegramId)) {
+      setStatus('Укажите корректный ID проекта и владельца');
+      return;
+    }
+    try {
+      await request('/projects', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      form.reset();
+      state.selectedProjectId = payload.id;
+      await loadProjects();
+      setStatus('Проект создан');
     } catch (error) {
       setStatus(error.message);
     }
@@ -481,11 +576,11 @@ const adminClientFactory = () => {
   };
 
   els.navButtons.forEach((button) => {
-    button.addEventListener('click', () => setView(button.dataset.nav));
+    button.addEventListener('click', () => void setView(button.dataset.nav));
   });
 
   els.refreshButtons.forEach((button) => {
-    button.addEventListener('click', () => setView(state.view));
+    button.addEventListener('click', () => void setView(state.view));
   });
 
   els.logoutButtons.forEach((button) => {
@@ -507,6 +602,8 @@ const adminClientFactory = () => {
     setView('projects');
   });
 
+  els.projectsBody?.addEventListener('click', handleProjectTableClick);
+  els.projectCreateForm?.addEventListener('submit', submitProjectCreate);
   els.paymentForm?.addEventListener('submit', submitPayment);
   els.settingsForm?.addEventListener('submit', submitSettings);
   els.webhookButton?.addEventListener('click', resetWebhook);
@@ -518,7 +615,7 @@ const adminClientFactory = () => {
     if (!state.key) {
       showLogin();
     } else {
-      setView('projects');
+      void setView('projects');
     }
   };
 

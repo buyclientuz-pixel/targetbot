@@ -49,7 +49,7 @@ test("fb auth record matches schema", () => {
 });
 
 test("project record round trip", () => {
-  const sample = {
+  const snakeCase = {
     id: "proj_a",
     name: "Project A",
     owner_id: 100,
@@ -67,12 +67,36 @@ test("project record round trip", () => {
     },
   };
 
-  const parsed = parseProjectRecord(sample);
+  const parsed = parseProjectRecord(snakeCase);
   assert.equal(parsed.settings.kpi.type, "LEAD");
   assert.equal(parsed.chatId, -100);
 
   const serialised = serialiseProjectRecord(parsed);
-  assert.deepEqual(serialised, sample);
+  assert.equal(serialised.owner_id, 100);
+  assert.equal(serialised.ownerId, 100);
+  assert.equal(serialised.portal_url, snakeCase.portal_url);
+  assert.equal(serialised.portalUrl, snakeCase.portal_url);
+});
+
+test("project record supports camelCase payload", () => {
+  const camelCase = {
+    id: "proj_b",
+    name: "Project B",
+    ownerTelegramId: 200,
+    adsAccountId: "act_2",
+    chatId: -200,
+    portalUrl: "https://example/p/proj_b",
+    settings: {
+      currency: "USD",
+      timezone: "Asia/Tashkent",
+      kpi: { mode: "manual", type: "MESSAGE", label: "Сообщения" },
+    },
+  };
+
+  const parsed = parseProjectRecord(camelCase);
+  assert.equal(parsed.ownerId, 200);
+  assert.equal(parsed.adAccountId, "act_2");
+  assert.equal(parsed.portalUrl, camelCase.portalUrl);
 });
 
 test("projects by user list", () => {
