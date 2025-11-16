@@ -50,6 +50,12 @@ const installGraphStub = () => {
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leadgen_forms")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "form-sync" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leads")) {
       return new Response(
         JSON.stringify({

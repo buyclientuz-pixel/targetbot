@@ -290,8 +290,8 @@ interface MetaLeadFetchOptions {
   since?: Date;
 }
 
-const buildLeadUrl = (options: MetaLeadFetchOptions, cursor?: string): URL => {
-  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${options.accountId}/leads`);
+const buildLeadUrl = (nodeId: string, options: MetaLeadFetchOptions, cursor?: string): URL => {
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${nodeId}/leads`);
   url.searchParams.set("access_token", options.accessToken);
   url.searchParams.set("fields", ["id", "created_time", "campaign_name", "adset_name", "ad_name", "field_data"].join(","));
   url.searchParams.set("limit", "100");
@@ -322,17 +322,47 @@ const normaliseLeadRecord = (record: Record<string, unknown>): MetaLeadRecord | 
   } satisfies MetaLeadRecord;
 };
 
-export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<MetaLeadRecord[]> => {
-  if (!options.accountId) {
-    throw new DataValidationError("Meta Ads account id is required for leads");
-  }
-  if (!options.accessToken) {
-    throw new DataValidationError("Meta access token is required for leads");
-  }
+const fetchLeadGenForms = async (accountId: string, accessToken: string): Promise<string[]> => {
+  const forms: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${accountId}/leadgen_forms`);
+    url.searchParams.set("access_token", accessToken);
+    url.searchParams.set("limit", "100");
+    url.searchParams.set("fields", "id");
+    if (cursor) {
+      url.searchParams.set("after", cursor);
+    }
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Meta leadgen forms request failed with ${response.status}: ${errorBody}`);
+    }
+    const payload = (await response.json()) as {
+      data?: Array<{ id?: string }>;
+      paging?: { cursors?: { after?: string | null } };
+    };
+    if (Array.isArray(payload.data)) {
+      for (const entry of payload.data) {
+        if (entry && typeof entry.id === "string" && entry.id.trim()) {
+          forms.push(entry.id.trim());
+        }
+      }
+    }
+    cursor = payload.paging?.cursors?.after ?? undefined;
+  } while (cursor);
+  return forms;
+};
+
+const fetchLeadsForNode = async (
+  nodeId: string,
+  options: MetaLeadFetchOptions,
+  limit?: number,
+): Promise<MetaLeadRecord[]> => {
   const collected: MetaLeadRecord[] = [];
   let cursor: string | undefined;
   do {
-    const url = buildLeadUrl(options, cursor);
+    const url = buildLeadUrl(nodeId, options, cursor);
     const response = await fetch(url);
     if (!response.ok) {
       const errorBody = await response.text();
@@ -353,9 +383,36 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
       }
     }
     cursor = payload.paging?.cursors?.after ?? undefined;
-    if (options.limit && collected.length >= options.limit) {
-      return collected.slice(0, options.limit);
+    if (limit && collected.length >= limit) {
+      return collected.slice(0, limit);
     }
   } while (cursor);
-  return options.limit ? collected.slice(0, options.limit) : collected;
+  return limit ? collected.slice(0, limit) : collected;
+};
+
+export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<MetaLeadRecord[]> => {
+  if (!options.accountId) {
+    throw new DataValidationError("Meta Ads account id is required for leads");
+  }
+  if (!options.accessToken) {
+    throw new DataValidationError("Meta access token is required for leads");
+  }
+  const forms = await fetchLeadGenForms(options.accountId, options.accessToken);
+  if (forms.length === 0) {
+    return [];
+  }
+  const limit = options.limit;
+  const collected: MetaLeadRecord[] = [];
+  for (const formId of forms) {
+    const remaining = typeof limit === "number" ? Math.max(limit - collected.length, 0) : undefined;
+    if (remaining === 0) {
+      break;
+    }
+    const leads = await fetchLeadsForNode(formId, options, remaining);
+    collected.push(...leads);
+    if (limit && collected.length >= limit) {
+      break;
+    }
+  }
+  return limit ? collected.slice(0, limit) : collected;
 };
