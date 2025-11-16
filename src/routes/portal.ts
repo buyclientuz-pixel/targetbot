@@ -1231,15 +1231,17 @@ export const registerPortalRoutes = (router: Router): void => {
         }
       }
       let campaignsDoc = bundle.campaigns;
-      try {
-        campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
-          projectRecord: bundle.project,
-        });
-      } catch (error) {
-        if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
-          console.warn(`[portal] Meta campaigns fallback for ${projectId}: ${(error as Error).message}`);
-        } else {
-          throw error;
+      if (!campaignsDoc || campaignsDoc.periodKey !== periodKey || campaignsDoc.campaigns.length === 0) {
+        try {
+          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+            projectRecord: bundle.project,
+          });
+        } catch (error) {
+          if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
+            console.warn(`[portal] Meta campaigns fallback for ${projectId}: ${(error as Error).message}`);
+          } else {
+            throw error;
+          }
         }
       }
       return jsonOk(buildSummaryPayload(bundle, periodKey, { summaryEntry, campaigns: campaignsDoc }));
@@ -1295,15 +1297,17 @@ export const registerPortalRoutes = (router: Router): void => {
       const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
       let campaignsDoc = bundle.campaigns;
       let campaignStatuses: CampaignStatus[] | null = null;
-      try {
-        campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
-          projectRecord: bundle.project,
-        });
-      } catch (error) {
-        if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
-          console.warn(`[portal] Meta campaigns fallback for ${projectId}: ${(error as Error).message}`);
-        } else {
-          throw error;
+      if (!campaignsDoc || campaignsDoc.periodKey !== periodKey || campaignsDoc.campaigns.length === 0) {
+        try {
+          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+            projectRecord: bundle.project,
+          });
+        } catch (error) {
+          if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
+            console.warn(`[portal] Meta campaigns fallback for ${projectId}: ${(error as Error).message}`);
+          } else {
+            throw error;
+          }
         }
       }
       try {

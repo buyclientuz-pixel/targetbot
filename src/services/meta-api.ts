@@ -83,6 +83,30 @@ export const countLeadsFromActions = (actions: unknown): number => {
   }, 0);
 };
 
+const isMessageAction = (type: unknown): boolean => {
+  if (typeof type !== "string") {
+    return false;
+  }
+  const lower = type.toLowerCase();
+  return lower.includes("message") || lower.includes("messaging");
+};
+
+export const countMessagesFromActions = (actions: unknown): number => {
+  if (!Array.isArray(actions)) {
+    return 0;
+  }
+  return actions.reduce((total, action) => {
+    if (!action || typeof action !== "object") {
+      return total;
+    }
+    const record = action as Record<string, unknown>;
+    if (isMessageAction(record.action_type)) {
+      return total + parseNumber(record.value);
+    }
+    return total;
+  }, 0);
+};
+
 const buildInsightsUrl = (options: MetaFetchOptions): URL => {
   const { accountId, accessToken, period, fields = DEFAULT_FIELDS.join(","), level = DEFAULT_LEVEL } =
     options;

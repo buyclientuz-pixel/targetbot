@@ -83,7 +83,9 @@ export const parseProjectRecord = (raw: unknown): ProjectRecord => {
     ownerId: assertNumber(ownerRaw, "project.owner_id"),
     adAccountId: assertOptionalString(adAccountRaw, "project.ad_account_id"),
     chatId: assertOptionalNumber(chatRaw, "project.chat_id"),
-    portalUrl: assertString(portalRaw ?? record.portal_url ?? record["portal_url"], "project.portal_url"),
+    portalUrl: assertString(portalRaw ?? record.portal_url ?? record["portal_url"], "project.portal_url", {
+      allowEmpty: true,
+    }),
     settings: parseSettings(record.settings ?? record["settings"]),
   };
 };

@@ -75,6 +75,8 @@ import {
 } from "../domain/spec/project";
 import { getProjectsByUser, putProjectsByUser } from "../domain/spec/projects-by-user";
 import { getUserSettingsRecord, updateUserSettingsRecord, type UserSettingsRecord } from "../domain/spec/user-settings";
+import { ensureProjectSettings, upsertProjectSettings } from "../domain/project-settings";
+import { deletePortalSyncState } from "../domain/portal-sync";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
 import {
@@ -87,6 +89,7 @@ import {
 } from "../services/telegram";
 import { fetchFacebookAdAccounts } from "../services/facebook-auth";
 import { deleteProjectCascade, releaseProjectChat } from "../services/project-lifecycle";
+import { PORTAL_PERIOD_KEYS, syncPortalMetrics, type PortalSyncResult } from "../services/portal-sync";
 import { normaliseBaseUrl } from "../utils/url";
 
 interface BotContext {
@@ -797,12 +800,139 @@ const sendPortalLink = async (ctx: BotContext, chatId: number, projectId: string
   });
 };
 
+const renderPortalPanel = async (
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  await renderPanel({ runtime, userId, chatId, panelId: `project:portal:${projectId}` });
+};
+
+const describePortalSyncResult = (result: PortalSyncResult): string => {
+  const success = result.periods.filter((entry) => entry.ok).length;
+  const total = result.periods.length;
+  const failed = result.periods.filter((entry) => !entry.ok);
+  if (failed.length === 0) {
+    return `Портал обновлён (${success}/${total}).`;
+  }
+  const issues = failed
+    .map((entry) => `${entry.periodKey}: ${entry.error ?? "ошибка"}`)
+    .join(", ");
+  return `Обновлено ${success}/${total}. Проблемы: ${issues}`;
+};
+
 const sendExportMenu = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: "Экспорт данных проекта. Выберите формат:",
     replyMarkup: buildExportKeyboard(projectId),
   });
+};
+
+const handlePortalCreate = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    let project = await requireProjectRecord(ctx.kv, projectId);
+    if (!project.portalUrl) {
+      const portalUrl = ctx.workerBaseUrl ? `${ctx.workerBaseUrl}/p/${projectId}` : `/p/${projectId}`;
+      project = { ...project, portalUrl };
+      await putProjectRecord(ctx.kv, project);
+      await sendTelegramMessage(ctx.token, { chatId, text: `Портал создан: ${portalUrl}` });
+    }
+    const settings = await ensureProjectSettings(ctx.kv, projectId);
+    if (!settings.portalEnabled) {
+      await upsertProjectSettings(ctx.kv, { ...settings, portalEnabled: true, updatedAt: new Date().toISOString() });
+    }
+    try {
+      const result = await syncPortalMetrics(ctx.kv, ctx.r2, projectId, { allowPartial: true });
+      await sendTelegramMessage(ctx.token, { chatId, text: describePortalSyncResult(result) });
+    } catch (error) {
+      await sendTelegramMessage(ctx.token, {
+        chatId,
+        text: `Портал включён, но не удалось обновить данные: ${(error as Error).message}`,
+      });
+    }
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, { chatId, text: `Не удалось создать портал: ${(error as Error).message}` });
+  }
+  await renderPortalPanel(runtime, userId, chatId, projectId);
+};
+
+const handlePortalToggle = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    const settings = await ensureProjectSettings(ctx.kv, projectId);
+    const nextValue = !settings.portalEnabled;
+    await upsertProjectSettings(ctx.kv, { ...settings, portalEnabled: nextValue, updatedAt: new Date().toISOString() });
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: nextValue ? "Автообновление портала включено." : "Автообновление портала остановлено.",
+    });
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, { chatId, text: `Не удалось изменить состояние портала: ${(error as Error).message}` });
+  }
+  await renderPortalPanel(runtime, userId, chatId, projectId);
+};
+
+const handlePortalSyncRequest = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    const project = await requireProjectRecord(ctx.kv, projectId);
+    if (!project.portalUrl) {
+      await sendTelegramMessage(ctx.token, { chatId, text: "Сначала создайте портал." });
+    } else {
+      const result = await syncPortalMetrics(ctx.kv, ctx.r2, projectId, {
+        allowPartial: true,
+        periods: PORTAL_PERIOD_KEYS,
+      });
+      await sendTelegramMessage(ctx.token, { chatId, text: describePortalSyncResult(result) });
+    }
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, { chatId, text: `Не удалось обновить данные портала: ${(error as Error).message}` });
+  }
+  await renderPortalPanel(runtime, userId, chatId, projectId);
+};
+
+const handlePortalDelete = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    const project = await requireProjectRecord(ctx.kv, projectId);
+    if (!project.portalUrl) {
+      await sendTelegramMessage(ctx.token, { chatId, text: "Портал уже удалён." });
+    } else {
+      await putProjectRecord(ctx.kv, { ...project, portalUrl: "" });
+      const settings = await ensureProjectSettings(ctx.kv, projectId);
+      if (settings.portalEnabled) {
+        await upsertProjectSettings(ctx.kv, { ...settings, portalEnabled: false, updatedAt: new Date().toISOString() });
+      }
+      await deletePortalSyncState(ctx.kv, projectId).catch(() => {});
+      await sendTelegramMessage(ctx.token, { chatId, text: "Портал отключён и ссылка удалена." });
+    }
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, { chatId, text: `Не удалось удалить портал: ${(error as Error).message}` });
+  }
+  await renderPortalPanel(runtime, userId, chatId, projectId);
 };
 
 const buildCsv = (rows: string[][]): string =>
@@ -1544,6 +1674,18 @@ const handleCallback = async (
           break;
         case "portal":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:portal:${parts[2]!}` });
+          break;
+        case "portal-create":
+          await handlePortalCreate(ctx, panelRuntime, userId, chatId, parts[2]!);
+          break;
+        case "portal-toggle":
+          await handlePortalToggle(ctx, panelRuntime, userId, chatId, parts[2]!);
+          break;
+        case "portal-sync":
+          await handlePortalSyncRequest(ctx, panelRuntime, userId, chatId, parts[2]!);
+          break;
+        case "portal-delete":
+          await handlePortalDelete(ctx, panelRuntime, userId, chatId, parts[2]!);
           break;
         case "export":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:export:${parts[2]!}` });

@@ -31,7 +31,7 @@ interface CampaignStatusPayload {
 
 type CampaignStatusEntry = MetaCacheEntry<CampaignStatusPayload>;
 
-const CACHE_TTL_SECONDS = 60;
+const CACHE_TTL_SECONDS = 600;
 const CAMPAIGN_STATUS_TTL_SECONDS = 300;
 
 const toIsoDate = (date: Date): string => date.toISOString().split("T")[0] ?? date.toISOString();
