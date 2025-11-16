@@ -7,12 +7,27 @@ import {
 import { getProject, touchProjectUpdatedAt } from "../domain/projects";
 import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
+import { applyCors, preflight } from "../http/cors";
 import type { Router } from "../worker/router";
 
-const badRequest = (message: string): Response => jsonResponse({ error: message }, { status: 400 });
-const notFoundResponse = (message: string): Response => jsonResponse({ error: message }, { status: 404 });
-const unprocessableResponse = (message: string): Response => jsonResponse({ error: message }, { status: 422 });
-const createdResponse = (body: unknown): Response => jsonResponse(body, { status: 201 });
+const jsonOk = (data: unknown, init?: ResponseInit): Response =>
+  applyCors(
+    jsonResponse(
+      { ok: true, data },
+      {
+        ...init,
+        headers: { "cache-control": "no-store", ...(init?.headers ?? {}) },
+      },
+    ),
+  );
+
+const jsonError = (status: number, message: string): Response =>
+  applyCors(jsonResponse({ ok: false, error: message }, { status, headers: { "cache-control": "no-store" } }));
+
+const badRequest = (message: string): Response => jsonError(400, message);
+const notFoundResponse = (message: string): Response => jsonError(404, message);
+const unprocessableResponse = (message: string): Response => jsonError(422, message);
+const createdResponse = (body: unknown): Response => jsonOk(body, { status: 201 });
 
 interface SessionRequestBody {
   userId?: string;
@@ -22,6 +37,7 @@ interface SessionRequestBody {
 }
 
 export const registerProjectRoutes = (router: Router): void => {
+  router.on("OPTIONS", "/api/projects/:projectId", (context) => preflight(context.request));
   router.on("GET", "/api/projects/:projectId", async (context) => {
     const projectId = context.state.params.projectId;
     if (!projectId) {
@@ -31,7 +47,7 @@ export const registerProjectRoutes = (router: Router): void => {
     try {
       const project = await getProject(context.kv, projectId);
       const settings = await ensureProjectSettings(context.kv, projectId);
-      return jsonResponse({ project, settings });
+      return jsonOk({ project, settings });
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFoundResponse(error.message);
@@ -43,6 +59,7 @@ export const registerProjectRoutes = (router: Router): void => {
     }
   });
 
+  router.on("OPTIONS", "/api/projects/:projectId/settings", (context) => preflight(context.request));
   router.on("PUT", "/api/projects/:projectId/settings", async (context) => {
     const projectId = context.state.params.projectId;
     if (!projectId) {
@@ -82,7 +99,7 @@ export const registerProjectRoutes = (router: Router): void => {
       const validated = parseProjectSettings(merged, projectId);
       await upsertProjectSettings(context.kv, validated);
       await touchProjectUpdatedAt(context.kv, projectId);
-      return jsonResponse({ settings: validated });
+      return jsonOk({ settings: validated });
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFoundResponse(error.message);
@@ -97,6 +114,7 @@ export const registerProjectRoutes = (router: Router): void => {
     }
   });
 
+  router.on("OPTIONS", "/api/projects/:projectId/sessions", (context) => preflight(context.request));
   router.on("POST", "/api/projects/:projectId/sessions", async (context) => {
     const projectId = context.state.params.projectId;
     if (!projectId) {

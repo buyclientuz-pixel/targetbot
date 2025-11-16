@@ -1162,23 +1162,6 @@ export const registerPortalRoutes = (router: Router): void => {
   router.on("GET", "/portal/:projectId", renderPortalPage);
   router.on("GET", "/p/:projectId", renderPortalPage);
 
-  router.on("GET", "/api/projects/:projectId", async (context) => {
-    const projectId = context.state.params.projectId;
-    if (!projectId) {
-      return badRequest("Project ID is required");
-    }
-    try {
-      const project = await requireProjectRecord(context.kv, projectId);
-      return jsonOk({ project });
-    } catch (error) {
-      if (error instanceof EntityNotFoundError) {
-        return notFound(error.message);
-      }
-      throw error;
-    }
-  });
-  router.on("OPTIONS", "/api/projects/:projectId", (context) => preflight(context.request));
-
   router.on("GET", "/api/projects/:projectId/summary", async (context) => {
     const projectId = context.state.params.projectId;
     if (!projectId) {
