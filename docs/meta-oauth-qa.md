@@ -9,7 +9,8 @@
 
 ## Steps
 1. Нажать кнопку **«Авторизоваться в Facebook»** на панели Meta.
-2. Пройти редирект на `https://www.facebook.com/v19.0/dialog/oauth` и подтвердить доступ приложения к `ads_read` и `leads_retrieval`.
+2. Пройти редирект на `https://www.facebook.com/v19.0/dialog/oauth` и подтвердить доступ приложения к `ads_management`,
+   `ads_read`, `leads_retrieval`, `business_management`, `pages_manage_metadata`, `pages_read_engagement`, `pages_show_list`.
 3. После редиректа на `/auth/facebook/callback?code=...` дождаться ответа воркера:
    - В KV появляется запись `metaToken` с новым `access_token` и `expires_at`.
    - `GET /api/meta/status` возвращает `{"ok":true,"data":{"status":"valid"...}}`.

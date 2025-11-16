@@ -152,7 +152,15 @@ export const registerMetaRoutes = (
     oauthUrl.searchParams.set("response_type", "code");
     oauthUrl.searchParams.set(
       "scope",
-      "ads_management,ads_read,leads_retrieval,business_management",
+      [
+        "ads_management",
+        "ads_read",
+        "leads_retrieval",
+        "business_management",
+        "pages_manage_metadata",
+        "pages_read_engagement",
+        "pages_show_list",
+      ].join(","),
     );
     oauthUrl.searchParams.set("state", tid);
     return new Response(null, {

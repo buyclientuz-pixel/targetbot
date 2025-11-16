@@ -475,6 +475,13 @@ const fetchLeadGenFormsViaPages = async (
   return Array.from(forms.values());
 };
 
+const isMissingAdAccountLeadsEdgeError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /nonexisting field \(leads\) on node type \(AdAccount\)/i.test(error.message);
+};
+
 const fetchLeadsForNode = async (
   nodeId: string,
   options: MetaLeadFetchOptions,
@@ -520,6 +527,7 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   }
   const limit = options.limit;
   let accountError: Error | null = null;
+  let ignorableAccountError = false;
   try {
     const accountLeads = await fetchLeadsForNode(options.accountId, options, limit);
     if (accountLeads.length > 0) {
@@ -527,6 +535,7 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     }
   } catch (error) {
     accountError = error as Error;
+    ignorableAccountError = isMissingAdAccountLeadsEdgeError(error);
     console.warn(`[meta] Failed to download leads via account ${options.accountId}: ${accountError.message}`);
   }
   let primaryError: Error | null = null;
@@ -553,7 +562,7 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     if (primaryError && !fallbackAttempted) {
       throw primaryError;
     }
-    if (accountError) {
+    if (accountError && !ignorableAccountError) {
       throw accountError;
     }
     return [];

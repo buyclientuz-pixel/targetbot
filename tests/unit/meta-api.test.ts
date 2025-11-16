@@ -70,7 +70,10 @@ test("fetchMetaLeads falls back to page leadgen forms when ad account edge is un
     const url = new URL(target);
     requests.push(url);
     if (url.pathname.includes("/act_page/leads")) {
-      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(
+        JSON.stringify({ error: { message: "(#100) Tried accessing nonexisting field (leads) on node type (AdAccount)" } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
     }
     if (url.pathname.includes("/act_page/leadgen_forms")) {
       return new Response(JSON.stringify({ error: { message: "unsupported" } }), {
@@ -111,6 +114,32 @@ test("fetchMetaLeads falls back to page leadgen forms when ad account edge is un
     const leadRequest = requests.find((request) => request.pathname.includes("/form-page-1/leads"));
     assert.ok(leadRequest);
     assert.equal(leadRequest?.searchParams.get("access_token"), "page-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchMetaLeads ignores missing account leads edge errors when no forms are available", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_missing/leads")) {
+      return new Response(
+        JSON.stringify({ error: { message: "(#100) Tried accessing nonexisting field (leads) on node type (AdAccount)" } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/act_missing/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_missing", accessToken: "token" });
+    assert.equal(leads.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
   }

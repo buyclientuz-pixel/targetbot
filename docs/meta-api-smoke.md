@@ -2,7 +2,8 @@
 
 - Дата проверки: 2025-02-12 (UTC)
 - Граф API: v19.0
-- Токен: long-lived пользовательский токен с правами `ads_management`, `business_management`, `pages_read_engagement`
+- Токен: long-lived пользовательский токен с правами `ads_management`, `ads_read`, `leads_retrieval`, `business_management`,
+  `pages_manage_metadata`, `pages_read_engagement`, `pages_show_list`
 
 ## Предусловия
 1. Выполнен OAuth-флоу через `/api/meta/oauth/start` → `/auth/facebook/callback`; токен сохранён в KV.
@@ -24,7 +25,15 @@ curl -s "https://graph.facebook.com/debug_token?input_token=<ACCESS_TOKEN>&acces
     "app_id": "123456789012345",
     "type": "USER",
     "is_valid": true,
-    "scopes": ["ads_management", "business_management", "pages_read_engagement"],
+    "scopes": [
+      "ads_management",
+      "ads_read",
+      "leads_retrieval",
+      "business_management",
+      "pages_manage_metadata",
+      "pages_read_engagement",
+      "pages_show_list"
+    ],
     "expires_at": 1762244132
   }
 }
