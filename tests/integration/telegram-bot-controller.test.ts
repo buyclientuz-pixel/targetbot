@@ -201,19 +201,17 @@ test("Telegram bot controller serves menu and project list", async () => {
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
     } as unknown as TelegramUpdate);
 
-    assert.ok(stub.requests.length >= 2);
+    assert.equal(stub.requests.length, 1);
     const creationKeyboard = stub.requests[0]?.body.reply_markup as {
-      inline_keyboard: Array<Array<{ callback_data: string }>>;
+      inline_keyboard: Array<Array<{ callback_data?: string }>>;
     };
     assert.ok(creationKeyboard);
     assert.equal(creationKeyboard.inline_keyboard[0]?.[0]?.callback_data, "project:add:act_123");
+    const myProjectsButton = creationKeyboard.inline_keyboard
+      .flat()
+      .find((btn) => btn.callback_data === "project:list");
+    assert.ok(myProjectsButton);
     assert.match(String(stub.requests[0]?.body.text), /Выберите рекламный аккаунт/);
-
-    const listKeyboard = stub.requests[1]?.body.reply_markup as {
-      inline_keyboard: Array<Array<{ callback_data: string }>>;
-    };
-    assert.ok(listKeyboard);
-    assert.equal(listKeyboard.inline_keyboard[0]?.[0]?.callback_data, "project:card:proj_a");
   } finally {
     stub.restore();
   }

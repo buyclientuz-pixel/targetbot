@@ -56,6 +56,7 @@ import {
   type ProjectListItem,
 } from "./messages";
 import { addDaysIso, parseDateInput, todayIsoDate } from "./dates";
+import { renderPanel } from "./panel-engine";
 import type { TelegramUpdate } from "./types";
 
 import { KV_KEYS } from "../config/kv";
@@ -115,6 +116,15 @@ interface BotContext {
   buildMenuKeyboard: (userId: number) => ReturnType<typeof buildMainMenuKeyboard>;
   getFacebookOAuthUrl: (userId: number) => string | null;
 }
+
+const buildPanelRuntime = (ctx: BotContext) => ({
+  kv: ctx.kv,
+  r2: ctx.r2,
+  workerUrl: ctx.workerBaseUrl,
+  defaultTimezone: ctx.defaultTimezone,
+  getFacebookOAuthUrl: ctx.getFacebookOAuthUrl,
+  telegramToken: ctx.token,
+});
 
 interface CreateTelegramBotControllerOptions {
   kv: KvClient;
@@ -1346,20 +1356,21 @@ const handleTextCommand = async (
   chatId: number,
   userId: number,
   text: string,
+  panelRuntime: ReturnType<typeof buildPanelRuntime>,
 ): Promise<void> => {
   switch (text) {
     case "/start":
     case "Меню":
-      await sendMenu(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
       return;
     case "Авторизация Facebook":
-      await handleFacebookAuth(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:fb-auth" });
       return;
     case "Meta-аккаунты":
       await sendMetaAccountsList(ctx, chatId, userId);
       return;
     case "Проекты":
-      await sendProjectsEntry(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects" });
       return;
     case "Аналитика":
       await sendAnalyticsOverview(ctx, chatId, userId);
@@ -1386,6 +1397,7 @@ const handleCallback = async (
   chatId: number,
   userId: number,
   data: string,
+  panelRuntime: ReturnType<typeof buildPanelRuntime>,
 ): Promise<void> => {
   const parts = data.split(":");
   const scope = parts[0];
@@ -1394,16 +1406,16 @@ const handleCallback = async (
       const action = parts[1];
       switch (action) {
         case "card":
-          await sendProjectCard(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "project:card:" + parts[2]! });
           break;
         case "list":
-          await sendExistingProjectsList(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects:list" });
           break;
         case "menu":
-          await sendMenu(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
           break;
         case "add":
-          await handleProjectAccountSelect(ctx, chatId, userId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: data });
           break;
         case "bind":
           await handleProjectBind(ctx, chatId, userId, parts[2]!, Number(parts[3]));
@@ -1663,13 +1675,13 @@ const handleCallback = async (
       const action = parts[1];
       switch (action) {
         case "menu":
-          await sendMenu(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
           break;
         case "auth":
-          await handleFacebookAuth(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:fb-auth" });
           break;
         case "projects":
-          await sendProjectsEntry(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects" });
           break;
         case "analytics":
           await sendAnalyticsOverview(ctx, chatId, userId);
@@ -1724,6 +1736,7 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
 
   return {
     handleUpdate: async (update: TelegramUpdate): Promise<void> => {
+      const panelRuntime = buildPanelRuntime(ctx);
       const userId = extractUserId(update);
       const chatId = extractChatId(update);
       if (userId == null || chatId == null) {
@@ -1745,12 +1758,12 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
         if (await handleSessionInput(ctx, chatId, userId, update.message.text, session)) {
           return;
         }
-        await handleTextCommand(ctx, chatId, userId, update.message.text.trim());
+        await handleTextCommand(ctx, chatId, userId, update.message.text.trim(), panelRuntime);
         return;
       }
 
       if (update.callback_query?.data) {
-        await handleCallback(ctx, chatId, userId, update.callback_query.data);
+        await handleCallback(ctx, chatId, userId, update.callback_query.data, panelRuntime);
         if (update.callback_query.id) {
           await answerCallbackQuery(ctx.token, { id: update.callback_query.id });
         }

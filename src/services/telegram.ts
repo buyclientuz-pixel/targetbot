@@ -18,6 +18,15 @@ export interface SendTelegramMessageOptions {
   replyMarkup?: unknown;
 }
 
+export interface EditTelegramMessageOptions {
+  chatId: number;
+  messageId: number;
+  text: string;
+  parseMode?: "MarkdownV2" | "Markdown" | "HTML";
+  disableWebPagePreview?: boolean;
+  replyMarkup?: unknown;
+}
+
 export interface SendTelegramDocumentOptions {
   chatId: number;
   filename: string;
@@ -100,6 +109,46 @@ export const sendTelegramMessage = async <T = unknown>(
       throw new TelegramError(`Telegram API error: ${data.description ?? "unknown"}`, response.status, bodyText);
     }
     return data.result;
+  } catch (error) {
+    if (error instanceof TelegramError) {
+      throw error;
+    }
+    throw new TelegramError("Failed to parse Telegram response", response.status, bodyText);
+  }
+};
+
+export const editTelegramMessage = async (
+  token: string,
+  options: EditTelegramMessageOptions,
+): Promise<void> => {
+  const url = `https://api.telegram.org/bot${token}/editMessageText`;
+  const payload: Record<string, unknown> = {
+    chat_id: options.chatId,
+    message_id: options.messageId,
+    text: options.text,
+    parse_mode: options.parseMode ?? "HTML",
+    disable_web_page_preview: options.disableWebPagePreview ?? true,
+  };
+  if (options.replyMarkup) {
+    payload.reply_markup = options.replyMarkup;
+  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw new TelegramError(`Telegram editMessageText failed with status ${response.status}`,
+      response.status,
+      bodyText,
+    );
+  }
+  try {
+    const data = JSON.parse(bodyText) as TelegramResponse<unknown>;
+    if (!data.ok) {
+      throw new TelegramError(`Telegram API error: ${data.description ?? "unknown"}`, response.status, bodyText);
+    }
   } catch (error) {
     if (error instanceof TelegramError) {
       throw error;

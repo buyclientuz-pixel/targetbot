@@ -3,6 +3,7 @@ import type { KvClient } from "../infra/kv";
 
 export type BotSessionState =
   | { type: "idle" }
+  | { type: "panel"; panelId: string }
   | { type: "billing:set-date"; projectId: string }
   | { type: "billing:manual"; projectId: string }
   | { type: "facebook:token" }
@@ -11,15 +12,23 @@ export type BotSessionState =
   | { type: "chat:manual"; projectId: string }
   | { type: "autoreports:set-time"; projectId: string };
 
+export interface BotPanelState {
+  panelId: string;
+  chatId: number;
+  messageId: number;
+}
+
 export interface BotSession {
   userId: number;
   state: BotSessionState;
+  panel?: BotPanelState;
   updatedAt: string;
 }
 
 const createDefaultSession = (userId: number): BotSession => ({
   userId,
   state: { type: "idle" },
+  panel: undefined,
   updatedAt: new Date().toISOString(),
 });
 
@@ -38,6 +47,6 @@ export const saveBotSession = async (kv: KvClient, session: BotSession): Promise
 };
 
 export const clearBotSession = async (kv: KvClient, userId: number): Promise<void> => {
-  const key = KV_KEYS.botSession(userId);
-  await kv.putJson(key, createDefaultSession(userId));
+  const session = await getBotSession(kv, userId);
+  await saveBotSession(kv, { ...session, state: { type: "idle" } });
 };
