@@ -6,8 +6,8 @@ import type { ProjectLeadsListRecord } from "../domain/spec/project-leads";
 import type { MetaCampaignsDocument } from "../domain/spec/meta-campaigns";
 import type { PaymentsHistoryDocument } from "../domain/spec/payments-history";
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
-import type { ChatRegistryEntry } from "../domain/chat-registry";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
+import type { FreeChatRecord } from "../domain/project-chats";
 
 import type { AnalyticsOverview, FinanceOverview, ProjectBundle } from "./data";
 
@@ -182,6 +182,49 @@ export const buildProjectsListMessage = (projects: ProjectListItem[]): string =>
   });
   return lines.join("\n");
 };
+
+export const buildProjectCreationMessage = (options: {
+  accounts: { id: string; name: string; currency: string }[];
+  hasProjects: boolean;
+}): string => {
+  const lines: string[] = [];
+  lines.push("Выберите рекламный аккаунт для подключения:");
+  lines.push("");
+  if (options.accounts.length === 0) {
+    lines.push("Не найдено рекламных аккаунтов.");
+    lines.push("Подключите Facebook в разделе «Авторизация Facebook».\n");
+  } else {
+    options.accounts.forEach((account, index) => {
+      lines.push(`${index + 1}. ${escapeHtml(account.name)} (${account.id}) — ${account.currency}`);
+    });
+    lines.push("");
+    lines.push("После выбора аккаунта бот попросит привязать чат-группу.");
+  }
+  lines.push(
+    options.hasProjects
+      ? "Нажмите «📂 Мои проекты», чтобы открыть существующие проекты."
+      : "У вас пока нет проектов. Добавьте их через портал или админ-панель.",
+  );
+  return lines.join("\n");
+};
+
+export const buildChatBindingMessage = (options: { accountName: string }): string =>
+  [
+    `Выбран рекламный аккаунт <b>${escapeHtml(options.accountName)}</b>.`,
+    "Теперь выберите свободную чат-группу для этого проекта.",
+    "1️⃣ Выберите чат из списка доступных, где бот уже зарегистрирован через /reg.",
+    "2️⃣ Или нажмите «Отправить ссылку вручную» и пришлите ссылку / @username / ID.",
+    "Бот автоматически найдёт или создаст тему «Таргет» и обновит привязку.",
+  ].join("\n");
+
+export const buildNoFreeChatsMessage = (): string =>
+  [
+    "У вас нет свободных чат-групп.",
+    "Добавьте новые, отправив команду /reg в нужной Telegram-группе.",
+  ].join("\n");
+
+export const buildChatAlreadyUsedMessage = (): string =>
+  "❌ Эта чат-группа уже используется другим проектом. Выберите другую.";
 
 export const buildProjectCardMessage = (bundle: ProjectBundle): string => {
   const { project, billing, leads, campaigns, alerts, autoreports } = bundle;
@@ -512,7 +555,7 @@ export const buildChatInfoMessage = (project: ProjectRecord): string => {
 
 export const buildChatChangeMessage = (
   project: ProjectRecord,
-  chats: ChatRegistryEntry[],
+  chats: FreeChatRecord[],
 ): string => {
   const lines: string[] = [];
   lines.push(`Изменить чат-группу — <b>${escapeHtml(project.name)}</b>`);

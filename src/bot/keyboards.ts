@@ -2,7 +2,8 @@ import type { AutoreportsRecord } from "../domain/spec/autoreports";
 import type { AlertsRecord } from "../domain/spec/alerts";
 import type { ProjectLeadsListRecord } from "../domain/spec/project-leads";
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
-import type { ChatRegistryEntry } from "../domain/chat-registry";
+import type { FreeChatRecord } from "../domain/project-chats";
+import type { FbAuthRecord } from "../domain/spec/fb-auth";
 
 import type { ProjectListItem } from "./messages";
 import type { InlineKeyboardMarkup } from "./types";
@@ -53,6 +54,22 @@ export const buildProjectListKeyboard = (projects: ProjectListItem[]): InlineKey
       callback_data: `project:card:${project.id}`,
     },
   ]),
+});
+
+export const buildProjectCreationKeyboard = (
+  accounts: FbAuthRecord["adAccounts"],
+  options: { hasProjects: boolean },
+): InlineKeyboardMarkup => ({
+  inline_keyboard: [
+    ...accounts.map((account) => [
+      {
+        text: `${account.name} (${account.id}) — ${account.currency}`,
+        callback_data: `project:add:${account.id}`,
+      },
+    ]),
+    ...(options.hasProjects ? [[{ text: "📂 Мои проекты", callback_data: "project:list" }]] : []),
+    [{ text: "🏠 Меню", callback_data: "project:menu" }],
+  ],
 });
 
 export const buildProjectActionsKeyboard = (projectId: string): InlineKeyboardMarkup => ({
@@ -163,15 +180,37 @@ export const buildChatInfoKeyboard = (projectId: string, hasChat: boolean): Inli
     .concat([[{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }]]),
 });
 
-export const buildChatChangeKeyboard = (
-  projectId: string,
-  chats: ChatRegistryEntry[],
+const formatChatButtonText = (chat: { chatTitle: string | null; chatId: number }, index: number): string => {
+  const icons = ["🔥", "👥", "🛠", "💬", "✨", "🚀", "⭐️", "🎯"];
+  const prefix = icons[index % icons.length] ?? "🔥";
+  return chat.chatTitle ? `${prefix} ${chat.chatTitle}` : `${prefix} Чат ${chat.chatId}`;
+};
+
+export const buildChatBindingKeyboard = (
+  accountId: string,
+  chats: FreeChatRecord[],
 ): InlineKeyboardMarkup => ({
   inline_keyboard: [
-    ...chats.slice(0, 5).map((chat) => [
+    ...chats.slice(0, 8).map((chat, index) => [
       {
-        text: chat.title ? `${chat.title} (${chat.id})` : `Чат ${chat.id}`,
-        callback_data: `project:chat-select:${projectId}:${chat.id}`,
+        text: `${formatChatButtonText(chat, index)} (${chat.chatId})`,
+        callback_data: `project:bind:${accountId}:${chat.chatId}`,
+      },
+    ]),
+    [{ text: "🔗 Отправить ссылку вручную", callback_data: `project:bind-manual:${accountId}` }],
+    [{ text: "🏠 Меню", callback_data: "project:menu" }],
+  ],
+});
+
+export const buildChatChangeKeyboard = (
+  projectId: string,
+  chats: FreeChatRecord[],
+): InlineKeyboardMarkup => ({
+  inline_keyboard: [
+    ...chats.slice(0, 8).map((chat, index) => [
+      {
+        text: `${formatChatButtonText(chat, index)} (${chat.chatId})`,
+        callback_data: `project:chat-select:${projectId}:${chat.chatId}`,
       },
     ]),
     [{ text: "🔗 Отправить ссылку вручную", callback_data: `project:chat-manual:${projectId}` }],

@@ -7,6 +7,7 @@ export type BotSessionState =
   | { type: "billing:manual"; projectId: string }
   | { type: "facebook:token" }
   | { type: "project:edit"; projectId: string; field: "name" | "ad" | "owner" }
+  | { type: "project:create-manual"; accountId: string }
   | { type: "chat:manual"; projectId: string }
   | { type: "autoreports:set-time"; projectId: string };
 

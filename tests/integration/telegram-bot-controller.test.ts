@@ -8,7 +8,10 @@ const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
 const { createTelegramBotController } = await import("../../src/bot/controller.ts");
 const { recordKnownChat } = await import("../../src/domain/chat-registry.ts");
-const { putProjectsByUser } = await import("../../src/domain/spec/projects-by-user.ts");
+const { putFreeChatRecord, getFreeChatRecord, getOccupiedChatRecord } = await import(
+  "../../src/domain/project-chats.ts",
+);
+const { putProjectsByUser, getProjectsByUser } = await import("../../src/domain/spec/projects-by-user.ts");
 const { putProjectRecord, requireProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { putBillingRecord, getBillingRecord } = await import("../../src/domain/spec/billing.ts");
 const { putAlertsRecord, getAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
@@ -156,6 +159,21 @@ test("Telegram bot controller serves menu and project list", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());
   await seedProject(kv, r2);
+  await putFbAuthRecord(kv, {
+    userId: 100,
+    accessToken: "token",
+    expiresAt: "2025-01-01T00:00:00.000Z",
+    adAccounts: [
+      { id: "act_123", name: "BirLash", currency: "USD", status: 1 },
+      { id: "act_456", name: "FlexAds", currency: "USD", status: 1 },
+    ],
+  });
+  await putFreeChatRecord(kv, {
+    chatId: -1007001,
+    chatTitle: "Birlash Leads",
+    ownerId: 100,
+    registeredAt: new Date().toISOString(),
+  });
 
   const controller = createController(kv, r2);
   const stub = installFetchStub();
@@ -183,10 +201,19 @@ test("Telegram bot controller serves menu and project list", async () => {
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
     } as unknown as TelegramUpdate);
 
-    assert.ok(stub.requests.length >= 1);
-    const keyboard = stub.requests[0]?.body.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> };
-    assert.ok(keyboard);
-    assert.equal(keyboard.inline_keyboard[0]?.[0]?.callback_data, "project:card:proj_a");
+    assert.ok(stub.requests.length >= 2);
+    const creationKeyboard = stub.requests[0]?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ callback_data: string }>>;
+    };
+    assert.ok(creationKeyboard);
+    assert.equal(creationKeyboard.inline_keyboard[0]?.[0]?.callback_data, "project:add:act_123");
+    assert.match(String(stub.requests[0]?.body.text), /Выберите рекламный аккаунт/);
+
+    const listKeyboard = stub.requests[1]?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ callback_data: string }>>;
+    };
+    assert.ok(listKeyboard);
+    assert.equal(listKeyboard.inline_keyboard[0]?.[0]?.callback_data, "project:card:proj_a");
   } finally {
     stub.restore();
   }
@@ -234,6 +261,96 @@ test("Telegram bot controller shows project card and handles +30 billing", async
     const payments = await getPaymentsHistoryDocument(r2, "proj_a");
     assert.equal(payments?.payments.length, 1);
     assert.equal(payments?.payments[0]?.periodTo, "2025-01-31");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("/reg command registers a chat group", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      message: {
+        chat: { id: -1005001, type: "supergroup", title: "Target Group" },
+        from: { id: 555 },
+        text: "/reg",
+      },
+    } as unknown as TelegramUpdate);
+
+    const record = await getFreeChatRecord(kv, -1005001);
+    assert.equal(record?.ownerId, 555);
+    const groupMessage = stub.requests.find((entry) => entry.url.includes("sendMessage") && entry.body.chat_id === -1005001);
+    assert.ok(groupMessage);
+    assert.match(String(groupMessage?.body.text), /Группа зарегистрирована/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("ad account binding creates a new project and occupies chat", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await putFbAuthRecord(kv, {
+    userId: 100,
+    accessToken: "token",
+    expiresAt: "2025-01-01T00:00:00.000Z",
+    adAccounts: [{ id: "act_new", name: "New Ads", currency: "USD", status: 1 }],
+  });
+  await putFreeChatRecord(kv, {
+    chatId: -1009001,
+    chatTitle: "Fresh Group",
+    ownerId: 100,
+    registeredAt: new Date().toISOString(),
+  });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb1",
+        from: { id: 100 },
+        data: "project:add:act_new",
+        message: { chat: { id: 100 }, message_id: 10 },
+      },
+    } as unknown as TelegramUpdate);
+
+    const prompt = findLastSendMessage(stub.requests);
+    assert.ok(prompt);
+    assert.match(String(prompt?.body.text), /свободную чат-группу/);
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb2",
+        from: { id: 100 },
+        data: "project:bind:act_new:-1009001",
+        message: { chat: { id: 100 }, message_id: 11 },
+      },
+    } as unknown as TelegramUpdate);
+
+    const membership = await getProjectsByUser(kv, 100);
+    assert.ok(membership);
+    const newProjectId = membership.projects[0];
+    const project = await requireProjectRecord(kv, newProjectId);
+    assert.equal(project.chatId, -1009001);
+
+    const freeChat = await getFreeChatRecord(kv, -1009001);
+    assert.equal(freeChat, null);
+    const occupied = await getOccupiedChatRecord(kv, -1009001);
+    assert.equal(occupied?.projectId, newProjectId);
+
+    const groupNotification = stub.requests.find(
+      (entry) => entry.url.includes("sendMessage") && entry.body.chat_id === -1009001,
+    );
+    assert.ok(groupNotification);
+    assert.match(String(groupNotification?.body.text), /Группа успешно подключена/);
+    const userNotification = findLastSendMessage(stub.requests);
+    assert.match(String(userNotification?.body.text), /📦 Проект подключён/);
   } finally {
     stub.restore();
   }
@@ -462,6 +579,18 @@ test("Telegram bot controller updates chat bindings via selection and manual inp
   const r2 = new R2Client(new MemoryR2Bucket());
   await seedProject(kv, r2);
   await recordKnownChat(kv, { id: -1001234, title: "Bir Group", type: "supergroup" });
+  await putFreeChatRecord(kv, {
+    chatId: -1001234,
+    chatTitle: "Bir Group",
+    ownerId: 100,
+    registeredAt: new Date().toISOString(),
+  });
+  await putFreeChatRecord(kv, {
+    chatId: -1007001,
+    chatTitle: "Manual Chat",
+    ownerId: 100,
+    registeredAt: new Date().toISOString(),
+  });
 
   const controller = createController(kv, r2);
   const stub = installFetchStub((url) => {

@@ -12,6 +12,7 @@ import {
   buildAlertsKeyboard,
   buildAlertsRouteKeyboard,
   buildBillingKeyboard,
+  buildChatBindingKeyboard,
   buildChatChangeKeyboard,
   buildChatInfoKeyboard,
   buildDeleteConfirmKeyboard,
@@ -22,6 +23,7 @@ import {
   buildMainMenuKeyboard,
   buildProjectActionsKeyboard,
   buildProjectEditKeyboard,
+  buildProjectCreationKeyboard,
   buildProjectListKeyboard,
   buildSettingsKeyboard,
 } from "./keyboards";
@@ -31,6 +33,8 @@ import {
   buildAutoreportsMessage,
   buildBillingScreenMessage,
   buildCampaignsMessage,
+  buildChatAlreadyUsedMessage,
+  buildChatBindingMessage,
   buildChatChangeMessage,
   buildChatInfoMessage,
   buildDeleteConfirmationMessage,
@@ -42,8 +46,10 @@ import {
   buildPortalMessage,
   buildProjectCardMessage,
   buildProjectEditMessage,
+  buildProjectCreationMessage,
   buildProjectsListMessage,
   buildReportMessage,
+  buildNoFreeChatsMessage,
   buildSettingsMessage,
   buildUsersMessage,
   buildWebhookStatusMessage,
@@ -56,6 +62,14 @@ import { KV_KEYS } from "../config/kv";
 import { R2_KEYS } from "../config/r2";
 import { clearBotSession, getBotSession, saveBotSession } from "../domain/bot-sessions";
 import { recordKnownChat } from "../domain/chat-registry";
+import {
+  deleteFreeChatRecord,
+  deleteOccupiedChatRecord,
+  getFreeChatRecord,
+  getOccupiedChatRecord,
+  putFreeChatRecord,
+  putOccupiedChatRecord,
+} from "../domain/project-chats";
 import { appendPaymentRecord, type PaymentRecord } from "../domain/spec/payments-history";
 import { putBillingRecord } from "../domain/spec/billing";
 import { getFbAuthRecord, putFbAuthRecord, type FbAuthRecord } from "../domain/spec/fb-auth";
@@ -68,7 +82,13 @@ import {
   putProjectLeadsList,
   type ProjectLeadsListRecord,
 } from "../domain/spec/project-leads";
-import { putProjectRecord, deleteProjectRecord, requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
+import {
+  putProjectRecord,
+  deleteProjectRecord,
+  requireProjectRecord,
+  getProjectRecord,
+  type ProjectRecord,
+} from "../domain/spec/project";
 import { getProjectsByUser, putProjectsByUser } from "../domain/spec/projects-by-user";
 import { getUserSettingsRecord, updateUserSettingsRecord, type UserSettingsRecord } from "../domain/spec/user-settings";
 import type { KvClient } from "../infra/kv";
@@ -143,6 +163,138 @@ const recordChatFromUpdate = async (ctx: BotContext, update: TelegramUpdate): Pr
   await recordKnownChat(ctx.kv, { id: chat.id, title: chat.title, type: chat.type });
 };
 
+const slugifyProjectName = (value: string): string => {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug || "project";
+};
+
+const generateProjectId = async (ctx: BotContext, name: string): Promise<string> => {
+  const slug = slugifyProjectName(name);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const suffix = Math.random().toString(36).slice(2, 6);
+    const candidate = `proj_${slug}_${suffix}`;
+    const existing = await getProjectRecord(ctx.kv, candidate);
+    if (!existing) {
+      return candidate;
+    }
+  }
+  return `proj_${slug}_${Date.now().toString(36)}`;
+};
+
+const buildDefaultBillingRecord = (currency: string) => ({
+  tariff: 0,
+  currency,
+  nextPaymentDate: new Date().toISOString().slice(0, 10),
+  autobilling: false,
+});
+
+const buildDefaultAlertsRecord = (): AlertsRecord => ({
+  enabled: true,
+  channel: "chat",
+  types: { leadInQueue: true, pause24h: true, paymentReminder: true },
+  leadQueueThresholdHours: 1,
+  pauseThresholdHours: 24,
+  paymentReminderDays: [7, 1],
+});
+
+const buildDefaultAutoreportsRecord = (): AutoreportsRecord => ({
+  enabled: false,
+  time: "10:00",
+  mode: "yesterday_plus_week",
+  sendTo: "both",
+});
+
+const addProjectToUserMembership = async (ctx: BotContext, userId: number, projectId: string): Promise<void> => {
+  const membership = (await getProjectsByUser(ctx.kv, userId)) ?? { projects: [] };
+  const nextProjects = [projectId, ...membership.projects.filter((id) => id !== projectId)];
+  await putProjectsByUser(ctx.kv, userId, { projects: nextProjects });
+};
+
+const reserveChatForProject = async (
+  ctx: BotContext,
+  project: ProjectRecord,
+  chat: { chatId: number; chatTitle: string | null },
+): Promise<void> => {
+  await deleteFreeChatRecord(ctx.kv, chat.chatId);
+  await putOccupiedChatRecord(ctx.kv, {
+    chatId: chat.chatId,
+    chatTitle: chat.chatTitle,
+    ownerId: project.ownerId,
+    projectId: project.id,
+    projectName: project.name,
+    boundAt: new Date().toISOString(),
+  });
+};
+
+const releaseChatOccupancy = async (
+  ctx: BotContext,
+  chatId: number,
+  ownerId: number,
+): Promise<void> => {
+  const occupied = await getOccupiedChatRecord(ctx.kv, chatId);
+  await deleteOccupiedChatRecord(ctx.kv, chatId);
+  const actualOwner = occupied?.ownerId ?? ownerId;
+  if (!actualOwner) {
+    return;
+  }
+  await putFreeChatRecord(ctx.kv, {
+    chatId,
+    chatTitle: occupied?.chatTitle ?? null,
+    ownerId: actualOwner,
+    registeredAt: new Date().toISOString(),
+  });
+};
+
+const createProjectFromAccount = async (
+  ctx: BotContext,
+  userId: number,
+  account: FbAuthRecord["adAccounts"][number],
+  chat: { chatId: number; chatTitle: string | null },
+): Promise<ProjectRecord> => {
+  const projectId = await generateProjectId(ctx, account.name);
+  const portalUrl = ctx.workerBaseUrl ? `${ctx.workerBaseUrl}/p/${projectId}` : `/p/${projectId}`;
+  const project: ProjectRecord = {
+    id: projectId,
+    name: account.name,
+    ownerId: userId,
+    adAccountId: account.id,
+    chatId: chat.chatId,
+    portalUrl,
+    settings: {
+      currency: account.currency,
+      timezone: ctx.defaultTimezone,
+      kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
+    },
+  };
+  await putProjectRecord(ctx.kv, project);
+  await addProjectToUserMembership(ctx, userId, projectId);
+  await putBillingRecord(ctx.kv, projectId, buildDefaultBillingRecord(account.currency));
+  await putAlertsRecord(ctx.kv, projectId, buildDefaultAlertsRecord());
+  await putAutoreportsRecord(ctx.kv, projectId, buildDefaultAutoreportsRecord());
+  await reserveChatForProject(ctx, project, chat);
+  return project;
+};
+
+const setProjectChatBinding = async (
+  ctx: BotContext,
+  projectId: string,
+  chat: { chatId: number; chatTitle: string | null } | null,
+): Promise<void> => {
+  const current = await requireProjectRecord(ctx.kv, projectId);
+  if (current.chatId && (!chat || current.chatId !== chat.chatId)) {
+    await releaseChatOccupancy(ctx, current.chatId, current.ownerId);
+  }
+  const updated = await updateProject(ctx, projectId, (project) => {
+    project.chatId = chat ? chat.chatId : null;
+  });
+  if (chat) {
+    await reserveChatForProject(ctx, updated, chat);
+  }
+};
+
 const sendMenu = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
   const fbAuth = await getFbAuthRecord(ctx.kv, userId);
   await sendTelegramMessage(ctx.token, {
@@ -171,12 +323,192 @@ const buildProjectListItems = async (
   return items;
 };
 
-const sendProjectsList = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+const sendExistingProjectsList = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
   const projects = await buildProjectListItems(ctx, userId);
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildProjectsListMessage(projects),
     replyMarkup: projects.length > 0 ? buildProjectListKeyboard(projects) : undefined,
+  });
+};
+
+const sendProjectsEntry = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  const fbAuth = await getFbAuthRecord(ctx.kv, userId);
+  const adAccounts = (fbAuth?.adAccounts ?? []) as FbAuthRecord["adAccounts"];
+  const projects = await buildProjectListItems(ctx, userId);
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildProjectCreationMessage({ accounts: adAccounts, hasProjects: projects.length > 0 }),
+    replyMarkup: buildProjectCreationKeyboard(adAccounts, { hasProjects: projects.length > 0 }),
+  });
+  if (projects.length === 0) {
+    return;
+  }
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildProjectsListMessage(projects),
+    replyMarkup: buildProjectListKeyboard(projects),
+  });
+};
+
+const handleProjectAccountSelect = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  accountId: string,
+): Promise<void> => {
+  const fbAuth = await getFbAuthRecord(ctx.kv, userId);
+  if (!fbAuth) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: "Подключите Facebook в разделе «Авторизация Facebook», чтобы увидеть рекламные аккаунты.",
+    });
+    return;
+  }
+  const account = fbAuth.adAccounts.find((entry) => entry.id === accountId);
+  if (!account) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: "Рекламный аккаунт не найден. Нажмите «📦 Список рекламных аккаунтов», чтобы обновить данные.",
+    });
+    return;
+  }
+  const chats = await listAvailableProjectChats(ctx.kv, userId);
+  if (chats.length === 0) {
+    await sendTelegramMessage(ctx.token, { chatId, text: buildNoFreeChatsMessage() });
+    return;
+  }
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text: buildChatBindingMessage({ accountName: account.name }),
+    replyMarkup: buildChatBindingKeyboard(account.id, chats),
+  });
+};
+
+const completeProjectBinding = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  account: FbAuthRecord["adAccounts"][number],
+  freeChat: { chatId: number; chatTitle: string | null; ownerId: number },
+): Promise<void> => {
+  const project = await createProjectFromAccount(ctx, userId, account, freeChat);
+  await sendTelegramMessage(ctx.token, {
+    chatId: freeChat.chatId,
+    text:
+      `👍 Группа успешно подключена к проекту «${escapeHtml(project.name)}».\n` +
+      "Теперь здесь будут приходить лиды, алерты и отчёты.",
+  });
+  await sendTelegramMessage(ctx.token, {
+    chatId,
+    text:
+      "📦 Проект подключён!\n" +
+      `Название: <b>${escapeHtml(project.name)}</b>\n` +
+      `Рекламный аккаунт: <b>${escapeHtml(account.id)}</b>\n` +
+      `Чат-группа: <b>${freeChat.chatTitle ?? freeChat.chatId}</b>`,
+    replyMarkup: buildProjectActionsKeyboard(project.id),
+  });
+};
+
+const handleProjectBind = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  accountId: string,
+  selectedChatId: number,
+): Promise<void> => {
+  const fbAuth = await getFbAuthRecord(ctx.kv, userId);
+  if (!fbAuth) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: "Подключите Facebook в разделе «Авторизация Facebook», чтобы выбрать аккаунт.",
+    });
+    return;
+  }
+  const account = fbAuth.adAccounts.find((entry) => entry.id === accountId);
+  if (!account) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: "Рекламный аккаунт не найден. Обновите список аккаунтов.",
+    });
+    return;
+  }
+  const freeChat = await getFreeChatRecord(ctx.kv, selectedChatId);
+  if (!freeChat || freeChat.ownerId !== userId) {
+    await sendTelegramMessage(ctx.token, { chatId, text: buildChatAlreadyUsedMessage() });
+    return;
+  }
+  await completeProjectBinding(ctx, chatId, userId, account, freeChat);
+};
+
+const handleProjectManualBindInput = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  accountId: string,
+  input: string,
+): Promise<void> => {
+  try {
+    const resolved = await resolveChatInput(ctx, input);
+    const freeChat = await getFreeChatRecord(ctx.kv, resolved.id);
+    if (!freeChat || freeChat.ownerId !== userId) {
+      await sendTelegramMessage(ctx.token, {
+        chatId,
+        text: "Чат не найден среди зарегистрированных. Отправьте команду /reg в группе и попробуйте снова.",
+      });
+      return;
+    }
+    const fbAuth = await getFbAuthRecord(ctx.kv, userId);
+    if (!fbAuth) {
+      await sendTelegramMessage(ctx.token, {
+        chatId,
+        text: "Подключите Facebook в разделе «Авторизация Facebook», чтобы выбрать аккаунт.",
+      });
+      return;
+    }
+    const account = fbAuth.adAccounts.find((entry) => entry.id === accountId);
+    if (!account) {
+      await sendTelegramMessage(ctx.token, {
+        chatId,
+        text: "Рекламный аккаунт не найден. Обновите список аккаунтов.",
+      });
+      return;
+    }
+    await completeProjectBinding(ctx, chatId, userId, account, freeChat);
+  } catch (error) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: `Не удалось обработать чат: ${(error as Error).message}`,
+    });
+  }
+};
+
+const handleGroupRegistration = async (
+  ctx: BotContext,
+  chat: NonNullable<TelegramUpdate["message"]>["chat"],
+  userId: number,
+): Promise<void> => {
+  if (!chat || chat.type === "private") {
+    return;
+  }
+  const existing = await getOccupiedChatRecord(ctx.kv, chat.id);
+  if (existing) {
+    await sendTelegramMessage(ctx.token, {
+      chatId: chat.id,
+      text: "❌ Эта чат-группа уже используется другим проектом. Выберите другую.",
+    });
+    return;
+  }
+  await putFreeChatRecord(ctx.kv, {
+    chatId: chat.id,
+    chatTitle: chat.title ?? null,
+    ownerId: userId,
+    registeredAt: new Date().toISOString(),
+  });
+  await sendTelegramMessage(ctx.token, {
+    chatId: chat.id,
+    text:
+      "Группа зарегистрирована!\nТеперь вы можете привязать её к проекту в разделе «Проекты».",
   });
 };
 
@@ -749,14 +1081,21 @@ const resolveChatInput = async (
 const handleChatManualInput = async (
   ctx: BotContext,
   chatId: number,
+  userId: number,
   projectId: string,
   input: string,
 ): Promise<void> => {
   try {
     const chat = await resolveChatInput(ctx, input);
-    await updateProject(ctx, projectId, (project) => {
-      project.chatId = chat.id;
-    });
+    const freeChat = await getFreeChatRecord(ctx.kv, chat.id);
+    if (!freeChat || freeChat.ownerId !== userId) {
+      await sendTelegramMessage(ctx.token, {
+        chatId,
+        text: "Чат не найден среди зарегистрированных. Отправьте команду /reg в группе и повторите попытку.",
+      });
+      return;
+    }
+    await setProjectChatBinding(ctx, projectId, { chatId: freeChat.chatId, chatTitle: freeChat.chatTitle });
     await recordKnownChat(ctx.kv, chat);
     await sendTelegramMessage(ctx.token, {
       chatId,
@@ -774,20 +1113,22 @@ const handleChatManualInput = async (
 const handleChatSelect = async (
   ctx: BotContext,
   chatId: number,
+  userId: number,
   projectId: string,
   selectedChatId: number,
 ): Promise<void> => {
-  await updateProject(ctx, projectId, (project) => {
-    project.chatId = selectedChatId;
-  });
+  const freeChat = await getFreeChatRecord(ctx.kv, selectedChatId);
+  if (!freeChat || freeChat.ownerId !== userId) {
+    await sendTelegramMessage(ctx.token, { chatId, text: buildChatAlreadyUsedMessage() });
+    return;
+  }
+  await setProjectChatBinding(ctx, projectId, { chatId: freeChat.chatId, chatTitle: freeChat.chatTitle });
   await sendTelegramMessage(ctx.token, { chatId, text: `✅ Чат привязан: ${selectedChatId}` });
   await sendChatInfoScreen(ctx, chatId, projectId);
 };
 
 const handleChatUnlink = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
-  await updateProject(ctx, projectId, (project) => {
-    project.chatId = null;
-  });
+  await setProjectChatBinding(ctx, projectId, null);
   await sendTelegramMessage(ctx.token, { chatId, text: "✅ Чат успешно отвязан от проекта." });
   await sendChatInfoScreen(ctx, chatId, projectId);
 };
@@ -937,7 +1278,11 @@ const cleanupProjectData = async (ctx: BotContext, projectId: string): Promise<v
 };
 
 const handleProjectDelete = async (ctx: BotContext, chatId: number, projectId: string, userId: number): Promise<void> => {
+  const project = await requireProjectRecord(ctx.kv, projectId);
   const membership = await getProjectsByUser(ctx.kv, userId);
+  if (project.chatId) {
+    await releaseChatOccupancy(ctx, project.chatId, project.ownerId);
+  }
   await deleteProjectRecord(ctx.kv, projectId);
   await cleanupProjectData(ctx, projectId);
   if (membership) {
@@ -946,7 +1291,7 @@ const handleProjectDelete = async (ctx: BotContext, chatId: number, projectId: s
     });
   }
   await sendTelegramMessage(ctx.token, { chatId, text: "✅ Проект удалён." });
-  await sendProjectsList(ctx, chatId, userId);
+  await sendExistingProjectsList(ctx, chatId, userId);
 };
 
 const handleLeadStatusChange = async (
@@ -1014,7 +1359,7 @@ const handleTextCommand = async (
       await sendMetaAccountsList(ctx, chatId, userId);
       return;
     case "Проекты":
-      await sendProjectsList(ctx, chatId, userId);
+      await sendProjectsEntry(ctx, chatId, userId);
       return;
     case "Аналитика":
       await sendAnalyticsOverview(ctx, chatId, userId);
@@ -1052,10 +1397,27 @@ const handleCallback = async (
           await sendProjectCard(ctx, chatId, parts[2]!);
           break;
         case "list":
-          await sendProjectsList(ctx, chatId, userId);
+          await sendExistingProjectsList(ctx, chatId, userId);
           break;
         case "menu":
           await sendMenu(ctx, chatId, userId);
+          break;
+        case "add":
+          await handleProjectAccountSelect(ctx, chatId, userId, parts[2]!);
+          break;
+        case "bind":
+          await handleProjectBind(ctx, chatId, userId, parts[2]!, Number(parts[3]));
+          break;
+        case "bind-manual":
+          await saveBotSession(ctx.kv, {
+            userId,
+            state: { type: "project:create-manual", accountId: parts[2]! },
+            updatedAt: new Date().toISOString(),
+          });
+          await sendTelegramMessage(ctx.token, {
+            chatId,
+            text: "Пришлите ссылку, @username или ID зарегистрированного чата.",
+          });
           break;
         case "billing":
           await sendBillingView(ctx, chatId, parts[2]!);
@@ -1102,7 +1464,7 @@ const handleCallback = async (
           });
           break;
         case "chat-select":
-          await handleChatSelect(ctx, chatId, parts[2]!, Number(parts[3]));
+          await handleChatSelect(ctx, chatId, userId, parts[2]!, Number(parts[3]));
           break;
         case "chat-unlink":
           await sendChatUnlinkConfirm(ctx, chatId, parts[2]!);
@@ -1307,7 +1669,7 @@ const handleCallback = async (
           await handleFacebookAuth(ctx, chatId, userId);
           break;
         case "projects":
-          await sendProjectsList(ctx, chatId, userId);
+          await sendProjectsEntry(ctx, chatId, userId);
           break;
         case "analytics":
           await sendAnalyticsOverview(ctx, chatId, userId);
@@ -1367,6 +1729,15 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
       if (userId == null || chatId == null) {
         return;
       }
+      const chatType = update.message?.chat?.type ?? update.callback_query?.message?.chat?.type ?? "private";
+      const isGroupChat = chatType === "group" || chatType === "supergroup";
+      if (isGroupChat && update.message?.text) {
+        const text = update.message.text.trim();
+        if (text.startsWith("/reg")) {
+          await handleGroupRegistration(ctx, update.message.chat, userId);
+        }
+        return;
+      }
       await recordChatFromUpdate(ctx, update);
 
       if (update.message?.text) {
@@ -1417,8 +1788,12 @@ const handleSessionInput = async (
       await handleProjectEditInput(ctx, chatId, sessionState.state.projectId, sessionState.state.field, text);
       await clearBotSession(ctx.kv, userId);
       return true;
+    case "project:create-manual":
+      await handleProjectManualBindInput(ctx, chatId, userId, sessionState.state.accountId, text);
+      await clearBotSession(ctx.kv, userId);
+      return true;
     case "chat:manual":
-      await handleChatManualInput(ctx, chatId, sessionState.state.projectId, text);
+      await handleChatManualInput(ctx, chatId, userId, sessionState.state.projectId, text);
       await clearBotSession(ctx.kv, userId);
       return true;
     case "autoreports:set-time":

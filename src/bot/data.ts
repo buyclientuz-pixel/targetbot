@@ -16,7 +16,7 @@ import {
   getPaymentsHistoryDocument,
   type PaymentsHistoryDocument,
 } from "../domain/spec/payments-history";
-import { listAvailableChats, type ChatRegistryEntry } from "../domain/chat-registry";
+import { listFreeChatsByOwner, type FreeChatRecord } from "../domain/project-chats";
 
 const createDefaultBilling = (project: ProjectRecord): BillingRecord => ({
   tariff: 0,
@@ -189,13 +189,7 @@ export const loadFinanceOverview = async (
 export const listAvailableProjectChats = async (
   kv: KvClient,
   userId: number,
-): Promise<ChatRegistryEntry[]> => {
-  const projects = await loadUserProjects(kv, userId);
-  const occupied = projects
-    .map((project) => project.chatId)
-    .filter((chatId): chatId is number => typeof chatId === "number");
-  return listAvailableChats(kv, occupied);
-};
+): Promise<FreeChatRecord[]> => listFreeChatsByOwner(kv, userId);
 
 export const loadProjectBundle = async (
   kv: KvClient,
