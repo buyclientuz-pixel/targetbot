@@ -11,7 +11,7 @@ test("resolveDatePreset clamps max period to Meta's 37-month limit", () => {
     const period = resolveDatePreset("max");
     assert.equal(period.preset, "time_range");
     assert.equal(period.to, "2025-11-16");
-    assert.equal(period.from, "2022-10-16");
+    assert.equal(period.from, "2022-10-17");
   } finally {
     Date.now = realNow;
   }

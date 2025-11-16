@@ -32,6 +32,7 @@ test("mergeProjectLeadsList deduplicates leads and tracks stats", async () => {
     createLead({ id: "existing", projectId: "proj-list", name: "Updated", phone: "+998900000222", createdAt: earlier }),
     createLead({ id: "fresh", projectId: "proj-list", name: "Message", phone: null, createdAt: now }),
   ];
+  leads[0]!.status = "IN_PROGRESS";
 
   const merged = await mergeProjectLeadsList(r2, "proj-list", leads);
   assert.equal(merged.leads.length, 2);
@@ -39,6 +40,7 @@ test("mergeProjectLeadsList deduplicates leads and tracks stats", async () => {
   assert.equal(merged.leads[0]?.type, "message");
   assert.equal(merged.leads[1]?.id, "existing");
   assert.equal(merged.leads[1]?.phone, "+998900000222");
+  assert.equal(merged.leads[1]?.status, "processing");
   assert.equal(merged.stats.total, 2);
   assert.ok(merged.stats.today >= 1);
 });

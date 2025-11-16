@@ -585,8 +585,8 @@ const renderAdminHtml = (workerUrl: string | null): string => {
       <div class="admin-login admin-login--visible" data-login-panel>
         <form class="admin-login__form" data-login-form>
           <h2>Админ-доступ</h2>
-          <p>Введите код доступа (по умолчанию 3590), чтобы открыть панель управления.</p>
-          <input type="password" name="adminKey" data-admin-key placeholder="3590" required />
+          <p>Введите код доступа, чтобы открыть панель управления.</p>
+          <input type="password" name="adminKey" data-admin-key placeholder="••••" required />
           <button class="admin-btn" type="submit">Войти</button>
         </form>
       </div>

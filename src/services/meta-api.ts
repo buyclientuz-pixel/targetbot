@@ -256,6 +256,7 @@ const META_TIME_RANGE_MONTH_LIMIT = 37;
 const clampToMetaTimeRangeLimit = (requestedFrom: Date, today: Date): Date => {
   const earliestAllowed = new Date(today);
   earliestAllowed.setMonth(earliestAllowed.getMonth() - META_TIME_RANGE_MONTH_LIMIT);
+  earliestAllowed.setDate(earliestAllowed.getDate() + 1); // stay strictly inside Meta's 37-month window
   if (requestedFrom < earliestAllowed) {
     return earliestAllowed;
   }

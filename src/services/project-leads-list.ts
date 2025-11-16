@@ -11,6 +11,19 @@ const normalisePhone = (value: string | null): string => {
   return value;
 };
 
+const mapLeadStatus = (leadStatus: Lead["status"]): ProjectLeadsListRecord["leads"][number]["status"] => {
+  switch (leadStatus) {
+    case "NEW":
+      return "new";
+    case "IN_PROGRESS":
+      return "processing";
+    case "DONE":
+      return "done";
+    default:
+      return "new";
+  }
+};
+
 const mapLeadToSummary = (lead: Lead): ProjectLeadsListRecord["leads"][number] => ({
   id: lead.id,
   name: lead.name,
@@ -18,7 +31,7 @@ const mapLeadToSummary = (lead: Lead): ProjectLeadsListRecord["leads"][number] =
   createdAt: lead.createdAt,
   source: lead.source,
   campaignName: lead.campaign ?? "—",
-  status: lead.status.toLowerCase() as ProjectLeadsListRecord["leads"][number]["status"],
+  status: mapLeadStatus(lead.status),
   type: lead.phone ? "lead" : "message",
 });
 

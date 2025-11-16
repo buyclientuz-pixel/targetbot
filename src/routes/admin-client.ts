@@ -79,7 +79,7 @@ const adminClientFactory = () => {
 
     const showLogin = () => {
       els.loginPanel?.classList.add('admin-login--visible');
-      setStatus('Введите код доступа (3590)');
+      setStatus('Введите код доступа');
       els.loginInput?.focus();
     };
 
