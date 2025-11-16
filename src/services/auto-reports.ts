@@ -9,6 +9,7 @@ import { loadProjectSummary } from "./project-insights";
 import type { MetaSummaryMetrics } from "../domain/meta-summary";
 import { dispatchProjectMessage } from "./project-messaging";
 import { DataValidationError } from "../errors";
+import { getAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 
 const SLOT_WINDOW_MS = 5 * 60 * 1000;
 
@@ -85,13 +86,14 @@ const isSlotDue = (
 };
 
 const resolvePeriodKeys = (mode: string, now: Date): string[] => {
-  if (mode === "yesterday+week") {
+  const normalised = mode === "yesterday_plus_week" ? "yesterday+week" : mode;
+  if (normalised === "yesterday+week") {
     if (now.getUTCDay() === 1) {
       return ["yesterday", "week"];
     }
     return ["yesterday"];
   }
-  switch (mode) {
+  switch (normalised) {
     case "today":
     case "yesterday":
     case "week":
@@ -101,6 +103,42 @@ const resolvePeriodKeys = (mode: string, now: Date): string[] => {
     default:
       return ["yesterday"];
   }
+};
+
+const mapAutoreportRoute = (
+  sendTo: AutoreportsRecord["sendTo"],
+): ProjectSettings["alerts"]["route"] => {
+  switch (sendTo) {
+    case "chat":
+      return "CHAT";
+    case "admin":
+      return "ADMIN";
+    case "both":
+    default:
+      return "BOTH";
+  }
+};
+
+const resolveAutoreportProfile = async (
+  kv: KvClient,
+  projectId: string,
+  settings: ProjectSettings,
+): Promise<{ enabled: boolean; slots: string[]; mode: string; route: ProjectSettings["alerts"]["route"] }> => {
+  const record = await getAutoreportsRecord(kv, projectId);
+  if (!record) {
+    return {
+      enabled: settings.reports.autoReportsEnabled,
+      slots: [...settings.reports.timeSlots],
+      mode: settings.reports.mode,
+      route: settings.alerts.route,
+    };
+  }
+  return {
+    enabled: record.enabled,
+    slots: record.enabled && record.time ? [record.time] : [],
+    mode: record.mode,
+    route: mapAutoreportRoute(record.sendTo),
+  };
 };
 
 const periodLabel = (key: string): string => {
@@ -185,13 +223,14 @@ export const runAutoReports = async (
   for (const project of projects) {
     try {
       const settings = await ensureProjectSettings(kv, project.id);
-      if (!settings.reports.autoReportsEnabled || settings.alerts.route === "NONE") {
+      const profile = await resolveAutoreportProfile(kv, project.id, settings);
+      if (!profile.enabled || profile.slots.length === 0 || profile.route === "NONE") {
         continue;
       }
 
       const state = await getReportScheduleState(kv, project.id);
       const dueSlots: Array<{ slot: string; scheduledAt: Date }> = [];
-      for (const slot of settings.reports.timeSlots) {
+      for (const slot of profile.slots) {
         const { due, scheduledAt } = isSlotDue(slot, now, state.slots[slot] ?? null);
         if (due && scheduledAt) {
           dueSlots.push({ slot, scheduledAt });
@@ -202,7 +241,7 @@ export const runAutoReports = async (
         continue;
       }
 
-      const periodKeys = resolvePeriodKeys(settings.reports.mode, now);
+      const periodKeys = resolvePeriodKeys(profile.mode, now);
       let metricsContext;
       try {
         metricsContext = await loadMetricsForPeriods(kv, project.id, periodKeys);
@@ -227,6 +266,7 @@ export const runAutoReports = async (
           settings: metricsContext.settings,
           text: message,
           parseMode: "HTML",
+          route: profile.route,
         });
         await markReportSlotDispatched(kv, project.id, slot, new Date().toISOString());
 

@@ -85,9 +85,44 @@ export const createLead = (input: CreateLeadInput): Lead => {
   };
 };
 
+const PROJECT_LEAD_PREFIX = "project-leads";
+const LEGACY_LEAD_PREFIX = "leads";
+
+const buildProjectLeadPrefix = (projectId: string): string => `${PROJECT_LEAD_PREFIX}/${projectId}/`;
+const buildLegacyLeadPrefix = (projectId: string): string => `${LEGACY_LEAD_PREFIX}/${projectId}/`;
+
+const deleteQuietly = async (r2: R2Client, key: string): Promise<void> => {
+  try {
+    await r2.delete(key);
+  } catch {
+    // ignore missing keys
+  }
+};
+
+const migrateLegacyLead = async (
+  r2: R2Client,
+  projectId: string,
+  leadId: string,
+  raw: unknown,
+): Promise<Lead | null> => {
+  try {
+    const lead = parseStoredLead(raw, projectId);
+    await r2.putJson(R2_KEYS.projectLead(projectId, leadId), lead);
+    await deleteQuietly(r2, R2_KEYS.lead(projectId, leadId));
+    return lead;
+  } catch {
+    return null;
+  }
+};
+
 export const saveLead = async (r2: R2Client, lead: Lead): Promise<void> => {
-  const key = R2_KEYS.lead(lead.projectId, lead.id);
-  await r2.putJson(key, lead);
+  const key = R2_KEYS.projectLead(lead.projectId, lead.id);
+  const storedPayload: Record<string, unknown> = {
+    ...lead,
+    status: lead.status.toLowerCase(),
+  };
+  await r2.putJson(key, storedPayload);
+  await deleteQuietly(r2, R2_KEYS.lead(lead.projectId, lead.id));
 };
 
 export const deleteLead = async (
@@ -95,43 +130,78 @@ export const deleteLead = async (
   projectId: string,
   leadId: string,
 ): Promise<void> => {
-  const key = R2_KEYS.lead(projectId, leadId);
-  await r2.delete(key);
+  await deleteQuietly(r2, R2_KEYS.projectLead(projectId, leadId));
+  await deleteQuietly(r2, R2_KEYS.lead(projectId, leadId));
 };
 
 export const getLead = async (r2: R2Client, projectId: string, leadId: string): Promise<Lead | null> => {
-  const key = R2_KEYS.lead(projectId, leadId);
-  return r2.getJson<Lead>(key);
+  const primaryKey = R2_KEYS.projectLead(projectId, leadId);
+  const primary = await r2.getJson<Lead>(primaryKey);
+  if (primary) {
+    return primary;
+  }
+  const legacyKey = R2_KEYS.lead(projectId, leadId);
+  const legacy = await r2.getJson<Lead>(legacyKey);
+  if (!legacy) {
+    return null;
+  }
+  return migrateLegacyLead(r2, projectId, leadId, legacy);
 };
 
 const parseLeadStatus = (value: unknown): LeadStatus => {
-  if (value === "NEW" || value === "IN_PROGRESS" || value === "DONE") {
-    return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const normalised = value.trim().toUpperCase();
+    if (normalised === "NEW" || normalised === "IN_PROGRESS" || normalised === "DONE") {
+      return normalised;
+    }
   }
   return "NEW";
 };
 
-export const parseStoredLead = (raw: unknown): Lead => {
+const pickRecordValue = <T>(record: Record<string, unknown>, keys: string[]): T | null => {
+  for (const key of keys) {
+    if (key in record && record[key] != null) {
+      return record[key] as T;
+    }
+  }
+  return null;
+};
+
+export const parseStoredLead = (raw: unknown, projectIdHint?: string): Lead => {
   if (!raw || typeof raw !== "object") {
     throw new DataValidationError("Stored lead payload must be an object");
   }
   const record = raw as Record<string, unknown>;
-  const createdAt = ensureIsoTimestamp(record.createdAt as string | null | undefined);
-  const lastStatusUpdateValue = (record.lastStatusUpdate as string | null | undefined) ?? createdAt;
+  const createdAt = ensureIsoTimestamp(
+    (pickRecordValue<string>(record, ["createdAt", "created_at"]) ?? undefined) as string | undefined,
+  );
+  const lastStatusUpdateValue =
+    pickRecordValue<string>(record, ["lastStatusUpdate", "last_status_update"]) ?? createdAt;
   const lastStatusUpdate = ensureIsoTimestamp(lastStatusUpdateValue);
+  const projectIdValue =
+    pickRecordValue<string>(record, ["projectId", "project_id"]) ?? projectIdHint ?? null;
   return {
     id: requireString(record.id as string | null | undefined, "lead.id"),
-    projectId: requireString(record.projectId as string | null | undefined, "lead.projectId"),
+    projectId: requireString(projectIdValue, "lead.projectId"),
     name: normaliseString(record.name as string | null | undefined, "Без имени"),
-    phone: normaliseOptionalString(record.phone as string | null | undefined),
+    phone:
+      normaliseOptionalString(
+        (pickRecordValue<string>(record, ["phone", "phone_number"]) ?? undefined) as string | undefined,
+      ),
     source: normaliseString((record.source as string | null | undefined) ?? "facebook", "facebook"),
-    campaign: normaliseOptionalString(record.campaign as string | null | undefined),
-    adset: normaliseOptionalString(record.adset as string | null | undefined),
-    ad: normaliseOptionalString(record.ad as string | null | undefined),
+    campaign: normaliseOptionalString(
+      (pickRecordValue<string>(record, ["campaign", "campaign_name"]) ?? undefined) as string | undefined,
+    ),
+    adset: normaliseOptionalString(
+      (pickRecordValue<string>(record, ["adset", "adset_name"]) ?? undefined) as string | undefined,
+    ),
+    ad: normaliseOptionalString(
+      (pickRecordValue<string>(record, ["ad", "ad_name", "creative"]) ?? undefined) as string | undefined,
+    ),
     createdAt,
-    status: parseLeadStatus(record.status),
+    status: parseLeadStatus(pickRecordValue(record, ["status"]) ?? undefined),
     lastStatusUpdate,
-    metaRaw: record.metaRaw ?? null,
+    metaRaw: pickRecordValue<Record<string, unknown>>(record, ["metaRaw", "meta_raw"]) ?? null,
   };
 };
 
@@ -142,37 +212,43 @@ const compareByCreatedAtDesc = (a: Lead, b: Lead): number => {
   return a.createdAt > b.createdAt ? -1 : 1;
 };
 
-export const listLeads = async (r2: R2Client, projectId: string): Promise<Lead[]> => {
-  const prefix = `leads/${projectId}/`;
+const collectLeadsFromPrefix = async (
+  r2: R2Client,
+  projectId: string,
+  prefix: string,
+  preferExisting: boolean,
+  bucket: Map<string, Lead>,
+): Promise<void> => {
   let cursor: string | undefined;
-  const leads: Lead[] = [];
-
   do {
     const { objects, cursor: nextCursor } = await r2.list(prefix, { cursor, limit: 1000 });
-    if (objects.length > 0) {
-      const page = await Promise.all(
-        objects.map(async (object) => {
-          const data = await r2.getJson<unknown>(object.key);
-          if (!data) {
-            return null;
-          }
-          try {
-            return parseStoredLead(data);
-          } catch {
-            return null;
-          }
-        }),
-      );
-      for (const lead of page) {
-        if (lead) {
-          leads.push(lead);
+    for (const object of objects) {
+      if (object.key.endsWith("/list.json")) {
+        continue;
+      }
+      const data = await r2.getJson<unknown>(object.key);
+      if (!data) {
+        continue;
+      }
+      try {
+        const lead = parseStoredLead(data, projectId);
+        if (bucket.has(lead.id) && !preferExisting) {
+          continue;
         }
+        bucket.set(lead.id, lead);
+      } catch {
+        await deleteQuietly(r2, object.key);
       }
     }
     cursor = nextCursor;
   } while (cursor);
+};
 
-  return leads.sort(compareByCreatedAtDesc);
+export const listLeads = async (r2: R2Client, projectId: string): Promise<Lead[]> => {
+  const bucket = new Map<string, Lead>();
+  await collectLeadsFromPrefix(r2, projectId, buildProjectLeadPrefix(projectId), true, bucket);
+  await collectLeadsFromPrefix(r2, projectId, buildLegacyLeadPrefix(projectId), false, bucket);
+  return Array.from(bucket.values()).sort(compareByCreatedAtDesc);
 };
 
 export const filterLeadsByDateRange = (leads: Lead[], from: Date, to: Date): Lead[] => {

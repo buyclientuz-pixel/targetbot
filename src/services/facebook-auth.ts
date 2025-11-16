@@ -5,6 +5,7 @@ export interface FacebookAdAccountRecord {
   id: string;
   name: string;
   currency: string;
+  status: number;
 }
 
 interface AdAccountsResponse {
@@ -31,7 +32,7 @@ const normaliseCurrency = (value: unknown): string => {
 const buildAdAccountsUrl = (accessToken: string, after?: string): URL => {
   const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/me/adaccounts`);
   url.searchParams.set("access_token", accessToken);
-  url.searchParams.set("fields", "id,name,currency");
+  url.searchParams.set("fields", "id,name,currency,account_status");
   url.searchParams.set("limit", "200");
   if (after) {
     url.searchParams.set("after", after);
@@ -63,7 +64,8 @@ export const fetchFacebookAdAccounts = async (
       if (!id) {
         continue;
       }
-      accounts.push({ id, name, currency: normaliseCurrency(record?.currency) });
+      const status = Number(record?.account_status);
+      accounts.push({ id, name, currency: normaliseCurrency(record?.currency), status: Number.isFinite(status) ? status : 0 });
     }
     const paging = payload.paging ?? {};
     const next = typeof paging.next === "string" ? paging.next : undefined;
@@ -80,4 +82,53 @@ export const fetchFacebookAdAccounts = async (
   } while (nextCursor);
 
   return accounts;
+};
+
+interface OAuthTokenResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+const buildOAuthTokenUrl = (): string => `${GRAPH_API_BASE}/${GRAPH_API_VERSION}/oauth/access_token`;
+
+export const exchangeOAuthCode = async (options: {
+  appId: string;
+  appSecret: string;
+  redirectUri: string;
+  code: string;
+}): Promise<{ accessToken: string; expiresIn: number }> => {
+  const url = new URL(buildOAuthTokenUrl());
+  url.searchParams.set("client_id", options.appId);
+  url.searchParams.set("client_secret", options.appSecret);
+  url.searchParams.set("redirect_uri", options.redirectUri);
+  url.searchParams.set("code", options.code);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Facebook OAuth exchange failed (${response.status}): ${body}`);
+  }
+  const payload = (await response.json()) as OAuthTokenResponse;
+  return { accessToken: payload.access_token, expiresIn: payload.expires_in };
+};
+
+export const exchangeLongLivedToken = async (options: {
+  appId: string;
+  appSecret: string;
+  shortLivedToken: string;
+}): Promise<{ accessToken: string; expiresIn: number }> => {
+  const url = new URL(buildOAuthTokenUrl());
+  url.searchParams.set("grant_type", "fb_exchange_token");
+  url.searchParams.set("client_id", options.appId);
+  url.searchParams.set("client_secret", options.appSecret);
+  url.searchParams.set("fb_exchange_token", options.shortLivedToken);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Facebook long-lived token exchange failed (${response.status}): ${body}`);
+  }
+  const payload = (await response.json()) as OAuthTokenResponse;
+  return { accessToken: payload.access_token, expiresIn: payload.expires_in };
 };

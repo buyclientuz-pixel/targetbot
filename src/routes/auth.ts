@@ -1,8 +1,12 @@
 import type { Router } from "../worker/router";
 import { normaliseBaseUrl } from "../utils/url";
+import { DEFAULT_WORKER_DOMAIN, resolveWorkerBaseUrl } from "../config/worker";
+import { putFbAuthRecord } from "../domain/spec/fb-auth";
+import { fetchFacebookAdAccounts, exchangeOAuthCode, exchangeLongLivedToken } from "../services/facebook-auth";
+import { resolveTelegramToken } from "../config/telegram";
+import { sendTelegramMessage } from "../services/telegram";
 
 const GRAPH_EXPLORER_URL = "https://developers.facebook.com/tools/explorer/";
-const DEFAULT_WORKER_DOMAIN = "th-reports.buyclientuz.workers.dev";
 
 const buildFacebookAuthHtml = (options: { fbAppId?: string; workerBaseUrl: string }): string => {
   const instructions: string[] = [
@@ -68,5 +72,62 @@ export const registerAuthRoutes = (router: Router): void => {
       status: 200,
       headers: { "content-type": "text/html; charset=utf-8" },
     });
+  });
+
+  router.on("GET", "/auth/facebook/callback", async (context) => {
+    const url = new URL(context.request.url);
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    if (!code || !state) {
+      return new Response("Missing code or state", { status: 400 });
+    }
+    const userId = Number(state);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return new Response("Invalid state", { status: 400 });
+    }
+
+    const appId = context.env.FB_APP_ID;
+    const appSecret = context.env.FB_APP_SECRET;
+    if (!appId || !appSecret) {
+      return new Response("Facebook app credentials are not configured", { status: 500 });
+    }
+    const workerBaseUrl = resolveWorkerBaseUrl(context.env);
+    const redirectUri = `${workerBaseUrl}/auth/facebook/callback`;
+
+    try {
+      const shortToken = await exchangeOAuthCode({ appId, appSecret, redirectUri, code });
+      const longToken = await exchangeLongLivedToken({ appId, appSecret, shortLivedToken: shortToken.accessToken });
+      const expiresAt = new Date(Date.now() + longToken.expiresIn * 1000).toISOString();
+      const accounts = await fetchFacebookAdAccounts(longToken.accessToken);
+      await putFbAuthRecord(context.kv, {
+        userId,
+        accessToken: longToken.accessToken,
+        expiresAt,
+        adAccounts: accounts,
+      });
+
+      const telegramToken = resolveTelegramToken(context.env);
+      if (telegramToken) {
+        try {
+          await sendTelegramMessage(telegramToken, {
+            chatId: userId,
+            text: `✅ Facebook подключён.\nНайдено ${accounts.length} рекламных аккаунтов.`,
+          });
+        } catch (error) {
+          console.error("telegram_notification_failed", (error as Error).message);
+        }
+      }
+
+      const successHtml =
+        "<!DOCTYPE html>" +
+        "<html lang=\"ru\"><head><meta charset=\"utf-8\" />" +
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />" +
+        "<title>Facebook подключён</title></head><body style=\"font-family:system-ui;padding:32px;\">" +
+        "<h1>Facebook подключён</h1><p>Вы можете вернуться в Telegram-бот и продолжить работу.</p></body></html>";
+      return new Response(successHtml, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Неизвестная ошибка";
+      return new Response(`Не удалось подключить Facebook: ${message}`, { status: 500 });
+    }
   });
 };

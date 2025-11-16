@@ -7,6 +7,7 @@ import {
   assertOptionalString,
   assertString,
 } from "./validation";
+import { parseProjectRecord } from "./spec/project";
 
 export interface Project {
   id: string;
@@ -23,15 +24,30 @@ export const parseProject = (raw: unknown): Project => {
   }
 
   const record = raw as Record<string, unknown>;
-
-  return {
-    id: assertString(record.id, "project.id"),
-    name: assertString(record.name, "project.name"),
-    adsAccountId: assertOptionalString(record.adsAccountId, "project.adsAccountId"),
-    ownerTelegramId: assertNumber(record.ownerTelegramId, "project.ownerTelegramId"),
-    createdAt: assertIsoDate(record.createdAt, "project.createdAt"),
-    updatedAt: assertIsoDate(record.updatedAt, "project.updatedAt"),
-  };
+  try {
+    return {
+      id: assertString(record.id, "project.id"),
+      name: assertString(record.name, "project.name"),
+      adsAccountId: assertOptionalString(record.adsAccountId, "project.adsAccountId"),
+      ownerTelegramId: assertNumber(record.ownerTelegramId, "project.ownerTelegramId"),
+      createdAt: assertIsoDate(record.createdAt, "project.createdAt"),
+      updatedAt: assertIsoDate(record.updatedAt, "project.updatedAt"),
+    };
+  } catch (error) {
+    if (!(error instanceof DataValidationError)) {
+      throw error;
+    }
+    const legacy = parseProjectRecord(record);
+    const now = new Date().toISOString();
+    return {
+      id: legacy.id,
+      name: legacy.name,
+      adsAccountId: legacy.adAccountId ?? null,
+      ownerTelegramId: legacy.ownerId,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
 };
 
 export const serialiseProject = (project: Project): Record<string, unknown> => ({

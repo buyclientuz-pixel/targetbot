@@ -137,12 +137,13 @@ export const loadProjectSummary = async (
     throw new DataValidationError("Project is missing adsAccountId for Meta insights");
   }
 
-  const facebookUserId = resolveFacebookUserId(settings, options?.facebookUserId);
   const summaryScope = `summary:${periodKey}`;
   const cachedSummary = await getMetaCache<MetaSummaryPayload>(kv, projectId, summaryScope);
   if (cachedSummary && isMetaCacheEntryFresh(cachedSummary)) {
     return { entry: cachedSummary, project, settings };
   }
+
+  const facebookUserId = resolveFacebookUserId(settings, options?.facebookUserId);
 
   const token = await getMetaToken(kv, facebookUserId);
 
@@ -214,12 +215,13 @@ export const loadProjectCampaigns = async (
     throw new DataValidationError("Project is missing adsAccountId for Meta insights");
   }
 
-  const facebookUserId = resolveFacebookUserId(settings, options?.facebookUserId);
   const scope = `campaigns:${periodKey}`;
   const cached = await getMetaCache<MetaInsightsRawResponse>(kv, projectId, scope);
   if (cached && isMetaCacheEntryFresh(cached)) {
     return { entry: cached, project, settings };
   }
+
+  const facebookUserId = resolveFacebookUserId(settings, options?.facebookUserId);
 
   const token = await getMetaToken(kv, facebookUserId);
   const raw = await fetchMetaInsightsRaw({
@@ -334,12 +336,13 @@ export const loadProjectCampaignStatuses = async (
     throw new DataValidationError("Project is missing adsAccountId for Meta insights");
   }
 
-  const facebookUserId = resolveFacebookUserId(settings, options?.facebookUserId);
   const scope = "campaign-status";
   const cached = await getMetaCache<CampaignStatusPayload>(kv, projectId, scope);
   if (cached && isMetaCacheEntryFresh(cached)) {
     return { entry: cached, project, settings };
   }
+
+  const facebookUserId = resolveFacebookUserId(settings, options?.facebookUserId);
 
   const token = await getMetaToken(kv, facebookUserId);
   const rawCampaigns = await fetchMetaCampaignStatuses(project.adsAccountId, token.accessToken);

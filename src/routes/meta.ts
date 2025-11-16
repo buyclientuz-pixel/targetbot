@@ -8,6 +8,7 @@ import { loadProjectCampaigns, loadProjectSummary } from "../services/project-in
 import { parseMetaWebhookPayload } from "../services/meta-webhook";
 import { dispatchProjectMessage } from "../services/project-messaging";
 import { resolveTelegramToken } from "../config/telegram";
+import { resolveWorkerBaseUrl } from "../config/worker";
 import type { Router } from "../worker/router";
 import type { KvClient } from "../infra/kv";
 
@@ -128,6 +129,36 @@ export const registerMetaRoutes = (
   deps: MetaRouteDependencies = {},
 ): void => {
   const sendProjectMessage = deps.dispatchProjectMessage ?? dispatchProjectMessage;
+
+  router.on("GET", "/api/meta/oauth/start", async (context) => {
+    const url = new URL(context.request.url);
+    const tid = url.searchParams.get("tid");
+    if (!tid) {
+      return jsonResponse({ error: "tid is required" }, { status: 400 });
+    }
+    if (!/^[0-9]+$/.test(tid)) {
+      return jsonResponse({ error: "tid must be a numeric Telegram ID" }, { status: 400 });
+    }
+    const appId = context.env.FB_APP_ID;
+    if (!appId) {
+      return jsonResponse({ error: "FB_APP_ID is not configured" }, { status: 500 });
+    }
+    const workerBaseUrl = resolveWorkerBaseUrl(context.env);
+    const redirectUri = `${workerBaseUrl}/auth/facebook/callback`;
+    const oauthUrl = new URL("https://www.facebook.com/v18.0/dialog/oauth");
+    oauthUrl.searchParams.set("client_id", appId);
+    oauthUrl.searchParams.set("redirect_uri", redirectUri);
+    oauthUrl.searchParams.set("response_type", "code");
+    oauthUrl.searchParams.set(
+      "scope",
+      "ads_management,ads_read,leads_retrieval,business_management",
+    );
+    oauthUrl.searchParams.set("state", tid);
+    return new Response(null, {
+      status: 302,
+      headers: { Location: oauthUrl.toString() },
+    });
+  });
 
   router.on("GET", "/api/meta/webhook", async (context) => {
     const url = new URL(context.request.url);

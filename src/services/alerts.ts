@@ -10,9 +10,16 @@ import {
 import { dispatchProjectMessage } from "./project-messaging";
 import { loadProjectCampaignStatuses, type CampaignStatus } from "./project-insights";
 import { DataValidationError, EntityNotFoundError } from "../errors";
+import { getAlertsRecord, type AlertsRecord } from "../domain/spec/alerts";
+import { getProjectLeadsList } from "../domain/spec/project-leads";
+import type { R2Client } from "../infra/r2";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+
+const safeTimestamp = (value: string): number => {
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+};
 
 interface AlertContext {
   kv: KvClient;
@@ -66,10 +73,11 @@ const formatDuration = (diffMs: number): string => {
 
 const attemptAlert = async (
   context: AlertContext,
-  type: "billing" | "budget" | "meta-api" | "pause",
+  type: "billing" | "budget" | "meta-api" | "pause" | "lead-queue",
   eventKey: string,
   windowMs: number,
   message: string,
+  routeOverride?: ProjectSettings["alerts"]["route"],
 ): Promise<AlertExecutionResult> => {
   const state = await getAlertState(context.kv, context.project.id, type);
   if (!shouldSendAlert(state, eventKey, windowMs, context.now)) {
@@ -83,6 +91,7 @@ const attemptAlert = async (
     settings: context.settings,
     text: message,
     parseMode: "HTML",
+    route: routeOverride,
   });
 
   await markAlertSent(
@@ -110,6 +119,7 @@ const parseNextPaymentDate = (value: string | null): Date | null => {
 
 const maybeSendBillingAlert = async (
   context: AlertContext,
+  profile: AlertsProfile,
 ): Promise<AlertExecutionResult> => {
   const dueDate = parseNextPaymentDate(context.settings.billing.nextPaymentDate);
   if (!dueDate) {
@@ -128,18 +138,33 @@ const maybeSendBillingAlert = async (
       `Дата оплаты: ${formatDate(dueDate)} (просрок ${overdueDays} дн.)`,
       `Тариф: ${formatCurrency(tariff, currency)}`,
     ].join("\n");
-    return attemptAlert(context, "billing", `overdue:${dueDate.toISOString()}`, 12 * 60 * 60 * 1000, message);
+    return attemptAlert(
+      context,
+      "billing",
+      `overdue:${dueDate.toISOString()}`,
+      12 * 60 * 60 * 1000,
+      message,
+      profile.route,
+    );
   }
 
-  if (diff <= 3 * DAY_MS) {
-    const remainingDays = Math.max(1, Math.ceil(diff / DAY_MS));
+  const remainingDays = Math.max(1, Math.ceil(diff / DAY_MS));
+  const thresholds = [...profile.paymentReminderDays].sort((a, b) => a - b);
+  if (thresholds.some((days) => remainingDays <= days)) {
     const message = [
-      "⚠️ Скоро оплата",
+      "📄 Напоминание об оплате",
       `Проект: ${escapeHtml(context.project.name)}`,
       `Дата оплаты: ${formatDate(dueDate)} (через ${remainingDays} дн.)`,
       `Тариф: ${formatCurrency(tariff, currency)}`,
     ].join("\n");
-    return attemptAlert(context, "billing", `due:${dueDate.toISOString()}`, DAY_MS, message);
+    return attemptAlert(
+      context,
+      "billing",
+      `due:${dueDate.toISOString()}`,
+      DAY_MS,
+      message,
+      profile.route,
+    );
   }
 
   return { settings: context.settings, dispatched: false };
@@ -267,7 +292,9 @@ const maybeSendBudgetAlert = async (
 const maybeSendPauseAlert = async (
   context: AlertContext,
   campaigns: CampaignStatus[],
+  profile: AlertsProfile,
 ): Promise<AlertExecutionResult> => {
+  const pauseThresholdMs = Math.max(1, profile.pauseThresholdHours) * 60 * 60 * 1000;
   const paused = campaigns.filter((campaign) => {
     if (!isPausedStatus(campaign.effectiveStatus ?? campaign.status)) {
       return false;
@@ -279,7 +306,7 @@ const maybeSendPauseAlert = async (
     if (Number.isNaN(updatedAt.getTime())) {
       return true;
     }
-    return context.now.getTime() - updatedAt.getTime() >= TWO_HOURS_MS;
+    return context.now.getTime() - updatedAt.getTime() >= pauseThresholdMs;
   });
 
   if (paused.length === 0) {
@@ -289,7 +316,7 @@ const maybeSendPauseAlert = async (
   const header =
     paused.length === campaigns.length
       ? "⛔️ Весь рекламный кабинет на паузе"
-      : "⚠️ Кампании приостановлены";
+      : "⚠️ Кампании на паузе";
   const lines = paused.map((campaign) => {
     let duration = "дольше 2 часов";
     if (campaign.updatedTime) {
@@ -305,11 +332,117 @@ const maybeSendPauseAlert = async (
     .map((campaign) => campaign.id)
     .sort()
     .join("|")}`;
-  return attemptAlert(context, "pause", eventKey, 6 * 60 * 60 * 1000, message);
+  return attemptAlert(context, "pause", eventKey, 6 * 60 * 60 * 1000, message, profile.route);
+};
+
+const formatDateTime = (value: Date): string => {
+  const day = `${value.getUTCDate()}`.padStart(2, "0");
+  const month = `${value.getUTCMonth() + 1}`.padStart(2, "0");
+  const year = value.getUTCFullYear();
+  const hours = `${value.getUTCHours()}`.padStart(2, "0");
+  const minutes = `${value.getUTCMinutes()}`.padStart(2, "0");
+  return `${day}.${month}.${year}, ${hours}:${minutes}`;
+};
+
+const maybeSendLeadQueueAlert = async (
+  context: AlertContext,
+  r2: R2Client,
+  profile: AlertsProfile,
+): Promise<AlertExecutionResult> => {
+  if (!profile.types.leadQueue) {
+    return { settings: context.settings, dispatched: false };
+  }
+  const list = await getProjectLeadsList(r2, context.project.id);
+  if (!list || list.leads.length === 0) {
+    return { settings: context.settings, dispatched: false };
+  }
+  const threshold = context.now.getTime() - profile.leadQueueThresholdHours * 60 * 60 * 1000;
+  const stale = list.leads
+    .filter((lead) => lead.status === "new" && safeTimestamp(lead.createdAt) <= threshold)
+    .sort((a, b) => safeTimestamp(a.createdAt) - safeTimestamp(b.createdAt));
+  if (stale.length === 0) {
+    return { settings: context.settings, dispatched: false };
+  }
+  const lead = stale[0]!;
+  const createdAt = new Date(lead.createdAt);
+  const waitMs = Math.max(0, context.now.getTime() - createdAt.getTime());
+  const message = [
+    "🔔 Лид ожидает ответа",
+    `Имя: ${escapeHtml(lead.name)}`,
+    `Телефон: ${escapeHtml(lead.phone)}`,
+    `Получен: ${formatDateTime(createdAt)}`,
+    `В ожидании: ${formatDuration(waitMs)}`,
+    `Проект: ${escapeHtml(context.project.name)}`,
+    "",
+    "Откройте список лидов в боте, чтобы обновить статус.",
+  ].join("\n");
+  return attemptAlert(
+    context,
+    "lead-queue",
+    `lead:${lead.id}`,
+    profile.leadQueueThresholdHours * 60 * 60 * 1000,
+    message,
+    profile.route,
+  );
+};
+
+interface AlertsProfile {
+  enabled: boolean;
+  route: ProjectSettings["alerts"]["route"];
+  leadQueueThresholdHours: number;
+  pauseThresholdHours: number;
+  paymentReminderDays: number[];
+  types: { leadQueue: boolean; pause: boolean; payment: boolean };
+}
+
+const mapAlertChannel = (channel: AlertsRecord["channel"]): ProjectSettings["alerts"]["route"] => {
+  switch (channel) {
+    case "chat":
+      return "CHAT";
+    case "admin":
+      return "ADMIN";
+    case "both":
+      return "BOTH";
+    default:
+      return "CHAT";
+  }
+};
+
+const buildAlertsProfile = (
+  settings: ProjectSettings,
+  record: AlertsRecord | null,
+): AlertsProfile => {
+  if (!record) {
+    return {
+      enabled: true,
+      route: settings.alerts.route,
+      leadQueueThresholdHours: 1,
+      pauseThresholdHours: 24,
+      paymentReminderDays: [7, 1],
+      types: {
+        leadQueue: settings.alerts.leadNotifications,
+        pause: settings.alerts.pauseAlerts,
+        payment: settings.alerts.billingAlerts,
+      },
+    };
+  }
+  return {
+    enabled: record.enabled,
+    route: mapAlertChannel(record.channel),
+    leadQueueThresholdHours: record.leadQueueThresholdHours,
+    pauseThresholdHours: record.pauseThresholdHours,
+    paymentReminderDays: record.paymentReminderDays,
+    types: {
+      leadQueue: record.types.leadInQueue,
+      pause: record.types.pause24h,
+      payment: record.types.paymentReminder,
+    },
+  };
 };
 
 export const runAlerts = async (
   kv: KvClient,
+  r2: R2Client,
   token: string | undefined,
   now = new Date(),
 ): Promise<void> => {
@@ -321,14 +454,17 @@ export const runAlerts = async (
   for (const project of projects) {
     try {
       let settings = await ensureProjectSettings(kv, project.id);
-      if (settings.alerts.route === "NONE") {
+      const alertsRecord = await getAlertsRecord(kv, project.id);
+      const profile = buildAlertsProfile(settings, alertsRecord);
+      settings = { ...settings, alerts: { ...settings.alerts, route: profile.route } };
+      if (!profile.enabled || settings.alerts.route === "NONE") {
         continue;
       }
 
       const contextBase: Omit<AlertContext, "settings"> = { kv, token, project, now };
 
-      if (settings.alerts.billingAlerts) {
-        const result = await maybeSendBillingAlert({ ...contextBase, settings });
+      if (profile.types.payment) {
+        const result = await maybeSendBillingAlert({ ...contextBase, settings }, profile);
         settings = result.settings;
       }
 
@@ -337,8 +473,11 @@ export const runAlerts = async (
         settings = result.settings;
       }
 
+      const leadQueueResult = await maybeSendLeadQueueAlert({ ...contextBase, settings }, r2, profile);
+      settings = leadQueueResult.settings;
+
       let campaigns: CampaignStatus[] | null = null;
-      if ((settings.alerts.budgetAlerts || settings.alerts.pauseAlerts) && project.adsAccountId) {
+      if ((settings.alerts.budgetAlerts || profile.types.pause) && project.adsAccountId) {
         try {
           const response = await loadProjectCampaignStatuses(kv, project.id, { project, settings });
           campaigns = response.entry.payload.campaigns;
@@ -357,8 +496,8 @@ export const runAlerts = async (
         settings = result.settings;
       }
 
-      if (campaigns && settings.alerts.pauseAlerts) {
-        const result = await maybeSendPauseAlert({ ...contextBase, settings }, campaigns);
+      if (campaigns && profile.types.pause) {
+        const result = await maybeSendPauseAlert({ ...contextBase, settings }, campaigns, profile);
         settings = result.settings;
       }
     } catch (error) {

@@ -17,8 +17,8 @@ test("fb auth record matches schema", () => {
     access_token: "EAAG",
     expires_at: "2026-01-13T08:23:00Z",
     ad_accounts: [
-      { id: "act_1", name: "birlash", currency: "USD" },
-      { id: "act_2", name: "test", currency: "USD" },
+      { id: "act_1", name: "birlash", currency: "USD", account_status: 1 },
+      { id: "act_2", name: "test", currency: "USD", account_status: 2 },
     ],
   };
 

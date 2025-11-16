@@ -7,6 +7,7 @@ export interface FbAdAccount {
   id: string;
   name: string;
   currency: string;
+  status: number;
 }
 
 export interface FbAuthRecord {
@@ -21,13 +22,12 @@ const parseAdAccount = (raw: unknown, index: number): FbAdAccount => {
     throw new DataValidationError(`fb_auth.ad_accounts[${index}] must be an object`);
   }
   const record = raw as Record<string, unknown>;
+  const statusRaw = record.account_status ?? record["account_status"] ?? record["status"] ?? 0;
   return {
     id: assertString(record.id ?? record["id"], `fb_auth.ad_accounts[${index}].id`),
     name: assertString(record.name ?? record["name"], `fb_auth.ad_accounts[${index}].name`),
-    currency: assertString(
-      record.currency ?? record["currency"],
-      `fb_auth.ad_accounts[${index}].currency`,
-    ),
+    currency: assertString(record.currency ?? record["currency"], `fb_auth.ad_accounts[${index}].currency`),
+    status: assertNumber(statusRaw, `fb_auth.ad_accounts[${index}].status`),
   };
 };
 
@@ -57,6 +57,7 @@ export const serialiseFbAuthRecord = (record: FbAuthRecord): Record<string, unkn
     id: account.id,
     name: account.name,
     currency: account.currency,
+    account_status: account.status,
   })),
 });
 

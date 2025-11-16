@@ -160,5 +160,6 @@ export const putLeadDetailRecord = async (
     adset: lead.adset ?? null,
     ad: lead.ad ?? null,
     meta_raw: lead.metaRaw ?? null,
+    project_id: projectId,
   });
 };

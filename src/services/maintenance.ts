@@ -3,6 +3,7 @@ import { listProjects } from "../domain/projects";
 import { deleteLead, parseStoredLead } from "../domain/leads";
 import { getLeadRetentionDays, getMetaCacheRetentionDays } from "../domain/config";
 import { parseMetaCacheEntry } from "../domain/meta-cache";
+import { getProjectLeadsList, putProjectLeadsList } from "../domain/spec/project-leads";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
 
@@ -13,33 +14,34 @@ const safeTimestamp = (value: string): number => {
   return Number.isNaN(time) ? 0 : time;
 };
 
-const cleanupProjectLeads = async (
+const cleanupLeadObjects = async (
   r2: R2Client,
   projectId: string,
+  prefix: string,
   olderThanMs: number,
 ): Promise<number> => {
   let cursor: string | undefined;
   let removed = 0;
-  const prefix = `leads/${projectId}/`;
-
   do {
     const { objects, cursor: nextCursor } = await r2.list(prefix, { cursor, limit: 1000 });
     for (const object of objects) {
+      if (object.key.endsWith("/list.json")) {
+        continue;
+      }
       const payload = await r2.getJson<unknown>(object.key);
       if (!payload) {
+        await r2.delete(object.key);
+        removed += 1;
         continue;
       }
       let createdAtMs = 0;
       try {
-        const lead = parseStoredLead(payload);
+        const lead = parseStoredLead(payload, projectId);
         createdAtMs = safeTimestamp(lead.createdAt);
-        if (createdAtMs === 0) {
-          throw new Error("Invalid lead timestamp");
-        }
-        if (createdAtMs >= olderThanMs) {
+        if (createdAtMs === 0 || createdAtMs >= olderThanMs) {
           continue;
         }
-        await deleteLead(r2, lead.projectId, lead.id);
+        await deleteLead(r2, projectId, lead.id);
         removed += 1;
       } catch {
         await r2.delete(object.key);
@@ -48,8 +50,45 @@ const cleanupProjectLeads = async (
     }
     cursor = nextCursor;
   } while (cursor);
-
   return removed;
+};
+
+const cleanupLeadSummaries = async (
+  r2: R2Client,
+  projectId: string,
+  olderThanMs: number,
+  now: Date,
+): Promise<number> => {
+  const record = await getProjectLeadsList(r2, projectId);
+  if (!record) {
+    return 0;
+  }
+  const filtered = record.leads.filter((lead) => safeTimestamp(lead.createdAt) >= olderThanMs);
+  const removed = record.leads.length - filtered.length;
+  if (removed === 0) {
+    return 0;
+  }
+  const todayKey = now.toISOString().slice(0, 10);
+  const todayCount = filtered.filter((lead) => lead.createdAt.slice(0, 10) === todayKey).length;
+  await putProjectLeadsList(r2, projectId, {
+    stats: { total: filtered.length, today: todayCount },
+    leads: filtered,
+  });
+  return removed;
+};
+
+const cleanupProjectLeads = async (
+  r2: R2Client,
+  projectId: string,
+  olderThanMs: number,
+  now: Date,
+): Promise<number> => {
+  const primaryPrefix = `project-leads/${projectId}/`;
+  const legacyPrefix = `leads/${projectId}/`;
+  const removedPrimary = await cleanupLeadObjects(r2, projectId, primaryPrefix, olderThanMs);
+  const removedLegacy = await cleanupLeadObjects(r2, projectId, legacyPrefix, olderThanMs);
+  const removedSummaries = await cleanupLeadSummaries(r2, projectId, olderThanMs, now);
+  return removedPrimary + removedLegacy + removedSummaries;
 };
 
 const cleanupMetaCache = async (
@@ -109,7 +148,7 @@ export const runMaintenance = async (
   let deletedLeadCount = 0;
 
   for (const project of projects) {
-    deletedLeadCount += await cleanupProjectLeads(r2, project.id, leadThreshold);
+    deletedLeadCount += await cleanupProjectLeads(r2, project.id, leadThreshold, now);
   }
 
   const deletedCacheCount = await cleanupMetaCache(kv, cacheThreshold);

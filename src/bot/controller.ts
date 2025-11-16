@@ -82,11 +82,12 @@ interface BotContext {
   r2: R2Client;
   token: string;
   workerBaseUrl: string;
-  facebookAuthUrl: string | null;
+  facebookAuthGuideUrl: string | null;
   telegramSecret: string;
   defaultTimezone: string;
   adminIds: number[];
-  menuKeyboard: ReturnType<typeof buildMainMenuKeyboard>;
+  buildMenuKeyboard: (userId: number) => ReturnType<typeof buildMainMenuKeyboard>;
+  getFacebookOAuthUrl: (userId: number) => string | null;
 }
 
 interface CreateTelegramBotControllerOptions {
@@ -141,7 +142,7 @@ const sendMenu = async (ctx: BotContext, chatId: number, userId: number): Promis
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildMenuMessage({ fbAuth }),
-    replyMarkup: ctx.menuKeyboard,
+    replyMarkup: ctx.buildMenuKeyboard(userId),
   });
 };
 
@@ -452,7 +453,7 @@ const sendAnalyticsOverview = async (ctx: BotContext, chatId: number, userId: nu
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildAnalyticsOverviewMessage(overview),
-    replyMarkup: ctx.menuKeyboard,
+    replyMarkup: ctx.buildMenuKeyboard(userId),
   });
 };
 
@@ -461,7 +462,7 @@ const sendUsersOverview = async (ctx: BotContext, chatId: number, userId: number
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildUsersMessage(projects, ctx.adminIds, userId),
-    replyMarkup: ctx.menuKeyboard,
+    replyMarkup: ctx.buildMenuKeyboard(userId),
   });
 };
 
@@ -470,11 +471,11 @@ const sendFinanceOverview = async (ctx: BotContext, chatId: number, userId: numb
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildFinanceOverviewMessage(finance),
-    replyMarkup: ctx.menuKeyboard,
+    replyMarkup: ctx.buildMenuKeyboard(userId),
   });
 };
 
-const sendWebhookStatus = async (ctx: BotContext, chatId: number): Promise<void> => {
+const sendWebhookStatus = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
   const info = await getWebhookInfo(ctx.token);
   const suffix = ctx.telegramSecret ? `?secret=${ctx.telegramSecret}` : "";
   const expectedUrl = ctx.workerBaseUrl ? `${ctx.workerBaseUrl}/tg-webhook${suffix}` : `/tg-webhook${suffix}`;
@@ -489,7 +490,7 @@ const sendWebhookStatus = async (ctx: BotContext, chatId: number): Promise<void>
         ? new Date(info.last_error_date * 1000).toISOString()
         : null,
     }),
-    replyMarkup: ctx.menuKeyboard,
+    replyMarkup: ctx.buildMenuKeyboard(userId),
   });
 };
 
@@ -589,12 +590,28 @@ const updateProject = async (
   return next;
 };
 
-const facebookAuthKeyboard = {
-  inline_keyboard: [
-    [{ text: "🔄 Обновить токен", callback_data: "auth:refresh" }],
-    [{ text: "📦 Список рекламных аккаунтов", callback_data: "auth:accounts" }],
-    [{ text: "⬅️ Назад", callback_data: "project:menu" }],
-  ],
+const buildFacebookConnectKeyboard = (ctx: BotContext, userId: number) => {
+  const authUrl = ctx.getFacebookOAuthUrl(userId) ?? ctx.facebookAuthGuideUrl ?? FACEBOOK_AUTH_GUIDE_FALLBACK;
+  return {
+    inline_keyboard: [
+      [{ text: "🔗 Открыть авторизацию Facebook", url: authUrl }],
+      [{ text: "✏️ Ввести токен вручную", callback_data: "auth:manual" }],
+      [{ text: "⬅️ Назад", callback_data: "project:menu" }],
+    ],
+  } as const;
+};
+
+const buildFacebookAuthKeyboard = (ctx: BotContext, userId: number) => {
+  const authUrl = ctx.getFacebookOAuthUrl(userId);
+  const fallbackUrl = ctx.facebookAuthGuideUrl ?? FACEBOOK_AUTH_GUIDE_FALLBACK;
+  return {
+    inline_keyboard: [
+      [{ text: "🔄 Обновить токен", url: authUrl ?? fallbackUrl }],
+      [{ text: "📦 Список рекламных аккаунтов", callback_data: "auth:accounts" }],
+      [{ text: "✏️ Ввести токен вручную", callback_data: "auth:manual" }],
+      [{ text: "⬅️ Назад", callback_data: "project:menu" }],
+    ],
+  } as const;
 };
 
 const formatAdAccounts = (accounts: FbAuthRecord["adAccounts"]): string => {
@@ -610,33 +627,32 @@ const formatAdAccounts = (accounts: FbAuthRecord["adAccounts"]): string => {
 const sendMetaAccountsList = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
   const record = await getFbAuthRecord(ctx.kv, userId);
   if (!record) {
+    const oauthUrl = ctx.getFacebookOAuthUrl(userId) ?? ctx.facebookAuthGuideUrl ?? FACEBOOK_AUTH_GUIDE_FALLBACK;
     await sendTelegramMessage(ctx.token, {
       chatId,
-      text: "⚠️ Facebook не подключён. Нажмите «Авторизация Facebook», чтобы получить токен.",
-      replyMarkup: ctx.menuKeyboard,
+      text:
+        "⚠️ Facebook не подключён. Нажмите «Авторизация Facebook», чтобы пройти авторизацию." +
+        `\nСсылка: ${oauthUrl}`,
+      replyMarkup: ctx.buildMenuKeyboard(userId),
     });
     return;
   }
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: formatAdAccounts(record.adAccounts),
-    replyMarkup: ctx.menuKeyboard,
+    replyMarkup: ctx.buildMenuKeyboard(userId),
   });
 };
 
 const handleFacebookAuth = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
   const record = await getFbAuthRecord(ctx.kv, userId);
   if (!record) {
-    await saveBotSession(ctx.kv, {
-      userId,
-      state: { type: "facebook:token" },
-      updatedAt: new Date().toISOString(),
-    });
     await sendTelegramMessage(ctx.token, {
       chatId,
       text:
-        "👣 Шаг 1. Авторизация Facebook\nПерейдите по ссылке ниже, авторизуйтесь и пришлите сюда полученный код.\n\n" +
-        "Если у вас уже есть токен — просто отправьте его сообщением.",
+        "👣 Шаг 1. Авторизация Facebook\nПерейдите по ссылке ниже, подтвердите доступ и вернитесь в бот." +
+        "\nЕсли у вас уже есть токен — просто отправьте его сообщением.",
+      replyMarkup: buildFacebookConnectKeyboard(ctx, userId),
     });
     return;
   }
@@ -646,7 +662,7 @@ const handleFacebookAuth = async (ctx: BotContext, chatId: number, userId: numbe
       `✅ Facebook уже подключён.\nАккаунт: <b>${record.userId}</b>\n` +
       `Токен действителен до: <b>${record.expiresAt}</b>\n` +
       "Используйте кнопки ниже для обновления или проверки подключения.",
-    replyMarkup: facebookAuthKeyboard,
+    replyMarkup: buildFacebookAuthKeyboard(ctx, userId),
   });
 };
 
@@ -672,7 +688,7 @@ const handleFacebookTokenInput = async (
       text:
         "✅ Facebook подключён. Аккаунт сохранён, можно возвращаться к проектам." +
         accountLines.join("\n"),
-      replyMarkup: ctx.menuKeyboard,
+      replyMarkup: ctx.buildMenuKeyboard(userId),
     });
   } catch (error) {
     await sendTelegramMessage(ctx.token, {
@@ -985,7 +1001,7 @@ const handleTextCommand = async (
       await sendFinanceOverview(ctx, chatId, userId);
       return;
     case "Вебхуки Telegram":
-      await sendWebhookStatus(ctx, chatId);
+      await sendWebhookStatus(ctx, chatId, userId);
       return;
     case "Настройки":
       await sendSettingsScreen(ctx, chatId, userId);
@@ -1234,6 +1250,16 @@ const handleCallback = async (
               (error instanceof Error ? error.message : "неизвестная ошибка"),
           });
         }
+      } else if (parts[1] === "manual") {
+        await saveBotSession(ctx.kv, {
+          userId,
+          state: { type: "facebook:token" },
+          updatedAt: new Date().toISOString(),
+        });
+        await sendTelegramMessage(ctx.token, {
+          chatId,
+          text: "Пришлите новый токен Facebook.",
+        });
       }
       break;
     }
@@ -1274,7 +1300,7 @@ const handleCallback = async (
           await sendMetaAccountsList(ctx, chatId, userId);
           break;
         case "webhooks":
-          await sendWebhookStatus(ctx, chatId);
+          await sendWebhookStatus(ctx, chatId, userId);
           break;
         default:
           await sendMenu(ctx, chatId, userId);
@@ -1289,12 +1315,24 @@ const handleCallback = async (
 
 const createTelegramBotController = (options: CreateTelegramBotControllerOptions) => {
   const workerBaseUrl = normaliseBaseUrl(options.workerUrl, DEFAULT_WORKER_DOMAIN);
-  const facebookAuthUrl = workerBaseUrl ? `${workerBaseUrl}/fb-auth` : FACEBOOK_AUTH_GUIDE_FALLBACK;
+  const facebookAuthGuideUrl = workerBaseUrl ? `${workerBaseUrl}/fb-auth` : FACEBOOK_AUTH_GUIDE_FALLBACK;
+  const buildFacebookOAuthUrl = (userId: number): string | null => {
+    if (!workerBaseUrl || !Number.isFinite(userId)) {
+      return null;
+    }
+    const url = new URL(`${workerBaseUrl}/api/meta/oauth/start`);
+    url.searchParams.set("tid", String(userId));
+    return url.toString();
+  };
   const ctx: BotContext = {
     ...options,
     workerBaseUrl,
-    facebookAuthUrl,
-    menuKeyboard: buildMainMenuKeyboard({ facebookAuthUrl }),
+    facebookAuthGuideUrl,
+    buildMenuKeyboard: (userId: number) => {
+      const authUrl = buildFacebookOAuthUrl(userId) ?? facebookAuthGuideUrl ?? FACEBOOK_AUTH_GUIDE_FALLBACK;
+      return buildMainMenuKeyboard({ facebookAuthUrl: authUrl });
+    },
+    getFacebookOAuthUrl: (userId: number) => buildFacebookOAuthUrl(userId),
   };
 
   return {

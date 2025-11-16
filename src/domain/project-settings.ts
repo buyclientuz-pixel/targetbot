@@ -10,6 +10,10 @@ import {
   assertString,
   assertStringArray,
 } from "./validation";
+import { getProjectRecord } from "./spec/project";
+import { getBillingRecord } from "./spec/billing";
+import { getAlertsRecord, type AlertsRecord } from "./spec/alerts";
+import { getAutoreportsRecord } from "./spec/autoreports";
 
 export type ProjectAlertRoute = "CHAT" | "ADMIN" | "BOTH" | "NONE";
 
@@ -247,6 +251,96 @@ export const createDefaultProjectSettings = (projectId: string): ProjectSettings
   };
 };
 
+const mapAlertChannelToRoute = (channel: AlertsRecord["channel"]): ProjectAlertRoute => {
+  switch (channel) {
+    case "chat":
+      return "CHAT";
+    case "admin":
+      return "ADMIN";
+    case "both":
+      return "BOTH";
+    default:
+      return "CHAT";
+  }
+};
+
+const mapAutoreportMode = (mode: string): string => {
+  if (mode === "yesterday_plus_week") {
+    return "yesterday+week";
+  }
+  return mode;
+};
+
+const loadProjectRecordSafe = async (
+  kv: KvClient,
+  projectId: string,
+): Promise<Awaited<ReturnType<typeof getProjectRecord>>> => {
+  try {
+    return await getProjectRecord(kv, projectId);
+  } catch {
+    return null;
+  }
+};
+
+const hydrateFromSpec = async (kv: KvClient, settings: ProjectSettings): Promise<ProjectSettings> => {
+  const [projectRecord, billingRecord, alertsRecord, autoreportsRecord] = await Promise.all([
+    loadProjectRecordSafe(kv, settings.projectId),
+    getBillingRecord(kv, settings.projectId),
+    getAlertsRecord(kv, settings.projectId),
+    getAutoreportsRecord(kv, settings.projectId),
+  ]);
+
+  let hydrated: ProjectSettings = { ...settings };
+
+  if (projectRecord) {
+    hydrated = {
+      ...hydrated,
+      chatId: projectRecord.chatId ?? hydrated.chatId,
+    };
+  }
+
+  if (billingRecord) {
+    hydrated = {
+      ...hydrated,
+      billing: {
+        tariff: billingRecord.tariff,
+        currency: billingRecord.currency,
+        nextPaymentDate: billingRecord.nextPaymentDate ?? null,
+        autobillingEnabled: billingRecord.autobilling,
+      },
+    };
+  }
+
+  if (alertsRecord) {
+    hydrated = {
+      ...hydrated,
+      alerts: {
+        ...hydrated.alerts,
+        leadNotifications: alertsRecord.types.leadInQueue,
+        billingAlerts: alertsRecord.types.paymentReminder,
+        pauseAlerts: alertsRecord.types.pause24h,
+        route: mapAlertChannelToRoute(alertsRecord.channel),
+      },
+    };
+  }
+
+  if (autoreportsRecord) {
+    hydrated = {
+      ...hydrated,
+      reports: {
+        autoReportsEnabled: autoreportsRecord.enabled,
+        timeSlots:
+          autoreportsRecord.enabled && autoreportsRecord.time
+            ? [autoreportsRecord.time]
+            : [],
+        mode: mapAutoreportMode(autoreportsRecord.mode),
+      },
+    };
+  }
+
+  return hydrated;
+};
+
 export const getProjectSettings = async (kv: KvClient, projectId: string): Promise<ProjectSettings> => {
   const key = KV_KEYS.projectSettings(projectId);
   const raw = await kv.getJson<Record<string, unknown>>(key);
@@ -263,12 +357,22 @@ export const upsertProjectSettings = async (kv: KvClient, settings: ProjectSetti
 
 export const ensureProjectSettings = async (kv: KvClient, projectId: string): Promise<ProjectSettings> => {
   try {
-    return await getProjectSettings(kv, projectId);
+    const current = await getProjectSettings(kv, projectId);
+    if (current.chatId == null) {
+      const projectRecord = await loadProjectRecordSafe(kv, projectId);
+      if (projectRecord?.chatId != null) {
+        const patched: ProjectSettings = { ...current, chatId: projectRecord.chatId };
+        await upsertProjectSettings(kv, patched);
+        return patched;
+      }
+    }
+    return current;
   } catch (error) {
     if (error instanceof EntityNotFoundError) {
       const defaults = createDefaultProjectSettings(projectId);
-      await upsertProjectSettings(kv, defaults);
-      return defaults;
+      const hydrated = await hydrateFromSpec(kv, defaults);
+      await upsertProjectSettings(kv, hydrated);
+      return hydrated;
     }
     throw error;
   }

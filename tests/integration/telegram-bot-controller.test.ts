@@ -168,7 +168,10 @@ test("Telegram bot controller serves menu and project list", async () => {
       inline_keyboard: Array<Array<{ text: string; url?: string; callback_data?: string }>>;
     };
     assert.ok(menuKeyboard);
-    assert.equal(menuKeyboard.inline_keyboard[0]?.[0]?.url, "https://th-reports.buyclientuz.workers.dev/fb-auth");
+    assert.equal(
+      menuKeyboard.inline_keyboard[0]?.[0]?.url,
+      "https://th-reports.buyclientuz.workers.dev/api/meta/oauth/start?tid=100",
+    );
     assert.equal(menuKeyboard.inline_keyboard[0]?.[1]?.callback_data, "cmd:meta");
 
     stub.requests.length = 0;
@@ -241,8 +244,8 @@ test("cmd:meta shows stored ad accounts", async () => {
     accessToken: "token",
     expiresAt: "2026-01-01T00:00:00.000Z",
     adAccounts: [
-      { id: "act_1", name: "BirLash", currency: "USD" },
-      { id: "act_2", name: "Test", currency: "USD" },
+      { id: "act_1", name: "BirLash", currency: "USD", status: 1 },
+      { id: "act_2", name: "Test", currency: "USD", status: 1 },
     ],
   });
 
@@ -317,8 +320,8 @@ test("Telegram bot fetches Facebook ad accounts on demand", async () => {
       ? {
           body: {
             data: [
-              { id: "act_123", name: "BirLash", currency: "USD" },
-              { id: "act_456", name: "Client Two", currency: "EUR" },
+              { id: "act_123", name: "BirLash", currency: "USD", account_status: 1 },
+              { id: "act_456", name: "Client Two", currency: "EUR", account_status: 2 },
             ],
           },
         }
@@ -575,6 +578,14 @@ test("Telegram bot controller stores Facebook tokens and user settings", async (
   try {
     await controller.handleUpdate({
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Авторизация Facebook" },
+    } as unknown as TelegramUpdate);
+    await controller.handleUpdate({
+      callback_query: {
+        id: "auth-manual",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "auth:manual",
+      },
     } as unknown as TelegramUpdate);
     await controller.handleUpdate({
       message: { chat: { id: 100 }, from: { id: 100 }, text: "EAATESTTOKEN" },

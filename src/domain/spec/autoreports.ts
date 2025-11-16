@@ -6,7 +6,14 @@ import { assertBoolean, assertEnum, assertString } from "../validation";
 export const AUTOREPORT_SEND_TO = ["chat", "admin", "both"] as const;
 export type AutoreportSendTo = (typeof AUTOREPORT_SEND_TO)[number];
 
-export const AUTOREPORT_MODES = ["yesterday_plus_week"] as const;
+export const AUTOREPORT_MODES = [
+  "today",
+  "yesterday",
+  "week",
+  "month",
+  "max",
+  "yesterday_plus_week",
+] as const;
 export type AutoreportMode = (typeof AUTOREPORT_MODES)[number];
 
 export interface AutoreportsRecord {

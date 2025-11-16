@@ -19,7 +19,7 @@ export const runScheduledTasks = async (
     (async () => {
       const token = resolveTelegramToken(env);
       await runAutoReports(kv, token, now);
-      await runAlerts(kv, token, now);
+      await runAlerts(kv, r2, token, now);
       await runMaintenance(kv, r2, now);
     })(),
   );

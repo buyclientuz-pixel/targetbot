@@ -81,7 +81,7 @@ test("Meta webhook route persists leads and dispatches Telegram alerts", async (
       lastMessage = {
         token: options.token,
         text: options.text,
-        chatId: options.project.chatId ?? null,
+        chatId: options.settings?.chatId ?? null,
       };
       return {
         delivered: { chat: true, admin: false },

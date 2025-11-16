@@ -8,6 +8,7 @@ export interface TargetBotEnv {
   DEFAULT_TZ?: string;
   ADMIN_IDS?: string;
   FB_APP_ID?: string;
+  FB_APP_SECRET?: string;
   META_APP_ID?: string;
   META_APP_SECRET?: string;
   META_REDIRECT_URI?: string;

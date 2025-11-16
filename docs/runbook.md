@@ -24,7 +24,7 @@
 1. Проверить `/api/meta/status` — поле `status` должно быть `valid`.
 2. Если `missing` или `expired`:
    - Открыть `/admin` и нажать «Обновить токен», либо выполнить `/api/meta/oauth/start` вручную.
-   - Пройти OAuth, убедиться, что редирект попал на `/auth/facebook/callback` (алиас: `/api/meta/oauth/callback`).
+   - Пройти OAuth, убедиться, что редирект попал на `/auth/facebook/callback`.
    - Проверить, что в KV появился ключ `meta:token` (Cloudflare Dashboard → KV → namespace DB).
 3. Для ручного обновления вызвать:
    ```bash
