@@ -1,7 +1,7 @@
 import { KV_KEYS } from "../../config/kv";
 import type { KvClient } from "../../infra/kv";
 import { DataValidationError, EntityNotFoundError } from "../../errors";
-import { assertIsoDate, assertNumber, assertString } from "../validation";
+import { assertIsoDate, assertNumber, assertOptionalString, assertString } from "../validation";
 
 export interface FbAdAccount {
   id: string;
@@ -15,6 +15,8 @@ export interface FbAuthRecord {
   accessToken: string;
   expiresAt: string;
   adAccounts: FbAdAccount[];
+  facebookUserId: string | null;
+  facebookName: string | null;
 }
 
 const pickField = (record: Record<string, unknown>, keys: string[]): unknown => {
@@ -56,6 +58,15 @@ export const parseFbAuthRecord = (raw: unknown): FbAuthRecord => {
     throw new DataValidationError("fb_auth.ad_accounts must be an array");
   }
 
+  const facebookUserId = pickField(record, [
+    "facebook_user_id",
+    "facebookUserId",
+    "facebookID",
+    "facebookId",
+    "fbUserId",
+  ]);
+  const facebookName = pickField(record, ["facebook_name", "facebookName", "fbName"]);
+
   return {
     userId: assertNumber(
       pickField(record, ["user_id", "userId", "userID", "userid"]),
@@ -70,6 +81,8 @@ export const parseFbAuthRecord = (raw: unknown): FbAuthRecord => {
       "fb_auth.expires_at",
     ),
     adAccounts: adAccountsRaw.map((entry, index) => parseAdAccount(entry, index)),
+    facebookUserId: assertOptionalString(facebookUserId, "fb_auth.facebook_user_id"),
+    facebookName: assertOptionalString(facebookName, "fb_auth.facebook_name"),
   };
 };
 
@@ -91,6 +104,10 @@ export const serialiseFbAuthRecord = (record: FbAuthRecord): Record<string, unkn
     expiresAt: record.expiresAt,
     ad_accounts: accounts,
     accounts,
+    facebook_user_id: record.facebookUserId,
+    facebookUserId: record.facebookUserId,
+    facebook_name: record.facebookName,
+    facebookName: record.facebookName,
   };
 };
 

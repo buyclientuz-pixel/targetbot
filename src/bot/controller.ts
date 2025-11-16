@@ -87,9 +87,11 @@ import {
   sendTelegramMessage,
   TelegramError,
 } from "../services/telegram";
-import { fetchFacebookAdAccounts } from "../services/facebook-auth";
+import { fetchFacebookAdAccounts, fetchFacebookProfile } from "../services/facebook-auth";
 import { deleteProjectCascade, releaseProjectChat } from "../services/project-lifecycle";
 import { PORTAL_PERIOD_KEYS, syncPortalMetrics, type PortalSyncResult } from "../services/portal-sync";
+import { syncProjectMetaAccount, syncUserProjectsMetaAccount } from "../services/project-meta";
+import { upsertMetaTokenRecord } from "../domain/meta-tokens";
 import { normaliseBaseUrl } from "../utils/url";
 
 interface BotContext {
@@ -234,6 +236,7 @@ const createProjectFromAccount = async (
   userId: number,
   account: FbAuthRecord["adAccounts"][number],
   chat: { chatId: number; chatTitle: string | null },
+  fbAuth: FbAuthRecord,
 ): Promise<ProjectRecord> => {
   const projectId = await generateProjectId(ctx, account.name);
   const portalUrl = ctx.workerBaseUrl ? `${ctx.workerBaseUrl}/p/${projectId}` : `/p/${projectId}`;
@@ -256,6 +259,7 @@ const createProjectFromAccount = async (
   await putAlertsRecord(ctx.kv, projectId, buildDefaultAlertsRecord());
   await putAutoreportsRecord(ctx.kv, projectId, buildDefaultAutoreportsRecord());
   await reserveChatForProject(ctx, project, chat);
+  await syncProjectMetaAccount(ctx.kv, projectId, fbAuth.facebookUserId ?? null);
   return project;
 };
 
@@ -417,8 +421,9 @@ const completeProjectBinding = async (
   userId: number,
   account: FbAuthRecord["adAccounts"][number],
   freeChat: { chatId: number; chatTitle: string | null; ownerId: number },
+  fbAuth: FbAuthRecord,
 ): Promise<void> => {
-  const project = await createProjectFromAccount(ctx, userId, account, freeChat);
+  const project = await createProjectFromAccount(ctx, userId, account, freeChat, fbAuth);
   await sendTelegramMessage(ctx.token, {
     chatId: freeChat.chatId,
     text:
@@ -464,7 +469,7 @@ const handleProjectBind = async (
     await sendTelegramMessage(ctx.token, { chatId, text: buildChatAlreadyUsedMessage() });
     return;
   }
-  await completeProjectBinding(ctx, chatId, userId, account, freeChat);
+  await completeProjectBinding(ctx, chatId, userId, account, freeChat, fbAuth);
 };
 
 const handleProjectManualBindInput = async (
@@ -500,7 +505,7 @@ const handleProjectManualBindInput = async (
       });
       return;
     }
-    await completeProjectBinding(ctx, chatId, userId, account, freeChat);
+    await completeProjectBinding(ctx, chatId, userId, account, freeChat, fbAuth);
   } catch (error) {
     await sendTelegramMessage(ctx.token, {
       chatId,
@@ -1244,13 +1249,22 @@ const handleFacebookTokenInput = async (
   try {
     const trimmed = tokenValue.trim();
     const accounts = await fetchFacebookAdAccounts(trimmed);
+    const profile = await fetchFacebookProfile(trimmed);
     const expiresAt = addDaysIso(todayIsoDate(), 90);
     await putFbAuthRecord(ctx.kv, {
       userId,
       accessToken: trimmed,
       expiresAt: `${expiresAt}T00:00:00.000Z`,
       adAccounts: accounts,
+      facebookUserId: profile.id,
+      facebookName: profile.name,
     });
+    await upsertMetaTokenRecord(ctx.kv, {
+      facebookUserId: profile.id,
+      accessToken: trimmed,
+      expiresAt: `${expiresAt}T00:00:00.000Z`,
+    });
+    await syncUserProjectsMetaAccount(ctx.kv, userId, profile.id);
     const accountLines = ["", formatAdAccounts(accounts)];
     await sendTelegramMessage(ctx.token, {
       chatId,

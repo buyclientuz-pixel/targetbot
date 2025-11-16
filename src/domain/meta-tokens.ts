@@ -91,3 +91,28 @@ export const touchMetaToken = async (
 export const deleteMetaToken = async (kv: KvClient, facebookUserId: string): Promise<void> => {
   await kv.delete(KV_KEYS.metaToken(facebookUserId));
 };
+
+export const upsertMetaTokenRecord = async (
+  kv: KvClient,
+  input: { facebookUserId: string; accessToken: string; refreshToken?: string | null; expiresAt?: string | null },
+): Promise<MetaToken> => {
+  let createdAt = new Date().toISOString();
+  try {
+    const existing = await getMetaToken(kv, input.facebookUserId);
+    createdAt = existing.createdAt;
+  } catch (error) {
+    if (!(error instanceof EntityNotFoundError)) {
+      throw error;
+    }
+  }
+  const token = parseMetaToken({
+    facebookUserId: input.facebookUserId,
+    accessToken: input.accessToken,
+    refreshToken: input.refreshToken ?? null,
+    expiresAt: input.expiresAt ?? null,
+    createdAt,
+    updatedAt: new Date().toISOString(),
+  });
+  await upsertMetaToken(kv, token);
+  return token;
+};

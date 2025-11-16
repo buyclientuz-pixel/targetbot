@@ -619,6 +619,8 @@ interface UpdateFbAuthBody {
   accessToken?: string;
   expiresAt?: string;
   accounts?: FbAdAccount[];
+  facebookUserId?: string | null;
+  facebookName?: string | null;
 }
 
 const registerAdminRoute = (
@@ -941,6 +943,8 @@ export const registerAdminRoutes = (router: Router): void => {
       accessToken: body.accessToken,
       expiresAt: body.expiresAt,
       adAccounts: body.accounts ?? [],
+      facebookUserId: body.facebookUserId ?? null,
+      facebookName: body.facebookName ?? null,
     };
     await putFbAuthRecord(context.kv, record);
     return jsonOk({ ok: true });

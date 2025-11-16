@@ -22,6 +22,7 @@ const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-ca
 const { putPaymentsHistoryDocument, getPaymentsHistoryDocument } = await import("../../src/domain/spec/payments-history.ts");
 const { getFbAuthRecord, putFbAuthRecord } = await import("../../src/domain/spec/fb-auth.ts");
 const { getUserSettingsRecord } = await import("../../src/domain/spec/user-settings.ts");
+const { ensureProjectSettings } = await import("../../src/domain/project-settings.ts");
 
 interface FetchRecord {
   url: string;
@@ -168,6 +169,8 @@ test("Telegram bot controller serves menu and project list", async () => {
       { id: "act_123", name: "BirLash", currency: "USD", status: 1 },
       { id: "act_456", name: "FlexAds", currency: "USD", status: 1 },
     ],
+    facebookUserId: "fb_user_100",
+    facebookName: "Meta Owner",
   });
   await putFreeChatRecord(kv, {
     chatId: -1007001,
@@ -177,7 +180,15 @@ test("Telegram bot controller serves menu and project list", async () => {
   });
 
   const controller = createController(kv, r2);
-  const stub = installFetchStub();
+  const stub = installFetchStub((url) => {
+    if (url.includes("graph.facebook.com") && url.includes("/me/adaccounts")) {
+      return { body: { data: [{ id: "act_manual", name: "Manual", currency: "USD", account_status: 1 }] } };
+    }
+    if (url.includes("graph.facebook.com") && url.includes("/me?")) {
+      return { body: { id: "fb_manual", name: "Manual User" } };
+    }
+    return undefined;
+  });
 
   try {
     await controller.handleUpdate({
@@ -229,6 +240,8 @@ test("Inline main menu buttons route through cmd:* callbacks", async () => {
     accessToken: "token",
     expiresAt: "2025-01-01T00:00:00.000Z",
     adAccounts: [{ id: "act_inline", name: "Inline Ads", currency: "USD", status: 1 }],
+    facebookUserId: "fb_user_100",
+    facebookName: "Meta Owner",
   });
 
   const controller = createController(kv, r2);
@@ -384,6 +397,8 @@ test("ad account binding creates a new project and occupies chat", async () => {
     accessToken: "token",
     expiresAt: "2025-01-01T00:00:00.000Z",
     adAccounts: [{ id: "act_new", name: "New Ads", currency: "USD", status: 1 }],
+    facebookUserId: "fb_user_100",
+    facebookName: "Meta Owner",
   });
   await putFreeChatRecord(kv, {
     chatId: -1009001,
@@ -423,6 +438,8 @@ test("ad account binding creates a new project and occupies chat", async () => {
     const newProjectId = membership.projects[0];
     const project = await requireProjectRecord(kv, newProjectId);
     assert.equal(project.chatId, -1009001);
+    const settings = await ensureProjectSettings(kv, newProjectId);
+    assert.equal(settings.meta.facebookUserId, "fb_user_100");
 
     const freeChat = await getFreeChatRecord(kv, -1009001);
     assert.equal(freeChat, null);
@@ -478,6 +495,8 @@ test("cmd:meta shows stored ad accounts", async () => {
       { id: "act_1", name: "BirLash", currency: "USD", status: 1 },
       { id: "act_2", name: "Test", currency: "USD", status: 1 },
     ],
+    facebookUserId: "fb_user_100",
+    facebookName: "Meta Owner",
   });
 
   const controller = createController(kv, r2);
@@ -579,6 +598,8 @@ test("Telegram bot fetches Facebook ad accounts on demand", async () => {
     accessToken: "test-token",
     expiresAt: "2026-01-01T00:00:00.000Z",
     adAccounts: [],
+    facebookUserId: "fb_user_100",
+    facebookName: "Meta Owner",
   });
 
   const controller = createController(kv, r2);
@@ -884,7 +905,18 @@ test("Telegram bot controller stores Facebook tokens and user settings", async (
   await seedProject(kv, r2);
 
   const controller = createController(kv, r2);
-  const stub = installFetchStub();
+  const graphRequests: string[] = [];
+  const stub = installFetchStub((url) => {
+    if (url.includes("graph.facebook.com") && url.includes("/me/adaccounts")) {
+      graphRequests.push(url);
+      return { body: { data: [{ id: "act_manual", name: "Manual", currency: "USD", account_status: 1 }] } };
+    }
+    if (url.includes("graph.facebook.com") && url.includes("/me?")) {
+      graphRequests.push(url);
+      return { body: { id: "fb_manual", name: "Manual User" } };
+    }
+    return undefined;
+  });
 
   try {
     await controller.handleUpdate({
@@ -903,6 +935,9 @@ test("Telegram bot controller stores Facebook tokens and user settings", async (
     } as unknown as TelegramUpdate);
     const fbAuth = await getFbAuthRecord(kv, 100);
     assert.equal(fbAuth?.accessToken, "EAATESTTOKEN");
+    assert.equal(fbAuth?.facebookUserId, "fb_manual");
+    assert.ok(graphRequests.some((url) => url.includes("/me/adaccounts")));
+    assert.ok(graphRequests.some((url) => url.includes("/me?")));
 
     await controller.handleUpdate({
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Настройки" },

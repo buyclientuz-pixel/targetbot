@@ -10,6 +10,7 @@ const { registerAuthRoutes } = await import("../../src/routes/auth.ts");
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
 const { getFbAuthRecord } = await import("../../src/domain/spec/fb-auth.ts");
+const { getMetaToken } = await import("../../src/domain/meta-tokens.ts");
 
 test("/api/meta/oauth/start redirects to Facebook", async () => {
   const kvNamespace = new MemoryKVNamespace();
@@ -70,6 +71,10 @@ test("/auth/facebook/callback exchanges tokens and stores accounts", async () =>
       status: 200,
       headers: { "content-type": "application/json" },
     }),
+    new Response(JSON.stringify({ id: "fb_user_1", name: "Meta User" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
     new Response(JSON.stringify({ ok: true, result: true }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -79,13 +84,16 @@ test("/auth/facebook/callback exchanges tokens and stores accounts", async () =>
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? new URL(input) : new URL(input.url ?? String(input));
     if (url.host.includes("api.telegram.org")) {
-      return responses[3]!;
+      return responses[4]!;
     }
     if (url.pathname.includes("oauth/access_token")) {
       return responses[call++]!;
     }
     if (url.pathname.includes("/me/adaccounts")) {
       return responses[2]!;
+    }
+    if (url.pathname.endsWith("/me")) {
+      return responses[3]!;
     }
     throw new Error(`Unexpected fetch: ${url}`);
   }) as typeof fetch;
@@ -104,12 +112,16 @@ test("/auth/facebook/callback exchanges tokens and stores accounts", async () =>
     assert.ok(record);
     assert.equal(record.accessToken, "long");
     assert.equal(record.adAccounts[0]?.id, "act_1");
+    assert.equal(record.facebookUserId, "fb_user_1");
 
     const raw = await kvNamespace.get("facebook-auth:100");
     assert.ok(raw);
     const parsed = JSON.parse(raw);
     assert.equal(parsed.longToken, "long");
     assert.equal(parsed.accounts[0]?.id, "act_1");
+
+    const metaToken = await getMetaToken(kv, "fb_user_1");
+    assert.equal(metaToken.accessToken, "long");
   } finally {
     globalThis.fetch = originalFetch;
   }

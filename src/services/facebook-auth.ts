@@ -13,6 +13,11 @@ interface AdAccountsResponse {
   paging?: { next?: string | null };
 }
 
+interface FacebookProfileResponse {
+  id?: string;
+  name?: string;
+}
+
 const normaliseString = (value: unknown, fallback = ""): string => {
   if (typeof value !== "string") {
     return fallback;
@@ -82,6 +87,32 @@ export const fetchFacebookAdAccounts = async (
   } while (nextCursor);
 
   return accounts;
+};
+
+const buildProfileUrl = (accessToken: string): URL => {
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/me`);
+  url.searchParams.set("access_token", accessToken);
+  url.searchParams.set("fields", "id,name");
+  return url;
+};
+
+export const fetchFacebookProfile = async (
+  accessToken: string,
+): Promise<{ id: string; name: string }> => {
+  if (!accessToken || accessToken.trim().length === 0) {
+    throw new Error("Facebook access token is required");
+  }
+  const response = await fetch(buildProfileUrl(accessToken));
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Facebook API error ${response.status}: ${errorBody}`);
+  }
+  const payload = (await response.json()) as FacebookProfileResponse;
+  const id = normaliseString(payload.id, "");
+  if (!id) {
+    throw new Error("Facebook API response is missing user id");
+  }
+  return { id, name: normaliseString(payload.name, "—") };
 };
 
 interface OAuthTokenResponse {
