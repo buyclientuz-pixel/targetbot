@@ -433,6 +433,101 @@ const extractPromotedPageIds = (campaigns: Record<string, unknown>[]): string[] 
   return Array.from(ids);
 };
 
+const buildAdsUrl = (accountId: string, accessToken: string, after?: string | null): URL => {
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${accountId}/ads`);
+  url.searchParams.set("access_token", accessToken);
+  url.searchParams.set("fields", "id,creative{object_story_spec}");
+  url.searchParams.set("limit", "100");
+  if (after) {
+    url.searchParams.set("after", after);
+  }
+  return url;
+};
+
+const collectLeadgenFormIds = (value: unknown, bucket: Set<string>, keyHint?: string): void => {
+  if (value == null) {
+    return;
+  }
+  if ((typeof value === "string" || typeof value === "number") && keyHint === "leadgen_form_id") {
+    const id = normaliseId(value);
+    if (id) {
+      bucket.add(id);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectLeadgenFormIds(entry, bucket, keyHint);
+    }
+    return;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const [key, nested] of Object.entries(record)) {
+      if (key === "leadgen_form_id") {
+        collectLeadgenFormIds(nested, bucket, key);
+      }
+      if (
+        key === "link_data" ||
+        key === "video_data" ||
+        key === "call_to_action" ||
+        key === "value" ||
+        key === "child_attachments" ||
+        key === "children" ||
+        key === "slides" ||
+        key === "template_data" ||
+        key === "instant_form_data"
+      ) {
+        collectLeadgenFormIds(nested, bucket, key);
+      }
+    }
+  }
+};
+
+const extractLeadgenFormsFromCreative = (creative: unknown): string[] => {
+  if (!creative || typeof creative !== "object") {
+    return [];
+  }
+  const record = creative as Record<string, unknown>;
+  const bucket = new Set<string>();
+  if (record.object_story_spec) {
+    collectLeadgenFormIds(record.object_story_spec, bucket);
+  }
+  return Array.from(bucket.values());
+};
+
+const fetchLeadGenFormsViaAds = async (
+  accountId: string,
+  accessToken: string,
+): Promise<LeadGenFormDescriptor[]> => {
+  const forms = new Map<string, LeadGenFormDescriptor>();
+  let cursor: string | undefined;
+  do {
+    const url = buildAdsUrl(accountId, accessToken, cursor);
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Meta ads request failed with ${response.status}: ${errorBody}`);
+    }
+    const payload = (await response.json()) as {
+      data?: Array<{ creative?: Record<string, unknown> | null }>;
+      paging?: { cursors?: { after?: string | null } };
+    };
+    if (Array.isArray(payload.data)) {
+      for (const ad of payload.data) {
+        const creative = ad?.creative;
+        if (!creative) {
+          continue;
+        }
+        const ids = extractLeadgenFormsFromCreative(creative);
+        ids.forEach((id) => forms.set(id, { id, accessToken }));
+      }
+    }
+    cursor = payload.paging?.cursors?.after ?? undefined;
+  } while (cursor);
+  return Array.from(forms.values());
+};
+
 const fetchLeadGenFormsViaPages = async (
   accountId: string,
   accessToken: string,
@@ -539,8 +634,10 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     console.warn(`[meta] Failed to download leads via account ${options.accountId}: ${accountError.message}`);
   }
   let primaryError: Error | null = null;
-  let fallbackError: Error | null = null;
-  let fallbackAttempted = false;
+  let pageFallbackError: Error | null = null;
+  let adsFallbackError: Error | null = null;
+  let pageFallbackAttempted = false;
+  let adsFallbackAttempted = false;
   let forms: LeadGenFormDescriptor[] = [];
   try {
     forms = await fetchLeadGenForms(options.accountId, options.accessToken);
@@ -548,18 +645,29 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     primaryError = error as Error;
   }
   if (forms.length === 0) {
-    fallbackAttempted = true;
+    pageFallbackAttempted = true;
     try {
       forms = await fetchLeadGenFormsViaPages(options.accountId, options.accessToken);
     } catch (error) {
-      fallbackError = error as Error;
+      pageFallbackError = error as Error;
     }
   }
   if (forms.length === 0) {
-    if (fallbackError) {
-      throw fallbackError;
+    adsFallbackAttempted = true;
+    try {
+      forms = await fetchLeadGenFormsViaAds(options.accountId, options.accessToken);
+    } catch (error) {
+      adsFallbackError = error as Error;
     }
-    if (primaryError && !fallbackAttempted) {
+  }
+  if (forms.length === 0) {
+    if (adsFallbackError) {
+      throw adsFallbackError;
+    }
+    if (pageFallbackError) {
+      throw pageFallbackError;
+    }
+    if (primaryError && !pageFallbackAttempted && !adsFallbackAttempted) {
       throw primaryError;
     }
     if (accountError && !ignorableAccountError) {

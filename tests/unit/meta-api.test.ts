@@ -274,3 +274,63 @@ test("fetchMetaLeads still downloads leads when managed pages request fails", as
     console.warn = originalWarn;
   }
 });
+
+test("fetchMetaLeads falls back to ad creative forms when pages don't expose leadgen forms", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    if (url.pathname.includes("/act_ads/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_ads/leadgen_forms")) {
+      return new Response(JSON.stringify({ error: { message: "edge unavailable" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/act_ads/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_ads/ads")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              creative: {
+                object_story_spec: {
+                  link_data: { call_to_action: { value: { leadgen_form_id: "form-ads" } } },
+                },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/form-ads/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-ads", created_time: "2025-11-17T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_ads", accessToken: "acct-token" });
+    assert.equal(leads.length, 1);
+    assert.equal(leads[0]?.id, "lead-ads");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
