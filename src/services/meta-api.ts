@@ -518,6 +518,17 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   if (!options.accessToken) {
     throw new DataValidationError("Meta access token is required for leads");
   }
+  const limit = options.limit;
+  let accountError: Error | null = null;
+  try {
+    const accountLeads = await fetchLeadsForNode(options.accountId, options, limit);
+    if (accountLeads.length > 0) {
+      return limit ? accountLeads.slice(0, limit) : accountLeads;
+    }
+  } catch (error) {
+    accountError = error as Error;
+    console.warn(`[meta] Failed to download leads via account ${options.accountId}: ${accountError.message}`);
+  }
   let primaryError: Error | null = null;
   let fallbackError: Error | null = null;
   let fallbackAttempted = false;
@@ -542,9 +553,11 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     if (primaryError && !fallbackAttempted) {
       throw primaryError;
     }
+    if (accountError) {
+      throw accountError;
+    }
     return [];
   }
-  const limit = options.limit;
   const collected: MetaLeadRecord[] = [];
   for (const form of forms) {
     const remaining = typeof limit === "number" ? Math.max(limit - collected.length, 0) : undefined;

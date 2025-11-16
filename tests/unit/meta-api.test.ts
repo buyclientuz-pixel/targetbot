@@ -17,6 +17,44 @@ test("resolveDatePreset clamps max period to Meta's 37-month limit", () => {
   }
 });
 
+test("fetchMetaLeads returns account-level leads without enumerating forms", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    requests.push(url);
+    if (url.pathname.includes("/act_account/leads")) {
+      return new Response(JSON.stringify({ data: [{ id: "lead-account", created_time: "2025-11-17T00:00:00Z" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/leadgen_forms")) {
+      return new Response(JSON.stringify({ error: { message: "should not be called" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_account", accessToken: "token" });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/act_account/leads")));
+    assert.ok(!requests.some((request) => request.pathname.includes("leadgen_forms")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetchMetaLeads falls back to page leadgen forms when ad account edge is unavailable", async () => {
   const originalFetch = globalThis.fetch;
   const requests: URL[] = [];
@@ -31,6 +69,9 @@ test("fetchMetaLeads falls back to page leadgen forms when ad account edge is un
             : String(input);
     const url = new URL(target);
     requests.push(url);
+    if (url.pathname.includes("/act_page/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (url.pathname.includes("/act_page/leadgen_forms")) {
       return new Response(JSON.stringify({ error: { message: "unsupported" } }), {
         status: 400,
@@ -79,6 +120,9 @@ test("fetchMetaLeads returns empty list when both leadgen sources have no forms"
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_empty/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (url.pathname.includes("/act_empty/leadgen_forms")) {
       return new Response(JSON.stringify({ error: { message: "edge unavailable" } }), {
         status: 400,
@@ -108,6 +152,9 @@ test("fetchMetaLeads enumerates managed pages when campaigns are missing page id
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_pages_only/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (url.pathname.includes("/act_pages_only/campaigns")) {
       return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
     }
@@ -154,6 +201,9 @@ test("fetchMetaLeads still downloads leads when managed pages request fails", as
   };
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_perm/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (url.pathname.includes("/act_perm/campaigns")) {
       return new Response(
         JSON.stringify({ data: [{ id: "cmp1", promoted_object: { page_id: "pg-5" } }] }),
