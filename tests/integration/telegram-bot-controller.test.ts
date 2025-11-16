@@ -184,8 +184,11 @@ test("Telegram bot controller serves menu and project list", async () => {
     } as unknown as TelegramUpdate);
 
     assert.ok(stub.requests.length >= 1);
-    assert.ok(String(stub.requests[0]?.body.text).includes("Главное меню"));
-    const menuKeyboard = stub.requests[0]?.body.reply_markup as {
+    const menuRequest = stub.requests.find((entry) =>
+      String(entry?.body?.text ?? "").includes("Главное меню"),
+    );
+    assert.ok(menuRequest, "expected a menu render request");
+    const menuKeyboard = menuRequest?.body.reply_markup as {
       inline_keyboard: Array<Array<{ text: string; url?: string; callback_data?: string }>>;
     };
     assert.ok(menuKeyboard);

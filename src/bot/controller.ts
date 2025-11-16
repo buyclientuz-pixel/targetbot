@@ -282,6 +282,32 @@ const sendMenu = async (ctx: BotContext, chatId: number, userId: number): Promis
   });
 };
 
+const ensureLegacyKeyboardCleared = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  session?: BotSession,
+): Promise<BotSession> => {
+  const currentSession = session ?? (await getBotSession(ctx.kv, userId));
+  if (currentSession.replyKeyboardCleared) {
+    return currentSession;
+  }
+  try {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: "Переключаюсь на новую панель…",
+      replyMarkup: { remove_keyboard: true },
+    });
+  } catch (error) {
+    console.warn(
+      `[telegram] Failed to clear legacy reply keyboard for ${userId}: ${(error as Error).message}`,
+    );
+  }
+  const updatedSession: BotSession = { ...currentSession, replyKeyboardCleared: true };
+  await saveBotSession(ctx.kv, updatedSession);
+  return updatedSession;
+};
+
 const buildProjectListItems = async (
   ctx: BotContext,
   userId: number,
@@ -1839,11 +1865,13 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
       await recordChatFromUpdate(ctx, update);
 
       if (update.message?.text) {
-        const session = cachedSession ?? (await getBotSession(ctx.kv, userId));
+        let session = cachedSession ?? (await getBotSession(ctx.kv, userId));
         cachedSession = session;
         if (await handleSessionInput(ctx, chatId, userId, update.message.text, session, panelRuntime)) {
           return;
         }
+        session = await ensureLegacyKeyboardCleared(ctx, chatId, userId, session);
+        cachedSession = session;
         await handleTextCommand(ctx, chatId, userId, update.message.text.trim(), panelRuntime);
         return;
       }

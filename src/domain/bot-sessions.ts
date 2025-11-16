@@ -23,6 +23,12 @@ export interface BotSession {
   state: BotSessionState;
   panel?: BotPanelState;
   /**
+   * Indicates whether we've already removed the legacy ReplyKeyboardMarkup for this user.
+   * Needed to avoid spamming chats with duplicate "remove keyboard" messages when migrating
+   * existing sessions to the single-message panel UI.
+   */
+  replyKeyboardCleared?: boolean;
+  /**
    * Timestamp of the last time we notified the user that commands only work in private chat.
    * Used to avoid spamming group chats when someone keeps typing /start inside a group thread.
    */

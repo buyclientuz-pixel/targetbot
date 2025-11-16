@@ -585,12 +585,19 @@ const adminClientFactory = () => {
     }
   };
 
+  const safeSetView = (view) => {
+    if (!view) {
+      return;
+    }
+    void setView(view).catch((error) => setStatus(error.message));
+  };
+
   els.navButtons.forEach((button) => {
-    button.addEventListener('click', () => void setView(button.dataset.nav));
+    button.addEventListener('click', () => safeSetView(button.dataset.nav));
   });
 
   els.refreshButtons.forEach((button) => {
-    button.addEventListener('click', () => void setView(state.view));
+    button.addEventListener('click', () => safeSetView(state.view));
   });
 
   els.logoutButtons.forEach((button) => {
@@ -600,17 +607,17 @@ const adminClientFactory = () => {
       handleUnauthorized('Ключ очищен');
     });
   });
-  els.loginForm?.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const key = els.loginInput?.value.trim();
-    if (!key) {
-      return;
-    }
-    localStorage.setItem(STORAGE_KEY, key);
-    state.key = key;
-    hideLogin();
-    setView('projects');
-  });
+    els.loginForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const key = els.loginInput?.value.trim();
+      if (!key) {
+        return;
+      }
+      localStorage.setItem(STORAGE_KEY, key);
+      state.key = key;
+      hideLogin();
+      safeSetView('projects');
+    });
 
   els.projectsBody?.addEventListener('click', handleProjectTableClick);
   els.projectCreateForm?.addEventListener('submit', submitProjectCreate);
@@ -618,14 +625,22 @@ const adminClientFactory = () => {
   els.settingsForm?.addEventListener('submit', submitSettings);
   els.webhookButton?.addEventListener('click', resetWebhook);
 
-  if (els.settingsInfo && WORKER_URL) {
-    els.settingsInfo.textContent = `WORKER_URL: ${WORKER_URL}`;
-  }
+    if (els.settingsInfo && WORKER_URL) {
+      els.settingsInfo.textContent = `WORKER_URL: ${WORKER_URL}`;
+    }
 
-    if (!state.key) {
-      showLogin();
+    const boot = () => {
+      if (!state.key) {
+        showLogin();
+      } else {
+        safeSetView('projects');
+      }
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', boot, { once: true });
     } else {
-      void setView('projects');
+      boot();
     }
   };
 
