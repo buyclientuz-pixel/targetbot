@@ -3,8 +3,12 @@ import type { MetaCacheEntry, MetaCachePeriod } from "../domain/meta-cache";
 import { getMetaToken } from "../domain/meta-tokens";
 import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
 import { getProject, type Project } from "../domain/projects";
+import { requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
 import { type MetaSummaryPayload } from "../domain/meta-summary";
+import { putMetaCampaignsDocument, type MetaCampaignsDocument } from "../domain/spec/meta-campaigns";
+import type { KpiType } from "../domain/spec/project";
 import type { KvClient } from "../infra/kv";
+import type { R2Client } from "../infra/r2";
 import {
   fetchMetaInsights,
   fetchMetaInsightsRaw,
@@ -12,6 +16,7 @@ import {
   resolveDatePreset,
   summariseMetaInsights,
   countLeadsFromActions,
+  countMessagesFromActions,
 } from "./meta-api";
 import { DataValidationError } from "../errors";
 import type { MetaInsightsRawResponse } from "./meta-api";
@@ -229,7 +234,7 @@ export const loadProjectCampaigns = async (
     accessToken: token.accessToken,
     period: resolveDatePreset(periodKey),
     level: "campaign",
-    fields: ["campaign_id", "campaign_name", "spend", "impressions", "clicks", "actions"].join(","),
+    fields: ["campaign_id", "campaign_name", "objective", "spend", "impressions", "clicks", "actions"].join(","),
   });
   const periodRange = resolvePeriodRange(periodKey);
   const entry = createMetaCacheEntry(projectId, scope, periodRange.period, raw, CACHE_TTL_SECONDS);
@@ -240,10 +245,12 @@ export const loadProjectCampaigns = async (
 export interface CampaignRow {
   id: string;
   name: string;
+  objective: string | null;
   spend: number;
   impressions: number;
   clicks: number;
   leads: number;
+  messages: number;
   cpa: number | null;
 }
 
@@ -252,14 +259,87 @@ export const mapCampaignRows = (raw: MetaInsightsRawResponse): CampaignRow[] => 
     const record = item as Record<string, unknown>;
     const id = typeof record.campaign_id === "string" ? record.campaign_id : "unknown";
     const name = typeof record.campaign_name === "string" ? record.campaign_name : "Без названия";
+    const objective = typeof record.objective === "string" ? record.objective : null;
     const summary = summariseMetaInsights({ data: [record] });
     const spend = summary.spend;
     const impressions = summary.impressions;
     const clicks = summary.clicks;
     const leads = countLeadsFromActions(record.actions);
+    const messages = countMessagesFromActions(record.actions);
     const cpa = leads > 0 ? spend / leads : null;
-    return { id, name, spend, impressions, clicks, leads, cpa };
+    return { id, name, objective, spend, impressions, clicks, leads, messages, cpa };
   });
+};
+
+const determineKpiType = (objective: string | null, fallback: KpiType): KpiType => {
+  if (!objective) {
+    return fallback;
+  }
+  const upper = objective.toUpperCase();
+  if (upper.includes("LEAD")) {
+    return "LEAD";
+  }
+  if (upper.includes("MESSAGE")) {
+    return "MESSAGE";
+  }
+  if (upper.includes("CLICK") || upper.includes("TRAFFIC")) {
+    return "CLICK";
+  }
+  if (upper.includes("VIEW") || upper.includes("AWARENESS") || upper.includes("REACH")) {
+    return "VIEW";
+  }
+  if (upper.includes("PURCHASE") || upper.includes("SALES") || upper.includes("CONVERSION")) {
+    return "PURCHASE";
+  }
+  return fallback;
+};
+
+export const syncProjectCampaignDocument = async (
+  kv: KvClient,
+  r2: R2Client,
+  projectId: string,
+  periodKey: string,
+  options?: {
+    project?: Project;
+    settings?: ProjectSettings;
+    projectRecord?: ProjectRecord;
+    facebookUserId?: string | null;
+  },
+): Promise<MetaCampaignsDocument> => {
+  const { entry, project, settings } = await loadProjectCampaigns(kv, projectId, periodKey, options);
+  const projectRecord = options?.projectRecord ?? (await requireProjectRecord(kv, projectId));
+  const kpiConfig = projectRecord.settings.kpi;
+  const rows = mapCampaignRows(entry.payload);
+  const campaigns = rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    objective: row.objective ?? kpiConfig.label,
+    kpiType:
+      kpiConfig.mode === "manual" ? kpiConfig.type : determineKpiType(row.objective, kpiConfig.type),
+    spend: row.spend,
+    impressions: row.impressions,
+    clicks: row.clicks,
+    leads: row.leads,
+    messages: row.messages,
+  }));
+  const summary = campaigns.reduce(
+    (acc, campaign) => ({
+      spend: acc.spend + (campaign.spend ?? 0),
+      impressions: acc.impressions + (campaign.impressions ?? 0),
+      clicks: acc.clicks + (campaign.clicks ?? 0),
+      leads: acc.leads + (campaign.leads ?? 0),
+      messages: acc.messages + (campaign.messages ?? 0),
+    }),
+    { spend: 0, impressions: 0, clicks: 0, leads: 0, messages: 0 },
+  );
+  const document: MetaCampaignsDocument = {
+    period: entry.period,
+    periodKey,
+    summary,
+    campaigns,
+  };
+  await putMetaCampaignsDocument(r2, projectId, document);
+  return document;
 };
 
 const parseBudget = (value: unknown): number | null => {
@@ -289,6 +369,8 @@ export interface CampaignStatus {
   name: string;
   status: string | null;
   effectiveStatus: string | null;
+  configuredStatus: string | null;
+  objective: string | null;
   dailyBudget: number | null;
   budgetRemaining: number | null;
   updatedTime: string | null;
@@ -299,11 +381,13 @@ const mapCampaignStatus = (record: Record<string, unknown>): CampaignStatus => {
   const name = typeof record.name === "string" && record.name.trim().length > 0 ? record.name : "Без названия";
   const status = typeof record.status === "string" ? record.status : null;
   const effectiveStatus = typeof record.effective_status === "string" ? record.effective_status : status;
+  const configuredStatus = typeof record.configured_status === "string" ? record.configured_status : status;
+  const objective = typeof record.objective === "string" ? record.objective : null;
   const dailyBudget = parseBudget(record.daily_budget);
   const budgetRemaining = parseBudget(record.budget_remaining ?? record.lifetime_budget);
   const updatedTime = parseIsoDate(record.updated_time);
 
-  return { id, name, status, effectiveStatus, dailyBudget, budgetRemaining, updatedTime };
+  return { id, name, status, effectiveStatus, configuredStatus, objective, dailyBudget, budgetRemaining, updatedTime };
 };
 
 export interface PortalSummaryResponse {

@@ -1,5 +1,11 @@
 import { loadProjectBundle, type ProjectBundle } from "../bot/data";
-import { resolvePeriodRange } from "../services/project-insights";
+import {
+  loadProjectSummary,
+  loadProjectCampaignStatuses,
+  resolvePeriodRange,
+  syncProjectCampaignDocument,
+  type CampaignStatus,
+} from "../services/project-insights";
 import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
 import { applyCors, preflight } from "../http/cors";
@@ -40,8 +46,25 @@ const computeCpa = (spend: number, value: number): number | null => {
   return spend / value;
 };
 
-const buildSummaryPayload = (bundle: ProjectBundle, requestedPeriod: string) => {
-  const summary = bundle.campaigns.summary;
+const buildSummaryPayload = (
+  bundle: ProjectBundle,
+  requestedPeriod: string,
+  options?: {
+    summaryEntry?: import("../domain/meta-cache").MetaCacheEntry<import("../domain/meta-summary").MetaSummaryPayload> | null;
+    campaigns?: import("../domain/spec/meta-campaigns").MetaCampaignsDocument;
+  },
+) => {
+  const campaignsDoc = options?.campaigns ?? bundle.campaigns;
+  const summaryMetrics = options?.summaryEntry?.payload.metrics;
+  const summary = summaryMetrics
+    ? {
+        spend: summaryMetrics.spend,
+        impressions: summaryMetrics.impressions,
+        clicks: summaryMetrics.clicks,
+        leads: summaryMetrics.leads,
+        messages: campaignsDoc.summary.messages,
+      }
+    : campaignsDoc.summary;
   const spend = summary.spend ?? 0;
   const leads = summary.leads ?? 0;
   const leadsToday = bundle.leads.stats.today ?? 0;
@@ -51,8 +74,8 @@ const buildSummaryPayload = (bundle: ProjectBundle, requestedPeriod: string) => 
       name: bundle.project.name,
       portalUrl: bundle.project.portalUrl,
     },
-    period: bundle.campaigns.period,
-    periodKey: bundle.campaigns.periodKey ?? requestedPeriod,
+    period: options?.summaryEntry?.period ?? campaignsDoc.period,
+    periodKey: options?.summaryEntry?.payload.periodKey ?? campaignsDoc.periodKey ?? requestedPeriod,
     metrics: {
       spend,
       impressions: summary.impressions ?? 0,
@@ -62,7 +85,8 @@ const buildSummaryPayload = (bundle: ProjectBundle, requestedPeriod: string) => 
       cpa: computeCpa(spend, leads),
       leadsTotal: bundle.leads.stats.total ?? 0,
       leadsToday,
-      cpaToday: computeCpa(spend, leadsToday),
+      cpaToday: summaryMetrics?.cpaToday ?? computeCpa(summaryMetrics?.spendToday ?? spend, leadsToday),
+      spendToday: summaryMetrics?.spendToday ?? (requestedPeriod === "today" ? spend : summaryMetrics?.spendToday ?? 0),
       currency: bundle.project.settings.currency,
       kpiLabel: bundle.project.settings.kpi.label,
     },
@@ -96,13 +120,36 @@ const filterLeadsForPeriod = (bundle: ProjectBundle, periodKey: string) => {
   };
 };
 
-const buildCampaignsPayload = (bundle: ProjectBundle, requestedPeriod: string) => ({
-  period: bundle.campaigns.period,
-  periodKey: bundle.campaigns.periodKey ?? requestedPeriod,
-  summary: bundle.campaigns.summary,
-  campaigns: bundle.campaigns.campaigns,
-  kpi: bundle.project.settings.kpi,
-});
+const buildCampaignsPayload = (
+  bundle: ProjectBundle,
+  requestedPeriod: string,
+  document?: import("../domain/spec/meta-campaigns").MetaCampaignsDocument,
+  statuses?: CampaignStatus[] | null,
+) => {
+  const campaignsDoc = document ?? bundle.campaigns;
+  const statusMap = new Map((statuses ?? []).map((entry) => [entry.id, entry] as const));
+  const campaigns = campaignsDoc.campaigns.map((campaign) => {
+    const status = statusMap.get(campaign.id);
+    const resolvedStatus = status?.status ?? status?.effectiveStatus ?? status?.configuredStatus ?? null;
+    return {
+      ...campaign,
+      objective: status?.objective ?? campaign.objective,
+      status: resolvedStatus,
+      effectiveStatus: status?.effectiveStatus ?? null,
+      configuredStatus: status?.configuredStatus ?? null,
+      dailyBudget: status?.dailyBudget ?? null,
+      budgetRemaining: status?.budgetRemaining ?? null,
+      updatedTime: status?.updatedTime ?? null,
+    };
+  });
+  return {
+    period: campaignsDoc.period,
+    periodKey: campaignsDoc.periodKey ?? requestedPeriod,
+    summary: campaignsDoc.summary,
+    campaigns,
+    kpi: bundle.project.settings.kpi,
+  };
+};
 
 const buildPaymentsPayload = (bundle: ProjectBundle) => ({
   billing: bundle.billing,
@@ -1171,7 +1218,31 @@ export const registerPortalRoutes = (router: Router): void => {
     const periodKey = url.searchParams.get("period") ?? "today";
     try {
       const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
-      return jsonOk(buildSummaryPayload(bundle, periodKey));
+      let summaryEntry: import("../domain/meta-cache").MetaCacheEntry<import("../domain/meta-summary").MetaSummaryPayload> | null =
+        null;
+      try {
+        const summaryResult = await loadProjectSummary(context.kv, projectId, periodKey);
+        summaryEntry = summaryResult.entry;
+      } catch (error) {
+        if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
+          console.warn(`[portal] Meta summary fallback for ${projectId}: ${(error as Error).message}`);
+        } else {
+          throw error;
+        }
+      }
+      let campaignsDoc = bundle.campaigns;
+      try {
+        campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+          projectRecord: bundle.project,
+        });
+      } catch (error) {
+        if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
+          console.warn(`[portal] Meta campaigns fallback for ${projectId}: ${(error as Error).message}`);
+        } else {
+          throw error;
+        }
+      }
+      return jsonOk(buildSummaryPayload(bundle, periodKey, { summaryEntry, campaigns: campaignsDoc }));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
@@ -1222,7 +1293,30 @@ export const registerPortalRoutes = (router: Router): void => {
     const periodKey = url.searchParams.get("period") ?? "today";
     try {
       const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
-      return jsonOk(buildCampaignsPayload(bundle, periodKey));
+      let campaignsDoc = bundle.campaigns;
+      let campaignStatuses: CampaignStatus[] | null = null;
+      try {
+        campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+          projectRecord: bundle.project,
+        });
+      } catch (error) {
+        if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
+          console.warn(`[portal] Meta campaigns fallback for ${projectId}: ${(error as Error).message}`);
+        } else {
+          throw error;
+        }
+      }
+      try {
+        const statusResult = await loadProjectCampaignStatuses(context.kv, projectId);
+        campaignStatuses = statusResult.entry.payload.campaigns;
+      } catch (error) {
+        if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
+          console.warn(`[portal] Campaign status fallback for ${projectId}: ${(error as Error).message}`);
+        } else {
+          throw error;
+        }
+      }
+      return jsonOk(buildCampaignsPayload(bundle, periodKey, campaignsDoc, campaignStatuses));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
