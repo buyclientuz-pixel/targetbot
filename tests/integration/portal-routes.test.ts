@@ -12,6 +12,7 @@ const { putBillingRecord } = await import("../../src/domain/spec/billing.ts");
 const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
 const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
 const { putPaymentsHistoryDocument } = await import("../../src/domain/spec/payments-history.ts");
+const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/meta-cache.ts");
 
 const createEnv = () => ({
   KV: new MemoryKVNamespace(),
@@ -181,6 +182,137 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   );
   assert.equal(shortPortalResponse.status, 200);
   assert.equal(shortPortalResponse.headers.get("content-type"), "text/html; charset=utf-8");
+
+  await execution.flush();
+});
+
+test("portal summary and campaigns prefer Meta cache entries when available", async () => {
+  const env = createEnv();
+  const router = createRouter();
+  registerPortalRoutes(router);
+  const execution = new TestExecutionContext();
+
+  const kv = new KvClient(env.KV);
+  const r2 = new R2Client(env.R2);
+
+  const projectRecord: import("../../src/domain/spec/project.ts").ProjectRecord = {
+    id: "cache_proj",
+    name: "Cache Project",
+    ownerId: 1,
+    adAccountId: "act_cache",
+    chatId: null,
+    portalUrl: "https://example.com/p/cache_proj",
+    settings: {
+      currency: "USD",
+      timezone: "Asia/Tashkent",
+      kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
+    },
+  };
+  await putProjectRecord(kv, projectRecord);
+  await putProjectLeadsList(r2, projectRecord.id, { stats: { total: 50, today: 2 }, leads: [] });
+  await putMetaCampaignsDocument(r2, projectRecord.id, {
+    period: { from: "2025-01-01", to: "2025-01-01" },
+    summary: { spend: 5, impressions: 100, clicks: 10, leads: 1, messages: 0 },
+    campaigns: [],
+    periodKey: "today",
+  });
+
+  const summaryEntry = createMetaCacheEntry(
+    projectRecord.id,
+    "summary:today",
+    { from: "2025-11-16", to: "2025-11-16" },
+    {
+      periodKey: "today",
+      metrics: {
+        spend: 42,
+        impressions: 900,
+        clicks: 120,
+        leads: 6,
+        leadsToday: 6,
+        leadsTotal: 200,
+        cpa: 7,
+        spendToday: 42,
+        cpaToday: 7,
+      },
+      source: { cached: true },
+    },
+    60,
+  );
+  await saveMetaCache(kv, summaryEntry);
+
+  const campaignsEntry = createMetaCacheEntry(
+    projectRecord.id,
+    "campaigns:today",
+    { from: "2025-11-16", to: "2025-11-16" },
+    {
+      data: [
+        {
+          campaign_id: "cmp-live",
+          campaign_name: "Live",
+          spend: "21",
+          impressions: "500",
+          clicks: "50",
+          actions: [{ action_type: "lead", value: "3" }],
+        },
+      ],
+    },
+    60,
+  );
+  await saveMetaCache(kv, campaignsEntry);
+
+  const statusEntry = createMetaCacheEntry(
+    projectRecord.id,
+    "campaign-status",
+    { from: "2025-11-16", to: "2025-11-16" },
+    {
+      campaigns: [
+        {
+          id: "cmp-live",
+          name: "Live",
+          status: "PAUSED",
+          effectiveStatus: "PAUSED",
+          configuredStatus: "PAUSED",
+          objective: "LEAD_GENERATION",
+          dailyBudget: 10000,
+          budgetRemaining: 5000,
+          updatedTime: "2025-11-16T00:00:00.000Z",
+        },
+      ],
+    },
+    300,
+  );
+  await saveMetaCache(kv, statusEntry);
+
+  const summaryResponse = await router.dispatch(
+    new Request("https://example.com/api/projects/cache_proj/summary?period=today"),
+    env,
+    execution,
+  );
+  const summaryPayload = (await summaryResponse.json()) as {
+    ok: boolean;
+    data: { metrics: { spend: number; leads: number; cpaToday: number | null } };
+  };
+  assert.ok(summaryPayload.ok);
+  assert.equal(summaryPayload.data.metrics.spend, 42);
+  assert.equal(summaryPayload.data.metrics.leads, 6);
+  assert.equal(summaryPayload.data.metrics.cpaToday, 7);
+
+  const campaignsResponse = await router.dispatch(
+    new Request("https://example.com/api/projects/cache_proj/campaigns?period=today"),
+    env,
+    execution,
+  );
+  const campaignsPayload = (await campaignsResponse.json()) as {
+    ok: boolean;
+    data: { campaigns: Array<{ id: string; status?: string | null; objective?: string; spend: number; leads: number }>; };
+  };
+  assert.ok(campaignsPayload.ok);
+  const liveCampaign = campaignsPayload.data.campaigns.find((campaign) => campaign.id === "cmp-live");
+  assert.ok(liveCampaign);
+  assert.equal(liveCampaign?.status, "PAUSED");
+  assert.equal(liveCampaign?.objective, "LEAD_GENERATION");
+  assert.equal(liveCampaign?.spend, 21);
+  assert.equal(liveCampaign?.leads, 3);
 
   await execution.flush();
 });
