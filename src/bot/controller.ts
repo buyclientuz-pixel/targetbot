@@ -91,6 +91,7 @@ import {
 import { fetchFacebookAdAccounts, fetchFacebookProfile } from "../services/facebook-auth";
 import { deleteProjectCascade, releaseProjectChat } from "../services/project-lifecycle";
 import { PORTAL_PERIOD_KEYS, syncPortalMetrics, type PortalSyncResult } from "../services/portal-sync";
+import { sendAutoReportNow } from "../services/auto-reports";
 import { translateMetaObjective } from "../services/meta-objectives";
 import { syncProjectMetaAccount, syncUserProjectsMetaAccount } from "../services/project-meta";
 import { upsertMetaTokenRecord } from "../domain/meta-tokens";
@@ -1470,6 +1471,25 @@ const handleAutoreportsRouteSet = async (
   await renderAutoreportsPanel(runtime, userId, chatId, projectId, "route");
 };
 
+const handleAutoreportsSendNow = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  try {
+    await sendAutoReportNow(ctx.kv, ctx.token, projectId);
+  } catch (error) {
+    console.error("auto-report manual send failed", { projectId, error });
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: "Не удалось отправить автоотчёт. Проверьте подключение Meta и попробуйте позже.",
+    });
+  }
+  await renderAutoreportsPanel(runtime, userId, chatId, projectId);
+};
+
 const handleAlertsToggle = async (
   ctx: BotContext,
   runtime: ReturnType<typeof buildPanelRuntime>,
@@ -2011,6 +2031,13 @@ const handleCallback = async (
         await handleSettingsChange(ctx, panelRuntime, userId, chatId, { language: parts[2]! });
       } else if (target === "tz") {
         await handleSettingsChange(ctx, panelRuntime, userId, chatId, { timezone: parts[2]! });
+      }
+      break;
+    }
+    case "auto_send_now": {
+      const projectId = parts[1];
+      if (projectId) {
+        await handleAutoreportsSendNow(ctx, panelRuntime, userId, chatId, projectId);
       }
       break;
     }

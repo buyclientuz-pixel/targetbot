@@ -130,6 +130,16 @@ const formatReportDate = (date: Date, timezone: string): string => {
   return `${dayLabel} [${weekday}]`;
 };
 
+const formatManualSlotLabel = (date: Date, timezone: string): string => {
+  const timeLabel = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  return `ручной запуск ${timeLabel}`;
+};
+
 const parseSlot = (slot: string): { hours: number; minutes: number } | null => {
   const match = /^([0-9]{1,2}):([0-9]{2})$/.exec(slot.trim());
   if (!match) {
@@ -541,7 +551,7 @@ const buildReportMessage = (options: {
   lines.push(`📊 Отчёт | ${reportDate}`);
   lines.push(`Проект: ${escapeHtml(project.name)}`);
   lines.push(`Цель: ${goalMeta.label}`);
-  lines.push(`Слот: ${slot} (UTC)`);
+  lines.push(`Слот: ${slot}`);
   lines.push(`Период топа: ${periodLabel(topPeriod)}`);
   lines.push("──────────");
   lines.push("Топ кампании:");
@@ -597,6 +607,77 @@ const loadMetricsForPeriods = async (
   return { project: context.project, settings: context.settings, metrics };
 };
 
+interface AutoReportTemplate {
+  project: Project;
+  projectRecord: ProjectRecord;
+  settings: ProjectSettings;
+  metricsByPeriod: Map<string, MetaSummaryMetrics>;
+  goal: AutoGoalKey;
+  campaigns: CampaignRow[];
+  topPeriod: string;
+  replyMarkup?: { inline_keyboard: Array<Array<{ text: string; url: string }>> };
+}
+
+const loadAutoReportTemplate = async (options: {
+  kv: KvClient;
+  projectId: string;
+  projectRecord: ProjectRecord;
+  mode: string;
+  now: Date;
+  project?: Project;
+  settings?: ProjectSettings;
+}): Promise<AutoReportTemplate> => {
+  const { kv, projectId, projectRecord, mode, now, project, settings } = options;
+  const periodKeys = collectPeriodKeys(mode, now);
+  const initialContext = project && settings ? { project, settings } : undefined;
+  const metricsContext = await loadMetricsForPeriods(kv, projectId, periodKeys, initialContext);
+  const topPeriod = resolveTopPeriod(mode);
+
+  let campaigns: CampaignRow[] = [];
+  try {
+    const campaignsResult = await loadProjectCampaigns(kv, projectId, topPeriod, {
+      project: metricsContext.project,
+      settings: metricsContext.settings,
+    });
+    campaigns = mapCampaignRows(campaignsResult.entry.payload);
+  } catch (error) {
+    if (!(error instanceof DataValidationError)) {
+      throw error;
+    }
+  }
+
+  const fallbackGoal = mapKpiTypeToGoal(projectRecord.settings.kpi.type);
+  const goal = determinePrimaryGoal(campaigns, fallbackGoal);
+  const replyMarkup =
+    projectRecord.portalUrl && projectRecord.portalUrl.trim().length > 0
+      ? { inline_keyboard: [[{ text: "Открыть портал", url: projectRecord.portalUrl }]] }
+      : undefined;
+
+  return {
+    project: metricsContext.project,
+    projectRecord,
+    settings: metricsContext.settings,
+    metricsByPeriod: metricsContext.metrics,
+    goal,
+    campaigns,
+    topPeriod,
+    replyMarkup,
+  };
+};
+
+const renderAutoReportMessage = (template: AutoReportTemplate, slot: string, now: Date): string =>
+  buildReportMessage({
+    project: template.project,
+    projectRecord: template.projectRecord,
+    settings: template.settings,
+    slot,
+    now,
+    metricsByPeriod: template.metricsByPeriod,
+    goal: template.goal,
+    campaigns: template.campaigns,
+    topPeriod: template.topPeriod,
+  });
+
 export const runAutoReports = async (
   kv: KvClient,
   token: string | undefined,
@@ -629,10 +710,17 @@ export const runAutoReports = async (
         continue;
       }
 
-      const periodKeys = collectPeriodKeys(profile.mode, now);
-      let metricsContext;
+      let template: AutoReportTemplate;
       try {
-        metricsContext = await loadMetricsForPeriods(kv, project.id, periodKeys);
+        template = await loadAutoReportTemplate({
+          kv,
+          projectId: project.id,
+          projectRecord,
+          mode: profile.mode,
+          now,
+          project,
+          settings,
+        });
       } catch (error) {
         if (error instanceof DataValidationError) {
           continue;
@@ -640,60 +728,63 @@ export const runAutoReports = async (
         throw error;
       }
 
-      const topPeriod = resolveTopPeriod(profile.mode);
-      let campaigns: CampaignRow[] = [];
-      try {
-        const campaignsResult = await loadProjectCampaigns(kv, project.id, topPeriod, {
-          project: metricsContext.project,
-          settings: metricsContext.settings,
-        });
-        campaigns = mapCampaignRows(campaignsResult.entry.payload);
-      } catch (error) {
-        if (!(error instanceof DataValidationError)) {
-          throw error;
-        }
-      }
-
-      const fallbackGoal = mapKpiTypeToGoal(projectRecord.settings.kpi.type);
-      const goal = determinePrimaryGoal(campaigns, fallbackGoal);
-      const replyMarkup =
-        projectRecord.portalUrl && projectRecord.portalUrl.trim().length > 0
-          ? { inline_keyboard: [[{ text: "Открыть портал", url: projectRecord.portalUrl }]] }
-          : undefined;
-
       for (const { slot } of dueSlots) {
-        const message = buildReportMessage(
-          {
-            project: metricsContext.project,
-            projectRecord,
-            settings: metricsContext.settings,
-            slot,
-            now,
-            metricsByPeriod: metricsContext.metrics,
-            goal,
-            campaigns,
-            topPeriod,
-          },
-        );
+        const message = renderAutoReportMessage(template, `${slot} (UTC)`, now);
         const result = await dispatchProjectMessage({
           kv,
           token,
-          project: metricsContext.project,
-          settings: metricsContext.settings,
+          project: template.project,
+          settings: template.settings,
           text: message,
           parseMode: "HTML",
           route: profile.route,
-          replyMarkup,
+          replyMarkup: template.replyMarkup,
         });
         await markReportSlotDispatched(kv, project.id, slot, new Date().toISOString());
 
-        metricsContext = {
-          ...metricsContext,
-          settings: result.settings,
-        };
+        template.settings = result.settings;
       }
     } catch (error) {
       console.error("auto-report failure", { projectId: project.id, error });
     }
   }
+};
+
+export const sendAutoReportNow = async (
+  kv: KvClient,
+  token: string | undefined,
+  projectId: string,
+  now = new Date(),
+): Promise<void> => {
+  if (!token) {
+    throw new Error("Telegram token is required to send auto-reports");
+  }
+  const projectRecord = await requireProjectRecord(kv, projectId);
+  const settings = await ensureProjectSettings(kv, projectId);
+  const profile = await resolveAutoreportProfile(kv, projectId, settings);
+  if (profile.route === "NONE") {
+    throw new Error("Auto-report route is disabled for this project");
+  }
+
+  const template = await loadAutoReportTemplate({
+    kv,
+    projectId,
+    projectRecord,
+    mode: profile.mode,
+    now,
+  });
+  const timezone = projectRecord.settings.timezone ?? "UTC";
+  const slotLabel = formatManualSlotLabel(now, timezone);
+  const message = renderAutoReportMessage(template, slotLabel, now);
+  const result = await dispatchProjectMessage({
+    kv,
+    token,
+    project: template.project,
+    settings: template.settings,
+    text: message,
+    parseMode: "HTML",
+    route: profile.route,
+    replyMarkup: template.replyMarkup,
+  });
+  template.settings = result.settings;
 };

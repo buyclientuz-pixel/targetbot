@@ -233,6 +233,9 @@ export const buildAutoreportsKeyboard = (
     [
       { text: "👥 Кому отправлять", callback_data: `project:autoreports-route:${projectId}` },
     ],
+    [
+      { text: "📤 Отправить сейчас", callback_data: `auto_send_now:${projectId}` },
+    ],
     [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],
   ],
 });

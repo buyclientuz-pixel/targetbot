@@ -14,6 +14,7 @@ const { putFreeChatRecord, getFreeChatRecord, getOccupiedChatRecord, putOccupied
 );
 const { putProjectsByUser, getProjectsByUser } = await import("../../src/domain/spec/projects-by-user.ts");
 const { putProjectRecord, requireProjectRecord } = await import("../../src/domain/spec/project.ts");
+const { putProject, createProject } = await import("../../src/domain/projects.ts");
 const { putBillingRecord, getBillingRecord } = await import("../../src/domain/spec/billing.ts");
 const { putAlertsRecord, getAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
 const { putAutoreportsRecord, getAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
@@ -23,6 +24,8 @@ const { putPaymentsHistoryDocument, getPaymentsHistoryDocument } = await import(
 const { getFbAuthRecord, putFbAuthRecord } = await import("../../src/domain/spec/fb-auth.ts");
 const { getUserSettingsRecord } = await import("../../src/domain/spec/user-settings.ts");
 const { ensureProjectSettings } = await import("../../src/domain/project-settings.ts");
+const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/meta-cache.ts");
+const { type MetaSummaryMetrics } = await import("../../src/domain/meta-summary.ts");
 
 interface FetchRecord {
   url: string;
@@ -902,6 +905,109 @@ test("Telegram bot controller toggles autoreports and alerts", async () => {
     } as unknown as TelegramUpdate);
     alerts = await getAlertsRecord(kv, "proj_a");
     assert.equal(alerts?.types.leadInQueue, false);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("auto_send_now dispatches manual auto-report", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await putProject(
+    kv,
+    createProject({ id: "proj_a", name: "BirLash", adsAccountId: "act_123", ownerTelegramId: 100 }),
+  );
+
+  const summaryMetrics = {
+    spend: 30,
+    impressions: 2000,
+    clicks: 220,
+    leads: 8,
+    messages: 4,
+    purchases: 1,
+    addToCart: 0,
+    calls: 0,
+    registrations: 0,
+    engagement: 0,
+    leadsToday: 8,
+    leadsTotal: 180,
+    cpa: 3.75,
+    spendToday: 30,
+    cpaToday: 3.75,
+  } satisfies MetaSummaryMetrics;
+
+  const summaryPeriods = [
+    { key: "today", from: "2025-01-01", to: "2025-01-01" },
+    { key: "yesterday", from: "2024-12-31", to: "2024-12-31" },
+    { key: "week", from: "2024-12-26", to: "2025-01-01" },
+    { key: "month", from: "2024-12-03", to: "2025-01-01" },
+  ];
+  for (const period of summaryPeriods) {
+    await saveMetaCache(
+      kv,
+      createMetaCacheEntry(
+        "proj_a",
+        `summary:${period.key}`,
+        { from: period.from, to: period.to },
+        { periodKey: period.key, metrics: summaryMetrics, source: {} },
+        3600,
+      ),
+    );
+  }
+
+  await saveMetaCache(
+    kv,
+    createMetaCacheEntry(
+      "proj_a",
+      "campaigns:today",
+      { from: "2025-01-01", to: "2025-01-01" },
+      {
+        data: [
+          {
+            campaign_id: "cmp1",
+            campaign_name: "Lead Ads",
+            objective: "LEAD_GENERATION",
+            spend: 30,
+            impressions: 2000,
+            clicks: 220,
+            actions: [
+              { action_type: "lead", value: 8 },
+              { action_type: "onsite_conversion.messaging_conversation_started_7d", value: 4 },
+            ],
+          },
+        ],
+      },
+      3600,
+    ),
+  );
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "auto-now",
+        from: { id: 100 },
+        message: { chat: { id: 100 } },
+        data: "auto_send_now:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    const reportRequests = stub.requests.filter(
+      (entry) =>
+        entry.url.includes("/sendMessage") &&
+        typeof entry.body?.text === "string" &&
+        String(entry.body.text).startsWith("📊 Отчёт"),
+    );
+    const chatDelivery = reportRequests.find((entry) => entry.body.chat_id === -100555666777);
+    assert.ok(chatDelivery, "expected chat delivery for auto report");
+    assert.match(String(chatDelivery?.body?.text ?? ""), /ручной запуск/);
+    assert.match(JSON.stringify(chatDelivery?.body?.reply_markup ?? {}), /Открыть портал/);
+
+    const ownerDelivery = reportRequests.find((entry) => entry.body.chat_id === 100);
+    assert.ok(ownerDelivery, "expected owner delivery for auto report");
   } finally {
     stub.restore();
   }
