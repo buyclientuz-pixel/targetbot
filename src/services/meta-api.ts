@@ -73,6 +73,7 @@ const CAMPAIGN_FIELDS = [
   "lifetime_budget",
   "updated_time",
   "configured_status",
+  "promoted_object",
 ];
 
 const parseNumber = (value: unknown): number => {
@@ -322,11 +323,11 @@ const normaliseLeadRecord = (record: Record<string, unknown>): MetaLeadRecord | 
   } satisfies MetaLeadRecord;
 };
 
-const fetchLeadGenForms = async (accountId: string, accessToken: string): Promise<string[]> => {
+const fetchLeadGenForms = async (nodeId: string, accessToken: string): Promise<string[]> => {
   const forms: string[] = [];
   let cursor: string | undefined;
   do {
-    const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${accountId}/leadgen_forms`);
+    const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${nodeId}/leadgen_forms`);
     url.searchParams.set("access_token", accessToken);
     url.searchParams.set("limit", "100");
     url.searchParams.set("fields", "id");
@@ -352,6 +353,101 @@ const fetchLeadGenForms = async (accountId: string, accessToken: string): Promis
     cursor = payload.paging?.cursors?.after ?? undefined;
   } while (cursor);
   return forms;
+};
+
+interface MetaPageRecord {
+  id: string;
+  accessToken?: string;
+}
+
+const normaliseId = (value: unknown): string | null => {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return null;
+};
+
+const buildManagedPagesUrl = (accessToken: string, after?: string | null): URL => {
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/me/accounts`);
+  url.searchParams.set("access_token", accessToken);
+  url.searchParams.set("fields", "id,name,access_token");
+  url.searchParams.set("limit", "100");
+  if (after) {
+    url.searchParams.set("after", after);
+  }
+  return url;
+};
+
+const fetchManagedPages = async (accessToken: string): Promise<MetaPageRecord[]> => {
+  const pages: MetaPageRecord[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = buildManagedPagesUrl(accessToken, cursor);
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Meta managed pages request failed with ${response.status}: ${errorBody}`);
+    }
+    const payload = (await response.json()) as {
+      data?: Array<{ id?: string | number; access_token?: string }>;
+      paging?: { cursors?: { after?: string | null } };
+    };
+    if (Array.isArray(payload.data)) {
+      for (const entry of payload.data) {
+        const id = normaliseId(entry?.id);
+        if (!id) {
+          continue;
+        }
+        pages.push({ id, accessToken: typeof entry?.access_token === "string" ? entry.access_token : undefined });
+      }
+    }
+    cursor = payload.paging?.cursors?.after ?? undefined;
+  } while (cursor);
+  return pages;
+};
+
+const extractPromotedPageIds = (campaigns: Record<string, unknown>[]): string[] => {
+  const ids = new Set<string>();
+  for (const campaign of campaigns) {
+    const promoted = campaign?.promoted_object;
+    if (!promoted || typeof promoted !== "object") {
+      continue;
+    }
+    const pageId = normaliseId((promoted as Record<string, unknown>).page_id);
+    if (pageId) {
+      ids.add(pageId);
+    }
+  }
+  return Array.from(ids);
+};
+
+const fetchLeadGenFormsViaPages = async (accountId: string, accessToken: string): Promise<string[]> => {
+  const campaigns = await fetchMetaCampaignStatuses(accountId, accessToken);
+  const pageIds = extractPromotedPageIds(campaigns);
+  if (pageIds.length === 0) {
+    return [];
+  }
+  const managedPages = await fetchManagedPages(accessToken);
+  const tokenByPageId = managedPages.reduce((map, page) => {
+    if (page.accessToken) {
+      map.set(page.id, page.accessToken);
+    }
+    return map;
+  }, new Map<string, string>());
+  const forms = new Set<string>();
+  for (const pageId of pageIds) {
+    const token = tokenByPageId.get(pageId) ?? accessToken;
+    try {
+      const pageForms = await fetchLeadGenForms(pageId, token);
+      pageForms.forEach((formId) => forms.add(formId));
+    } catch (error) {
+      console.warn(`[meta] Failed to load leadgen forms for page ${pageId}: ${(error as Error).message}`);
+    }
+  }
+  return Array.from(forms);
 };
 
 const fetchLeadsForNode = async (
@@ -397,8 +493,24 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   if (!options.accessToken) {
     throw new DataValidationError("Meta access token is required for leads");
   }
-  const forms = await fetchLeadGenForms(options.accountId, options.accessToken);
+  let lastError: Error | null = null;
+  let forms: string[] = [];
+  try {
+    forms = await fetchLeadGenForms(options.accountId, options.accessToken);
+  } catch (error) {
+    lastError = error as Error;
+  }
   if (forms.length === 0) {
+    try {
+      forms = await fetchLeadGenFormsViaPages(options.accountId, options.accessToken);
+    } catch (error) {
+      lastError = error as Error;
+    }
+  }
+  if (forms.length === 0) {
+    if (lastError) {
+      throw lastError;
+    }
     return [];
   }
   const limit = options.limit;
