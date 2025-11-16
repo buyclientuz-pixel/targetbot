@@ -41,4 +41,9 @@ describe("ensureAdminRequest", () => {
     const ctx = makeContext(null, { "x-admin-key": "3590" });
     assert.equal(ensureAdminRequest(ctx), null);
   });
+
+  it("accepts the default key even if env ADMIN_KEY is set differently", () => {
+    const ctx = makeContext("!Lyas123", { "x-admin-key": "3590" });
+    assert.equal(ensureAdminRequest(ctx), null);
+  });
 });

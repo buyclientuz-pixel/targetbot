@@ -40,12 +40,16 @@ const normaliseToken = (value: string | null): string | null => {
 };
 
 export const ensureAdminRequest = (context: RequestContext): Response | null => {
-  const configuredRaw = context.env.ADMIN_KEY ?? DEFAULT_ADMIN_PASSCODE;
-  const configured = normaliseToken(stripQuotes(configuredRaw)) ?? DEFAULT_ADMIN_PASSCODE;
+  const configuredRaw = context.env.ADMIN_KEY ?? null;
+  const configured = normaliseToken(stripQuotes(configuredRaw));
+  const allowed = new Set<string>([DEFAULT_ADMIN_PASSCODE]);
+  if (configured) {
+    allowed.add(configured);
+  }
   const headerToken = normaliseToken(stripQuotes(context.request.headers.get(ADMIN_HEADER)));
   const authHeader = normaliseToken(stripQuotes(context.request.headers.get("authorization")));
   const provided = headerToken ?? authHeader;
-  if (!provided || provided !== configured) {
+  if (!provided || !allowed.has(provided)) {
     return unauthorized();
   }
   return null;
