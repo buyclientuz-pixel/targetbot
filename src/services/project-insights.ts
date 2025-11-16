@@ -178,6 +178,7 @@ export const loadProjectSummary = async (
     impressions: requestedInsights.payload.summary.impressions,
     clicks: requestedInsights.payload.summary.clicks,
     leads: requestedInsights.payload.summary.leads,
+    messages: requestedInsights.payload.summary.messages,
     leadsToday: todayInsights.payload.summary.leads,
     leadsTotal: lifetimeInsights.payload.summary.leads,
     cpa:

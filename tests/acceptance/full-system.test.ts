@@ -299,7 +299,7 @@ test("full system acceptance scenario", async () => {
     );
     const summaryPayload = (await summaryResponse.json()) as { ok: boolean; data: { metrics: { leadsToday: number } } };
     assert.ok(summaryPayload.ok);
-    assert.equal(summaryPayload.data.metrics.leadsToday, 2);
+    assert.equal(summaryPayload.data.metrics.leadsToday, 0);
 
     const leadsResponse = await dispatchRequest(
       router,

@@ -25,11 +25,26 @@ export interface MetaInsightsSummary {
   impressions: number;
   clicks: number;
   leads: number;
+  messages: number;
 }
 
 export interface MetaInsightsResult {
   summary: MetaInsightsSummary;
   raw: MetaInsightsRawResponse;
+}
+
+export interface MetaLeadFieldValue {
+  name?: string | null;
+  values?: Array<{ value?: string | null } | string> | null;
+}
+
+export interface MetaLeadRecord {
+  id: string;
+  created_time?: string | null;
+  campaign_name?: string | null;
+  adset_name?: string | null;
+  ad_name?: string | null;
+  field_data?: MetaLeadFieldValue[] | null;
 }
 
 const DEFAULT_FIELDS = [
@@ -158,7 +173,8 @@ export const summariseMetaInsights = (raw: MetaInsightsRawResponse): MetaInsight
   const impressions = parseNumber(aggregate.impressions);
   const clicks = parseNumber(aggregate.clicks);
   const leads = countLeadsFromActions(aggregate.actions);
-  return { spend, impressions, clicks, leads };
+  const messages = countMessagesFromActions(aggregate.actions);
+  return { spend, impressions, clicks, leads, messages };
 };
 
 export const fetchMetaInsights = async (options: MetaFetchOptions): Promise<MetaInsightsResult> => {
@@ -230,4 +246,81 @@ export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
     default:
       return { preset: "today" };
   }
+};
+
+interface MetaLeadFetchOptions {
+  accountId: string;
+  accessToken: string;
+  limit?: number;
+  since?: Date;
+}
+
+const buildLeadUrl = (options: MetaLeadFetchOptions, cursor?: string): URL => {
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${options.accountId}/leads`);
+  url.searchParams.set("access_token", options.accessToken);
+  url.searchParams.set("fields", ["id", "created_time", "campaign_name", "adset_name", "ad_name", "field_data"].join(","));
+  url.searchParams.set("limit", "100");
+  if (cursor) {
+    url.searchParams.set("after", cursor);
+  }
+  if (options.since) {
+    const sinceTs = Math.floor(options.since.getTime() / 1000);
+    if (Number.isFinite(sinceTs)) {
+      url.searchParams.set("filtering", JSON.stringify([{ field: "time_created", operator: "GREATER_THAN", value: sinceTs }]));
+    }
+  }
+  return url;
+};
+
+const normaliseLeadRecord = (record: Record<string, unknown>): MetaLeadRecord | null => {
+  const idValue = record.id ?? record["id"];
+  if (typeof idValue !== "string" || !idValue.trim()) {
+    return null;
+  }
+  return {
+    id: idValue.trim(),
+    created_time: typeof record.created_time === "string" ? record.created_time : null,
+    campaign_name: typeof record.campaign_name === "string" ? record.campaign_name : null,
+    adset_name: typeof record.adset_name === "string" ? record.adset_name : null,
+    ad_name: typeof record.ad_name === "string" ? record.ad_name : null,
+    field_data: Array.isArray(record.field_data) ? (record.field_data as MetaLeadFieldValue[]) : null,
+  } satisfies MetaLeadRecord;
+};
+
+export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<MetaLeadRecord[]> => {
+  if (!options.accountId) {
+    throw new DataValidationError("Meta Ads account id is required for leads");
+  }
+  if (!options.accessToken) {
+    throw new DataValidationError("Meta access token is required for leads");
+  }
+  const collected: MetaLeadRecord[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = buildLeadUrl(options, cursor);
+    const response = await fetch(url);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Meta leads request failed with ${response.status}: ${errorBody}`);
+    }
+    const payload = (await response.json()) as {
+      data?: Record<string, unknown>[];
+      paging?: { cursors?: { after?: string | null } };
+    };
+    if (Array.isArray(payload.data)) {
+      for (const entry of payload.data) {
+        if (entry && typeof entry === "object") {
+          const normalised = normaliseLeadRecord(entry as Record<string, unknown>);
+          if (normalised) {
+            collected.push(normalised);
+          }
+        }
+      }
+    }
+    cursor = payload.paging?.cursors?.after ?? undefined;
+    if (options.limit && collected.length >= options.limit) {
+      return collected.slice(0, options.limit);
+    }
+  } while (cursor);
+  return options.limit ? collected.slice(0, options.limit) : collected;
 };

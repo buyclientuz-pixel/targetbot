@@ -34,7 +34,7 @@ const readConfigNumber = async (
   return clampNumber(Math.floor(parsed), min, max);
 };
 
-export const getLeadRetentionDays = async (kv: KvClient, fallback = 14): Promise<number> => {
+export const getLeadRetentionDays = async (kv: KvClient, fallback = 30): Promise<number> => {
   return readConfigNumber(kv, "lead-retention-days", fallback, DAY_MIN, 90);
 };
 

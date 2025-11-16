@@ -7,6 +7,7 @@ import { requireProjectRecord, type ProjectRecord } from "../domain/spec/project
 import { getPortalSyncState, savePortalSyncState, type PortalSyncState } from "../domain/portal-sync";
 import { loadProjectSummary, syncProjectCampaignDocument } from "./project-insights";
 import { DataValidationError } from "../errors";
+import { syncProjectLeadsFromMeta } from "./project-leads-sync";
 
 export type PortalPeriodKey = "today" | "yesterday" | "week" | "month" | "max";
 
@@ -14,8 +15,10 @@ export const PORTAL_PERIOD_KEYS: PortalPeriodKey[] = ["today", "yesterday", "wee
 const DEFAULT_PERIOD_PLAN: PortalPeriodKey[] = PORTAL_PERIOD_KEYS.filter((key) => key !== "today").concat("today");
 export const PORTAL_AUTO_PERIOD_PLAN: PortalPeriodKey[] = [...DEFAULT_PERIOD_PLAN];
 
+export type PortalSyncTaskKey = PortalPeriodKey | "leads";
+
 export interface PortalSyncPeriodResult {
-  periodKey: PortalPeriodKey;
+  periodKey: PortalSyncTaskKey;
   ok: boolean;
   error?: string;
 }
@@ -100,6 +103,7 @@ export const syncPortalMetrics = async (
   const facebookUserId = requireFacebookUserId(settings, options.facebookUserId);
   const periodResults: PortalSyncPeriodResult[] = [];
   let firstError: Error | null = null;
+  const allowPartial = options.allowPartial === true;
   for (const periodKey of periods) {
     try {
       await loadProjectSummary(kv, projectId, periodKey, { project, settings, facebookUserId });
@@ -116,8 +120,23 @@ export const syncPortalMetrics = async (
       if (!firstError) {
         firstError = error as Error;
       }
-      if (!options.allowPartial) {
+      if (!allowPartial) {
         break;
+      }
+    }
+  }
+  if (allowPartial || !firstError) {
+    try {
+      await syncProjectLeadsFromMeta(kv, r2, projectId, { project, settings, facebookUserId });
+      periodResults.push({ periodKey: "leads", ok: true });
+    } catch (error) {
+      const message = (error as Error).message;
+      periodResults.push({ periodKey: "leads", ok: false, error: message });
+      if (!firstError) {
+        firstError = error as Error;
+      }
+      if (!allowPartial) {
+        // propagate failure after updating sync state below
       }
     }
   }
@@ -126,8 +145,12 @@ export const syncPortalMetrics = async (
   if (options.updateState !== false) {
     await updatePortalSyncState(kv, projectId, periods, { ok, hadErrors, errorMessage: firstError?.message });
   }
-  if (!ok && firstError) {
-    throw firstError;
+  const shouldThrow = (!allowPartial && hadErrors) || (!ok && firstError);
+  if (shouldThrow) {
+    if (firstError) {
+      throw firstError;
+    }
+    throw new Error("Portal sync failed");
   }
   return { projectId, ok, periods: periodResults };
 };

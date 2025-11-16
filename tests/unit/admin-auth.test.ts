@@ -38,7 +38,7 @@ describe("ensureAdminRequest", () => {
   });
 
   it("falls back to default admin key when env is empty", () => {
-    const ctx = makeContext(null, { "x-admin-key": "ilyas123" });
+    const ctx = makeContext(null, { "x-admin-key": "3590" });
     assert.equal(ensureAdminRequest(ctx), null);
   });
 });

@@ -12,6 +12,7 @@ import { applyCors, preflight } from "../http/cors";
 import { requireProjectRecord } from "../domain/spec/project";
 import type { Router } from "../worker/router";
 import type { RequestContext } from "../worker/context";
+import { translateMetaObjective } from "../services/meta-objectives";
 
 const htmlResponse = (body: string): Response =>
   new Response(body, {
@@ -62,7 +63,7 @@ const buildSummaryPayload = (
         impressions: summaryMetrics.impressions,
         clicks: summaryMetrics.clicks,
         leads: summaryMetrics.leads,
-        messages: campaignsDoc.summary.messages,
+        messages: summaryMetrics.messages ?? campaignsDoc.summary.messages,
       }
     : campaignsDoc.summary;
   const spend = summary.spend ?? 0;
@@ -89,6 +90,7 @@ const buildSummaryPayload = (
       spendToday: summaryMetrics?.spendToday ?? (requestedPeriod === "today" ? spend : summaryMetrics?.spendToday ?? 0),
       currency: bundle.project.settings.currency,
       kpiLabel: bundle.project.settings.kpi.label,
+      kpiType: bundle.project.settings.kpi.type,
     },
   };
 };
@@ -131,9 +133,11 @@ const buildCampaignsPayload = (
   const campaigns = campaignsDoc.campaigns.map((campaign) => {
     const status = statusMap.get(campaign.id);
     const resolvedStatus = status?.status ?? status?.effectiveStatus ?? status?.configuredStatus ?? null;
+    const objectiveValue = status?.objective ?? campaign.objective;
     return {
       ...campaign,
-      objective: status?.objective ?? campaign.objective,
+      objective: objectiveValue,
+      objectiveLabel: translateMetaObjective(objectiveValue),
       status: resolvedStatus,
       effectiveStatus: status?.effectiveStatus ?? null,
       configuredStatus: status?.configuredStatus ?? null,
@@ -173,6 +177,9 @@ export const renderPortalHtml = (projectId: string): string => {
           projectDescription: document.querySelector('[data-project-description]'),
           summaryPeriod: document.querySelector('[data-summary-period]'),
           metrics: document.querySelectorAll('[data-metric]'),
+          focusTarget: document.querySelector('[data-focus-target]'),
+          focusCpa: document.querySelector('[data-focus-cpa]'),
+          focusCpl: document.querySelector('[data-focus-cpl]'),
           periodButtons: document.querySelectorAll('[data-period-button]'),
           leadsBody: document.querySelector('[data-leads-body]'),
           leadsEmpty: document.querySelector('[data-leads-empty]'),
@@ -350,6 +357,27 @@ export const renderPortalHtml = (projectId: string): string => {
           campaigns: (period) => fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period)),
           payments: () => fetchJson(API_BASE + '/payments'),
         };
+        const KPI_LABELS = {
+          LEAD: 'Лиды',
+          MESSAGE: 'Сообщения',
+          CLICK: 'Клики',
+          VIEW: 'Показы',
+          PURCHASE: 'Продажи',
+        };
+        const PAYMENT_STATUS_LABELS = {
+          paid: 'Оплачено',
+          planned: 'Просрочено',
+          overdue: 'Просрочено',
+          cancelled: 'Отказ',
+          declined: 'Отказ',
+        };
+        const PAYMENT_STATUS_STATES = {
+          paid: 'success',
+          planned: 'warning',
+          overdue: 'warning',
+          cancelled: 'danger',
+          declined: 'danger',
+        };
         const renderProject = (project) => {
           if (!project) return;
           document.title = 'Портал — ' + project.name;
@@ -368,18 +396,43 @@ export const renderPortalHtml = (projectId: string): string => {
             impressions: formatNumber(metrics.impressions),
             clicks: formatNumber(metrics.clicks),
             leads: formatNumber(metrics.leads),
+            messages: formatNumber(metrics.messages),
             cpa: metrics.cpa != null ? formatMoney(metrics.cpa, metrics.currency || 'USD') : '—',
-            'leads-total': formatNumber(metrics.leadsTotal),
             'leads-today': formatNumber(metrics.leadsToday),
             'cpa-today': metrics.cpaToday != null ? formatMoney(metrics.cpaToday, metrics.currency || 'USD') : '—',
           };
-          elements.metrics?.forEach?.((metric) => {
+          const metricNodes = Array.from(elements.metrics ?? []);
+          metricNodes.forEach((metric) => {
             const key = metric.getAttribute('data-metric');
             const target = metric.querySelector('[data-metric-value]');
+            metric.classList.remove('portal-metric--primary');
             if (key && target) {
               target.textContent = values[key] ?? '—';
             }
           });
+          const highlightKey = (metrics.kpiType || '').toUpperCase() === 'MESSAGE' ? 'messages' : 'leads';
+          const highlighted = metricNodes.find((metric) => metric.getAttribute('data-metric') === highlightKey);
+          highlighted?.classList.add('portal-metric--primary');
+          const targetLabel = metrics.kpiLabel || (highlightKey === 'messages' ? 'Сообщения' : 'Лиды');
+          const targetValue = highlightKey === 'messages' ? formatNumber(metrics.messages) : formatNumber(metrics.leads);
+          if (elements.focusTarget) {
+            elements.focusTarget.textContent = targetLabel + ': ' + targetValue;
+          }
+          const spendValue = typeof metrics.spend === 'number' ? metrics.spend : 0;
+          const cpaTarget =
+            highlightKey === 'messages'
+              ? metrics.messages > 0
+                ? formatMoney(spendValue / metrics.messages, metrics.currency || 'USD')
+                : '—'
+              : values.cpa;
+          const cplValue =
+            metrics.leads > 0 ? formatMoney(spendValue / metrics.leads, metrics.currency || 'USD') : '—';
+          if (elements.focusCpa) {
+            elements.focusCpa.textContent = cpaTarget ?? '—';
+          }
+          if (elements.focusCpl) {
+            elements.focusCpl.textContent = cplValue ?? '—';
+          }
         };
         const renderLeads = (payload) => {
           if (elements.leadsPeriod) {
@@ -390,18 +443,15 @@ export const renderPortalHtml = (projectId: string): string => {
             elements.leadsBody.innerHTML = leads
               .map((lead) => {
                 const name = escapeHtml(lead.name || 'Без имени');
-                const phone = escapeHtml(lead.phone || '—');
+                const phone = (lead.phone || '').trim().length ? escapeHtml(lead.phone) : null;
+                const contact = phone || '<span class="portal-tag">Сообщение</span>';
                 const campaign = escapeHtml(lead.campaignName || lead.campaign || '—');
-                const status = escapeHtml(lead.status || '—');
                 return (
                   '<tr>' +
                   '<td>' + name + '</td>' +
-                  '<td>' + phone + '</td>' +
-                  '<td>' + campaign + '</td>' +
+                  '<td>' + contact + '</td>' +
                   '<td>' + formatDateTime(lead.createdAt) + '</td>' +
-                  '<td><span class="portal-table__status"><span class="portal-table__status-dot"></span>' +
-                  status +
-                  '</span></td>' +
+                  '<td>' + campaign + '</td>' +
                   '</tr>'
                 );
               })
@@ -435,19 +485,25 @@ export const renderPortalHtml = (projectId: string): string => {
             elements.campaignsPeriod.textContent = formatDateRange(payload?.period);
           }
           const campaigns = payload?.campaigns || [];
+          const currency = state.summary?.metrics?.currency || 'USD';
           if (elements.campaignsBody) {
             elements.campaignsBody.innerHTML = campaigns
               .map((campaign) => {
                 const kpiValue = campaignKpiValue(campaign, campaign.kpiType);
                 const cpa = kpiValue && Number(kpiValue) > 0 ? campaign.spend / kpiValue : null;
+                const objectiveLabel = escapeHtml(campaign.objectiveLabel || campaign.objective || '—');
+                const kpiLabel = KPI_LABELS[campaign.kpiType] || 'Результат';
                 return (
                   '<tr>' +
-                  '<td>' + escapeHtml(campaign.name) + '</td>' +
-                  '<td>' + formatMoney(campaign.spend) + '</td>' +
+                  '<td>' + escapeHtml(campaign.name) + '<span class="portal-table__note">' + objectiveLabel + '</span></td>' +
+                  '<td>' + formatMoney(campaign.spend, currency) + '</td>' +
                   '<td>' + formatNumber(campaign.impressions) + '</td>' +
                   '<td>' + formatNumber(campaign.clicks) + '</td>' +
-                  '<td>' + formatNumber(kpiValue) + '</td>' +
-                  '<td>' + (cpa != null ? formatMoney(cpa) : '—') + '</td>' +
+                  '<td>' +
+                  formatNumber(kpiValue) +
+                  '<span class="portal-table__note">' + kpiLabel + '</span>' +
+                  '</td>' +
+                  '<td>' + (cpa != null ? formatMoney(cpa, currency) : '—') + '</td>' +
                   '</tr>'
                 );
               })
@@ -474,16 +530,21 @@ export const renderPortalHtml = (projectId: string): string => {
           const payments = payload?.payments || [];
           if (elements.paymentsBody) {
             elements.paymentsBody.innerHTML = payments
-              .map(
-                (payment) =>
+              .map((payment) => {
+                const statusKey = (payment.status || '').toLowerCase();
+                const rawLabel = PAYMENT_STATUS_LABELS[statusKey] || payment.status || '—';
+                const statusLabel = escapeHtml(rawLabel);
+                const statusClass = PAYMENT_STATUS_STATES[statusKey] || 'muted';
+                return (
                   '<tr>' +
-                  '<td>' + escapeHtml(payment.id) + '</td>' +
-                  '<td>' + formatMoney(payment.amount, payment.currency) + '</td>' +
-                  '<td>' + formatDate(payment.periodFrom) + ' — ' + formatDate(payment.periodTo) + '</td>' +
-                  '<td>' + escapeHtml(payment.status) + '</td>' +
-                  '<td>' + (payment.paidAt ? formatDateTime(payment.paidAt) : '—') + '</td>' +
-                  '</tr>',
-              )
+                  '<td>' + formatMoney(payment.amount, payment.currency || 'USD') + '</td>' +
+                  '<td>' + formatDate(payment.paidAt || payment.periodTo) + '</td>' +
+                  '<td><span class="portal-table__status portal-table__status--' + statusClass + '"><span class="portal-table__status-dot"></span>' +
+                  statusLabel +
+                  '</span></td>' +
+                  '</tr>'
+                );
+              })
               .join('');
           }
           if (elements.paymentsEmpty) {
@@ -560,10 +621,11 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const exportLeads = () => {
           if (!state.leads?.leads?.length) return;
-          const header = toCsvRow(['ID', 'Имя', 'Телефон', 'Кампания', 'Статус', 'Дата']);
-          const rows = state.leads.leads.map((lead) =>
-            toCsvRow([lead.id, lead.name, lead.phone, lead.campaignName, lead.status, lead.createdAt]),
-          );
+          const header = toCsvRow(['ID', 'Имя', 'Контакт', 'Кампания', 'Статус', 'Дата']);
+          const rows = state.leads.leads.map((lead) => {
+            const contact = (lead.phone || '').trim().length ? lead.phone : 'Сообщение';
+            return toCsvRow([lead.id, lead.name, contact, lead.campaignName, lead.status, lead.createdAt]);
+          });
           downloadFile('leads-' + state.period + '.csv', [header, ...rows].join('\n'), 'text/csv');
         };
         const exportCampaigns = () => {
@@ -575,7 +637,7 @@ export const renderPortalHtml = (projectId: string): string => {
             return toCsvRow([
               campaign.id,
               campaign.name,
-              campaign.objective,
+              campaign.objectiveLabel || campaign.objective,
               campaign.spend,
               campaign.impressions,
               campaign.clicks,
@@ -695,245 +757,222 @@ export const renderPortalHtml = (projectId: string): string => {
     <title>Портал — ${projectId}</title>
     <style>
       :root {
-        color-scheme: light dark;
-        --portal-bg: #0f172a;
-        --portal-card: rgba(15, 23, 42, 0.75);
-        --portal-text: #e2e8f0;
-        --portal-accent: #38bdf8;
+        font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --portal-bg: #f4f6fb;
+        --portal-card: #ffffff;
+        --portal-text: #0f172a;
         --portal-muted: #64748b;
-        --portal-border: rgba(148, 163, 184, 0.2);
-        --portal-error: #f87171;
-        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --portal-border: rgba(15, 23, 42, 0.08);
+        --portal-accent: #2563eb;
+      }
+      * {
+        box-sizing: border-box;
       }
       body {
         margin: 0;
-        background: radial-gradient(circle at top, #1e293b 0%, #0f172a 60%);
         min-height: 100vh;
+        background: var(--portal-bg);
         color: var(--portal-text);
+        line-height: 1.5;
       }
       .portal {
-        position: relative;
         min-height: 100vh;
-        padding: 32px 16px 64px;
-        box-sizing: border-box;
-      }
-      @media (min-width: 960px) {
-        .portal {
-          padding: 48px 48px 96px;
-        }
-      }
-      .portal__header {
-        margin: 0 auto 24px;
-        max-width: 1200px;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .portal__title {
-        font-size: clamp(24px, 4vw, 36px);
-        font-weight: 600;
-      }
-      .portal__subtitle {
-        font-size: 16px;
-        color: var(--portal-muted);
-      }
-      .portal__preloader {
-        position: fixed;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(15, 23, 42, 0.86);
-        backdrop-filter: blur(12px);
-        z-index: 10;
-      }
-      .portal__preloader-card {
-        background: rgba(15, 23, 42, 0.95);
-        border: 1px solid var(--portal-border);
-        border-radius: 20px;
-        padding: 32px 40px;
-        text-align: center;
-        box-shadow: 0 20px 50px rgba(15, 23, 42, 0.5);
-      }
-      .portal__preloader-title {
-        font-size: 22px;
-        font-weight: 600;
-        margin-bottom: 8px;
-      }
-      .portal__preloader-text {
-        font-size: 16px;
-        color: var(--portal-muted);
-      }
-      .portal__preloader--hidden {
-        display: none;
-      }
-      .portal__error {
-        position: fixed;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(15, 23, 42, 0.9);
-        backdrop-filter: blur(10px);
-        z-index: 20;
-      }
-      .portal__error-card {
-        background: rgba(15, 23, 42, 0.96);
-        border: 1px solid var(--portal-border);
-        border-radius: 20px;
-        padding: 32px 40px;
-        max-width: 420px;
-        box-shadow: 0 30px 60px rgba(15, 23, 42, 0.55);
-        text-align: center;
-      }
-      .portal__error--hidden {
-        display: none;
-      }
-      .portal__error-title {
-        font-size: 22px;
-        font-weight: 600;
-        margin-bottom: 8px;
-      }
-      .portal__error-text {
-        color: var(--portal-muted);
-        margin-bottom: 24px;
-      }
-      .portal__button {
-        background: var(--portal-accent);
-        color: #0f172a;
-        border: none;
-        border-radius: 999px;
-        padding: 12px 24px;
-        font-size: 16px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: transform 0.15s ease;
-      }
-      .portal__button:active {
-        transform: scale(0.98);
+        background: var(--portal-bg);
       }
       .portal__content {
+        max-width: 1160px;
+        margin: 0 auto;
+        padding: 32px 16px 48px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
         opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.3s ease;
+        transform: translateY(16px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
       }
       .portal__content--visible {
         opacity: 1;
-        pointer-events: auto;
+        transform: none;
+      }
+      .portal__header {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .portal__title {
+        font-size: 28px;
+        font-weight: 700;
+        margin: 0;
+      }
+      .portal__subtitle {
+        font-size: 15px;
+        color: var(--portal-muted);
       }
       .portal-section {
-        max-width: 1200px;
-        margin: 0 auto 32px;
         background: var(--portal-card);
-        border: 1px solid var(--portal-border);
         border-radius: 24px;
         padding: 24px;
-        box-shadow: 0 30px 80px rgba(15, 23, 42, 0.45);
+        border: 1px solid var(--portal-border);
+        box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
       }
       .portal-section__header {
         display: flex;
-        flex-wrap: wrap;
         justify-content: space-between;
-        gap: 16px;
-        margin-bottom: 24px;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .portal-section__actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
       }
       .portal-section__title {
         font-size: 20px;
         font-weight: 600;
+        margin: 0;
       }
       .portal-section__subtitle {
         color: var(--portal-muted);
         font-size: 14px;
       }
+      .portal-metrics {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+        margin-top: 20px;
+      }
+      .portal-metric {
+        background: #f8fafc;
+        border-radius: 18px;
+        padding: 16px;
+        border: 1px solid var(--portal-border);
+        transition: transform 0.15s ease;
+      }
+      .portal-metric--primary {
+        border-color: rgba(37, 99, 235, 0.4);
+        box-shadow: 0 12px 30px rgba(37, 99, 235, 0.12);
+      }
+      .portal-metric__label {
+        color: var(--portal-muted);
+        font-size: 14px;
+        margin-bottom: 6px;
+      }
+      .portal-metric__value {
+        font-size: 24px;
+        font-weight: 700;
+      }
+      .portal-focus {
+        margin-top: 12px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+      .portal-focus__item {
+        background: rgba(37, 99, 235, 0.08);
+        border: 1px solid rgba(37, 99, 235, 0.2);
+        border-radius: 16px;
+        padding: 14px 16px;
+      }
+      .portal-focus__label {
+        color: #1d4ed8;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 4px;
+      }
+      .portal-focus__value {
+        font-size: 18px;
+        font-weight: 600;
+        color: #0f172a;
+      }
       .portal-tabs {
         display: inline-flex;
-        gap: 8px;
         border-radius: 999px;
+        background: #e2e8f0;
         padding: 4px;
-        background: rgba(15, 23, 42, 0.6);
-        border: 1px solid var(--portal-border);
       }
       .portal-tabs__button {
         border: none;
         background: transparent;
         color: var(--portal-muted);
-        font-weight: 600;
-        padding: 10px 18px;
+        padding: 8px 16px;
         border-radius: 999px;
+        font-weight: 600;
         cursor: pointer;
-        transition: background 0.2s ease, color 0.2s ease;
       }
       .portal-tabs__button--active {
-        background: var(--portal-accent);
-        color: #0f172a;
-      }
-      .portal-metrics {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 16px;
-      }
-      .portal-metric {
-        background: rgba(15, 23, 42, 0.6);
-        border-radius: 20px;
-        padding: 20px;
-        border: 1px solid rgba(148, 163, 184, 0.1);
-      }
-      .portal-metric__label {
-        color: var(--portal-muted);
-        font-size: 14px;
-        margin-bottom: 8px;
-      }
-      .portal-metric__value {
-        font-size: 24px;
-        font-weight: 600;
-      }
-      .portal-metric__delta {
-        font-size: 14px;
-        color: var(--portal-muted);
-        margin-top: 4px;
-      }
-      .portal-table-wrapper {
-        position: relative;
-        overflow: hidden;
-        border-radius: 18px;
-        border: 1px solid rgba(148, 163, 184, 0.14);
+        background: var(--portal-card);
+        color: var(--portal-text);
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
       }
       table {
         width: 100%;
         border-collapse: collapse;
-        background: rgba(15, 23, 42, 0.45);
       }
-      th, td {
-        padding: 14px 16px;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      th,
+      td {
+        padding: 14px 12px;
+        border-bottom: 1px solid var(--portal-border);
         text-align: left;
         font-size: 14px;
       }
-      th {
+      .portal-table__note {
+        display: block;
+        font-size: 12px;
         color: var(--portal-muted);
+        margin-top: 4px;
+      }
+      th {
         font-weight: 600;
+        color: var(--portal-muted);
         text-transform: uppercase;
         letter-spacing: 0.04em;
       }
-      tr:last-child td {
-        border-bottom: none;
+      tbody tr:hover {
+        background: rgba(15, 23, 42, 0.02);
       }
       .portal-table__status {
         display: inline-flex;
         align-items: center;
         gap: 6px;
         font-weight: 600;
+        color: #059669;
+      }
+      .portal-table__status--success {
+        color: #059669;
+      }
+      .portal-table__status--warning {
+        color: #d97706;
+      }
+      .portal-table__status--danger {
+        color: #dc2626;
+      }
+      .portal-table__status--muted {
+        color: var(--portal-muted);
       }
       .portal-table__status-dot {
         width: 8px;
         height: 8px;
-        border-radius: 999px;
-        background: var(--portal-accent);
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .portal-retry {
+        border: 1px solid var(--portal-border);
+        background: transparent;
+        color: var(--portal-text);
+        padding: 8px 16px;
+        border-radius: 12px;
+        cursor: pointer;
+        font-weight: 600;
       }
       .portal-empty {
-        padding: 32px;
+        padding: 20px;
         text-align: center;
         color: var(--portal-muted);
+        border: 1px dashed var(--portal-border);
+        border-radius: 16px;
+        margin-top: 16px;
       }
       .portal-empty--hidden {
         display: none;
@@ -941,34 +980,87 @@ export const renderPortalHtml = (projectId: string): string => {
       .portal-skeleton {
         display: grid;
         gap: 12px;
-        padding: 24px;
+        margin-top: 16px;
+      }
+      .portal-tag {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 13px;
+        background: rgba(37, 99, 235, 0.12);
+        color: #1d4ed8;
+        font-weight: 600;
+      }
+      .portal-skeleton__row {
+        height: 48px;
+        border-radius: 10px;
+        background: linear-gradient(90deg, #e2e8f0, #f8fafc, #e2e8f0);
+        background-size: 200% 100%;
+        animation: shimmer 1.5s infinite;
+        margin-bottom: 12px;
       }
       .portal-skeleton--hidden {
         display: none;
       }
-      .portal-skeleton__row {
-        height: 16px;
-        border-radius: 999px;
-        background: linear-gradient(90deg, rgba(148, 163, 184, 0.15), rgba(148, 163, 184, 0.3), rgba(148, 163, 184, 0.15));
-        background-size: 200% 100%;
-        animation: portal-skeleton 1.6s infinite;
+      @keyframes shimmer {
+        0% {
+          background-position: 200% 0;
+        }
+        100% {
+          background-position: -200% 0;
+        }
       }
-      @keyframes portal-skeleton {
-        0% { background-position: 200% 0; }
-        100% { background-position: -200% 0; }
-      }
-      .portal-section__actions {
+      .portal__preloader,
+      .portal__error {
+        position: fixed;
+        inset: 0;
         display: flex;
         align-items: center;
-        gap: 12px;
+        justify-content: center;
+        background: rgba(244, 246, 251, 0.92);
+        z-index: 20;
+        padding: 16px;
       }
-      .portal-retry {
+      .portal__preloader-card,
+      .portal__error-card {
+        background: var(--portal-card);
+        border-radius: 24px;
+        padding: 32px;
+        text-align: center;
         border: 1px solid var(--portal-border);
-        background: transparent;
+        box-shadow: 0 30px 70px rgba(15, 23, 42, 0.15);
+        color: var(--portal-text);
+      }
+      .portal__preloader-title,
+      .portal__error-title {
+        font-size: 22px;
+        font-weight: 700;
+        margin-bottom: 12px;
+      }
+      .portal__preloader-text,
+      .portal__error-text {
         color: var(--portal-muted);
-        border-radius: 999px;
-        padding: 8px 16px;
+        margin-bottom: 20px;
+      }
+      .portal__error--hidden,
+      .portal__preloader--hidden {
+        display: none;
+      }
+      .portal__button {
+        border: none;
+        background: var(--portal-accent);
+        color: #fff;
+        padding: 12px 24px;
+        border-radius: 14px;
         cursor: pointer;
+        font-weight: 600;
+        box-shadow: 0 12px 30px rgba(37, 99, 235, 0.25);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+      .portal__button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 18px 34px rgba(37, 99, 235, 0.2);
       }
       .portal-export {
         display: flex;
@@ -977,24 +1069,59 @@ export const renderPortalHtml = (projectId: string): string => {
       }
       .portal-export__button {
         border: 1px solid var(--portal-border);
-        background: rgba(148, 163, 184, 0.12);
+        background: var(--portal-card);
         color: var(--portal-text);
-        border-radius: 16px;
+        border-radius: 14px;
         padding: 12px 18px;
         font-weight: 600;
         cursor: pointer;
-        transition: background 0.2s ease, color 0.2s ease;
+        flex: 1 1 200px;
+        text-align: center;
       }
       .portal-export__button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
       }
-      a.portal-link {
-        color: var(--portal-accent);
-        text-decoration: none;
+      .portal-table-wrapper {
+        margin-top: 16px;
+        overflow-x: auto;
       }
-      a.portal-link:hover {
-        text-decoration: underline;
+      @media (max-width: 768px) {
+        .portal__content {
+          padding: 20px 12px 32px;
+        }
+        .portal-section {
+          padding: 18px;
+          border-radius: 18px;
+        }
+        .portal-metrics {
+          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        }
+        .portal-metric__value {
+          font-size: 20px;
+        }
+        .portal-focus {
+          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        }
+        th,
+        td {
+          padding: 12px 8px;
+        }
+        .portal-tabs__button {
+          padding: 6px 10px;
+        }
+        .portal-section__title {
+          font-size: 18px;
+        }
+        .portal-export__button {
+          flex: 1 1 100%;
+        }
+      }
+      @media (max-width: 520px) {
+        .portal-tabs {
+          flex-wrap: wrap;
+          width: 100%;
+        }
       }
     </style>
   </head>
@@ -1051,12 +1178,12 @@ export const renderPortalHtml = (projectId: string): string => {
               <div class="portal-metric__label">Лиды</div>
               <div class="portal-metric__value" data-metric-value>—</div>
             </div>
-            <div class="portal-metric" data-metric="cpa">
-              <div class="portal-metric__label">CPL</div>
+            <div class="portal-metric" data-metric="messages">
+              <div class="portal-metric__label">Сообщения</div>
               <div class="portal-metric__value" data-metric-value>—</div>
             </div>
-            <div class="portal-metric" data-metric="leads-total">
-              <div class="portal-metric__label">Лиды (всего)</div>
+            <div class="portal-metric" data-metric="cpa">
+              <div class="portal-metric__label">CPA</div>
               <div class="portal-metric__value" data-metric-value>—</div>
             </div>
             <div class="portal-metric" data-metric="leads-today">
@@ -1066,6 +1193,20 @@ export const renderPortalHtml = (projectId: string): string => {
             <div class="portal-metric" data-metric="cpa-today">
               <div class="portal-metric__label">CPA (сегодня)</div>
               <div class="portal-metric__value" data-metric-value>—</div>
+            </div>
+          </div>
+          <div class="portal-focus">
+            <div class="portal-focus__item">
+              <div class="portal-focus__label">Целевая метрика</div>
+              <div class="portal-focus__value" data-focus-target>—</div>
+            </div>
+            <div class="portal-focus__item">
+              <div class="portal-focus__label">CPA</div>
+              <div class="portal-focus__value" data-focus-cpa>—</div>
+            </div>
+            <div class="portal-focus__item">
+              <div class="portal-focus__label">CPL</div>
+              <div class="portal-focus__value" data-focus-cpl>—</div>
             </div>
           </div>
         </section>
@@ -1082,10 +1223,9 @@ export const renderPortalHtml = (projectId: string): string => {
               <thead>
                 <tr>
                   <th>Имя</th>
-                  <th>Телефон</th>
-                  <th>Кампания</th>
+                  <th>Контакт</th>
                   <th>Дата</th>
-                  <th>Статус</th>
+                  <th>Кампания</th>
                 </tr>
               </thead>
               <tbody data-leads-body></tbody>
@@ -1116,8 +1256,8 @@ export const renderPortalHtml = (projectId: string): string => {
                   <th>Расход</th>
                   <th>Показы</th>
                   <th>Клики</th>
-                  <th>Лиды</th>
-                  <th>CPL</th>
+                  <th>Целевая метрика</th>
+                  <th>CPA</th>
                 </tr>
               </thead>
               <tbody data-campaigns-body></tbody>
@@ -1144,10 +1284,8 @@ export const renderPortalHtml = (projectId: string): string => {
               <thead>
                 <tr>
                   <th>Сумма</th>
-                  <th>Период</th>
+                  <th>Дата оплаты</th>
                   <th>Статус</th>
-                  <th>Оплачено</th>
-                  <th>Комментарий</th>
                 </tr>
               </thead>
               <tbody data-payments-body></tbody>

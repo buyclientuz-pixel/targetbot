@@ -50,6 +50,21 @@ const installGraphStub = () => {
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leads")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: "stub-lead",
+              created_time: new Date().toISOString(),
+              campaign_name: "Lead",
+              field_data: [{ name: "full_name", values: [{ value: "Stub" }] }],
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     return originalFetch(input);
   }) as typeof fetch;
   return { restore: () => (globalThis.fetch = originalFetch) };
@@ -77,7 +92,8 @@ test("syncPortalMetrics fetches insights and records state", async () => {
   try {
     const result = await syncPortalMetrics(kv, r2, "proj-sync", { periods: ["today"] });
     assert.ok(result.ok);
-    assert.equal(result.periods.length, 1);
+    assert.equal(result.periods.length, 2);
+    assert.equal(result.periods.at(-1)?.periodKey, "leads");
     const doc = await getMetaCampaignsDocument(r2, "proj-sync");
     assert.equal(doc?.periodKey, "today");
     const state = await getPortalSyncState(kv, "proj-sync");
@@ -115,10 +131,12 @@ test("syncPortalMetrics syncs the full period plan by default", async () => {
   try {
     const result = await syncPortalMetrics(kv, r2, "proj-plan");
     const expectedPlan = PORTAL_AUTO_PERIOD_PLAN;
-    assert.equal(result.periods.length, expectedPlan.length);
+    assert.equal(result.periods.length, expectedPlan.length + 1);
     assert.deepEqual(
-      result.periods.map((entry) => entry.periodKey).sort(),
-      expectedPlan.slice().sort(),
+      result.periods
+        .map((entry) => entry.periodKey)
+        .sort(),
+      [...expectedPlan, "leads"].sort(),
     );
     const state = await getPortalSyncState(kv, "proj-plan");
     assert.deepEqual(state.periodKeys.sort(), expectedPlan.slice().sort());

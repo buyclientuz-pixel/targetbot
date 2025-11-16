@@ -90,6 +90,7 @@ import {
 import { fetchFacebookAdAccounts, fetchFacebookProfile } from "../services/facebook-auth";
 import { deleteProjectCascade, releaseProjectChat } from "../services/project-lifecycle";
 import { PORTAL_PERIOD_KEYS, syncPortalMetrics, type PortalSyncResult } from "../services/portal-sync";
+import { translateMetaObjective } from "../services/meta-objectives";
 import { syncProjectMetaAccount, syncUserProjectsMetaAccount } from "../services/project-meta";
 import { upsertMetaTokenRecord } from "../domain/meta-tokens";
 import { normaliseBaseUrl } from "../utils/url";
@@ -814,6 +815,15 @@ const renderPortalPanel = async (
   await renderPanel({ runtime, userId, chatId, panelId: `project:portal:${projectId}` });
 };
 
+const PORTAL_SYNC_KEY_LABELS: Record<string, string> = {
+  today: "сегодня",
+  yesterday: "вчера",
+  week: "неделя",
+  month: "месяц",
+  max: "максимум",
+  leads: "лиды",
+};
+
 const describePortalSyncResult = (result: PortalSyncResult): string => {
   const success = result.periods.filter((entry) => entry.ok).length;
   const total = result.periods.length;
@@ -822,7 +832,7 @@ const describePortalSyncResult = (result: PortalSyncResult): string => {
     return `Портал обновлён (${success}/${total}).`;
   }
   const issues = failed
-    .map((entry) => `${entry.periodKey}: ${entry.error ?? "ошибка"}`)
+    .map((entry) => `${PORTAL_SYNC_KEY_LABELS[entry.periodKey] ?? entry.periodKey}: ${entry.error ?? "ошибка"}`)
     .join(", ");
   return `Обновлено ${success}/${total}. Проблемы: ${issues}`;
 };
@@ -994,7 +1004,7 @@ const sendCsvExport = async (
         ...bundle.campaigns.campaigns.map((campaign) => [
           campaign.id,
           campaign.name,
-          campaign.objective,
+          translateMetaObjective(campaign.objective),
           String(campaign.spend),
           String(campaign.impressions),
           String(campaign.clicks),

@@ -3,6 +3,7 @@ export interface MetaSummaryMetrics {
   impressions: number;
   clicks: number;
   leads: number;
+  messages: number;
   leadsToday: number;
   leadsTotal: number;
   cpa: number | null;

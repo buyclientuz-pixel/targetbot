@@ -97,13 +97,24 @@ const resolvePortalUrl = (env: TargetBotEnv, projectId: string): string => {
   return `/p/${projectId}`;
 };
 
+const SYNC_KEY_LABELS: Record<string, string> = {
+  today: "сегодня",
+  yesterday: "вчера",
+  week: "неделя",
+  month: "месяц",
+  max: "максимум",
+  leads: "лиды",
+};
+
 const describePortalSyncResult = (result: PortalSyncResult): string => {
   const successful = result.periods.filter((entry) => entry.ok).length;
   const failed = result.periods.filter((entry) => !entry.ok);
   if (failed.length === 0) {
     return `Портал обновлён (${successful}/${result.periods.length}).`;
   }
-  const issues = failed.map((entry) => `${entry.periodKey}: ${entry.error ?? "ошибка"}`).join(", ");
+  const issues = failed
+    .map((entry) => `${SYNC_KEY_LABELS[entry.periodKey] ?? entry.periodKey}: ${entry.error ?? "ошибка"}`)
+    .join(", ");
   return `Обновлено ${successful}/${result.periods.length}. Проблемы: ${issues}`;
 };
 
@@ -574,8 +585,8 @@ const renderAdminHtml = (workerUrl: string | null): string => {
       <div class="admin-login admin-login--visible" data-login-panel>
         <form class="admin-login__form" data-login-form>
           <h2>Админ-доступ</h2>
-          <p>Введите ADMIN_KEY, чтобы открыть панель управления.</p>
-          <input type="password" name="adminKey" data-admin-key placeholder="ADMIN_KEY" required />
+          <p>Введите код доступа (по умолчанию 3590), чтобы открыть панель управления.</p>
+          <input type="password" name="adminKey" data-admin-key placeholder="3590" required />
           <button class="admin-btn" type="submit">Войти</button>
         </form>
       </div>

@@ -79,7 +79,7 @@ const adminClientFactory = () => {
 
     const showLogin = () => {
       els.loginPanel?.classList.add('admin-login--visible');
-      setStatus('Введите ключ администратора');
+      setStatus('Введите код доступа (3590)');
       els.loginInput?.focus();
     };
 
@@ -87,7 +87,7 @@ const adminClientFactory = () => {
       els.loginPanel?.classList.remove('admin-login--visible');
     };
 
-    const handleUnauthorized = (message = 'Необходимо ввести ключ администратора') => {
+    const handleUnauthorized = (message = 'Необходимо ввести код доступа') => {
       localStorage.removeItem(STORAGE_KEY);
       state.key = null;
       setStatus(message);
@@ -97,7 +97,7 @@ const adminClientFactory = () => {
     const request = async (path, options = {}) => {
       if (!state.key) {
         handleUnauthorized();
-        throw new Error('Требуется ключ администратора');
+        throw new Error('Требуется код доступа');
       }
       const baseOrder = [primaryApiBase, ...candidates.filter((candidate) => candidate !== primaryApiBase)];
       let lastError = null;
@@ -120,7 +120,7 @@ const adminClientFactory = () => {
           }
           if (response.status === 401) {
             handleUnauthorized();
-            throw new Error('Неверный ключ администратора');
+            throw new Error('Неверный код доступа');
           }
           if (!response.ok || !payload?.ok) {
             throw new Error(payload?.error ?? `Ошибка ${response.status}`);
@@ -307,7 +307,7 @@ const adminClientFactory = () => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${campaign.name}</td>
-        <td>${campaign.objective}</td>
+        <td>${campaign.objectiveLabel || campaign.objective}</td>
         <td>${campaign.status ?? '—'}</td>
         <td>${campaign.kpiType ?? '—'}</td>
         <td>${campaign.spend ?? 0}</td>
