@@ -1,20 +1,21 @@
 // @ts-nocheck
 
 const adminClientFactory = () => {
-  const STORAGE_KEY = 'targetbot.admin.key';
-  const API_BASE = '/api/admin';
-  const WORKER_URL = "WORKER_URL_PLACEHOLDER";
-  const state = {
-    key: localStorage.getItem(STORAGE_KEY),
-    view: 'projects',
-    projects: [],
-    selectedProjectId: null,
-    selectedProject: null,
-  };
-  const els = {
-    app: document.querySelector('[data-app]'),
-    navButtons: document.querySelectorAll('[data-nav]'),
-    sections: document.querySelectorAll('[data-section]'),
+  try {
+    const STORAGE_KEY = 'targetbot.admin.key';
+    const API_BASE = '/api/admin';
+    const WORKER_URL = "WORKER_URL_PLACEHOLDER";
+    const state = {
+      key: localStorage.getItem(STORAGE_KEY),
+      view: 'projects',
+      projects: [],
+      selectedProjectId: null,
+      selectedProject: null,
+    };
+    const els = {
+      app: document.querySelector('[data-app]'),
+      navButtons: document.querySelectorAll('[data-nav]'),
+      sections: document.querySelectorAll('[data-section]'),
     status: document.querySelector('[data-status]'),
     viewTitle: document.querySelector('[data-view-title]'),
     loginPanel: document.querySelector('[data-login-panel]'),
@@ -44,35 +45,36 @@ const adminClientFactory = () => {
     settingsInfo: document.querySelector('[data-settings-info]'),
   };
 
-  const setStatus = (message) => {
-    if (els.status) {
-      els.status.textContent = message;
-    }
-  };
+    const setStatus = (message) => {
+      if (els.status) {
+        els.status.textContent = message;
+      }
+    };
 
-  const showLogin = () => {
-    els.loginPanel?.classList.add('admin-login--visible');
-    els.loginInput?.focus();
-  };
+    const showLogin = () => {
+      els.loginPanel?.classList.add('admin-login--visible');
+      setStatus('Введите ключ администратора');
+      els.loginInput?.focus();
+    };
 
-  const hideLogin = () => {
-    els.loginPanel?.classList.remove('admin-login--visible');
-  };
+    const hideLogin = () => {
+      els.loginPanel?.classList.remove('admin-login--visible');
+    };
 
-  const handleUnauthorized = (message = 'Необходимо ввести ключ администратора') => {
-    localStorage.removeItem(STORAGE_KEY);
-    state.key = null;
-    setStatus(message);
-    showLogin();
-  };
+    const handleUnauthorized = (message = 'Необходимо ввести ключ администратора') => {
+      localStorage.removeItem(STORAGE_KEY);
+      state.key = null;
+      setStatus(message);
+      showLogin();
+    };
 
-  const request = async (path, options = {}) => {
-    if (!state.key) {
-      handleUnauthorized();
-      throw new Error('Требуется ключ администратора');
-    }
-    const response = await fetch(`${API_BASE}${path}`, {
-      ...options,
+    const request = async (path, options = {}) => {
+      if (!state.key) {
+        handleUnauthorized();
+        throw new Error('Требуется ключ администратора');
+      }
+      const response = await fetch(`${API_BASE}${path}`, {
+        ...options,
       headers: {
         'content-type': 'application/json',
         'x-admin-key': state.key,
@@ -95,25 +97,25 @@ const adminClientFactory = () => {
     return payload.data;
   };
 
-  const highlightNav = (view) => {
-    els.navButtons.forEach((button) => {
-      if (button.dataset.nav === view) {
-        button.classList.add('admin-nav__item--active');
-      } else {
-        button.classList.remove('admin-nav__item--active');
-      }
-    });
-  };
-  const showSection = (view) => {
-    els.sections.forEach((section) => {
-      section.toggleAttribute('hidden', section.dataset.section !== view);
-    });
-  };
+    const highlightNav = (view) => {
+      els.navButtons.forEach((button) => {
+        if (button.dataset.nav === view) {
+          button.classList.add('admin-nav__item--active');
+        } else {
+          button.classList.remove('admin-nav__item--active');
+        }
+      });
+    };
+    const showSection = (view) => {
+      els.sections.forEach((section) => {
+        section.toggleAttribute('hidden', section.dataset.section !== view);
+      });
+    };
 
-  const formatCurrency = (value, currency) => {
-    if (!currency) {
-      return `${value ?? 0}`;
-    }
+    const formatCurrency = (value, currency) => {
+      if (!currency) {
+        return `${value ?? 0}`;
+      }
     try {
       return new Intl.NumberFormat('ru-RU', { style: 'currency', currency }).format(value ?? 0);
     } catch {
@@ -121,11 +123,11 @@ const adminClientFactory = () => {
     }
   };
 
-  const renderProjects = (projects) => {
-    state.projects = projects;
-    if (!els.projectsBody) {
-      return;
-    }
+    const renderProjects = (projects) => {
+      state.projects = projects;
+      if (!els.projectsBody) {
+        return;
+      }
     els.projectsBody.innerHTML = '';
     projects.forEach((project) => {
       const tr = document.createElement('tr');
@@ -154,10 +156,10 @@ const adminClientFactory = () => {
     });
   };
 
-  const renderLeads = (leads) => {
-    if (!els.leadsTable) {
-      return;
-    }
+    const renderLeads = (leads) => {
+      if (!els.leadsTable) {
+        return;
+      }
     els.leadsTable.innerHTML = '';
     leads.leads.forEach((lead) => {
       const tr = document.createElement('tr');
@@ -173,10 +175,10 @@ const adminClientFactory = () => {
     });
   };
 
-  const renderCampaigns = (campaigns) => {
-    if (!els.campaignsTable) {
-      return;
-    }
+    const renderCampaigns = (campaigns) => {
+      if (!els.campaignsTable) {
+        return;
+      }
     els.campaignsTable.innerHTML = '';
     campaigns.campaigns.forEach((campaign) => {
       const tr = document.createElement('tr');
@@ -193,10 +195,10 @@ const adminClientFactory = () => {
     });
   };
 
-  const renderPayments = (billing, payments) => {
-    if (!els.paymentsTable) {
-      return;
-    }
+    const renderPayments = (billing, payments) => {
+      if (!els.paymentsTable) {
+        return;
+      }
     els.paymentsTable.innerHTML = '';
     payments.forEach((payment) => {
       const tr = document.createElement('tr');
@@ -215,10 +217,10 @@ const adminClientFactory = () => {
     }
   };
 
-  const fillSettingsForm = (detail) => {
-    if (!els.settingsForm || !detail) {
-      return;
-    }
+    const fillSettingsForm = (detail) => {
+      if (!els.settingsForm || !detail) {
+        return;
+      }
     els.settingsForm.elements.kpiMode.value = detail.project.settings.kpi.mode;
     els.settingsForm.elements.kpiType.value = detail.project.settings.kpi.type;
     els.settingsForm.elements.kpiLabel.value = detail.project.settings.kpi.label;
@@ -231,10 +233,10 @@ const adminClientFactory = () => {
     els.settingsForm.elements.autoreportsTime.value = detail.autoreports.time;
     els.settingsForm.elements.autoreportsSendTo.value = detail.autoreports.sendTo;
   };
-  const clearProjectDetailTables = () => {
-    if (els.leadsTable) {
-      els.leadsTable.innerHTML = '';
-    }
+    const clearProjectDetailTables = () => {
+      if (els.leadsTable) {
+        els.leadsTable.innerHTML = '';
+      }
     if (els.campaignsTable) {
       els.campaignsTable.innerHTML = '';
     }
@@ -242,13 +244,13 @@ const adminClientFactory = () => {
       els.paymentsTable.innerHTML = '';
     }
   };
-  const renderProjectDetail = (detail) => {
-    state.selectedProject = detail;
-    if (!detail || !els.projectDetail) {
-      els.projectDetail?.setAttribute('hidden', '');
-      clearProjectDetailTables();
-      return;
-    }
+    const renderProjectDetail = (detail) => {
+      state.selectedProject = detail;
+      if (!detail || !els.projectDetail) {
+        els.projectDetail?.setAttribute('hidden', '');
+        clearProjectDetailTables();
+        return;
+      }
     els.projectDetail.removeAttribute('hidden');
     els.projectDetailTitle.textContent = detail.project.name;
     const stats = detail.campaigns.summary;
@@ -261,10 +263,10 @@ const adminClientFactory = () => {
     fillSettingsForm(detail);
   };
 
-  const loadProjects = async () => {
-    try {
-      setStatus('Загружаем проекты...');
-      const data = await request('/projects');
+    const loadProjects = async () => {
+      try {
+        setStatus('Загружаем проекты...');
+        const data = await request('/projects');
       const list = data.projects ?? [];
       renderProjects(list);
       if (list.length === 0) {
@@ -284,20 +286,20 @@ const adminClientFactory = () => {
     }
   };
 
-  const refreshProject = async (projectId) => {
-    try {
-      await request(`/projects/${projectId}/refresh`, { method: 'POST' });
-      await selectProject(projectId);
-      setStatus('Данные проекта обновлены');
-    } catch (error) {
-      setStatus(error.message);
-    }
-  };
+    const refreshProject = async (projectId) => {
+      try {
+        await request(`/projects/${projectId}/refresh`, { method: 'POST' });
+        await selectProject(projectId);
+        setStatus('Данные проекта обновлены');
+      } catch (error) {
+        setStatus(error.message);
+      }
+    };
 
-  const deleteProject = async (projectId) => {
-    if (!window.confirm('Удалить проект и связанные данные?')) {
-      return;
-    }
+    const deleteProject = async (projectId) => {
+      if (!window.confirm('Удалить проект и связанные данные?')) {
+        return;
+      }
     try {
       await request(`/projects/${projectId}`, { method: 'DELETE' });
       state.selectedProjectId = null;
@@ -308,10 +310,10 @@ const adminClientFactory = () => {
     }
   };
 
-  const handleProjectTableClick = (event) => {
-    const button = event.target.closest('[data-project-action]');
-    if (button) {
-      event.stopPropagation();
+    const handleProjectTableClick = (event) => {
+      const button = event.target.closest('[data-project-action]');
+      if (button) {
+        event.stopPropagation();
       const projectId = button.dataset.projectId;
       if (!projectId) {
         return;
@@ -332,19 +334,19 @@ const adminClientFactory = () => {
     }
   };
 
-  const selectProject = async (projectId) => {
-    state.selectedProjectId = projectId;
-    try {
-      const detail = await request(`/projects/${projectId}`);
-      renderProjectDetail(detail);
-    } catch (error) {
-      setStatus(error.message);
-    }
-  };
+    const selectProject = async (projectId) => {
+      state.selectedProjectId = projectId;
+      try {
+        const detail = await request(`/projects/${projectId}`);
+        renderProjectDetail(detail);
+      } catch (error) {
+        setStatus(error.message);
+      }
+    };
 
-  const submitProjectCreate = async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
+    const submitProjectCreate = async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
     const payload = {
       id: form.elements.projectId.value.trim(),
       name: form.elements.projectName.value.trim(),
@@ -369,9 +371,9 @@ const adminClientFactory = () => {
     }
   };
 
-  const loadAnalytics = async () => {
-    try {
-      const data = await request('/analytics');
+    const loadAnalytics = async () => {
+      try {
+        const data = await request('/analytics');
       if (els.analyticsTotals) {
         const totals = Object.entries(data.totals.spendByCurrency ?? {})
           .map(([currency, spend]) => `${currency}: ${spend.toFixed(2)}`)
@@ -400,9 +402,9 @@ const adminClientFactory = () => {
     }
   };
 
-  const loadFinance = async () => {
-    try {
-      const data = await request('/finance');
+    const loadFinance = async () => {
+      try {
+        const data = await request('/finance');
       if (els.financeTotals) {
         const totals = Object.entries(data.totals.spendByCurrency ?? {})
           .map(([currency, spend]) => `${currency}: ${spend.toFixed(2)}`)
@@ -423,9 +425,9 @@ const adminClientFactory = () => {
     }
   };
 
-  const loadUsers = async () => {
-    try {
-      const data = await request('/users');
+    const loadUsers = async () => {
+      try {
+        const data = await request('/users');
       if (!els.usersTable) {
         return;
       }
@@ -445,9 +447,9 @@ const adminClientFactory = () => {
       setStatus(error.message);
     }
   };
-  const loadMetaAccounts = async () => {
-    try {
-      const data = await request('/meta/accounts');
+    const loadMetaAccounts = async () => {
+      try {
+        const data = await request('/meta/accounts');
       if (!els.metaTable) {
         return;
       }
@@ -466,9 +468,9 @@ const adminClientFactory = () => {
     }
   };
 
-  const loadWebhookStatus = async () => {
-    try {
-      const data = await request('/webhook-status');
+    const loadWebhookStatus = async () => {
+      try {
+        const data = await request('/webhook-status');
       if (els.webhookInfo) {
         els.webhookInfo.textContent = `Текущий URL: ${data.info?.url ?? '—'} | Ожидаемый: ${data.expectedUrl ?? '—'}`;
       }
@@ -477,11 +479,11 @@ const adminClientFactory = () => {
     }
   };
 
-  const submitPayment = async (event) => {
-    event.preventDefault();
-    if (!state.selectedProjectId) {
-      return;
-    }
+    const submitPayment = async (event) => {
+      event.preventDefault();
+      if (!state.selectedProjectId) {
+        return;
+      }
     const form = event.currentTarget;
     const payload = {
       amount: Number(form.elements.amount.value),
@@ -505,11 +507,11 @@ const adminClientFactory = () => {
     }
   };
 
-  const submitSettings = async (event) => {
-    event.preventDefault();
-    if (!state.selectedProjectId) {
-      return;
-    }
+    const submitSettings = async (event) => {
+      event.preventDefault();
+      if (!state.selectedProjectId) {
+        return;
+      }
     const form = event.currentTarget;
     const payload = {
       kpi: {
@@ -543,9 +545,9 @@ const adminClientFactory = () => {
     }
   };
 
-  const resetWebhook = async () => {
-    try {
-      await request('/webhook-reset', { method: 'POST' });
+    const resetWebhook = async () => {
+      try {
+        await request('/webhook-reset', { method: 'POST' });
       await loadWebhookStatus();
       setStatus('Webhook обновлён');
     } catch (error) {
@@ -553,10 +555,10 @@ const adminClientFactory = () => {
     }
   };
 
-  const setView = async (view) => {
-    state.view = view;
-    highlightNav(view);
-    showSection(view);
+    const setView = async (view) => {
+      state.view = view;
+      highlightNav(view);
+      showSection(view);
     if (els.viewTitle) {
       const label = document.querySelector(`[data-nav="${view}"]`)?.textContent ?? 'Админка';
       els.viewTitle.textContent = label;
@@ -585,28 +587,28 @@ const adminClientFactory = () => {
     }
   };
 
-  const safeSetView = (view) => {
-    if (!view) {
-      return;
-    }
-    void setView(view).catch((error) => setStatus(error.message));
-  };
+    const safeSetView = (view) => {
+      if (!view) {
+        return;
+      }
+      void setView(view).catch((error) => setStatus(error.message));
+    };
 
-  els.navButtons.forEach((button) => {
-    button.addEventListener('click', () => safeSetView(button.dataset.nav));
-  });
-
-  els.refreshButtons.forEach((button) => {
-    button.addEventListener('click', () => safeSetView(state.view));
-  });
-
-  els.logoutButtons.forEach((button) => {
-    button.addEventListener('click', () => {
-      localStorage.removeItem(STORAGE_KEY);
-      state.key = null;
-      handleUnauthorized('Ключ очищен');
+    els.navButtons.forEach((button) => {
+      button.addEventListener('click', () => safeSetView(button.dataset.nav));
     });
-  });
+
+    els.refreshButtons.forEach((button) => {
+      button.addEventListener('click', () => safeSetView(state.view));
+    });
+
+    els.logoutButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        localStorage.removeItem(STORAGE_KEY);
+        state.key = null;
+        handleUnauthorized('Ключ очищен');
+      });
+    });
     els.loginForm?.addEventListener('submit', (event) => {
       event.preventDefault();
       const key = els.loginInput?.value.trim();
@@ -619,11 +621,11 @@ const adminClientFactory = () => {
       safeSetView('projects');
     });
 
-  els.projectsBody?.addEventListener('click', handleProjectTableClick);
-  els.projectCreateForm?.addEventListener('submit', submitProjectCreate);
-  els.paymentForm?.addEventListener('submit', submitPayment);
-  els.settingsForm?.addEventListener('submit', submitSettings);
-  els.webhookButton?.addEventListener('click', resetWebhook);
+    els.projectsBody?.addEventListener('click', handleProjectTableClick);
+    els.projectCreateForm?.addEventListener('submit', submitProjectCreate);
+    els.paymentForm?.addEventListener('submit', submitPayment);
+    els.settingsForm?.addEventListener('submit', submitSettings);
+    els.webhookButton?.addEventListener('click', resetWebhook);
 
     if (els.settingsInfo && WORKER_URL) {
       els.settingsInfo.textContent = `WORKER_URL: ${WORKER_URL}`;
@@ -633,6 +635,7 @@ const adminClientFactory = () => {
       if (!state.key) {
         showLogin();
       } else {
+        hideLogin();
         safeSetView('projects');
       }
     };
@@ -642,7 +645,15 @@ const adminClientFactory = () => {
     } else {
       boot();
     }
-  };
+  } catch (error) {
+    console.error('[admin] Failed to bootstrap dashboard', error);
+    const status = document.querySelector('[data-status]');
+    if (status) {
+      status.textContent = `UI ошибка: ${(error && error.message) || 'см. консоль'}`;
+    }
+    document.querySelector('[data-login-panel]')?.classList.add('admin-login--visible');
+  }
+};
 
 export const buildAdminClientScript = (workerUrl: string | null): string => {
   const workerUrlJson = JSON.stringify(workerUrl ?? "");

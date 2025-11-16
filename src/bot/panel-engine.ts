@@ -132,7 +132,7 @@ const resolvePanel = (panelId: string): ResolveResult => {
   return { renderer: renderMain, params: [], id: "main" };
 };
 
-const PANEL_ERROR_MESSAGE =
+export const PANEL_ERROR_MESSAGE =
   "⚠️ Не удалось загрузить панель. Нажмите /start и попробуйте снова.";
 
 interface RenderRequest {
@@ -162,35 +162,49 @@ export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRe
     return;
   }
   let messageId = session.panel?.chatId === chatId ? session.panel?.messageId ?? null : null;
-  if (messageId) {
-    try {
-      await editTelegramMessage(runtime.telegramToken, {
-        chatId,
-        messageId,
-        text: result.text,
-        replyMarkup: result.keyboard,
-      });
-    } catch (error) {
-      if (error instanceof TelegramError && error.responseBody.includes("message is not modified")) {
-        // ignore
-      } else {
-        messageId = null;
+  try {
+    if (messageId) {
+      try {
+        await editTelegramMessage(runtime.telegramToken, {
+          chatId,
+          messageId,
+          text: result.text,
+          replyMarkup: result.keyboard,
+        });
+      } catch (error) {
+        if (error instanceof TelegramError && error.responseBody.includes("message is not modified")) {
+          // ignore
+        } else {
+          messageId = null;
+        }
       }
     }
-  }
-  if (!messageId) {
-    const sent = (await sendTelegramMessage<TelegramMessage>(runtime.telegramToken, {
-      chatId,
-      text: result.text,
-      replyMarkup: result.keyboard,
-    })) as TelegramMessage | undefined;
-    if (sent && typeof sent.message_id === "number") {
-      messageId = sent.message_id;
+    if (!messageId) {
+      const sent = (await sendTelegramMessage<TelegramMessage>(runtime.telegramToken, {
+        chatId,
+        text: result.text,
+        replyMarkup: result.keyboard,
+      })) as TelegramMessage | undefined;
+      if (sent && typeof sent.message_id === "number") {
+        messageId = sent.message_id;
+      }
     }
+    await saveBotSession(runtime.kv, {
+      ...session,
+      panel: messageId ? { chatId, messageId, panelId: resolved.id } : session.panel,
+      state: { type: "panel", panelId: resolved.id },
+    });
+  } catch (error) {
+    console.error(`[telegram] Failed to deliver panel ${resolved.id}:`, error);
+    try {
+      await sendTelegramMessage(runtime.telegramToken, { chatId, text: PANEL_ERROR_MESSAGE });
+    } catch (fallbackError) {
+      console.error(`[telegram] Failed to send fallback panel message:`, fallbackError);
+    }
+    await saveBotSession(runtime.kv, {
+      ...session,
+      panel: undefined,
+      state: { type: "idle" },
+    });
   }
-  await saveBotSession(runtime.kv, {
-    ...session,
-    panel: messageId ? { chatId, messageId, panelId: resolved.id } : session.panel,
-    state: { type: "panel", panelId: resolved.id },
-  });
 };

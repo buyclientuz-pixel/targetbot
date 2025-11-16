@@ -485,7 +485,7 @@ const renderAdminHtml = (workerUrl: string | null): string => {
           </section>
         </main>
       </div>
-      <div class="admin-login" data-login-panel>
+      <div class="admin-login admin-login--visible" data-login-panel>
         <form class="admin-login__form" data-login-form>
           <h2>Админ-доступ</h2>
           <p>Введите ADMIN_KEY, чтобы открыть панель управления.</p>

@@ -28,6 +28,7 @@ test("/admin serves the SPA shell", async () => {
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.ok(html.includes("TargetBot Admin"));
+  assert.ok(html.includes("admin-login admin-login--visible"));
 });
 
 test("admin APIs require x-admin-key and return project summaries", async () => {

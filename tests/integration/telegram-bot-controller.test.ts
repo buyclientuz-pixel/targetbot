@@ -7,6 +7,7 @@ import type { TelegramUpdate } from "../../src/bot/types.ts";
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
 const { createTelegramBotController } = await import("../../src/bot/controller.ts");
+const { PANEL_ERROR_MESSAGE } = await import("../../src/bot/panel-engine.ts");
 const { recordKnownChat } = await import("../../src/domain/chat-registry.ts");
 const { putFreeChatRecord, getFreeChatRecord, getOccupiedChatRecord, putOccupiedChatRecord } = await import(
   "../../src/domain/project-chats.ts",
@@ -926,6 +927,34 @@ test("Telegram bot controller stores Facebook tokens and user settings", async (
     const settings = await getUserSettingsRecord(kv, 100, {});
     assert.equal(settings.timezone, "Europe/Moscow");
     assert.equal(settings.language, "en");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("panel fallback message is sent if Telegram rejects updates", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  const controller = createController(kv, r2);
+  let sendAttempts = 0;
+  const stub = installFetchStub((url) => {
+    if (url.includes("/sendMessage")) {
+      sendAttempts += 1;
+      if (sendAttempts === 2) {
+        return { status: 500, body: JSON.stringify({ ok: false, description: "error" }) };
+      }
+    }
+    return undefined;
+  });
+  try {
+    await controller.handleUpdate({
+      message: { chat: { id: 100, type: "private" }, from: { id: 100 }, text: "/start" },
+    } as TelegramUpdate);
+    const sends = stub.requests.filter((entry) => entry.url.includes("/sendMessage"));
+    assert.equal(sends.length >= 2, true);
+    const fallback = sends.find((entry) => entry.body.text === PANEL_ERROR_MESSAGE);
+    assert.ok(fallback);
   } finally {
     stub.restore();
   }
