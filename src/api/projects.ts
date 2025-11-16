@@ -2,10 +2,12 @@ import { jsonResponse, parseJsonRequest } from "../utils/http";
 import {
   EnvBindings,
   clearPaymentReminder,
+  cleanupProjectArtifacts,
   deleteProjectCascade,
   listProjects,
   loadProject,
   saveProjects,
+  unlinkProjectChat,
 } from "../utils/storage";
 import { ApiSuccess, ProjectRecord, ProjectSummary } from "../types";
 import { createId } from "../utils/ids";
@@ -194,10 +196,45 @@ export const handleProjectDelete = async (
     if (!result) {
       return jsonResponse({ ok: false, error: "Project not found" }, { status: 404 });
     }
-    const payload = { success: true, data: result };
-    return new Response(JSON.stringify(payload, null, 2), {
-      headers: { "content-type": "application/json; charset=utf-8" },
-    });
+    return jsonResponse({ ok: true, data: result });
+  } catch (error) {
+    const details = error as Error;
+    console.error(
+      `[PROJECT_DELETE_ERROR]\nproject_id: ${projectId}\nerror: ${details.message}\nstack: ${details.stack ?? "n/a"}`,
+    );
+    return jsonResponse({ ok: false, error: details.message }, { status: 500 });
+  }
+};
+
+export const handleProjectCleanup = async (
+  _request: Request,
+  env: unknown,
+  projectId: string,
+): Promise<Response> => {
+  try {
+    const bindings = ensureEnv(env);
+    const result = await cleanupProjectArtifacts(bindings, projectId);
+    if (!result) {
+      return jsonResponse({ ok: false, error: "Project not found" }, { status: 404 });
+    }
+    return jsonResponse({ ok: true, data: result });
+  } catch (error) {
+    return jsonResponse({ ok: false, error: (error as Error).message }, { status: 500 });
+  }
+};
+
+export const handleProjectUnlinkChat = async (
+  _request: Request,
+  env: unknown,
+  projectId: string,
+): Promise<Response> => {
+  try {
+    const bindings = ensureEnv(env);
+    const updated = await unlinkProjectChat(bindings, projectId);
+    if (!updated) {
+      return jsonResponse({ ok: false, error: "Project not found" }, { status: 404 });
+    }
+    return jsonResponse({ ok: true, data: updated });
   } catch (error) {
     return jsonResponse({ ok: false, error: (error as Error).message }, { status: 500 });
   }

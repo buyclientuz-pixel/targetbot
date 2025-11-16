@@ -327,7 +327,7 @@ export interface ProjectRecord {
   name: string;
   metaAccountId: string;
   metaAccountName: string;
-  chatId: string;
+  chatId: string | null;
   billingStatus: ProjectBillingState;
   nextPaymentDate: string | null;
   tariff: number;
@@ -349,10 +349,8 @@ export interface ProjectRecord {
   portalSlug?: string;
 }
 
-export interface ProjectDeletionSummary {
+export interface ProjectCleanupSummary {
   project: ProjectRecord;
-  metaAccount?: MetaAccountLinkRecord | null;
-  telegramGroup?: TelegramGroupLinkRecord | null;
   removedLeads: number;
   removedPayments: number;
   removedReports: number;
@@ -360,6 +358,11 @@ export interface ProjectDeletionSummary {
   clearedPaymentReminders: number;
   updatedSchedules: number;
   portalRemoved?: boolean;
+}
+
+export interface ProjectDeletionSummary extends ProjectCleanupSummary {
+  metaAccount?: MetaAccountLinkRecord | null;
+  telegramGroup?: TelegramGroupLinkRecord | null;
 }
 
 export interface ChatRegistrationRecord {
