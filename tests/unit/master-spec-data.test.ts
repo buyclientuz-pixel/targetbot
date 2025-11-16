@@ -4,12 +4,15 @@ import test from "node:test";
 import { parseAlertsRecord, serialiseAlertsRecord } from "../../src/domain/spec/alerts";
 import { parseAutoreportsRecord } from "../../src/domain/spec/autoreports";
 import { parseBillingRecord } from "../../src/domain/spec/billing";
-import { parseFbAuthRecord, serialiseFbAuthRecord } from "../../src/domain/spec/fb-auth";
+import { getFbAuthRecord, parseFbAuthRecord, serialiseFbAuthRecord } from "../../src/domain/spec/fb-auth";
 import { parseMetaCampaignsDocument } from "../../src/domain/spec/meta-campaigns";
 import { parsePaymentsHistoryDocument } from "../../src/domain/spec/payments-history";
 import { parseProjectLeadsListRecord } from "../../src/domain/spec/project-leads";
 import { parseProjectRecord, serialiseProjectRecord } from "../../src/domain/spec/project";
 import { parseProjectsByUserRecord } from "../../src/domain/spec/projects-by-user";
+import { KV_KEYS } from "../../src/config/kv";
+import { KvClient } from "../../src/infra/kv";
+import { MemoryKVNamespace } from "../utils/mocks";
 
 test("fb auth record matches schema", () => {
   const snakeCase = {
@@ -172,4 +175,24 @@ test("payments history parsing", () => {
   };
   const parsed = parsePaymentsHistoryDocument(sample);
   assert.equal(parsed.payments[0].status, "paid");
+});
+
+test("getFbAuthRecord skips malformed records and allows re-auth", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  await kv.putJson(KV_KEYS.facebookAuth(200), { user_id: 200, access_token: "EAAG" });
+
+  const missing = await getFbAuthRecord(kv, 200);
+  assert.equal(missing, null);
+  assert.equal(await kv.getJson(KV_KEYS.facebookAuth(200)), null);
+
+  await kv.putJson(KV_KEYS.fbAuth(200), {
+    user_id: 200,
+    access_token: "EAAG",
+    expires_at: "2026-01-01T00:00:00Z",
+    ad_accounts: [{ id: "act_1", name: "BirLash", currency: "USD", account_status: 1 }],
+  });
+
+  const record = await getFbAuthRecord(kv, 200);
+  assert.ok(record);
+  assert.equal(record?.adAccounts.length, 1);
 });

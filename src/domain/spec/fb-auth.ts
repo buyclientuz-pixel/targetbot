@@ -101,8 +101,16 @@ export const getFbAuthRecord = async (
   const keys = [KV_KEYS.facebookAuth(userId), KV_KEYS.fbAuth(userId)];
   for (const key of keys) {
     const raw = await kv.getJson<Record<string, unknown>>(key);
-    if (raw) {
+    if (!raw) {
+      continue;
+    }
+    try {
       return parseFbAuthRecord(raw);
+    } catch (error) {
+      console.warn(
+        `[fb_auth] Failed to parse record for user ${userId} at ${key}: ${(error as Error).message}`,
+      );
+      await kv.delete(key);
     }
   }
   return null;
