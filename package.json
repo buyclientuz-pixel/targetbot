@@ -8,9 +8,11 @@
     "build": "wrangler deploy",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "lint": "eslint . --ext .ts,.js",
+    "lint": "eslint . --ext .js",
     "typecheck": "tsc --noEmit --project tsconfig.json",
-    "qa": "node --loader ./scripts/ts-loader.mjs tests/regression.test.ts"
+    "test": "node --loader ./scripts/ts-loader.mjs --test \"tests/**/*.test.ts\"",
+    "qa": "node --loader ./scripts/ts-loader.mjs --test \"tests/**/*.test.ts\"",
+    "dry-run": "node ./scripts/dry-run.mjs"
   },
   "devDependencies": {
     "eslint": "^9.39.1",

@@ -1,22 +1,14 @@
-import { EnvBindings } from "../utils/storage";
-import { TelegramEnv } from "../utils/telegram";
-
-type NumericString = string;
-
 export interface TelegramUser {
   id: number;
-  is_bot?: boolean;
-  username?: string;
   first_name?: string;
   last_name?: string;
-  language_code?: string;
+  username?: string;
 }
 
 export interface TelegramChat {
-  id: number | NumericString;
-  type: string;
+  id: number;
+  type: "private" | "group" | "supergroup" | "channel" | string;
   title?: string;
-  username?: string;
 }
 
 export interface TelegramMessage {
@@ -25,7 +17,6 @@ export interface TelegramMessage {
   chat: TelegramChat;
   from?: TelegramUser;
   text?: string;
-  data?: string;
 }
 
 export interface TelegramCallbackQuery {
@@ -39,18 +30,24 @@ export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
-  edited_message?: TelegramMessage;
 }
 
-export interface BotContext {
-  env: EnvBindings & TelegramEnv;
-  update: TelegramUpdate;
-  chatId?: string;
-  chatType?: string;
-  chatTitle?: string;
-  threadId?: number;
-  messageId?: number;
-  userId?: string;
-  username?: string;
-  text?: string;
+export interface ReplyKeyboardButton {
+  text: string;
+}
+
+export interface ReplyKeyboardMarkup {
+  keyboard: ReplyKeyboardButton[][];
+  resize_keyboard?: boolean;
+  one_time_keyboard?: boolean;
+}
+
+export interface InlineKeyboardButton {
+  text: string;
+  callback_data?: string;
+  url?: string;
+}
+
+export interface InlineKeyboardMarkup {
+  inline_keyboard: InlineKeyboardButton[][];
 }

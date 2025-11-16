@@ -1,18 +1,69 @@
-# TargetBot — единая экосистема Telegram + Web для Facebook Ads
+# TargetBot — Cloudflare Worker refactor
 
-TargetBot разворачивается на Cloudflare Workers и объединяет Telegram-бота и веб-панель над общим REST-API. Цель проекта — единое управление проектами, Meta-аккаунтами, лидами, оплатами и отчётами в реальном времени.
+TargetBot объединяет Telegram-бота, клиентский портал и интеграцию с Meta Ads в рамках единого Cloudflare Worker приложения. Переписываем наследованный проект, переходя на KV + R2 и унифицированные API/портал/бот сценарии.
 
 ## Implementation Status
-- [x] Итерация 1 — Настройка базовой структуры проекта и Worker API
-- [x] Итерация 2 — Реализация Telegram-бота и главного меню
-- [x] Итерация 3 — Добавление Facebook OAuth и токен-менеджера
-- [x] Итерация 4 — Подключение Meta API, получение кампаний и расходов
-- [x] Итерация 5 — Создание логики проектов, лидов и оплат
-- [x] Итерация 6 — Реализация отчётов (/auto_report, /summary)
-- [x] Итерация 7 — Вебхуки Telegram + Cloudflare
-- [x] Итерация 8 — Интеграция с веб-панелью и синхронизация KV
-- [x] Итерация 9 — Финализация FSM и inline-меню
-- [x] Итерация 10 — Тестирование, оптимизация, документация
+- [x] Итерация 1 — Аудит и планирование Cloudflare-рефакторинга
+- [x] Итерация 2 — Базовая инфраструктура Worker (entrypoint, KV/R2 клиенты)
+- [x] Итерация 3 — Модель данных и хранилища (projects, settings, sessions)
+- [x] Итерация 4 — Meta API и KV-кеш (meta-cache:*, meta-token:*)
+- [x] Итерация 5 — Meta Webhook → лиды в R2 + уведомления
+- [x] Итерация 6 — Telegram-бот: меню, карточка проекта, биллинг
+- [x] Итерация 7 — Клиентский портал: прелоадер, метрики, лиды, кампании
+- [x] Итерация 8 — Автоотчёты и алерты (cron, маршрутизация, темы)
+- [x] Итерация 9 — Очистка лидов и кешей, ревизия устаревшего кода
+- [x] Итерация 10 — Автотесты и финальная документация
+- [x] Итерация 11 — Операционные гайды и деплойная памятка
+- [x] Итерация 12 — Dry-run деплоя и сбор фидбека
+
+## Master-spec rollout (2026)
+- [x] Итерация 1 — Базовые модели данных (KV/R2) и новая структура домена
+- [x] Итерация 2 — Telegram-бот по master-spec (меню, карточки, оплаты, чаты)
+- [x] Итерация 2b — Telegram-бот: авторизация, аналитика, пользователи, финансы, вебхуки, алерты
+- [x] Итерация 3 — Клиентский портал и API (прелоадер, ключевые метрики, оплаты)
+- [x] Итерация 4 — Вебхуки Meta/Telegram и алерты
+- [x] Итерация 5 — Автоотчёты, экспорт CSV, финальный QA
+- [x] Итерация 6 — Full-stack приёмка: OAuth → Meta webhook → портал/API (tests/acceptance/full-system.test.ts)
+
+## Refactor 2025 Progress
+
+- **Выполнено:**
+  - Итерация 1 — подготовлен документ `docs/refactor-plan.md` с дорожной картой перехода на новую архитектуру.
+  - Итерация 2 — развёрнут новый Cloudflare Worker entrypoint, добавлены типизированные клиенты KV/R2, единый роутер и CORS-инфраструктура.
+  - Итерация 3 — собраны доменные модели и CRUD-helpers для проектов, настроек и сессий портала, добавлены REST-эндпоинты `/api/projects/*`.
+  - Итерация 4 — внедрён Meta API-прокси с кешированием KV (`meta-cache:*`), CRUD для `meta-token:{fbUserId}` и отчётами по проектам/кампаниям.
+  - Итерация 5 — реализован webhook Meta с импортом лидов в R2, дедупликацией и уведомлениями в Telegram по маршрутам CHAT/ADMIN.
+  - Итерация 6 — обновлён Telegram-бот: добавлены меню, карточки проектов, биллинг-меню и состояния бота в KV.
+  - Итерация 7 — собран клиентский портал на Worker: HTML-роут `/portal/:projectId`, API для summary/leads/campaigns, скелетоны и обработка таймаута прелоадера.
+  - Итерация 8 — реализованы cron-задачи автоотчётов и алертов: кеш статусов кампаний, дедупликация уведомлений, авто-создание тем «Таргет».
+  - Итерация 9 — добавлена еженедельная зачистка лидов в R2, удаление устаревших кешей Meta и конфигурируемые пороги retention через KV.
+  - Итерация 10 — собран набор автотестов (unit/integration/e2e) на `node --test` с кастомным TS-лоадером и зафиксирована процедура запуска QA.
+  - Итерация 11 — подготовлена операционная памятка (`docs/deployment-guide.md`) с деплоем, релизами, мониторингом и экстренными сценариями.
+  - Итерация 12 — добавлен чеклист dry-run деплоя (`docs/dry-run-checklist.md`) и автоматизированный скрипт `npm run dry-run`.
+- Подготовлена и уточнена инструкция по подключению Telegram Webhook (`docs/telegram-webhook.md`) с проверкой фактического домена воркера.
+- Сформирован функциональный blueprint с пошаговым планом восстановления системы (`docs/system-blueprint.md`).
+- Собран полный пакет "жирного" ТЗ, текстов и мастер-промпта (`docs/master-spec.md`) для быстрого онбординга Codex/ИИ.
+- Стартовал master-spec rollout: реализованы доменные модели и адаптеры KV/R2 под новые ключи `facebook-auth:*` (совместимо с легаси `fb_auth:*`), `projects_by_user:*`, `billing:*`, `alerts:*`, `autoreports:*`, `project-leads/*`, `meta/campaigns/*`, `payments/*`.
+- Реализованы административные API `/api/admin/*` для управления проектами, настройками и Meta-токенами, добавлены проверки в `tests/integration/admin-routes.test.ts`.
+- Добавлены интеграционные тесты `tests/integration/telegram-bot-controller.test.ts`, покрывающие меню, карточку проекта, биллинг, аналитику/финансы, вебхуки Telegram, управление чатами, алертами и настройками.
+  - Завершена фаза 3 плана восстановления — интеграционный тест `tests/integration/portal-routes.test.ts` подтверждает работу HTML-портала и API summary/leads/campaigns/payments.
+  - Завершена фаза 4 плана восстановления — тест `tests/integration/meta-webhook-route.test.ts` покрывает ingest лида, запись в R2, проверку verify token и уведомление в Telegram.
+  - Завершена фаза 5 плана восстановления — тест `tests/integration/scheduler-tasks.test.ts` подтверждает автоотчёты, алерты и очистку maintenance-задач.
+  - Завершена фаза 6 плана восстановления — прогон `npm run dry-run -- --skip-deploy` подтверждает, что линтер, typecheck, тесты и деплойная проверка проходят в едином пайплайне; гайды QA/ops обновлены.
+- Завершена итерация 2 master-spec rollout — Telegram-бот переведён на новые модели `project:{id}`, `billing:{id}`, `alerts:{id}`, `autoreports:{id}`, `project-leads/{id}`, `meta/campaigns/{id}`, `payments/{id}`; добавлены шаблоны сообщений из master-spec, расширены клавиатуры и покрытие `tests/integration/telegram-bot-controller.test.ts`.
+- Завершена итерация 2b master-spec rollout — бот реализует все разделы master-spec: авторизация Facebook с вводом токена, список проектов, карточка с чатами/порталом/оплатами/KPI, разделы аналитики, пользователей, финансов, вебхуков, управление чатами, алертами, автоотчётами и настройками пользователя; `src/bot/controller.ts`, `src/bot/keyboards.ts`, `src/bot/messages.ts` и `src/bot/data.ts` работают поверх новых адаптеров, интеграционные тесты покрывают новые команды.
+- Завершена итерация 3 master-spec rollout — портал `/p/:projectId` и API `/api/projects/:projectId/*` работают через bundle-адаптеры KV/R2 (`project`, `billing`, `project-leads`, `meta/campaigns`, `payments`), добавлен новый portalClient с таймаутом/прелоадером, секция экспорта, CSV/JSON выгрузки и обновлены тесты `tests/integration/portal-routes.test.ts`, `tests/e2e/portal.test.ts`.
+- Восстановлена логика «Проекты → рекламный аккаунт → свободная чат-группа»: команда `/reg` регистрирует чаты в `free-chats:{chatId}`, раздел «Проекты» показывает живой список кабинетов из Facebook OAuth, выбор кабинета ведёт к экрану свободных чатов, а подтверждение создаёт проект, занимает чат (`occupied-chats:{chatId}`) и отправляет уведомления в группу и ЛС владельца.
+- Телеграм-бот переведён на динамическую панель: все разделы (`/start`, «Проекты», карточка проекта, авторизация Facebook) работают через единое сообщение с inline-кнопками и `editMessage`, панели объявлены в `src/bot/panels/*`, а `src/bot/panel-engine.ts` отвечает за EDM (Edit → Dispatch → Merge) и хранит `panelMessageId` в KV-сессиях.
+- Авторизация Facebook в Telegram-боте теперь подтягивает реальный список рекламных аккаунтов через Graph API (`src/services/facebook-auth.ts`) и отображает ID/валюту в кнопке `📦 Список рекламных аккаунтов`.
+- Кнопка `📦 Список рекламных аккаунтов` выполняет живой запрос к Graph API с сохранением результата в `facebook-auth:{userId}` (и зеркально в `fb_auth:{userId}`), поэтому при повторном открытии карточки всегда выводятся актуальные кабинеты или явное предупреждение о правах доступа.
+- Главное меню Telegram-бота переведено на inline-клавиатуру с кнопкой-ссылкой «Авторизация Facebook», которая открывает реальный OAuth `/api/meta/oauth/start?tid={telegramUserId}` (редирект на `facebook.com/v18.0/dialog/oauth`); HTML-страница `/fb-auth` осталась как подсказка.
+- Реализован полный OAuth-flow (`/api/meta/oauth/start` → `/auth/facebook/callback`): короткий токен обменивается на long-lived, список рекламных аккаунтов сохраняется в `facebook-auth:{userId}` (параллельно в `fb_auth:{userId}` для совместимости) и пользователю приходит уведомление в Telegram.
+- Завершена итерация 4 master-spec rollout — вебхуки Meta/Telegram работают поверх новых моделей, формат алертов обновлён под master-spec, а импортер лидов нормализует snake_case payload.
+- Завершена итерация 5 master-spec rollout — экспорт лидов/кампаний/оплат отправляется файлами CSV в Telegram, портал/бот используют единые бандлы данных и добавлены финальные QA-тесты.
+- Добавлен full-stack acceptance-тест `tests/acceptance/full-system.test.ts`, который прогоняет OAuth start/callback, Meta webhook, запись лида в R2 и ответы портальных API `/summary`, `/leads`, `/campaigns`, `/payments` на свежих данных.
+- Собрана веб-админ панель `/admin` (dark theme SPA): авторизация по `ADMIN_KEY`, разделы Projects/Analytics/Finance/Users/Meta/Webhooks/Settings, живой список проектов/чатов/оплат, формы для платежей и KPI, мониторинг webhook-статуса и ручной `setWebhook`.
+- **Следующее:** прогнать acceptance-сценарий на стенде и сопоставить ответы портала/бота с боевыми данными.
 
 ## How to run
 
@@ -27,8 +78,19 @@ npm run dev
 npm run deploy
 ```
 
+### Веб-админ панель `/admin`
+1. Убедитесь, что в среде задан `ADMIN_KEY` и `WORKER_URL`.
+2. Откройте `https://${WORKER_URL}/admin` — появится форма ввода ключа администратора.
+3. Введите `ADMIN_KEY`; он сохраняется в `localStorage`, а все запросы панели отправляют заголовок `x-admin-key`.
+4. Навигация по разделам:
+   - **Проекты** — список проектов, карточка с лидами/кампаниями/оплатами, формы изменения KPI/оплат.
+   - **Analytics / Finance / Users / Meta** — агрегированные показатели по проектам, пользователям и Facebook OAuth.
+   - **Webhooks** — текущее состояние Telegram webhook (`getWebhookInfo`) и кнопка пересоздания (`setWebhook`).
+   - **Settings** — подсказки по `WORKER_URL` и техданным.
+5. Любой запрос без корректного ключа вернёт `401`, поэтому для ручных API-вызовов используйте заголовок `x-admin-key: <ADMIN_KEY>`.
+
 ## Build / Deploy commands
-```
+```bash
 # локально
 npm install
 npm run dev
@@ -43,695 +105,71 @@ npm run deploy
 npm run qa
 ```
 
-Команда выполняет регрессионные проверки расписаний отчётов и напоминаний, фиксирует результат в журнале `QA_RUNS` (KV + R2) и
-обновляет расчётные `nextRunAt` для просроченных расписаний.
+Команда `npm run qa` запускает `node --test` через кастомный TypeScript loader (`scripts/ts-loader.mjs`), покрывая unit, integration и e2e сценарии.
+
+### Dry-run деплоя
+
+```bash
+npm run dry-run
+```
+
+Скрипт последовательно выполняет линт, typecheck, тесты и `wrangler deploy --dry-run`. Для локальных прогонов без токена Cloudflare добавьте флаг `--skip-deploy`.
 
 ## Архитектура
 
 ```text
 src/
-  api/
-    meta.ts       # OAuth, статус и рекламные кабинеты Meta
-    projects.ts   # CRUD проектов и привязки
-    leads.ts      # Приём лидов и смена статусов
-    users.ts      # Управление пользователями
-    payments.ts   # Учёт оплат и статусов биллинга
-    reports.ts    # Метаданные отчётов и экспортов
-    settings.ts   # Глобальные настройки, расписания, локализация
-    manage.ts     # Сервисные действия (переподключение вебхуков Telegram)
-  admin/
-    index.ts      # Панель /admin
-    project-form.ts
-    users.ts
-  bot/
-    context.ts    # Построение BotContext из обновления Telegram
-    menu.ts       # Основное меню и заглушки команд
-    router.ts     # Обработка вебхука Telegram
-    types.ts
-  components/
-    layout.ts
-  utils/
-    http.ts       # Формирование ответов
-    ids.ts        # Генерация идентификаторов
-    meta.ts       # Клиент Graph API
-    projects.ts   # Агрегация и сортировка статистики
-    storage.ts    # Обёртки над KV/R2 для сущностей
-    telegram.ts   # Отправка сообщений и работа с API Telegram
-  views/
-    portal.ts     # Клиентский портал проекта
-  index.ts        # Маршрутизатор Worker’а
+  config/
+    kv.ts        # ключи и префиксы KV
+    r2.ts        # структура ключей в R2
+  domain/
+    meta-cache.ts       # кеш Meta insights
+    meta-tokens.ts      # хранение и обновление Meta access/refresh токенов
+    project-settings.ts # валидация и CRUD настроек проекта
+    projects.ts         # доменная модель проекта
+    portal-sessions.ts  # управление сессиями портала
+    validation.ts       # общие валидаторы доменных сущностей
+  http/
+    cors.ts      # CORS middleware
+    responses.ts # стандартные HTTP ответы
+  infra/
+    kv.ts        # обёртка над Workers KV
+    r2.ts        # обёртка над R2
+  routes/
+    index.ts     # регистрация базовых маршрутов (health/meta/projects)
+    meta.ts      # Meta API proxy + кеш summary/campaigns
+    portal.ts    # HTML-портал + API summary/leads/campaigns
+  services/
+    meta-api.ts  # запросы к Graph API и нормализация данных
+    project-insights.ts # кеширование summary/campaigns для портала и API
+    project-messaging.ts # отправка сообщений в Telegram с автосозданием тем
+    auto-reports.ts # cron-отчёты по таймслотам и форматирование сообщений
+    alerts.ts # биллинг/бюджет/паузa/Meta алерты с дедупликацией
+    scheduler.ts # запуск автоотчётов и алертов из Scheduled events
+  worker/
+    context.ts   # RequestContext (env, KV, R2, body helpers)
+    router.ts    # URLPattern-роутер + CORS
+    types.ts     # типы окружения
+  index.ts       # точка входа Worker’a
 ```
 
-### Потоки данных
-```mermaid
-flowchart TD
-    subgraph CLIENT["Пользователь (Admin / Manager / Client)"]
-        TGBOT["🤖 Telegram Bot"] --> API
-        WEB["🌐 Web Admin Panel"] --> API
-    end
-
-    subgraph API["☁ Cloudflare Worker API"]
-        ROUTES["/api/users /api/projects /api/meta /api/leads /api/payments"]
-        ROUTES --> KV[(Workers KV)]
-        ROUTES --> R2[(R2 Storage)]
-    end
-
-    META["🔗 Facebook Graph API"]
-    CFHOOKS["⚙ Telegram + Cloudflare Webhooks"]
-
-    API --> META
-    TGBOT --> CFHOOKS
-```
-
-### FSM Telegram-бота
-```mermaid
-flowchart LR
-    START[/Пользователь /start/] --> MENU[🏠 Главное меню]
-    MENU --> AUTH[🔐 Авторизация Facebook]
-    MENU --> PROJECTS[📊 Проекты]
-    MENU --> USERS[👥 Пользователи]
-    MENU --> META[🔗 Meta-аккаунты]
-    MENU --> ANALYTICS[📈 Аналитика]
-    MENU --> FINANCE[💰 Финансы]
-    MENU --> SETTINGS[⚙ Настройки]
-
-    PROJECTS --> PROJECT_CARD[🏗 Карточка проекта]
-    PROJECT_CARD --> LEADS[💬 Лиды]
-    PROJECT_CARD --> REPORT[📈 Отчёт]
-    PROJECT_CARD --> PAYMENT[💳 Оплата]
-    PROJECT_CARD --> PORTAL[🧩 Портал]
-    PROJECT_CARD --> CAMPAIGNS[👀 Кампании]
-
-    SETTINGS --> WEBHOOKS[🔄 Обновить вебхуки]
-    SETTINGS --> META_CHECK[🧩 Проверить токен]
-    SETTINGS --> TIME[⏰ Изменить время отчётов]
-
-    META --> META_DETAIL[Аккаунт → проект или подключение]
-    ANALYTICS --> EXPORT[📤 Отчёт клиенту]
-    FINANCE --> PAYCONFIRM[💸 Подтверждение оплаты]
-    AUTH --> MENU
-```
-
-## Iteration Progress
-
-- Выполнено: STEP 17 (итерация 2) — автоматизированы напоминания об оплате, клиентский выбор формата платежа и подтверждение перевода: cron вызывает `runReminderSweep`, который уведомляет админа за день до оплаты, отправляет запрос в чат проекта (с учётом `message_thread_id`), фиксирует выбор клиента и ставит follow-up админу.
-- Выполнено: STEP 17 (итерация 3) — финальный smoke/QA биллинга и автоотчётов, обновлена документация по cron-окнам и подготовлена релизная запись.
-- Итераций до полного покрытия ТЗ: 0 (финальный QA/релиз завершён).
-
-### Текущее состояние задач
-
-**Выполнено в этой итерации**
-- Расширена `ProjectRecord`/KV: добавлены `billingEnabled`, `billingPlan`, `billingAmountUsd`, миграция и merge/normalize логика синхронизируют данные с тарифом и датой оплаты.
-- Телеграм-кнопки оплаты переведены на `payments:add_30_days|set_plan_{350,500}|ask_date_*`; обработчики обновляют KV, очищают напоминания и моментально перерисовывают экран.
-- `handlePendingBillingInput` и пресеты тарифа теперь включают биллинг и синхронизируют тариф/план.
-- Планировщик `runReminderSweep` учитывает `settings.alerts.enabled` и `settings.autobilling.enabled`, уведомляет команду в теме проекта без inline-кнопок, повторяет follow-up при просрочке и автоматически блокирует отчёты/портал при отказе.
-- Сценарии `payments:renew_*`, `payments:pay_*`, `payments:{confirm,error,wait}` обновляют карточку проекта, редактируют сообщения в теме чата, уведомляют администратора и сохраняют курс/планируемую дату следующей оплаты.
-
-**Осталось закрыть**
-- Нет — все задачи STEP 17 завершены, портал и бот синхронизированы.
-
-## Data Model (ER Diagram)
-
-_Обновлено 2025-02-24: добавлена сущность `PROJECT_SETTINGS` (auto-report/alert) из SPEC-AUTO-REPORT-v3._
-
-```mermaid
-erDiagram
-    USERS ||--o{ PROJECTS : owns
-    PROJECTS ||--o{ LEADS : collects
-    META_ACCOUNTS ||--|| PROJECTS : links
-    META_PROJECTS ||--|| PROJECTS : mirrors
-    PROJECTS ||--|| PROJECT_PORTALS : portal
-    PROJECTS ||--|| PROJECT_REPORT_PREFERENCES : defaults
-    PROJECTS ||--o{ TELEGRAM_GROUPS : notifies
-    PROJECTS ||--o{ PAYMENTS : invoices
-    META_ACCOUNTS ||--o{ META_WEBHOOK_EVENTS : emits
-    PROJECTS ||--o{ META_WEBHOOK_EVENTS : records
-    LEADS ||--o{ LEAD_REMINDERS : escalates
-    PROJECTS ||--o{ LEAD_REMINDERS : supervises
-    PROJECTS ||--o{ PAYMENT_REMINDERS : schedules
-    PROJECTS ||--|| PROJECT_SETTINGS : schedules
-    PROJECTS ||--o{ REPORTS : aggregates
-    PROJECTS ||--o{ REPORT_SCHEDULES : schedules
-    REPORT_SCHEDULES ||--o{ REPORTS : generates
-    REPORT_SCHEDULES ||--o{ REPORT_DELIVERIES : logs
-    QA_RUNS ||--o{ REPORT_SCHEDULES : audits
-    QA_RUNS ||--o{ PROJECTS : monitors
-    USERS ||--o{ PENDING_PORTAL_OPERATIONS : initiates
-    USERS ||--o{ PENDING_CAMPAIGN_SELECTIONS : selects
-    PROJECTS ||--o{ PENDING_CAMPAIGN_SELECTIONS : tracks
-    USERS ||--o{ PENDING_PROJECT_EDITS : edits
-    PROJECTS ||--o{ PENDING_PROJECT_EDITS : targets
-    PROJECTS ||--o{ CAMPAIGN_OBJECTIVES : tracks
-    PROJECTS ||--o{ PROJECT_CAMPAIGN_KPIS : configures
-    USERS ||--o{ PENDING_KPI_SELECTIONS : tunes
-    PROJECTS ||--o{ PENDING_KPI_SELECTIONS : scopes
-
-    USERS {
-        string id
-        string username
-        string role
-        string registered_at
-    }
-    META_ACCOUNTS {
-        string id
-        string name
-        number spent_today
-        boolean is_linked
-    }
-    PROJECTS {
-        string id
-        string name
-        string meta_account_id
-        string chat_id
-        string chat_title
-        string telegram_link
-        string billing_status
-        string created_at
-        number tariff
-        json settings
-    }
-    PROJECT_SETTINGS {
-        boolean auto_enabled
-        string[] auto_times
-        string auto_send_target
-        string alerts_route
-        boolean monday_double
-        string last_sent_daily
-        string last_sent_monday
-    }
-    PROJECT_REPORT_PREFERENCES {
-        string project_id
-        string[] campaign_ids
-        string[] metrics
-    }
-    LEADS {
-        string id
-        string project_id
-        string name
-        string phone
-        string status
-    }
-    TELEGRAM_GROUPS {
-        string chat_id
-        string title
-        number members
-        boolean registered
-        string linked_project_id
-    }
-    PAYMENTS {
-        string id
-        string project_id
-        number amount
-        string currency
-        string status
-        string period_start
-        string period_end
-    }
-    META_WEBHOOK_EVENTS {
-        string id
-        string object
-        string field
-        string lead_id
-        string ad_account_id
-        string project_id
-        boolean processed
-        string created_at
-        string updated_at
-    }
-    LEAD_REMINDERS {
-        string id
-        string lead_id
-        string project_id
-        string status
-        number notified_count
-        string last_notified_at
-    }
-    PAYMENT_REMINDERS {
-        string id
-        string project_id
-        string status
-        string due_date
-        number notified_count
-        string last_notified_at
-    }
-    REPORTS {
-        string id
-        string project_id
-        string type
-        string format
-        string generated_at
-    }
-    REPORT_SCHEDULES {
-        string id
-        string type
-        string frequency
-        string time
-        string chat_id
-        boolean enabled
-    }
-    REPORT_DELIVERIES {
-        string id
-        string schedule_id
-        string report_id
-        string status
-        string delivered_at
-    }
-    QA_RUNS {
-        string id
-        string created_at
-        number duration_ms
-        json checks
-        json issues
-    }
-    PROJECT_PORTALS {
-        string portal_id
-        string project_id
-        string mode
-        string[] campaign_ids
-        string[] metrics
-        string created_at
-        string updated_at
-        string last_regenerated_at
-        string last_shared_at
-        string last_report_id
-    }
-    PENDING_PORTAL_OPERATIONS {
-        string user_id
-        string project_id
-        string action
-        number page
-        string updated_at
-    }
-    PENDING_CAMPAIGN_SELECTIONS {
-        string user_id
-        string project_id
-        string[] campaign_ids
-        string updated_at
-    }
-    PENDING_PROJECT_EDITS {
-        string user_id
-        string project_id
-        string action
-        string updated_at
-    }
-    CAMPAIGN_OBJECTIVES {
-        string project_id
-        string campaign_id
-        string objective
-        string updated_at
-    }
-    PROJECT_CAMPAIGN_KPIS {
-        string project_id
-        string campaign_id
-        string[] metrics
-        string updated_at
-    }
-    PENDING_KPI_SELECTIONS {
-        string user_id
-        string project_id
-        string campaign_id
-        string[] metrics
-        string updated_at
-    }
-```
-
-> Клиентский портал не хранит абсолютный URL в KV: воркер вычисляет ссылку на лету по `portal_id`, используя `PORTAL_BASE_URL`/`PUBLIC_WEB_URL`/`WORKER_BASE_URL` или fallback на домен авторизации Facebook (workers.dev).
-> `PROJECTS.telegram_link` хранит нормализованный `https://`/`tg://` URL: при сохранении дополняется схема для `t.me`, `@username`, `+invite` и числовых chat_id.
-
-## Callback schema
-
-Подробная расшифровка доступна в [docs/callback-schema.md](docs/callback-schema.md). Ключевые пространства данных:
-
-- `cmd:*` — навигационные команды главного меню и разделов.
-- `proj:*` — действия над проектами (карточка, чат, лиды, отчёты, настройки, удаление).
-- `meta:*` — мастер подключения Meta-аккаунтов и переходы в связанные проекты.
-- `report:*` — сценарии формирования отчётов `/summary` и `/auto_report`.
-
-## Unified API (перечень конечных точек)
-
-| Модуль | Конечные точки | Описание |
-| ------ | -------------- | -------- |
-| Meta | `GET /api/meta/status`, `GET /api/meta/adaccounts`, `GET /api/meta/campaigns`, `GET /api/meta/oauth/start`, `GET /auth/facebook/callback` (alias: `/api/meta/oauth/callback`), `POST /api/meta/refresh`, `GET/POST /meta/webhook` | OAuth, выбор кабинетов, метрики кампаний и приём webhook событий |
-| Projects | `GET/POST /api/projects`, `GET/PATCH/DELETE /api/projects/:id`, `GET /api/projects/:id/leads` | CRUD проектов и привязки |
-| Leads | `POST /api/leads`, `GET /api/leads?projectId=`, `PATCH /api/leads/:id` | Приём и обработка лидов |
-| Users | `GET/POST /api/users`, `PATCH/DELETE /api/users/:id` | Управление пользователями и ролями |
-| Payments | `GET/POST /api/payments`, `PATCH/DELETE /api/payments/:id` | Учёт оплат, статусы, биллинг |
-| Reports | `GET/POST /api/reports`, `POST /api/reports/generate`, `GET/DELETE /api/reports/:id`, `GET /api/reports/:id/content` | Регистрация отчётов и выдача содержимого экспорта |
-| Report schedules | `GET/POST /api/report-schedules`, `PATCH/DELETE /api/report-schedules/:id` | Планирование автоотчётов и SLA-выгрузок |
-| Settings | `GET /api/settings`, `POST /api/settings`, `PATCH /api/settings`, `GET /api/settings/:key` | Расписания, локализация, вебхуки |
-| Manage | `GET /manage/telegram/webhook?action=refresh&drop=1` | Переподключение вебхуков Telegram |
-| Logs | `GET /api/logs/commands` | Журнал действий Telegram-бота и веб-панели |
-| Telegram | `POST /bot/webhook` | Вебхук бота, роутинг команд |
-
-## Хранилища
-
-- **Workers KV** — long-lived токен Meta (`meta:token`) и служебные записи.
-- **R2** — JSON-индексы для проектов, лидов, пользователей, оплат, отчётов, расписаний (`report_schedules.json`), журналов доставок (`reports/deliveries.json`) и контента отчётов (`reports/assets/*`).
-- `appendCommandLog` сохраняет до 500 последних действий Telegram/веб-панели.
-- **Project portals** — индекс `portals/index.json` в R2 и зеркальный KV (`portals:index`, `portal:{portalId}`) с pending-записями `portal/pending/{userId}` и мультивыбором кампаний `campaigns/pending/{userId}` для FSM портала/кампаний.
-
-## Telegram & Web синхронизация
-
-- `/bot/webhook` приводит входящие апдейты к `BotContext`, разворачивает главное меню и обрабатывает разделы Telegram-бота (итерация 2).
-- `/manage/telegram/webhook` пересоздаёт вебхук Telegram с учётом параметров `action` и `drop`.
-- В админке и боте доступна кнопка «🔄 Обновить вебхуки», вызывающая `/manage/telegram/webhook?action=refresh&drop=1` и показывающая результат операции.
-- `settings.ts` фиксирует настройки автоотчётов, языков и форматов уведомлений, синхронизируя их между ботом и веб-панелью.
-- `/admin/settings` управляет KV-настройками через API `/api/settings`, позволяя обновлять параметры отчётов, расписаний и локализации.
-- `GET /api/logs/commands` и раздел журнала в /admin отображают единый лог действий Telegram-бота и веб-панели.
-
-## Meta Leadgen Webhook
-
-- Endpoint: `GET/POST /meta/webhook` (верификация `hub.challenge` и обработка событий `leadgen`).
-- Токен проверки берётся из переменных окружения (`META_WEBHOOK_VERIFY_TOKEN`, `FB_WEBHOOK_VERIFY_TOKEN` и др.) либо из настройки `meta.webhook.verifyToken` в KV.
-- Каждое событие leadgen находит привязанный проект по `ad_account_id`, подтягивает детали лида из Graph API и сохраняет запись в `leads/{projectId}.json` + Workers KV.
-- Бот отправляет уведомление в привязанную Telegram-группу с кнопкой `proj:leads:{projectId}` и фиксирует событие в журнале `meta/webhook/events.json`.
-
-## SLA-напоминания
-
-- Cron-задачи (каждые 5 минут и ежедневно в 03:00 UTC) вызывают `runReminderSweep`, который проверяет незакрытые лиды и ближайшие/просроченные оплаты.
-- Для лидов создаются записи `LEAD_REMINDERS` в R2/KV: хранится статус (`pending`, `notified`), количество отправленных алертов и время последнего уведомления.
-- По оплатам ведётся индекс `PAYMENT_REMINDERS`, позволяющий повторно напоминать о просрочке каждые `PAYMENT_REMINDER_OVERDUE_HOURS` часов.
-- Настройки по умолчанию: 60 минут ожидания лида, 1 день до оплаты, повтор алертов каждые 24 часа при просрочке. Переопределяются переменными окружения (`LEAD_REMINDER_MINUTES`, `PAYMENT_REMINDER_DAYS`, `PAYMENT_REMINDER_OVERDUE_HOURS`) или KV-ключами `reminders.*`.
-- Каждое уведомление отправляется в привязанный Telegram-чат проекта с inline-кнопками `proj:leads:{projectId}` и `proj:billing:{projectId}`.
-
-## Автоотчёты и SLA-экспорт
-
-- Планировщик читает конфигурацию из `report_schedules` (R2 + KV) и формирует отчёты согласно `frequency`, `time`, `timezone` и списку проектов.
-- Для каждого срабатывания сохраняется запись в `reports/index.json`, контент выгружается в R2 (`reports/assets/{id}`) и отправляется в Telegram-чат администратора.
-- Поддерживаются типы расписаний: `summary`, `detailed` (auto), `finance`, `sla`. SLA-экспорт создаёт CSV с лидами, нарушившими порог реакции.
-- REST API: `GET/POST /api/report-schedules`, `PATCH/DELETE /api/report-schedules/:id`, а содержимое отчёта доступно по `GET /api/reports/:id/content`.
-- В разделе «📈 Аналитика» появился мастер экспорта, позволяющий вручную инициировать сводку, автоотчёт, финансовый отчёт или SLA CSV прямо из бота.
-
-## Progress Log
-
-### Progress 1
-Что сделано: создана базовая структура API (payments, reports, settings, manage), добавлен маршрутизатор Telegram вебхука и обновлён Worker-роутер. Что дальше: реализовать полноценное главное меню бота и пользовательские сценарии (Итерация 2).
-
-### ✅ Итерация 1 завершена
-Настроена инфраструктура Worker API, заготовки модулей платежей/отчётов/настроек и обработка Telegram вебхука. Следующая задача: Итерация 2 — реализовать главное меню Telegram-бота и начальные действия.
-
-### Progress 2
-Что сделано: реализовано главное меню Telegram-бота, команды разделов выводят данные проектов, пользователей, финансов и статуса Meta, а действия логируются. Что дальше: Итерация 3 — добавить Facebook OAuth и токен-менеджер.
-
-### ✅ Итерация 2 завершена
-Главное меню Telegram-бота показывает статус авторизации Meta, список проектов с лидами, распределение пользователей и финальную сводку, плюс добавлены ответы на нажатия и логирование команд. Следующая задача: Итерация 3 — добавить Facebook OAuth и синхронизацию токена между ботом и веб-панелью.
-
-### Progress 3
-Что сделано: подключён полноформатный OAuth-flow Facebook, токен сохраняется в KV и валидируется через Graph API, бот сообщает срок действия и список кабинетов. Что дальше: Итерация 4 — подключить Meta API для получения кампаний и расходов.
-
-### ✅ Итерация 3 завершена
-Реализована выдача ссылки авторизации из Telegram, callback синхронизирует токен, подтягивает рекламные аккаунты и отображает их в админке и боте. Следующая задача: Итерация 4 — подключить Meta API и отобразить данные по расходам.
-
-### Progress 4
-Что сделано: добавлены вызовы Meta Graph API для кампаний и расходов, админка и бот показывают текущий spend, статусы и топ-кампании, API расширено эндпоинтом `/api/meta/campaigns`. Что дальше: Итерация 5 — создать логику проектов, лидов и оплат.
-
-### ✅ Итерация 4 завершена
-Подключены метрики кампаний и расходов к Worker API, веб-панели и Telegram-боту, обеспечена синхронизация spend с таблицами кабинетов и inline-отчётами. Следующая задача: Итерация 5 — внедрить управление проектами, лидами и оплатами.
-
-### Progress 5
-Что сделано: добавлены сводные данные по оплатам в проекты и портал, внедрена страница /admin/payments с созданием и обновлением платежей, Telegram-бот показывает биллинговый статус по каждому проекту. Что дальше: Итерация 6 — реализовать отчёты и автоматические команды /auto_report и /summary.
-
-### ✅ Итерация 5 завершена
-Система проектов объединяет лиды и оплату: админка показывает статусы биллинга, портал информирует о действующем платёжном периоде, а Telegram-бот и API делятся общей сводкой. Следующая задача: Итерация 6 — реализовать отчётность и автоотправку отчётов.
-
-### Прогресс: 5/10 итераций
-Осталось: отчёты (/auto_report, /summary), расширение FSM-меню, финальные вебхуки и финтесты с документацией.
-
-### Progress 6
-Что сделано: реализованы Telegram-команды /summary и /auto_report с выбором проектов, добавлен эндпоинт `POST /api/reports/generate` и сохранение отчётов в KV/R2, админка показывает таблицу последних отчётов. Что дальше: Итерация 7 — вебхуки Telegram + Cloudflare и синхронная настройка через панель.
-
-### ✅ Итерация 6 завершена
-Отчётность работает через общие утилиты: бот строит интерактивный выбор проектов, формирует HTML/текст сводку и сохраняет запись в Reports, админка отображает свежие выгрузки. Следующая задача: Итерация 7 — вебхуки Telegram + Cloudflare.
-
-### Прогресс: 6/10 итераций
-Осталось: вебхуки Telegram/Cloudflare, интеграция KV с веб-панелью, финализация FSM и итоговые тесты с документацией.
-
-### Progress 7
-Что сделано: добавлена кнопка «Обновить вебхуки» в Telegram и веб-панели, эндпоинт `/manage/telegram/webhook` переподключает хуки и возвращает статус Telegram. Что дальше: Итерация 8 — интеграция с веб-панелью и синхронизация KV.
-
-### ✅ Итерация 7 завершена
-Вебхуки Telegram переподключаются из бота и админки: запрос к `/manage/telegram/webhook` выполняет сброс и установку, а пользователи получают подробный ответ об успехе или ошибке. Следующая задача: Итерация 8 — синхронизировать KV-данные с веб-панелью.
-
-### Прогресс: 7/10 итераций
-Осталось: интеграция KV с веб-панелью, финализация FSM/inline-меню, финальное тестирование и документация.
-
-### Progress 8
-Что сделано: админка получила навигацию и разделы настроек/журнала, /admin/settings обновляет KV через API, а `/api/logs/commands` выдаёт единый лог действий бота и панели. Что дальше: Итерация 9 — финализация FSM и inline-меню.
-
-### ✅ Итерация 8 завершена
-Веб-панель синхронизируется с KV: настройки редактируются из админки и сразу доступны Telegram-боту, а журнал команд отображает записи, полученные через новый REST-эндпоинт. Следующая задача: Итерация 9 — закрыть FSM-ветки и inline-кнопки.
-
-### Прогресс: 8/10 итераций
-Осталось: финализировать FSM/inline-меню, завершить smoke-тесты и оформить итоговую документацию.
-
-### Progress 9
-Что сделано: добавлены inline-кнопки и состояние FSM для карточек проектов в Telegram, реализованы действия карточки (чаты, лиды, отчёты, кампании, портал, биллинг) с переходами назад и запуском экспорта отчётов. Что дальше: Итерация 10 — провести финальные проверки, оптимизацию и оформление документации.
-
-### ✅ Итерация 9 завершена
-Telegram-бот полностью покрывает FSM: список проектов, карточка с действием в две колонки, переходы к порталу, чатам, кампаниям и отчётам работают через единое API. Следующая задача: Итерация 10 — финальное тестирование, оптимизация и обновление документации.
-
-### Прогресс: 9/10 итераций
-Осталось: финальные smoke-тесты, оптимизации и итоговый пакет документации.
-
-### Progress 10
-Что сделано: собраны финальные smoke-результаты (typecheck, curl, ручные UI проверки), оформлен сводный файл `docs/final-verification.md` и обновлена документация по эксплуатации. Что дальше: эксплуатация и мониторинг в бою.
-
-### ✅ Итерация 10 завершена
-Финальные проверки задокументированы, инструкции по деплою и ручному QA актуализированы, проект готов к эксплуатации и дальнейшему сопровождению.
-
-### Progress 11
-Что сделано: внедрён планировщик отчётов с REST-управлением, добавлены SLA-экспорты и выбор типа отчёта внутри бота; отчётные файлы сохраняются в R2 и доступны через `/api/reports/:id/content`. Что дальше: эксплуатация и мониторинг.
-
-### ✅ Итерация 11 завершена
-Автоматические отчёты (summary/auto/finance/SLA) и SLA-CSV доступны по расписанию и вручную, данные синхронизируются между R2 и KV, а бот предоставляет новый мастер экспорта.
-
-### ✅ Итоговая проверка деплоя
-- npm ci: удалено
-- GitHub Actions: обновлён
-- wrangler.toml: минимизирован  
-- package.json: очищен  
-- deploy: успешен  
-- авто-деплой через GitHub Actions активен  
-- эндпоинты /auth/facebook/callback и /manage/telegram/webhook отвечают 200 OK  
-- curl-тесты пройдены успешно
-
-### 🧩 Автоматизация деплоя (динамический npm registry)
-- `scripts/ensure-registry.mjs` проверяет `NPM_REGISTRY_OVERRIDE`, Cloudflare mirror и стандартный registry.npmjs.org, выбирая первый доступный и фиксируя его в `.npmrc`.
-- `.bunfig.toml` теперь указывает на официальный registry.npmjs.org, поэтому Cloudflare Build Service не упирается в недоступное зеркало.
-- GitHub Actions вызывает fallback-скрипт перед `npm install`, гарантируя, что `wrangler` подтянется даже при сбоях зеркала.
-- Локальные `npm install`/`npx wrangler deploy` используют тот же механизм, так что ручные и автоматические деплои работают одинаково.
-- curl-проверки эндпоинтов (`tests/deploy-checks.sh`) остаются обязательной частью финального отчёта.
-
-### Прогресс: 10/10 итераций
-Осталось: поддерживать продакшен и выполнять регламентные проверки.
-
-### 🔧 Telegram webhook & Meta OAuth fallbacks
-- `/manage/telegram/webhook` ищет URL не только в переменных окружения, но и в настройках R2 (`bot.webhookUrl`, `system.webhookUrl` и т.д.)
-  и при необходимости собирает адрес из базового домена воркера.
-- Ответы при переподключении содержат источник найденного URL и финальное значение, чтобы проще диагностировать ошибки.
-- OAuth-старт принимает `FB_APP_ID`, `META_APP_ID`, `FACEBOOK_APP_ID`, `FB_CLIENT_ID` или `META_CLIENT_ID`, поэтому авторизация из админки и Telegram
-  работает даже при альтернативных именах переменных.
-- Если URL найден по запросу, воркер автоматически сохраняет его в настройках `bot.webhookUrl`, чтобы следующее переподключение выполнялось без ручных правок.
-- Meta OAuth читает `meta.appId` / `meta.appSecret` из настроек админки (R2), поэтому кнопка авторизации в веб-панели работает даже без переменных окружения.
-- Meta OAuth читает `meta.appId` / `meta.appSecret` и `meta.token` из настроек админки (R2), поэтому кнопка авторизации и проверка статуса работают даже без переменных окружения.
-- При отсутствии записи `meta:token` в KV воркер использует сохранённые в настройках токены и автоматически приводит старые JSON-схемы (snake_case) к новому формату.
-- Telegram-вебхук автоматически подставляется из `WORKER_URL`/`WORKER_DOMAIN`/`WORKER_HOST`, если прямых URL нет ни в окружении, ни в настройках.
-- Статус Meta и Telegram-бот воспринимают `FB_LONG_TOKEN`, `META_LONG_TOKEN` и другие alias-переменные, поэтому достаточно добавить токен в `.dev.vars`/Cloudflare Variables без KV.
-
-### 🤝 Регистрация клиентских чат-групп
-- Команда `/reg` доступна только в групповых чатах: она фиксирует ID и название группы в реестре `chats/index.json` (R2), чтобы администраторы могли привязать её к свободному проекту.
-- Если чат уже подключён к проекту, бот сообщает имя проекта и напоминает, что отчёты/уведомления будут отправляться автоматически; повторная регистрация не требуется.
-- Все команды меню, inline-кнопки и административные сценарии блокируются в клиентских чатах: бот принимает только `/reg` и автоматические события (лиды, отчёты, алерты).
-- Административный доступ остаётся в приватных чатах и в группах, перечисленных в переменных окружения (`ADMIN_CHAT_IDS`, `BOT_ADMIN_CHATS`, и т.п.) или настройках `bot.adminChats`.
-- Список свободных групп хранится в R2 и синхронизируется с веб-панелью/ботом, поэтому подключение новой рекламной кампании не требует ручной переписки — достаточно выбрать зарегистрированную группу в карточке проекта.
-
-### Progress 27
-- Что сделано: добавлены fallback-и для URL Telegram вебхука и чтение Meta OAuth-идентификаторов из альтернативных переменных/настроек.
-- Какая задача сейчас в работе: стабилизация ручного деплоя через wrangler (повторный прогон npm install/build/deploy).
-- Следующие задачи: подтвердить curl-проверки в рабочем окружении и обновить логи успешного деплоя.
-
-### Progress 28
-- Что сделано: вебхук Telegram автоматически сохраняется в настройках и подставляется в окружение, Meta OAuth читает `meta.appId`/`meta.appSecret` из R2 для кнопки в админке.
-- Какая задача сейчас в работе: повторное тестирование manage-эндпоинта и OAuth-флоу после деплоя.
-- Следующие задачи: подтвердить успешный wrangler deploy и зафиксировать свежие curl-логи.
-
-### Progress 29
-- Что сделано: расширена валидация URL вебхука через query-параметры/заголовки Host, а старт Meta OAuth теперь открывает HTML-страницу с авто-переадресацией и диагностикой ошибок.
-- Какая задача сейчас в работе: ручная проверка `/manage/telegram/webhook` и `/auth/facebook` на продакшене.
-- Следующие задачи: зафиксировать успешные логи curl и повторно прогнать wrangler deploy в рабочем окружении.
-
-### Progress 30
-- Что сделано: добавлен `.bunfig.toml`, который указывает bun install на зеркало https://registry.npmjs.cf/ и синхронизирован с локальной `.npmrc`.
-- Какая задача сейчас в работе: повторное прохождение `bun install`/`wrangler deploy` в окружении Cloudflare с новым зеркалом.
-- Следующие задачи: подтвердить успешные curl-проверки после деплоя и приложить обновлённые логи.
-
-### Progress 31
-- Что сделано: Meta OAuth и Telegram-бот читают токены и сроки действия из админских настроек, даже если KV содержит старую snake_case-схему; `/manage/telegram/webhook` и Telegram-меню теперь корректно отображают статус авторизации.
-- Какая задача сейчас в работе: контрольное тестирование `/api/meta/status` и Telegram-команды «Авторизация Facebook» на рабочем воркере.
-- Следующие задачи: зафиксировать успешные curl-логи и обновить деплой-гайд после очередного прогона `wrangler deploy`.
-
-### Progress 32
-- Что сделано: `/manage/telegram/webhook` научился собирать URL из `WORKER_URL`/`WORKER_DOMAIN`, а Meta-эндпоинты и Telegram теперь используют `FB_LONG_TOKEN`/`META_LONG_TOKEN` из окружения или настроек, если KV пуст.
-- Какая задача сейчас в работе: повторная проверка вебхука Telegram и Meta OAuth на продакшене после обновления переменных окружения.
-- Следующие задачи: подтвердить curl-проверки `/manage/telegram/webhook` и `/auth/facebook` и приложить свежие логи деплоя.
-
-### Progress 33
-- Что сделано: добавлен скрипт `scripts/ensure-registry.mjs`, который автоматически выбирает доступный npm registry (Cloudflare mirror или npmjs.org) и синхронизирует его с `.npmrc`; `.bunfig.toml` переведён на официальный registry, а GitHub Actions запускает новый fallback перед установкой зависимостей.
-- Какая задача сейчас в работе: прогон `bun install`/`wrangler deploy` в облачной сборке после смены registry.
-- Следующие задачи: подтвердить успешные curl-проверки и зафиксировать свежие логи деплоя в README после прохода install/build/deploy.
-
-### Progress 34
-- Что сделано: добавлены регистрация чат-групп через `/reg`, реестр свободных чатов (`chats/index.json`) и политика безопасности, которая отключает меню/inline-кнопки в клиентских чатах и разрешает их только в админских чатах и личных диалогах.
-- Какая задача сейчас в работе: синхронизировать список зарегистрированных групп с веб-панелью (карточки проектов и раздел настроек).
-- Следующие задачи: вывести реестр свободных чатов в /admin, позволить назначать чат на проект в один клик и зафиксировать успешные smoke-проверки после обновления.
-
-### Progress 35
-- Что сделано: переориентирован OAuth-редирект на `/auth/facebook/callback` (добавлен алиас `/api/meta/oauth/callback`), а документация и роутер обновлены, чтобы кнопка авторизации в админке больше не упиралась в заблокированный URL Facebook.
-- Какая задача сейчас в работе: обновить список разрешённых Redirect URI в Meta и подтвердить успешный OAuth-флоу после деплоя.
-- Следующие задачи: синхронизировать список зарегистрированных чатов с карточками проектов и зафиксировать свежие логи деплоя.
-
-### Progress 36
-- Что сделано: Telegram-меню теперь редактирует исходное сообщение при нажатии inline-кнопок, а Meta OAuth возвращает пользователей обратно в бота с автоматическим уведомлением и HTML-страницей успеха/ошибки.
-- Какая задача сейчас в работе: проконтролировать отправку уведомлений после OAuth в боевых чатах и убедиться, что админка показывает свежие данные без перезагрузки.
-- Следующие задачи: пройти ручные проверки `/auth/facebook` и `/manage/telegram/webhook` после деплоя и приложить обновлённые логи в журнал.
-
-### Progress 37
-- Что сделано: синхронизирована KV-реплика `telegram_groups` для зарегистрированных чатов, обновлена ER-диаграмма и README с актуальным состоянием мастер-флоу проектов.
-- Какая задача сейчас в работе: автоматизировать CRM-процессы по лидам и расширить биллинг в бот-меню.
-- Следующие задачи: подключить напоминания по лидам, обновить сценарии оплаты и интегрировать Meta вебхуки в отчётный цикл.
-
-### Progress 38
-- Что сделано: добавлены inline-переключатели статусов лидов и управление биллингом (статус, дата, тариф) прямо в Telegram-боте, а в карточке проекта отображаются последние платежи.
-- Какая задача сейчас в работе: подготовка напоминаний по лидам/оплатам и подключение Meta вебхуков к отчётному циклу.
-- Следующие задачи: расширить отчётность и автоматизировать уведомления по SLA.
-
-### Progress 39
-- Что сделано: реализованы cron-напоминания по лидам и оплатам — воркер рассылает сообщения в проектные чаты, синхронизируя записи `LEAD_REMINDERS`/`PAYMENT_REMINDERS` в KV и R2.
-- Какая задача сейчас в работе: финализировать отчётный модуль и подготовить SLA-экспорты.
-- Следующие задачи: расширить автоотчёты и подтвердить расписания выгрузок.
-
-### Progress 40
-- Что сделано: главное меню бота показывает статус Meta OAuth, кнопки выровнены в два столбца, а авторизация и обновление вебхуков открываются по прямым ссылкам; карточки проектов подтягивают названия Telegram-групп из KV/R2 и корректно открываются из раздела Meta.
-- Какая задача сейчас в работе: реализация безопасного удаления проектов и расширение экспортов для клиентских отчётов.
-- Следующие задачи: добавить очистку привязок при удалении проекта и расширить расписания отчётности для портала.
-
-### Progress 41
-- Что сделано: реализовано каскадное удаление проектов в боте и API — `deleteProjectCascade` очищает лиды, оплаты, отчёты, напоминания и снимает привязку Meta/Telegram; бот запрашивает подтверждение и уведомляет клиентский чат.
-- Какая задача сейчас в работе: расширение отчётных сценариев (экспорт, авторассылки) и финальные регрессионные проверки.
-- Следующие задачи: дополнить отчётность новыми форматами, провести smoke-/regression-тесты и задокументировать результаты в runbook.
-
-### Progress 42
-- Что сделано: единый список проектов собирает данные из KV, R2 и зеркала Meta — карточки снова открываются в Telegram и веб-админке, ссылки на редактирование и портал работают.
-- Какая задача сейчас в работе: финальный прогон отчётности и уведомлений перед релизом.
-- Следующие задачи: подготовить релизную документацию и контрольный чек-лист для smoke-/regression-тестов.
-
-### Progress 43
-- Что сделано: портал управляется без выхода из карточки (создание/перегенерация/режимы/рассылка с попапами), список проектов компактный и показывает расход Meta прямо в кнопках, а биллинг получил пресеты тарифов и дат оплаты вместе с автозаполнением первой оплаты.
-- Какая задача сейчас в работе: вынести настройки метрик/кампаний рекламных отчётов и синхронизировать автоотчёты с ручными параметрами.
-- Следующие задачи: внедрить расширенные настройки отчётности, зафиксировать итоговый QA по новым биллинговым и портальным сценариям.
-
-### Progress 44
-- Что сделано: раздел «Изменить данные» запускает переименование проекта прямо в чате, а настройки проекта получили переключатели периода автоотчётов, тихих выходных, тихой отправки и lead-алертов с сохранением в KV и мгновенной перерисовкой карточки.
-- Какая задача сейчас в работе: объединение ручных фильтров (метрики/кампании) с автоотчётами и клиентским порталом.
-- Следующие задачи: прогнать напоминания и отчёты после обновления настроек и подготовить финальный регрессионный чек-лист перед релизом.
-
-### Progress 45
-- Что сделано: ручные выборки кампаний/метрик синхронизируются между порталом, настройками проекта и автоотчётами — расходы Meta считаются по сохранённым кампаниям, портал моментально обновляется без выхода из карточки, а Telegram-сводки показывают актуальные данные.
-- Какая задача сейчас в работе: сквозной регрессионный прогон напоминаний, расписаний отчётов и портала с новыми настройками.
-- Следующие задачи: обновить финальный QA-чек-лист, зафиксировать результаты smoke-/regression-тестов и подготовить релизные материалы.
-
-### Progress 46
-- Что сделано: генерация и перегенерация клиентских порталов сразу выдают рабочую ссылку — воркер подставляет базовый домен из окружения или fallback на workers.dev, поэтому карточка портала в Telegram не требует повторного открытия.
-- Какая задача сейчас в работе: актуализировать release-/smoke-чек-лист с учётом нового fallback и убедиться, что QA-журнал закрывает сценарии портала.
-- Следующие задачи: закрепить результаты QA в финальной документации и выпустить релизную вырезку.
-
-### Progress 47
-- Что сделано: кнопка «📲 Чат-группа» нормализует ссылки (`https://`/`tg://`, `t.me`, `@username`, `+invite`, числовые ID) и открывает чаты напрямую без ошибок формата; карточка проекта показывает ту же ссылку в описании.
-- Какая задача сейчас в работе: контрольный прогон QA для подтверждения быстрых переходов в админских чатах.
-- Следующие задачи: зафиксировать результаты smoke-/regression-проверок и финализировать релизный чек-лист.
-
-### Progress 48
-- Что сделано: добавлен KPI-редактор кампаний (callback `report:kpi_*`), который синхронизирует цели Meta (`campaign_objective:*`) и пользовательские наборы KPI (`project_campaign_kpis:*`) с порталами и автоотчётами; порталы и экспорт теперь поддерживают CTR/CPC/CPL/ROAS и другие метрики.
-- Какая задача сейчас в работе: smoke-тесты CSV/HTML-экспортов с расширенными KPI и фиксация результатов в QA-журнале.
-- Следующие задачи: подтвердить выгрузки, обновить release-чек-лист и подготовить финальную выдачу.
-
-### Progress 49
-- Что сделано: унифицированы ссылки на чат-группы — `chat_id` супергрупп конвертируются в `https://t.me/c/<id>/2`, поэтому кнопка «📲 Чат-группа» и portal/QA-ссылки открываются моментально; регрессионные тесты обновлены под новый формат.
-- Какая задача сейчас в работе: контрольные smoke-/QA-прогоны экспортов с учётом обновлённых ссылок и KPI.
-- Следующие задачи: зафиксировать результаты тестов в QA-журнале и закрыть финальный релизный чек-лист.
-
-### Progress 50
-- Что сделано: все административные ответы Telegram-бота очищены от упоминаний веб-панели, тексты направляют админов работать внутри бота и подсказывают, как добавить недостающие данные.
-- Какая задача сейчас в работе: контроль корректности уведомлений и отчётов после обновления текстов и политик доступа.
-- Следующие задачи: подтвердить smoke-/regression-прогоны и сфокусироваться на финальных настройках KPI/кампаний.
-
-### Progress 51
-- Что сделано: ссылки на чат-группы и fallback `tg://openmessage` нормализованы к формату `https://t.me/c/.../2`, а regression-тесты и README обновлены.
-- Какая задача сейчас в работе: smoke-/QA-прогоны переходов в чат и отчётности после смены формата ссылок.
-- Следующие задачи: зафиксировать результаты тестов в QA-журнале и закрыть финальный релизный чек-лист.
-
-### Progress 52
-- Что сделано: подготовлен паспорт `SPEC-AUTO-REPORT-v3.md`, README/ER-диаграмма дополнены сущностью `PROJECT_SETTINGS`, callback-schema расширена новыми пространствами `auto_*`, `alert_*`, `kpi_*`, `report_manual/report_export`.
-- Какая задача сейчас в работе: миграция Telegram-бота и cron-движка на новый стандарт callback-ов и расписаний SPEC-AUTO-REPORT-v3.
-- Следующие задачи: обновить обработчики отчётности, синхронизировать планировщик (интервал 5 минут, понедельничный double-report) и подтвердить QA.
-
-### Progress 53
-- Что сделано: внедрена inline-панель автоотчётов SPEC-AUTO-REPORT-v3 — кнопки `auto_*`/`alert_*` управляют расписанием, маршрутами и алертами, состояние хранится в KV (`project_settings:{id}`) и отображается в карточке проекта.
-- Какая задача сейчас в работе: перенос cron- и экспорт-логики на новые настройки `project_settings` (маршруты, double-report, `last_sent_*`).
-- Следующие задачи: обновить планировщик/alert-движок под новое хранилище, прогнать `npm run qa` и зафиксировать результат в документации.
-
-### Progress 54
-- Что сделано: cron-движок SPEC-AUTO-REPORT-v3 запущен — воркер каждые 5 минут собирает проекты, синхронизирует `project_settings`, рассылает ежедневные/понедельничные отчёты и отправляет алерты (billing/budget/meta/pause) по заданным маршрутам.
-- Какая задача сейчас в работе: финальный smoke-/QA-прогон отчётности, экспортов и алертов с фиксацией результатов в runbook.
-- Следующие задачи: обновить deployment/runbook чек-листы и подготовить релизную выдачу модуля отчётности.
-
-### Progress 55
-- Что сделано: auto-report dataset расширен KPI/порталами, SUMMARY формирует inline-кнопки «Портал проекта», а маршрутизация отчётов переключается отдельными чекбоксами «в чат»/«админу» с поддержкой отключения обоих каналов.
-- Какая задача сейчас в работе: перевести раздел «💰 Оплата» на новые тарифы/продления и подготовить платёжные напоминания/подтверждения.
-- Следующие задачи: завершить напоминания/подтверждения оплаты и провести итоговый QA по отчётам + платежам с фиксацией в документации.
-
-### Progress 56
-- Что сделано: раздел «💰 Оплата» переведён на предписанный набор кнопок (+30 дней, 350$, 500$, ввод даты) с актуальными callback-ами `proj:billing-next`/`proj:billing-tariff-preset`, чтобы обновление тарифа и даты оплаты выполнялось без лишних меню.
-- Какая задача сейчас в работе: автоматизировать напоминания и подтверждения оплаты, включая сценарии продления/непродления и маршрут сообщений.
-- Следующие задачи: реализовать платёжные уведомления админам/клиентам и обновить документацию/QA под новую платёжную логику.
-
-### Progress 57
-- Что сделано: платёжные напоминания перешли в Telegram-бот — админ выбирает «Не продлеваю»/«Продолжаем работу», клиент отвечает «Наличкой»/«Перевод на карту»/«Готово», бот рассылает реквизиты, подтверждения и follow-up с обновлением `payment_reminders`/`projects` в KV.
-- Какая задача сейчас в работе: финальный smoke/QA SPEC-AUTO-REPORT и биллинга, синхронизация runbook/deployment чек-листов.
-- Следующие задачи: провести итоговый QA, задокументировать результаты и подготовить релизную сводку.
-
-### Progress 58
-- Что сделано: автоотчёты и отчётные рассылки переведены на текстовый формат SPEC, добавлены inline-кнопки «Портал проекта», удалены HTML-файлы и callback `report:download`, а все маршруты используют новые текстовые payload'ы.
-- Какая задача сейчас в работе: провести финальный smoke/QA SPEC-AUTO-REPORT и биллинга, обновить runbook/deployment чек-листы.
-- Следующие задачи: завершить релизный QA и зафиксировать изменения в документации/чек-листах.
-
-### Progress 59
-- Что сделано: добавлены регрессионные тесты для text-only автоотчётов и dataset-генератора, экспортированы хелперы `buildAutoReportDataset`/`buildAutoReportNotification` для QA.
-- Какая задача сейчас в работе: финальный smoke на продовых воркерах и валидация платёжных follow-up сообщений.
-- Следующие задачи: закрыть релизный чек-лист, собрать итоговый отчёт по внедрению SPEC-AUTO-REPORT и обновить runbook.
-
-### Progress 60
-- Что сделано: внедрён auto-objective KPI engine — цели кампаний считываются из Meta, project/campaign overrides сохраняются в KV и применяются в отчётах/портале, добавлены inline-редакторы KPI проекта и кампаний.
-- Какая задача сейчас в работе: релизный smoke SPEC-AUTO-REPORT + биллинг.
-- Следующие задачи: оформить итоговый QA-отчёт и закрыть релизную документацию.
-
-### Progress 61
-- Что сделано: STEP 13 перевёл отчёты на KPISet/ProjectReport, обновил текстовые шаблоны (daily/weekly) с кнопками «Портал проекта» и синхронизировал клиентский портал (фильтры периодов, пагинация лидов, новые KPI).
-- Какая задача сейчас в работе: сверка документации перед запуском STEP 14.
-- Следующие задачи: получить требования STEP 14 и выполнить релизный smoke.
-
-### Progress 62
-- Что сделано: STEP 14 унифицировал кампании — `normalizeCampaign`/`compareCampaigns` дают сортировку ACTIVE → PAUSED, вычисляют objective-driven result KPI и короткие названия; бот, портал и отчёты показывают статус/result/расход/показы/клики, а лиды и уведомления используют короткие имена.
-- Какая задача сейчас в работе: финальный smoke/QA SPEC-AUTO-REPORT + биллинг перед релизом.
-- Следующие задачи: закрыть релизный чек-лист, обновить runbook/deployment и оформить итоговый отчёт.
-
-### Progress 63
-- Что сделано: STEP 15 перевёл отчёты на компактный текст (⏰/📅 заголовки, KPI и кампании с result/CPA), авторассылки используют пресет «yesterday» и отправляются в тему проекта, обновлены регрессионные тесты под новый шаблон.
-- Какая задача сейчас в работе: финальный smoke SPEC-AUTO-REPORT + биллинг и сверка документации.
-- Следующие задачи: завершить релизный чек-лист и выпустить итоговый отчёт.
-
-### Progress 64
-- Что сделано: STEP 17 (итерация 2) внедрил автоматические напоминания оплаты, выбор формата платежа клиентом, подтверждение перевода админу и авто-блокировку отчётов/портала при отказе, все сообщения маршрутизируются в тему проекта.
-- Какая задача сейчас в работе: финальный smoke/QA SPEC-AUTO-REPORT + биллинг, фиксация cron-окон и edge-case сценариев оплаты.
-- Следующие задачи: оформить релизную запись по STEP 17, обновить runbook/deployment чек-листы и подтвердить результаты QA.
-
+## Дорожная карта (сокращённо)
+
+Полное описание — в `docs/refactor-plan.md`. Ниже ключевые ориентиры:
+
+1. База (entrypoint + KV/R2 клиенты) ✅
+2. Модель данных и CRUD-helpers ✅
+3. Meta API + кеш
+4. Webhook лидов + Telegram уведомления
+5. Telegram-бот (меню, карточка, биллинг)
+6. Клиентский портал (прелоадер, метрики, табы)
+7. Автоотчёты и алерты
+8. Очистка лидов/кешей и удаление легаси-кода
+9. Автотесты (unit/integration/e2e)
+10. Документация деплоя и эксплуатации
+
+## Дополнительная документация
+
+- [Telegram Webhook Setup Guide](docs/telegram-webhook.md)
+- [Functional Blueprint & Rollout Plan](docs/system-blueprint.md)
+- [Full Spec, Templates & Master Prompt](docs/master-spec.md)

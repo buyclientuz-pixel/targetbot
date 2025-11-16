@@ -9,7 +9,7 @@
 - [ ] Зафиксирован ответственный за ведение README (обновление раздела Progress).
 
 ## 2. Подключение Meta
-- [ ] Пройден OAuth по кнопке «Обновить токен» в `/admin`, редирект завершился на `/auth/facebook/callback` (алиас: `/api/meta/oauth/callback`).
+- [ ] Пройден OAuth по кнопке «Обновить токен» в `/admin`, редирект завершился на `/auth/facebook/callback`.
 - [ ] `/api/meta/status` возвращает `ok: true`, `status: "valid"` и дату истечения токена.
 - [ ] `/api/meta/adaccounts` выводит список кабинетов с именем, ID и валютой.
 - [ ] В README отмечено, какой бизнес-аккаунт используется (см. Progress).
