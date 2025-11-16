@@ -9,6 +9,8 @@ export interface PanelRuntime {
   defaultTimezone: string;
   getFacebookOAuthUrl: (userId: number) => string | null;
   telegramToken: string;
+  telegramSecret: string;
+  adminIds: number[];
 }
 
 export interface PanelRendererOptions {

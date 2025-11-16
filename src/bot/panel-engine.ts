@@ -6,6 +6,12 @@ import { render as renderMain } from "./panels/main";
 import { render as renderProjects } from "./panels/projects";
 import { render as renderFbAuth } from "./panels/fb-auth";
 import { render as renderProject } from "./panels/project";
+import { render as renderAnalytics } from "./panels/analytics";
+import { render as renderFinance } from "./panels/finance";
+import { render as renderUsers } from "./panels/users";
+import { render as renderSettings } from "./panels/settings";
+import { render as renderWebhooks } from "./panels/webhooks";
+import { render as renderMeta } from "./panels/meta";
 
 interface ResolveResult {
   renderer: typeof renderMain;
@@ -34,6 +40,24 @@ const resolvePanel = (panelId: string): ResolveResult => {
   }
   if (panelId === "panel:fb-auth" || panelId === "cmd:auth") {
     return { renderer: renderFbAuth, params: [], id: "fb-auth" };
+  }
+  if (panelId === "panel:analytics" || panelId === "cmd:analytics") {
+    return { renderer: renderAnalytics, params: [], id: "analytics" };
+  }
+  if (panelId === "panel:finance" || panelId === "cmd:finance") {
+    return { renderer: renderFinance, params: [], id: "finance" };
+  }
+  if (panelId === "panel:users" || panelId === "cmd:users") {
+    return { renderer: renderUsers, params: [], id: "users" };
+  }
+  if (panelId === "panel:settings" || panelId === "cmd:settings") {
+    return { renderer: renderSettings, params: [], id: "settings" };
+  }
+  if (panelId === "panel:webhooks" || panelId === "cmd:webhooks") {
+    return { renderer: renderWebhooks, params: [], id: "webhooks" };
+  }
+  if (panelId === "panel:meta" || panelId === "cmd:meta") {
+    return { renderer: renderMeta, params: [], id: "meta" };
   }
   return { renderer: renderMain, params: [], id: "main" };
 };

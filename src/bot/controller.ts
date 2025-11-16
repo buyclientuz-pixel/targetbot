@@ -124,6 +124,8 @@ const buildPanelRuntime = (ctx: BotContext) => ({
   defaultTimezone: ctx.defaultTimezone,
   getFacebookOAuthUrl: ctx.getFacebookOAuthUrl,
   telegramToken: ctx.token,
+  telegramSecret: ctx.telegramSecret,
+  adminIds: ctx.adminIds,
 });
 
 interface CreateTelegramBotControllerOptions {
@@ -1367,28 +1369,28 @@ const handleTextCommand = async (
       await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:fb-auth" });
       return;
     case "Meta-аккаунты":
-      await sendMetaAccountsList(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:meta" });
       return;
     case "Проекты":
       await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects" });
       return;
     case "Аналитика":
-      await sendAnalyticsOverview(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:analytics" });
       return;
     case "Пользователи":
-      await sendUsersOverview(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:users" });
       return;
     case "Финансы":
-      await sendFinanceOverview(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:finance" });
       return;
     case "Вебхуки Telegram":
-      await sendWebhookStatus(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:webhooks" });
       return;
     case "Настройки":
-      await sendSettingsScreen(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:settings" });
       return;
     default:
-      await sendMenu(ctx, chatId, userId);
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
   }
 };
 
@@ -1684,22 +1686,22 @@ const handleCallback = async (
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects" });
           break;
         case "analytics":
-          await sendAnalyticsOverview(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:analytics" });
           break;
         case "users":
-          await sendUsersOverview(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:users" });
           break;
         case "finance":
-          await sendFinanceOverview(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:finance" });
           break;
         case "settings":
-          await sendSettingsScreen(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:settings" });
           break;
         case "meta":
-          await sendMetaAccountsList(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:meta" });
           break;
         case "webhooks":
-          await sendWebhookStatus(ctx, chatId, userId);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:webhooks" });
           break;
         default:
           await sendMenu(ctx, chatId, userId);
