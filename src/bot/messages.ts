@@ -589,6 +589,17 @@ export const buildAutoreportsMessage = (
   return lines.join("\n");
 };
 
+export const buildAutoreportsRouteMessage = (
+  project: ProjectRecord,
+  autoreports: AutoreportsRecord,
+): string => {
+  const lines: string[] = [];
+  lines.push(`Маршрут авто-отчётов — <b>${escapeHtml(project.name)}</b>`);
+  lines.push("Выберите, куда отправлять ежедневные авто-отчёты.");
+  lines.push(`Текущий маршрут: ${mapAutoreportSendTo(autoreports)}`);
+  return lines.join("\n");
+};
+
 export const buildAlertsMessage = (project: ProjectRecord, alerts: AlertsRecord): string => {
   const lines: string[] = [];
   lines.push(`Алерты — <b>${escapeHtml(project.name)}</b>`);
@@ -603,6 +614,14 @@ export const buildAlertsMessage = (project: ProjectRecord, alerts: AlertsRecord)
     `Порог очереди: ${alerts.leadQueueThresholdHours} ч, паузы: ${alerts.pauseThresholdHours} ч, ` +
       `оплата за ${alerts.paymentReminderDays.join(", ")} дн.`,
   );
+  return lines.join("\n");
+};
+
+export const buildAlertsRouteMessage = (project: ProjectRecord, alerts: AlertsRecord): string => {
+  const lines: string[] = [];
+  lines.push(`Маршрут алертов — <b>${escapeHtml(project.name)}</b>`);
+  lines.push("Укажите, куда отправлять напоминания и предупреждения.");
+  lines.push(`Сейчас: ${mapAlertsChannel(alerts)}`);
   return lines.join("\n");
 };
 

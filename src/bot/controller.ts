@@ -8,50 +8,34 @@ import {
   leadStatusLabel,
 } from "./data";
 import {
-  buildAutoreportsKeyboard,
-  buildAutoreportsRouteKeyboard,
-  buildAlertsKeyboard,
-  buildAlertsRouteKeyboard,
   buildBillingKeyboard,
   buildChatBindingKeyboard,
-  buildChatChangeKeyboard,
-  buildChatInfoKeyboard,
   buildDeleteConfirmKeyboard,
   buildExportKeyboard,
-  buildKpiKeyboard,
   buildLeadDetailKeyboard,
   buildLeadsKeyboard,
   buildMainMenuKeyboard,
   buildProjectActionsKeyboard,
-  buildProjectEditKeyboard,
   buildProjectCreationKeyboard,
   buildProjectListKeyboard,
-  buildSettingsKeyboard,
 } from "./keyboards";
 import {
-  buildAlertsMessage,
   buildAnalyticsOverviewMessage,
-  buildAutoreportsMessage,
   buildBillingScreenMessage,
   buildCampaignsMessage,
   buildChatAlreadyUsedMessage,
   buildChatBindingMessage,
-  buildChatChangeMessage,
-  buildChatInfoMessage,
   buildDeleteConfirmationMessage,
   buildFinanceOverviewMessage,
-  buildKpiMessage,
   buildLeadDetailMessage,
   buildLeadsMessage,
   buildMenuMessage,
   buildPortalMessage,
   buildProjectCardMessage,
-  buildProjectEditMessage,
   buildProjectCreationMessage,
   buildProjectsListMessage,
   buildReportMessage,
   buildNoFreeChatsMessage,
-  buildSettingsMessage,
   buildUsersMessage,
   buildWebhookStatusMessage,
   type ProjectListItem,
@@ -876,73 +860,61 @@ const sendWebhookStatus = async (ctx: BotContext, chatId: number, userId: number
   });
 };
 
-const sendSettingsScreen = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
-  const settings = await getUserSettingsRecord(ctx.kv, userId, { timezone: ctx.defaultTimezone, language: "ru" });
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildSettingsMessage(settings),
-    replyMarkup: buildSettingsKeyboard(settings),
-  });
-};
-
-const sendChatInfoScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildChatInfoMessage(bundle.project),
-    replyMarkup: buildChatInfoKeyboard(projectId, Boolean(bundle.project.chatId)),
-  });
-};
-
-const sendChatChangeScreen = async (
-  ctx: BotContext,
-  chatId: number,
+const renderSettingsPanel = async (
+  runtime: ReturnType<typeof buildPanelRuntime>,
   userId: number,
+  chatId: number,
+): Promise<void> => {
+  await renderPanel({ runtime, userId, chatId, panelId: "panel:settings" });
+};
+
+const renderChatPanel = async (
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
   projectId: string,
 ): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  const chats = await listAvailableProjectChats(ctx.kv, userId);
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildChatChangeMessage(bundle.project, chats),
-    replyMarkup: buildChatChangeKeyboard(projectId, chats),
-  });
+  await renderPanel({ runtime, userId, chatId, panelId: `project:chat:${projectId}` });
 };
 
-const sendAutoreportsScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildAutoreportsMessage(bundle.project, bundle.autoreports),
-    replyMarkup: buildAutoreportsKeyboard(projectId, bundle.autoreports),
-  });
+const renderAutoreportsPanel = async (
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+  view: "main" | "route" = "main",
+): Promise<void> => {
+  const target = view === "route" ? `project:autoreports-route:${projectId}` : `project:autoreports:${projectId}`;
+  await renderPanel({ runtime, userId, chatId, panelId: target });
 };
 
-const sendAlertsScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildAlertsMessage(bundle.project, bundle.alerts),
-    replyMarkup: buildAlertsKeyboard(projectId, bundle.alerts),
-  });
+const renderAlertsPanel = async (
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+  view: "main" | "route" = "main",
+): Promise<void> => {
+  const target = view === "route" ? `project:alerts-route:${projectId}` : `project:alerts:${projectId}`;
+  await renderPanel({ runtime, userId, chatId, panelId: target });
 };
 
-const sendKpiScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildKpiMessage(bundle.project),
-    replyMarkup: buildKpiKeyboard(projectId),
-  });
+const renderKpiPanel = async (
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  await renderPanel({ runtime, userId, chatId, panelId: `project:kpi:${projectId}` });
 };
 
-const sendProjectEditScreen = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildProjectEditMessage(bundle.project),
-    replyMarkup: buildProjectEditKeyboard(projectId),
-  });
+const renderProjectEditPanel = async (
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  await renderPanel({ runtime, userId, chatId, panelId: `project:edit:${projectId}` });
 };
 
 const sendDeleteConfirm = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
@@ -1105,8 +1077,9 @@ const resolveChatInput = async (
 
 const handleChatManualInput = async (
   ctx: BotContext,
-  chatId: number,
+  runtime: ReturnType<typeof buildPanelRuntime>,
   userId: number,
+  chatId: number,
   projectId: string,
   input: string,
 ): Promise<void> => {
@@ -1122,11 +1095,7 @@ const handleChatManualInput = async (
     }
     await setProjectChatBinding(ctx, projectId, { chatId: freeChat.chatId, chatTitle: freeChat.chatTitle });
     await recordKnownChat(ctx.kv, chat);
-    await sendTelegramMessage(ctx.token, {
-      chatId,
-      text: `✅ Чат-группа обновлена: ID ${chat.id}.`,
-    });
-    await sendChatInfoScreen(ctx, chatId, projectId);
+    await renderChatPanel(runtime, userId, chatId, projectId);
   } catch (error) {
     await sendTelegramMessage(ctx.token, {
       chatId,
@@ -1137,8 +1106,9 @@ const handleChatManualInput = async (
 
 const handleChatSelect = async (
   ctx: BotContext,
-  chatId: number,
+  runtime: ReturnType<typeof buildPanelRuntime>,
   userId: number,
+  chatId: number,
   projectId: string,
   selectedChatId: number,
 ): Promise<void> => {
@@ -1148,28 +1118,36 @@ const handleChatSelect = async (
     return;
   }
   await setProjectChatBinding(ctx, projectId, { chatId: freeChat.chatId, chatTitle: freeChat.chatTitle });
-  await sendTelegramMessage(ctx.token, { chatId, text: `✅ Чат привязан: ${selectedChatId}` });
-  await sendChatInfoScreen(ctx, chatId, projectId);
+  await renderChatPanel(runtime, userId, chatId, projectId);
 };
 
-const handleChatUnlink = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
+const handleChatUnlink = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
   await setProjectChatBinding(ctx, projectId, null);
-  await sendTelegramMessage(ctx.token, { chatId, text: "✅ Чат успешно отвязан от проекта." });
-  await sendChatInfoScreen(ctx, chatId, projectId);
+  await renderChatPanel(runtime, userId, chatId, projectId);
 };
 
 const handleAutoreportsToggle = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   await putAutoreportsRecord(ctx.kv, projectId, { ...bundle.autoreports, enabled: !bundle.autoreports.enabled });
-  await sendAutoreportsScreen(ctx, chatId, projectId);
+  await renderAutoreportsPanel(runtime, userId, chatId, projectId);
 };
 
 const handleAutoreportsTimeInput = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   timeInput: string,
@@ -1187,43 +1165,51 @@ const handleAutoreportsTimeInput = async (
   }
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   await putAutoreportsRecord(ctx.kv, projectId, { ...bundle.autoreports, time: `${match[1]}:${match[2]}` });
-  await sendAutoreportsScreen(ctx, chatId, projectId);
+  await renderAutoreportsPanel(runtime, userId, chatId, projectId);
 };
 
 const handleAutoreportsRouteSet = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   route: AutoreportsRecord["sendTo"],
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   await putAutoreportsRecord(ctx.kv, projectId, { ...bundle.autoreports, sendTo: route });
-  await sendAutoreportsScreen(ctx, chatId, projectId);
+  await renderAutoreportsPanel(runtime, userId, chatId, projectId, "route");
 };
 
 const handleAlertsToggle = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   await putAlertsRecord(ctx.kv, projectId, { ...bundle.alerts, enabled: !bundle.alerts.enabled });
-  await sendAlertsScreen(ctx, chatId, projectId);
+  await renderAlertsPanel(runtime, userId, chatId, projectId);
 };
 
 const handleAlertsRouteSet = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   channel: AlertsRecord["channel"],
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   await putAlertsRecord(ctx.kv, projectId, { ...bundle.alerts, channel });
-  await sendAlertsScreen(ctx, chatId, projectId);
+  await renderAlertsPanel(runtime, userId, chatId, projectId, "route");
 };
 
 const handleAlertsTypeToggle = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   key: keyof AlertsRecord["types"],
@@ -1233,11 +1219,13 @@ const handleAlertsTypeToggle = async (
     ...bundle.alerts,
     types: { ...bundle.alerts.types, [key]: !bundle.alerts.types[key] },
   });
-  await sendAlertsScreen(ctx, chatId, projectId);
+  await renderAlertsPanel(runtime, userId, chatId, projectId);
 };
 
 const handleKpiModeChange = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   mode: ProjectRecord["settings"]["kpi"]["mode"],
@@ -1245,11 +1233,13 @@ const handleKpiModeChange = async (
   await updateProject(ctx, projectId, (project) => {
     project.settings.kpi.mode = mode;
   });
-  await sendKpiScreen(ctx, chatId, projectId);
+  await renderKpiPanel(runtime, userId, chatId, projectId);
 };
 
 const handleKpiTypeChange = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   type: ProjectRecord["settings"]["kpi"]["type"],
@@ -1276,7 +1266,7 @@ const handleKpiTypeChange = async (
         break;
     }
   });
-  await sendKpiScreen(ctx, chatId, projectId);
+  await renderKpiPanel(runtime, userId, chatId, projectId);
 };
 
 const cleanupProjectData = async (ctx: BotContext, projectId: string): Promise<void> => {
@@ -1340,12 +1330,13 @@ const handleLeadStatusChange = async (
 
 const handleSettingsChange = async (
   ctx: BotContext,
-  chatId: number,
+  runtime: ReturnType<typeof buildPanelRuntime>,
   userId: number,
+  chatId: number,
   patch: Partial<UserSettingsRecord>,
 ): Promise<void> => {
   await updateUserSettingsRecord(ctx.kv, userId, patch, { timezone: ctx.defaultTimezone, language: "ru" });
-  await sendSettingsScreen(ctx, chatId, userId);
+  await renderSettingsPanel(runtime, userId, chatId);
 };
 
 const buildChatUnlinkKeyboard = (projectId: string) => ({
@@ -1491,19 +1482,19 @@ const handleCallback = async (
           });
           break;
         case "chat-select":
-          await handleChatSelect(ctx, chatId, userId, parts[2]!, Number(parts[3]));
+          await handleChatSelect(ctx, panelRuntime, userId, chatId, parts[2]!, Number(parts[3]));
           break;
         case "chat-unlink":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:chat-unlink:${parts[2]!}` });
           break;
         case "chat-unlink-confirm":
-          await handleChatUnlink(ctx, chatId, parts[2]!);
+          await handleChatUnlink(ctx, panelRuntime, userId, chatId, parts[2]!);
           break;
         case "autoreports":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:autoreports:${parts[2]!}` });
           break;
         case "autoreports-toggle":
-          await handleAutoreportsToggle(ctx, chatId, parts[2]!);
+          await handleAutoreportsToggle(ctx, panelRuntime, userId, chatId, parts[2]!);
           break;
         case "autoreports-time":
           await saveBotSession(ctx.kv, {
@@ -1514,30 +1505,36 @@ const handleCallback = async (
           await sendTelegramMessage(ctx.token, { chatId, text: "Введите время HH:MM" });
           break;
         case "autoreports-route":
-          await sendTelegramMessage(ctx.token, {
-            chatId,
-            text: "Кому отправлять отчёты",
-            replyMarkup: buildAutoreportsRouteKeyboard(parts[2]!),
-          });
+          await renderAutoreportsPanel(panelRuntime, userId, chatId, parts[2]!, "route");
           break;
         case "autoreports-send":
-          await handleAutoreportsRouteSet(ctx, chatId, parts[2]!, parts[3]! as AutoreportsRecord["sendTo"]);
+          await handleAutoreportsRouteSet(
+            ctx,
+            panelRuntime,
+            userId,
+            chatId,
+            parts[2]!,
+            parts[3]! as AutoreportsRecord["sendTo"],
+          );
           break;
         case "alerts":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:alerts:${parts[2]!}` });
           break;
         case "alerts-toggle":
-          await handleAlertsToggle(ctx, chatId, parts[2]!);
+          await handleAlertsToggle(ctx, panelRuntime, userId, chatId, parts[2]!);
           break;
         case "alerts-route":
-          await sendTelegramMessage(ctx.token, {
-            chatId,
-            text: "Выберите маршрут доставки алертов",
-            replyMarkup: buildAlertsRouteKeyboard(parts[2]!),
-          });
+          await renderAlertsPanel(panelRuntime, userId, chatId, parts[2]!, "route");
           break;
         case "alerts-route-set":
-          await handleAlertsRouteSet(ctx, chatId, parts[2]!, parts[3]! as AlertsRecord["channel"]);
+          await handleAlertsRouteSet(
+            ctx,
+            panelRuntime,
+            userId,
+            chatId,
+            parts[2]!,
+            parts[3]! as AlertsRecord["channel"],
+          );
           break;
         case "alerts-type": {
           const typeKeyMap: Record<string, keyof AlertsRecord["types"]> = {
@@ -1545,17 +1542,38 @@ const handleCallback = async (
             pause: "pause24h",
             payment: "paymentReminder",
           };
-          await handleAlertsTypeToggle(ctx, chatId, parts[2]!, typeKeyMap[parts[3]!] ?? "leadInQueue");
+          await handleAlertsTypeToggle(
+            ctx,
+            panelRuntime,
+            userId,
+            chatId,
+            parts[2]!,
+            typeKeyMap[parts[3]!] ?? "leadInQueue",
+          );
           break;
         }
         case "kpi":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:kpi:${parts[2]!}` });
           break;
         case "kpi-mode":
-          await handleKpiModeChange(ctx, chatId, parts[2]!, parts[3]! as ProjectRecord["settings"]["kpi"]["mode"]);
+          await handleKpiModeChange(
+            ctx,
+            panelRuntime,
+            userId,
+            chatId,
+            parts[2]!,
+            parts[3]! as ProjectRecord["settings"]["kpi"]["mode"],
+          );
           break;
         case "kpi-type":
-          await handleKpiTypeChange(ctx, chatId, parts[2]!, parts[3]! as ProjectRecord["settings"]["kpi"]["type"]);
+          await handleKpiTypeChange(
+            ctx,
+            panelRuntime,
+            userId,
+            chatId,
+            parts[2]!,
+            parts[3]! as ProjectRecord["settings"]["kpi"]["type"],
+          );
           break;
         case "edit":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:edit:${parts[2]!}` });
@@ -1681,9 +1699,9 @@ const handleCallback = async (
     case "settings": {
       const target = parts[1];
       if (target === "language") {
-        await handleSettingsChange(ctx, chatId, userId, { language: parts[2]! });
+        await handleSettingsChange(ctx, panelRuntime, userId, chatId, { language: parts[2]! });
       } else if (target === "tz") {
-        await handleSettingsChange(ctx, chatId, userId, { timezone: parts[2]! });
+        await handleSettingsChange(ctx, panelRuntime, userId, chatId, { timezone: parts[2]! });
       }
       break;
     }
@@ -1815,7 +1833,15 @@ const handleSessionInput = async (
       await clearBotSession(ctx.kv, userId);
       return true;
     case "project:edit":
-      await handleProjectEditInput(ctx, chatId, sessionState.state.projectId, sessionState.state.field, text);
+      await handleProjectEditInput(
+        ctx,
+        panelRuntime,
+        userId,
+        chatId,
+        sessionState.state.projectId,
+        sessionState.state.field,
+        text,
+      );
       await clearBotSession(ctx.kv, userId);
       return true;
     case "project:create-manual":
@@ -1823,11 +1849,11 @@ const handleSessionInput = async (
       await clearBotSession(ctx.kv, userId);
       return true;
     case "chat:manual":
-      await handleChatManualInput(ctx, chatId, userId, sessionState.state.projectId, text);
+      await handleChatManualInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, text);
       await clearBotSession(ctx.kv, userId);
       return true;
     case "autoreports:set-time":
-      await handleAutoreportsTimeInput(ctx, chatId, sessionState.state.projectId, text);
+      await handleAutoreportsTimeInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, text);
       await clearBotSession(ctx.kv, userId);
       return true;
     default:
@@ -1837,6 +1863,8 @@ const handleSessionInput = async (
 
 const handleProjectEditInput = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   field: "name" | "ad" | "owner",
@@ -1861,7 +1889,6 @@ const handleProjectEditInput = async (
       project.name = trimmed;
     });
   }
-  await sendTelegramMessage(ctx.token, { chatId, text: "✅ Данные проекта обновлены." });
-  await sendProjectEditScreen(ctx, chatId, projectId);
+  await renderProjectEditPanel(runtime, userId, chatId, projectId);
 };
 
