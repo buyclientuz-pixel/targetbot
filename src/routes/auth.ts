@@ -81,6 +81,14 @@ export const registerAuthRoutes = (router: Router): void => {
     });
   });
 
+  const DEFAULT_LONG_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 дней — стандартный срок действия long-lived токена
+
+  const resolveTokenExpiry = (expiresInSeconds: unknown): string => {
+    const seconds = typeof expiresInSeconds === "number" ? expiresInSeconds : Number(expiresInSeconds);
+    const ttlMs = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : DEFAULT_LONG_TOKEN_TTL_MS;
+    return new Date(Date.now() + ttlMs).toISOString();
+  };
+
   router.on("GET", "/auth/facebook/callback", async (context) => {
     const url = new URL(context.request.url);
     const code = url.searchParams.get("code");
@@ -104,7 +112,7 @@ export const registerAuthRoutes = (router: Router): void => {
     try {
       const shortToken = await exchangeOAuthCode({ appId, appSecret, redirectUri, code });
       const longToken = await exchangeLongLivedToken({ appId, appSecret, shortLivedToken: shortToken.accessToken });
-      const expiresAt = new Date(Date.now() + longToken.expiresIn * 1000).toISOString();
+      const expiresAt = resolveTokenExpiry(longToken.expiresIn);
       const accounts = await fetchFacebookAdAccounts(longToken.accessToken);
       const profile = await fetchFacebookProfile(longToken.accessToken);
       await putFbAuthRecord(context.kv, {

@@ -126,3 +126,81 @@ test("/auth/facebook/callback exchanges tokens and stores accounts", async () =>
     globalThis.fetch = originalFetch;
   }
 });
+
+test("/auth/facebook/callback falls back to default expiry when expires_in is missing", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  const fixedNow = 1_700_000_000_000;
+  Date.now = () => fixedNow;
+
+  const kvNamespace = new MemoryKVNamespace();
+  const r2Bucket = new MemoryR2Bucket();
+  const env = {
+    KV: kvNamespace,
+    R2: r2Bucket,
+    FB_APP_ID: "123",
+    FB_APP_SECRET: "secret",
+    WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
+  } satisfies import("../../src/worker/types.ts").TargetBotEnv;
+
+  const router = createRouter();
+  registerMetaRoutes(router);
+  registerAuthRoutes(router);
+
+  const kv = new KvClient(kvNamespace);
+
+  const responses: Response[] = [
+    new Response(JSON.stringify({ access_token: "short", token_type: "bearer", expires_in: 600 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    new Response(JSON.stringify({ access_token: "long", token_type: "bearer" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    new Response(JSON.stringify({
+      data: [{ id: "act_1", name: "BirLash", currency: "USD", account_status: 1 }],
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+    new Response(JSON.stringify({ id: "fb_user_1", name: "Meta User" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  ];
+  let call = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? new URL(input) : new URL(input.url ?? String(input));
+    if (url.pathname.includes("oauth/access_token")) {
+      return responses[call++]!;
+    }
+    if (url.pathname.includes("/me/adaccounts")) {
+      return responses[2]!;
+    }
+    if (url.pathname.endsWith("/me")) {
+      return responses[3]!;
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const request = new Request("https://example.com/auth/facebook/callback?code=abc&state=100");
+    const exec = new TestExecutionContext();
+    const response = await router.dispatch(request, env, exec);
+    await exec.flush();
+
+    assert.equal(response.status, 200);
+
+    const record = await getFbAuthRecord(kv, 100);
+    assert.ok(record);
+    const metaToken = await getMetaToken(kv, "fb_user_1");
+    assert.equal(metaToken.accessToken, "long");
+    const expectedExpiry = new Date(fixedNow + 90 * 24 * 60 * 60 * 1000).toISOString();
+    assert.equal(record.expiresAt, expectedExpiry);
+    assert.equal(metaToken.expiresAt, expectedExpiry);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
