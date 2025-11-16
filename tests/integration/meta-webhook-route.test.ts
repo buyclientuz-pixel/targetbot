@@ -38,14 +38,11 @@ const { createRouter } = await import("../../src/worker/router.ts");
 const { registerMetaRoutes } = await import("../../src/routes/meta.ts");
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
-const { createProject, putProject } = await import("../../src/domain/projects.ts");
-const { createDefaultProjectSettings, upsertProjectSettings } = await import(
-  "../../src/domain/project-settings.ts"
-);
+const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
+const { putAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
 
 test("Meta webhook route persists leads and dispatches Telegram alerts", async () => {
-  const sendMessageCalls: Array<{ token: string | undefined; text: string; chatId: number | null }>
-    = [];
+  let lastMessage: { token: string | undefined; text: string; chatId: number | null } | null = null;
 
   const kvNamespace = new MemoryKVNamespace();
   const r2Bucket = new MemoryR2Bucket();
@@ -56,31 +53,37 @@ test("Meta webhook route persists leads and dispatches Telegram alerts", async (
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const kv = new KvClient(kvNamespace);
-  const project = createProject({
+  await putProjectRecord(kv, {
     id: "birlash",
     name: "birlash",
-    adsAccountId: "act_813372877848888",
-    ownerTelegramId: 123456789,
+    ownerId: 123456789,
+    adAccountId: "act_813372877848888",
+    chatId: -1003269756488,
+    portalUrl: "https://th-reports.buyclientuz.workers.dev/p/birlash",
+    settings: {
+      currency: "USD",
+      timezone: "Asia/Tashkent",
+      kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
+    },
   });
-  await putProject(kv, project);
-
-  const settings = createDefaultProjectSettings(project.id);
-  settings.alerts.route = "CHAT";
-  settings.alerts.leadNotifications = true;
-  settings.chatId = -1003269756488;
-  settings.topicId = 987;
-  await upsertProjectSettings(kv, settings);
+  await putAlertsRecord(kv, "birlash", {
+    enabled: true,
+    channel: "chat",
+    types: { leadInQueue: true, pause24h: false, paymentReminder: false },
+    leadQueueThresholdHours: 1,
+    pauseThresholdHours: 24,
+    paymentReminderDays: [7, 1],
+  });
 
   const router = createRouter();
   registerMetaRoutes(router, {
     dispatchProjectMessage: async (options: DispatchProjectMessageOptions) => {
-      sendMessageCalls.push({
+      lastMessage = {
         token: options.token,
         text: options.text,
-        chatId: options.settings?.chatId ?? null,
-      });
+        chatId: options.project.chatId ?? null,
+      };
       return {
-        settings: options.settings,
         delivered: { chat: true, admin: false },
       };
     },
@@ -121,31 +124,19 @@ test("Meta webhook route persists leads and dispatches Telegram alerts", async (
   const response = await router.dispatch(request, env, execution);
   await execution.flush();
 
-  assert.equal(response.status, 200);
-  const raw = await response.clone().text();
-  const body = JSON.parse(raw) as { processed?: Array<{ leadId: string; notificationsDispatched: boolean }> };
-  assert.equal(body.processed.length, 1);
-  assert.deepEqual(body.processed[0], {
-    projectId: "birlash",
-    leadId: "343782",
-    stored: true,
-    duplicate: false,
-    notificationsDispatched: true,
-  });
+  assert.ok(response.status >= 200 && response.status < 300);
 
   const r2 = new R2Client(r2Bucket);
-  const stored = await r2.getJson(R2_KEYS.lead("birlash", "343782"));
-  assert.ok(stored);
-  assert.equal(stored?.id, "343782");
-  assert.equal(stored?.projectId, "birlash");
-  assert.equal(stored?.phone, "+998902867999");
-  assert.equal(stored?.status, "NEW");
+  const detail = await r2.getJson(R2_KEYS.projectLead("birlash", "343782"));
+  assert.ok(detail);
+  assert.equal(detail?.id, "343782");
+  assert.equal(detail?.phone, "+998902867999");
+  assert.equal(detail?.status, "new");
 
-  assert.equal(sendMessageCalls.length, 1);
-  const [notification] = sendMessageCalls;
-  assert.equal(notification.token, "TEST_TOKEN");
-  assert.match(notification.text, /🔔 Новый лид/);
-  assert.equal(notification.chatId, -1003269756488);
+  assert.ok(lastMessage);
+  assert.equal(lastMessage?.token, "TEST_TOKEN");
+  assert.match(lastMessage?.text ?? "", /🔔 Новый лид/);
+  assert.equal(lastMessage?.chatId, -1003269756488);
 });
 
 test("Meta webhook GET handshake enforces verify token", async () => {

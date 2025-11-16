@@ -76,6 +76,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
     autobilling: true,
   });
 
+  const recentLeadDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   await putProjectLeadsList(r2, projectRecord.id, {
     stats: { total: 170, today: 2 },
     leads: [
@@ -83,7 +84,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
         id: "lead-1",
         name: "Sharofat Ona",
         phone: "+998902867999",
-        createdAt: "2025-11-14T21:54:26.000Z",
+        createdAt: recentLeadDate,
         source: "facebook",
         campaignName: "Campaign A",
         status: "new",
