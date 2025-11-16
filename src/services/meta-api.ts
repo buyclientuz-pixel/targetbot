@@ -323,12 +323,21 @@ const normaliseLeadRecord = (record: Record<string, unknown>): MetaLeadRecord | 
   } satisfies MetaLeadRecord;
 };
 
-const fetchLeadGenForms = async (nodeId: string, accessToken: string): Promise<string[]> => {
-  const forms: string[] = [];
+interface LeadGenFormDescriptor {
+  id: string;
+  accessToken?: string;
+}
+
+const fetchLeadGenForms = async (
+  nodeId: string,
+  accessToken: string,
+  overrideToken?: string,
+): Promise<LeadGenFormDescriptor[]> => {
+  const forms: LeadGenFormDescriptor[] = [];
   let cursor: string | undefined;
   do {
     const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${nodeId}/leadgen_forms`);
-    url.searchParams.set("access_token", accessToken);
+    url.searchParams.set("access_token", overrideToken ?? accessToken);
     url.searchParams.set("limit", "100");
     url.searchParams.set("fields", "id");
     if (cursor) {
@@ -346,7 +355,7 @@ const fetchLeadGenForms = async (nodeId: string, accessToken: string): Promise<s
     if (Array.isArray(payload.data)) {
       for (const entry of payload.data) {
         if (entry && typeof entry.id === "string" && entry.id.trim()) {
-          forms.push(entry.id.trim());
+          forms.push({ id: entry.id.trim(), accessToken: overrideToken ?? accessToken });
         }
       }
     }
@@ -424,30 +433,46 @@ const extractPromotedPageIds = (campaigns: Record<string, unknown>[]): string[] 
   return Array.from(ids);
 };
 
-const fetchLeadGenFormsViaPages = async (accountId: string, accessToken: string): Promise<string[]> => {
+const fetchLeadGenFormsViaPages = async (
+  accountId: string,
+  accessToken: string,
+): Promise<LeadGenFormDescriptor[]> => {
   const campaigns = await fetchMetaCampaignStatuses(accountId, accessToken);
-  const pageIds = extractPromotedPageIds(campaigns);
-  if (pageIds.length === 0) {
+  const campaignPageIds = extractPromotedPageIds(campaigns);
+  let managedPages: MetaPageRecord[] = [];
+  let managedPagesError: Error | null = null;
+  try {
+    managedPages = await fetchManagedPages(accessToken);
+  } catch (error) {
+    managedPagesError = error as Error;
+    console.warn(`[meta] Failed to enumerate managed pages: ${managedPagesError.message}`);
+  }
+  const pageIds = new Set<string>();
+  campaignPageIds.forEach((id) => pageIds.add(id));
+  managedPages.forEach((page) => pageIds.add(page.id));
+  if (pageIds.size === 0) {
+    if (managedPagesError) {
+      throw managedPagesError;
+    }
     return [];
   }
-  const managedPages = await fetchManagedPages(accessToken);
-  const tokenByPageId = managedPages.reduce((map, page) => {
+  const tokenByPageId = new Map<string, string>();
+  for (const page of managedPages) {
     if (page.accessToken) {
-      map.set(page.id, page.accessToken);
+      tokenByPageId.set(page.id, page.accessToken);
     }
-    return map;
-  }, new Map<string, string>());
-  const forms = new Set<string>();
+  }
+  const forms = new Map<string, LeadGenFormDescriptor>();
   for (const pageId of pageIds) {
     const token = tokenByPageId.get(pageId) ?? accessToken;
     try {
-      const pageForms = await fetchLeadGenForms(pageId, token);
-      pageForms.forEach((formId) => forms.add(formId));
+      const pageForms = await fetchLeadGenForms(pageId, token, token);
+      pageForms.forEach((form) => forms.set(form.id, form));
     } catch (error) {
       console.warn(`[meta] Failed to load leadgen forms for page ${pageId}: ${(error as Error).message}`);
     }
   }
-  return Array.from(forms);
+  return Array.from(forms.values());
 };
 
 const fetchLeadsForNode = async (
@@ -496,7 +521,7 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   let primaryError: Error | null = null;
   let fallbackError: Error | null = null;
   let fallbackAttempted = false;
-  let forms: string[] = [];
+  let forms: LeadGenFormDescriptor[] = [];
   try {
     forms = await fetchLeadGenForms(options.accountId, options.accessToken);
   } catch (error) {
@@ -521,12 +546,13 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   }
   const limit = options.limit;
   const collected: MetaLeadRecord[] = [];
-  for (const formId of forms) {
+  for (const form of forms) {
     const remaining = typeof limit === "number" ? Math.max(limit - collected.length, 0) : undefined;
     if (remaining === 0) {
       break;
     }
-    const leads = await fetchLeadsForNode(formId, options, remaining);
+    const token = form.accessToken ?? options.accessToken;
+    const leads = await fetchLeadsForNode(form.id, { ...options, accessToken: token }, remaining);
     collected.push(...leads);
     if (limit && collected.length >= limit) {
       break;
