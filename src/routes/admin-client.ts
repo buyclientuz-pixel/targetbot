@@ -1,21 +1,9 @@
-const extractScriptBlock = (factory: () => void): string => {
-  const source = factory.toString();
-  const start = source.indexOf("/*");
-  const end = source.lastIndexOf("*/");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error("Failed to extract admin client script block");
-  }
-  return source.slice(start + 2, end).trim();
-};
+// @ts-nocheck
 
-export const buildAdminClientScript = (workerUrl: string | null): string => {
-  const workerUrlJson = JSON.stringify(workerUrl ?? "");
-  const template = extractScriptBlock(() => {
-    /*
-(() => {
+const adminClientFactory = () => {
   const STORAGE_KEY = 'targetbot.admin.key';
   const API_BASE = '/api/admin';
-  const WORKER_URL = WORKER_URL_PLACEHOLDER;
+  const WORKER_URL = "WORKER_URL_PLACEHOLDER";
   const state = {
     key: localStorage.getItem(STORAGE_KEY),
     view: 'projects',
@@ -527,13 +515,17 @@ export const buildAdminClientScript = (workerUrl: string | null): string => {
     els.settingsInfo.textContent = `WORKER_URL: ${WORKER_URL}`;
   }
 
-  if (!state.key) {
-    showLogin();
-  } else {
-    setView('projects');
-  }
-})();
-    */
-  });
-  return template.replace(/WORKER_URL_PLACEHOLDER/g, workerUrlJson);
+    if (!state.key) {
+      showLogin();
+    } else {
+      setView('projects');
+    }
+  };
+
+export const buildAdminClientScript = (workerUrl: string | null): string => {
+  const workerUrlJson = JSON.stringify(workerUrl ?? "");
+  const script = adminClientFactory
+    .toString()
+    .replace(/"WORKER_URL_PLACEHOLDER"/g, workerUrlJson);
+  return `(${script})();`;
 };
