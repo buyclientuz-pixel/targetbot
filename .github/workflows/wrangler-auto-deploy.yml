@@ -1,22 +1,48 @@
-name: Wrangler Auto Deploy
+name: Cloudflare Auto Deploy (work)
+
 on:
   push:
     branches:
-      - codex/fix-npm-ci-error-on-cloudflare-workers-a5prv0
+      - work
+  workflow_dispatch:
+
+concurrency:
+  group: cloudflare-auto-deploy-work
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_VERSION: '22'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
       - name: Ensure npm registry availability
         run: node ./scripts/ensure-registry.mjs
+
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
       - name: Deploy to Cloudflare
-        run: npx wrangler deploy
+        run: npm run deploy
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
