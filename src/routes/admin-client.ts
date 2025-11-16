@@ -40,6 +40,19 @@ const adminClientFactory = () => {
     projectDetail: document.querySelector('[data-project-detail]'),
     projectDetailTitle: document.querySelector('[data-project-detail-title]'),
     projectDetailMeta: document.querySelector('[data-project-detail-meta]'),
+    portalPanel: document.querySelector('[data-portal-panel]'),
+    portalDescription: document.querySelector('[data-portal-description]'),
+    portalLink: document.querySelector('[data-portal-link]'),
+    portalAuto: document.querySelector('[data-portal-auto]'),
+    portalRun: document.querySelector('[data-portal-run]'),
+    portalSuccess: document.querySelector('[data-portal-success]'),
+    portalError: document.querySelector('[data-portal-error]'),
+    portalActions: document.querySelector('[data-portal-actions]'),
+    portalCreateButton: document.querySelector('[data-portal-create]'),
+    portalToggleButton: document.querySelector('[data-portal-toggle]'),
+    portalSyncButton: document.querySelector('[data-portal-sync]'),
+    portalDeleteButton: document.querySelector('[data-portal-delete]'),
+    portalOpenButton: document.querySelector('[data-portal-open]'),
     leadsTable: document.querySelector('[data-leads-body]'),
     campaignsTable: document.querySelector('[data-campaigns-body]'),
     paymentsTable: document.querySelector('[data-payments-body]'),
@@ -120,6 +133,91 @@ const adminClientFactory = () => {
         }
       }
       throw lastError ?? new Error('API недоступно');
+    };
+
+    const formatPortalDateTime = (value) => {
+      if (!value) {
+        return '—';
+      }
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return '—';
+      }
+      return date.toLocaleString('ru-RU');
+    };
+
+    const updatePortalPanel = (detail) => {
+      if (!els.portalPanel) {
+        return;
+      }
+      if (!detail) {
+        els.portalPanel.classList.add('portal-panel--disabled');
+        if (els.portalDescription) {
+          els.portalDescription.textContent = 'Выберите проект, чтобы управлять порталом.';
+        }
+        if (els.portalLink) {
+          els.portalLink.textContent = '—';
+          els.portalLink.removeAttribute('href');
+        }
+        [els.portalAuto, els.portalRun, els.portalSuccess, els.portalError].forEach((node) => {
+          if (node) {
+            node.textContent = '—';
+          }
+        });
+        ['portalCreateButton', 'portalToggleButton', 'portalSyncButton', 'portalDeleteButton', 'portalOpenButton'].forEach((key) => {
+          const button = els[key];
+          if (button) {
+            button.disabled = true;
+          }
+        });
+        return;
+      }
+      els.portalPanel.classList.remove('portal-panel--disabled');
+      const portalUrl = detail.project?.portalUrl ?? '';
+      const portalInfo = detail.portal ?? { enabled: false, sync: { lastRunAt: null, lastSuccessAt: null, lastErrorMessage: null } };
+      const hasPortal = Boolean(portalUrl);
+      if (els.portalDescription) {
+        els.portalDescription.textContent = hasPortal
+          ? 'Ссылка готова к отправке клиенту.'
+          : 'Портал ещё не создан.';
+      }
+      if (els.portalLink) {
+        if (hasPortal) {
+          els.portalLink.textContent = portalUrl;
+          els.portalLink.setAttribute('href', portalUrl);
+        } else {
+          els.portalLink.textContent = '—';
+          els.portalLink.removeAttribute('href');
+        }
+      }
+      if (els.portalAuto) {
+        els.portalAuto.textContent = portalInfo.enabled ? 'Включено' : 'Выключено';
+      }
+      if (els.portalRun) {
+        els.portalRun.textContent = formatPortalDateTime(portalInfo.sync?.lastRunAt ?? null);
+      }
+      if (els.portalSuccess) {
+        els.portalSuccess.textContent = formatPortalDateTime(portalInfo.sync?.lastSuccessAt ?? null);
+      }
+      if (els.portalError) {
+        els.portalError.textContent = portalInfo.sync?.lastErrorMessage ?? '—';
+      }
+      if (els.portalCreateButton) {
+        els.portalCreateButton.disabled = hasPortal;
+      }
+      if (els.portalToggleButton) {
+        els.portalToggleButton.disabled = !hasPortal;
+        els.portalToggleButton.textContent = portalInfo.enabled ? 'Остановить автообновление' : 'Включить автообновление';
+      }
+      if (els.portalSyncButton) {
+        els.portalSyncButton.disabled = !hasPortal;
+      }
+      if (els.portalDeleteButton) {
+        els.portalDeleteButton.disabled = !hasPortal;
+      }
+      if (els.portalOpenButton) {
+        els.portalOpenButton.disabled = !hasPortal;
+      }
     };
 
     const highlightNav = (view) => {
@@ -268,7 +366,62 @@ const adminClientFactory = () => {
     if (els.paymentsTable) {
       els.paymentsTable.innerHTML = '';
     }
+    updatePortalPanel(null);
   };
+    const portalActionPaths = {
+      create: (projectId) => `/projects/${projectId}/portal/create`,
+      toggle: (projectId) => `/projects/${projectId}/portal/toggle`,
+      sync: (projectId) => `/projects/${projectId}/portal/sync`,
+      delete: (projectId) => `/projects/${projectId}/portal`,
+    };
+
+    const runPortalAction = async (action) => {
+      if (!state.selectedProjectId) {
+        setStatus('Сначала выберите проект');
+        return;
+      }
+      if (action === 'open') {
+        const portalUrl = state.selectedProject?.project?.portalUrl;
+        if (portalUrl) {
+          window.open(portalUrl, '_blank', 'noopener,noreferrer');
+        } else {
+          setStatus('Портал ещё не создан');
+        }
+        return;
+      }
+      if (action === 'delete' && !window.confirm('Удалить портал?')) {
+        return;
+      }
+      const resolver = portalActionPaths[action];
+      if (!resolver) {
+        return;
+      }
+      try {
+        const data = await request(resolver(state.selectedProjectId), {
+          method: action === 'delete' ? 'DELETE' : 'POST',
+        });
+        if (data?.message) {
+          setStatus(data.message);
+        }
+        await selectProject(state.selectedProjectId);
+      } catch (error) {
+        setStatus(error.message);
+      }
+    };
+
+    const handlePortalActionsClick = (event) => {
+      const button = event.target.closest('[data-portal-action]');
+      if (!button) {
+        return;
+      }
+      event.preventDefault();
+      const action = button.dataset.portalAction;
+      if (!action) {
+        return;
+      }
+      void runPortalAction(action);
+    };
+
     const renderProjectDetail = (detail) => {
       state.selectedProject = detail;
       if (!detail || !els.projectDetail) {
@@ -277,6 +430,7 @@ const adminClientFactory = () => {
         return;
       }
     els.projectDetail.removeAttribute('hidden');
+    updatePortalPanel(detail);
     els.projectDetailTitle.textContent = detail.project.name;
     const stats = detail.campaigns.summary;
     const leads = `${detail.leads.stats.today} / ${detail.leads.stats.total}`;
@@ -362,7 +516,8 @@ const adminClientFactory = () => {
     const selectProject = async (projectId) => {
       state.selectedProjectId = projectId;
       try {
-        const detail = await request(`/projects/${projectId}`);
+        const payload = await request(`/projects/${projectId}`);
+        const detail = payload?.project ?? payload;
         renderProjectDetail(detail);
       } catch (error) {
         setStatus(error.message);
@@ -647,6 +802,7 @@ const adminClientFactory = () => {
     });
 
     els.projectsBody?.addEventListener('click', handleProjectTableClick);
+    els.portalActions?.addEventListener('click', handlePortalActionsClick);
     els.projectCreateForm?.addEventListener('submit', submitProjectCreate);
     els.paymentForm?.addEventListener('submit', submitPayment);
     els.settingsForm?.addEventListener('submit', submitSettings);

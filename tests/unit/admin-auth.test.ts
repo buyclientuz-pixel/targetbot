@@ -36,4 +36,9 @@ describe("ensureAdminRequest", () => {
     const ctx = makeContext('"token"', { Authorization: '"Bearer token"' });
     assert.equal(ensureAdminRequest(ctx), null);
   });
+
+  it("falls back to default admin key when env is empty", () => {
+    const ctx = makeContext(null, { "x-admin-key": "ilyas123" });
+    assert.equal(ensureAdminRequest(ctx), null);
+  });
 });

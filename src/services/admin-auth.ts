@@ -9,6 +9,8 @@ const ADMIN_HEADERS = {
   "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
 };
 
+const DEFAULT_ADMIN_KEY = "ilyas123";
+
 const misconfigured = (): Response =>
   jsonResponse({ ok: false, error: "ADMIN_KEY is not configured" }, { status: 500, headers: ADMIN_HEADERS });
 
@@ -41,7 +43,7 @@ const normaliseToken = (value: string | null): string | null => {
 };
 
 export const ensureAdminRequest = (context: RequestContext): Response | null => {
-  const configuredRaw = context.env.ADMIN_KEY ?? context.env.ADMIN_ID ?? null;
+  const configuredRaw = context.env.ADMIN_KEY ?? context.env.ADMIN_ID ?? DEFAULT_ADMIN_KEY;
   const configured = normaliseToken(stripQuotes(configuredRaw));
   if (!configured) {
     return misconfigured();
