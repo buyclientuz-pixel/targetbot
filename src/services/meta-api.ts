@@ -196,6 +196,22 @@ export const fetchMetaCampaignStatuses = async (
   return campaigns;
 };
 
+const formatDateOnly = (date: Date): string => {
+  const iso = date.toISOString();
+  return iso.split("T")[0] ?? iso;
+};
+
+const META_TIME_RANGE_MONTH_LIMIT = 37;
+
+const clampToMetaTimeRangeLimit = (requestedFrom: Date, today: Date): Date => {
+  const earliestAllowed = new Date(today);
+  earliestAllowed.setMonth(earliestAllowed.getMonth() - META_TIME_RANGE_MONTH_LIMIT);
+  if (requestedFrom < earliestAllowed) {
+    return earliestAllowed;
+  }
+  return requestedFrom;
+};
+
 export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
   switch (periodKey) {
     case "today":
@@ -207,13 +223,9 @@ export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
     case "month":
       return { preset: "last_30d" };
     case "max": {
-      const epoch = new Date(0);
       const today = new Date();
-      const format = (date: Date): string => {
-        const iso = date.toISOString();
-        return iso.split("T")[0] ?? iso;
-      };
-      return { preset: "time_range", from: format(epoch), to: format(today) };
+      const from = clampToMetaTimeRangeLimit(new Date(0), today);
+      return { preset: "time_range", from: formatDateOnly(from), to: formatDateOnly(today) };
     }
     default:
       return { preset: "today" };
