@@ -11,6 +11,8 @@ import { DataValidationError } from "../errors";
 export type PortalPeriodKey = "today" | "yesterday" | "week" | "month" | "max";
 
 export const PORTAL_PERIOD_KEYS: PortalPeriodKey[] = ["today", "yesterday", "week", "month", "max"];
+const DEFAULT_PERIOD_PLAN: PortalPeriodKey[] = PORTAL_PERIOD_KEYS.filter((key) => key !== "today").concat("today");
+export const PORTAL_AUTO_PERIOD_PLAN: PortalPeriodKey[] = [...DEFAULT_PERIOD_PLAN];
 
 export interface PortalSyncPeriodResult {
   periodKey: PortalPeriodKey;
@@ -36,9 +38,9 @@ interface SyncPortalMetricsOptions {
 
 const ensurePeriodPlan = (periods?: PortalPeriodKey[]): PortalPeriodKey[] => {
   if (!periods || periods.length === 0) {
-    return ["today"];
+    return [...DEFAULT_PERIOD_PLAN];
   }
-  const unique = Array.from(new Set(periods));
+  const unique = Array.from(new Set(periods)) as PortalPeriodKey[];
   const todayIndex = unique.indexOf("today");
   if (todayIndex === -1) {
     unique.push("today");
@@ -144,7 +146,11 @@ const listProjectIds = async (kv: KvClient): Promise<string[]> => {
   return ids;
 };
 
-export const runPortalSync = async (kv: KvClient, r2: R2Client): Promise<PortalSyncResult[]> => {
+export const runPortalSync = async (
+  kv: KvClient,
+  r2: R2Client,
+  periods: PortalPeriodKey[] = PORTAL_AUTO_PERIOD_PLAN,
+): Promise<PortalSyncResult[]> => {
   const projectIds = await listProjectIds(kv);
   const results: PortalSyncResult[] = [];
   for (const projectId of projectIds) {
@@ -168,7 +174,7 @@ export const runPortalSync = async (kv: KvClient, r2: R2Client): Promise<PortalS
     }
     try {
       const result = await syncPortalMetrics(kv, r2, projectId, {
-        periods: ["today"],
+        periods,
         allowPartial: true,
         projectRecord,
         settings,

@@ -4,7 +4,7 @@ import { MemoryKVNamespace, MemoryR2Bucket } from "../utils/mocks.ts";
 
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
-const { syncPortalMetrics } = await import("../../src/services/portal-sync.ts");
+const { PORTAL_AUTO_PERIOD_PLAN, syncPortalMetrics } = await import("../../src/services/portal-sync.ts");
 const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { createProject, putProject } = await import("../../src/domain/projects.ts");
 const { createDefaultProjectSettings, upsertProjectSettings } = await import("../../src/domain/project-settings.ts");
@@ -83,6 +83,45 @@ test("syncPortalMetrics fetches insights and records state", async () => {
     const state = await getPortalSyncState(kv, "proj-sync");
     assert.ok(state.lastSuccessAt);
     assert.deepEqual(state.periodKeys, ["today"]);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("syncPortalMetrics syncs the full period plan by default", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await putProjectRecord(kv, {
+    id: "proj-plan",
+    name: "Plan",
+    ownerId: 1,
+    adAccountId: "act_plan",
+    chatId: null,
+    portalUrl: "https://example.com/p/proj-plan",
+    settings: { currency: "USD", timezone: "Asia/Tashkent", kpi: { mode: "auto", type: "LEAD", label: "Лиды" } },
+  });
+  const project = createProject({ id: "proj-plan", name: "Plan", adsAccountId: "act_plan", ownerTelegramId: 1 });
+  await putProject(kv, project);
+  const defaults = createDefaultProjectSettings("proj-plan");
+  await upsertProjectSettings(kv, {
+    ...defaults,
+    projectId: "proj-plan",
+    portalEnabled: true,
+    meta: { facebookUserId: "fb_plan" },
+  });
+  const token = createMetaToken({ facebookUserId: "fb_plan", accessToken: "token" });
+  await upsertMetaToken(kv, token);
+  const stub = installGraphStub();
+  try {
+    const result = await syncPortalMetrics(kv, r2, "proj-plan");
+    const expectedPlan = PORTAL_AUTO_PERIOD_PLAN;
+    assert.equal(result.periods.length, expectedPlan.length);
+    assert.deepEqual(
+      result.periods.map((entry) => entry.periodKey).sort(),
+      expectedPlan.slice().sort(),
+    );
+    const state = await getPortalSyncState(kv, "proj-plan");
+    assert.deepEqual(state.periodKeys.sort(), expectedPlan.slice().sort());
   } finally {
     stub.restore();
   }
