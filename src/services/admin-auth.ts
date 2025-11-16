@@ -2,15 +2,18 @@ import { jsonResponse } from "../http/responses";
 import type { RequestContext } from "../worker/context";
 
 const ADMIN_HEADER = "x-admin-key";
+const ADMIN_HEADERS = {
+  "cache-control": "no-store",
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "content-type, authorization, x-admin-key",
+  "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
+};
 
 const misconfigured = (): Response =>
-  jsonResponse(
-    { ok: false, error: "ADMIN_KEY is not configured" },
-    { status: 500, headers: { "cache-control": "no-store" } },
-  );
+  jsonResponse({ ok: false, error: "ADMIN_KEY is not configured" }, { status: 500, headers: ADMIN_HEADERS });
 
 const unauthorized = (): Response =>
-  jsonResponse({ ok: false, error: "Admin key required" }, { status: 401, headers: { "cache-control": "no-store" } });
+  jsonResponse({ ok: false, error: "Admin key required" }, { status: 401, headers: ADMIN_HEADERS });
 
 const stripQuotes = (value: string | null): string | null => {
   if (!value) {

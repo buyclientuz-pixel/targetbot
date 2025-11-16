@@ -33,13 +33,30 @@ import { getWebhookInfo, setWebhook } from "../services/telegram";
 import { deleteProjectCascade } from "../services/project-lifecycle";
 import { buildAdminClientScript } from "./admin-client";
 
+const ADMIN_CORS_HEADERS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "content-type, authorization, x-admin-key",
+  "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
+};
+
+const withCors = (headers: HeadersInit = {}): HeadersInit => ({
+  ...ADMIN_CORS_HEADERS,
+  ...(headers as Record<string, string>),
+});
+
+const optionsResponse = (): Response =>
+  new Response(null, {
+    status: 204,
+    headers: withCors({ "cache-control": "no-store" }),
+  });
+
 const htmlResponse = (body: string): Response =>
   new Response(body, {
     status: 200,
-    headers: {
+    headers: withCors({
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-    },
+    }),
   });
 
 const jsonOk = (data: unknown, init?: ResponseInit): Response =>
@@ -47,7 +64,7 @@ const jsonOk = (data: unknown, init?: ResponseInit): Response =>
     { ok: true, data },
     {
       ...init,
-      headers: { "cache-control": "no-store", ...(init?.headers ?? {}) },
+      headers: withCors({ "cache-control": "no-store", ...(init?.headers ?? {}) }),
     },
   );
 
@@ -56,7 +73,7 @@ const jsonError = (status: number, message: string): Response =>
     { ok: false, error: message },
     {
       status,
-      headers: { "cache-control": "no-store" },
+      headers: withCors({ "cache-control": "no-store" }),
     },
   );
 
@@ -542,6 +559,7 @@ const registerAdminRoute = (
   handler: (context: Parameters<Parameters<Router["on"]>[2]>[0]) => Promise<Response> | Response,
 ): void => {
   for (const pathname of paths) {
+    router.on("OPTIONS", pathname, () => optionsResponse());
     router.on(method, pathname, async (context) => {
       const guard = ensureAdminRequest(context);
       if (guard) {

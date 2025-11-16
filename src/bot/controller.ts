@@ -282,6 +282,25 @@ const sendMenu = async (ctx: BotContext, chatId: number, userId: number): Promis
   });
 };
 
+const renderMainPanelFromCommand = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  session?: BotSession,
+): Promise<void> => {
+  const currentSession = session ?? (await getBotSession(ctx.kv, userId));
+  const hasPanelState = currentSession.panel != null || currentSession.state.type !== "idle";
+  if (hasPanelState) {
+    await saveBotSession(ctx.kv, {
+      ...currentSession,
+      panel: undefined,
+      state: { type: "idle" },
+    });
+  }
+  await renderPanel({ runtime, userId, chatId, panelId: "panel:main" });
+};
+
 const ensureLegacyKeyboardCleared = async (
   ctx: BotContext,
   chatId: number,
@@ -1395,6 +1414,7 @@ const handleTextCommand = async (
   userId: number,
   text: string,
   panelRuntime: ReturnType<typeof buildPanelRuntime>,
+  session?: BotSession,
 ): Promise<void> => {
   const normalized = text.trim();
   const lower = normalized.toLowerCase();
@@ -1408,7 +1428,7 @@ const handleTextCommand = async (
     lower === "меню" ||
     lower === "menu"
   ) {
-    await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
+    await renderMainPanelFromCommand(ctx, panelRuntime, userId, chatId, session);
     return;
   }
   switch (normalized) {
@@ -1437,7 +1457,7 @@ const handleTextCommand = async (
       await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:settings" });
       return;
     default:
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
+      await renderMainPanelFromCommand(ctx, panelRuntime, userId, chatId, session);
   }
 };
 
@@ -1836,7 +1856,7 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
         }
         session = await ensureLegacyKeyboardCleared(ctx, chatId, userId, session);
         cachedSession = session;
-        await handleTextCommand(ctx, chatId, userId, update.message.text.trim(), panelRuntime);
+        await handleTextCommand(ctx, chatId, userId, update.message.text.trim(), panelRuntime, session);
         return;
       }
 

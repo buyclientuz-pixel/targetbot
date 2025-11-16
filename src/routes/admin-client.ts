@@ -3,8 +3,16 @@
 const adminClientFactory = () => {
   try {
     const STORAGE_KEY = 'targetbot.admin.key';
-    const API_BASE = '/api/admin';
     const WORKER_URL = "WORKER_URL_PLACEHOLDER";
+    const apiHost = WORKER_URL && WORKER_URL.length ? WORKER_URL.trim() : '';
+    const hasScheme = apiHost.startsWith('http://') || apiHost.startsWith('https://');
+    const isAbsoluteHost = !!apiHost && !apiHost.startsWith('/');
+    const baseHost = hasScheme ? apiHost.replace(/\/$/, '') : apiHost ? `https://${apiHost.replace(/\/$/, '')}` : '';
+    const API_BASE = isAbsoluteHost && baseHost ? `${baseHost}/api/admin` : '/api/admin';
+    const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
+    const sections = Array.from(document.querySelectorAll('[data-section]'));
+    const refreshButtons = Array.from(document.querySelectorAll('[data-action="refresh"]'));
+    const logoutButtons = Array.from(document.querySelectorAll('[data-action="logout"]'));
     const state = {
       key: localStorage.getItem(STORAGE_KEY),
       view: 'projects',
@@ -14,15 +22,15 @@ const adminClientFactory = () => {
     };
     const els = {
       app: document.querySelector('[data-app]'),
-      navButtons: document.querySelectorAll('[data-nav]'),
-      sections: document.querySelectorAll('[data-section]'),
-    status: document.querySelector('[data-status]'),
-    viewTitle: document.querySelector('[data-view-title]'),
-    loginPanel: document.querySelector('[data-login-panel]'),
-    loginForm: document.querySelector('[data-login-form]'),
-    loginInput: document.querySelector('[data-admin-key]'),
-    logoutButtons: document.querySelectorAll('[data-action="logout"]'),
-    refreshButtons: document.querySelectorAll('[data-action="refresh"]'),
+      navButtons,
+      sections,
+      status: document.querySelector('[data-status]'),
+      viewTitle: document.querySelector('[data-view-title]'),
+      loginPanel: document.querySelector('[data-login-panel]'),
+      loginForm: document.querySelector('[data-login-form]'),
+      loginInput: document.querySelector('[data-admin-key]'),
+      logoutButtons,
+      refreshButtons,
     projectsBody: document.querySelector('[data-projects-body]'),
     projectDetail: document.querySelector('[data-project-detail]'),
     projectDetailTitle: document.querySelector('[data-project-detail-title]'),
