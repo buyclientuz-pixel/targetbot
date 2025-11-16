@@ -12,6 +12,21 @@ import { render as renderUsers } from "./panels/users";
 import { render as renderSettings } from "./panels/settings";
 import { render as renderWebhooks } from "./panels/webhooks";
 import { render as renderMeta } from "./panels/meta";
+import { render as renderBilling } from "./panels/billing";
+import { render as renderLeads } from "./panels/leads";
+import { render as renderLeadDetail } from "./panels/lead-detail";
+import { render as renderReport } from "./panels/report";
+import { render as renderCampaigns } from "./panels/campaigns";
+import { render as renderPortal } from "./panels/portal";
+import { render as renderExport } from "./panels/export";
+import { render as renderChatInfo } from "./panels/chat-info";
+import { render as renderChatChange } from "./panels/chat-change";
+import { render as renderChatUnlink } from "./panels/chat-unlink";
+import { render as renderAutoreports } from "./panels/autoreports";
+import { render as renderAlerts } from "./panels/alerts";
+import { render as renderKpi } from "./panels/kpi";
+import { render as renderProjectEditPanel } from "./panels/project-edit";
+import { render as renderProjectDelete } from "./panels/project-delete";
 
 interface ResolveResult {
   renderer: typeof renderMain;
@@ -37,6 +52,53 @@ const resolvePanel = (panelId: string): ResolveResult => {
   }
   if (panelId.startsWith("project:card:")) {
     return { renderer: renderProject, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:billing:")) {
+    return { renderer: renderBilling, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:leads:")) {
+    const [, , status, projectId] = panelId.split(":");
+    return { renderer: renderLeads, params: [status ?? "new", projectId ?? ""], id: panelId };
+  }
+  if (panelId.startsWith("lead:detail:")) {
+    const [, , projectId, leadId] = panelId.split(":");
+    return { renderer: renderLeadDetail, params: [projectId ?? "", leadId ?? ""], id: panelId };
+  }
+  if (panelId.startsWith("project:report:")) {
+    return { renderer: renderReport, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:campaigns:")) {
+    return { renderer: renderCampaigns, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:portal:")) {
+    return { renderer: renderPortal, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:export:")) {
+    return { renderer: renderExport, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:chat-change:")) {
+    return { renderer: renderChatChange, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:chat-unlink:")) {
+    return { renderer: renderChatUnlink, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:autoreports:")) {
+    return { renderer: renderAutoreports, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:alerts:")) {
+    return { renderer: renderAlerts, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:kpi:")) {
+    return { renderer: renderKpi, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:edit:")) {
+    return { renderer: renderProjectEditPanel, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:delete:")) {
+    return { renderer: renderProjectDelete, params: [panelId.split(":")[2]!], id: panelId };
+  }
+  if (panelId.startsWith("project:chat:")) {
+    return { renderer: renderChatInfo, params: [panelId.split(":")[2]!], id: panelId };
   }
   if (panelId === "panel:fb-auth" || panelId === "cmd:auth") {
     return { renderer: renderFbAuth, params: [], id: "fb-auth" };

@@ -5,6 +5,7 @@ import {
   loadProjectBundle,
   loadUserProjects,
   listAvailableProjectChats,
+  leadStatusLabel,
 } from "./data";
 import {
   buildAutoreportsKeyboard,
@@ -560,16 +561,20 @@ const createPaymentRecord = (
 
 const notifyBillingChange = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   message: string,
 ): Promise<void> => {
   await sendTelegramMessage(ctx.token, { chatId, text: message });
-  await sendProjectCard(ctx, chatId, projectId);
+  await renderPanel({ runtime, userId, chatId, panelId: `project:billing:${projectId}` });
 };
 
 const handleBillingAdd30 = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
 ): Promise<void> => {
@@ -588,11 +593,13 @@ const handleBillingAdd30 = async (
       "planned",
     ),
   );
-  await notifyBillingChange(ctx, chatId, projectId, `✅ Дата следующего платежа обновлена: ${nextDate}`);
+  await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Дата следующего платежа обновлена: ${nextDate}`);
 };
 
 const handleBillingTariff = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   tariff: number,
@@ -602,6 +609,8 @@ const handleBillingTariff = async (
   await putBillingRecord(ctx.kv, projectId, updated);
   await notifyBillingChange(
     ctx,
+    runtime,
+    userId,
     chatId,
     projectId,
     `✅ Тариф обновлён: ${new Intl.NumberFormat("ru-RU", {
@@ -615,6 +624,8 @@ const handleBillingTariff = async (
 
 const handleBillingDateInput = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   dateInput: string,
@@ -633,11 +644,13 @@ const handleBillingDateInput = async (
       "planned",
     ),
   );
-  await notifyBillingChange(ctx, chatId, projectId, `✅ Дата следующего платежа обновлена: ${parsed}`);
+  await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Дата следующего платежа обновлена: ${parsed}`);
 };
 
 const handleBillingManualInput = async (
   ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
   chatId: number,
   projectId: string,
   input: string,
@@ -652,7 +665,7 @@ const handleBillingManualInput = async (
     projectId,
     createPaymentRecord({ amount, currency: bundle.billing.currency }, parsedDate, parsedDate, "paid"),
   );
-  await notifyBillingChange(ctx, chatId, projectId, `✅ Оплата обновлена: ${parsedDate}`);
+  await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Оплата обновлена: ${parsedDate}`);
 };
 
 const sendLeadsSection = async (
@@ -1312,7 +1325,7 @@ const handleLeadStatusChange = async (
   projectId: string,
   leadId: string,
   status: ProjectLeadsListRecord["leads"][number]["status"],
-): Promise<void> => {
+): Promise<string> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   const leads = bundle.leads.leads.map((lead) => (lead.id === leadId ? { ...lead, status } : lead));
   await putProjectLeadsList(ctx.r2, projectId, { ...bundle.leads, leads });
@@ -1322,7 +1335,7 @@ const handleLeadStatusChange = async (
   } catch {
     // ignore missing detail
   }
-  await sendLeadDetail(ctx, chatId, projectId, leadId);
+  return `✅ Статус обновлён: ${leadStatusLabel(status)}`;
 };
 
 const handleSettingsChange = async (
@@ -1434,22 +1447,22 @@ const handleCallback = async (
           });
           break;
         case "billing":
-          await sendBillingView(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:billing:${parts[2]!}` });
           break;
         case "leads":
-          await sendLeadsSection(ctx, chatId, parts[3]!, parts[2]! as ProjectLeadsListRecord["leads"][number]["status"]);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:leads:${parts[2]!}:${parts[3]!}` });
           break;
         case "report":
-          await sendReport(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:report:${parts[2]!}` });
           break;
         case "campaigns":
-          await sendCampaigns(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:campaigns:${parts[2]!}` });
           break;
         case "portal":
-          await sendPortalLink(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:portal:${parts[2]!}` });
           break;
         case "export":
-          await sendExportMenu(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:export:${parts[2]!}` });
           break;
         case "export-leads":
           await sendCsvExport(ctx, chatId, parts[2]!, "leads");
@@ -1461,10 +1474,10 @@ const handleCallback = async (
           await sendCsvExport(ctx, chatId, parts[2]!, "payments");
           break;
         case "chat":
-          await sendChatInfoScreen(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:chat:${parts[2]!}` });
           break;
         case "chat-change":
-          await sendChatChangeScreen(ctx, chatId, userId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:chat-change:${parts[2]!}` });
           break;
         case "chat-manual":
           await saveBotSession(ctx.kv, {
@@ -1481,13 +1494,13 @@ const handleCallback = async (
           await handleChatSelect(ctx, chatId, userId, parts[2]!, Number(parts[3]));
           break;
         case "chat-unlink":
-          await sendChatUnlinkConfirm(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:chat-unlink:${parts[2]!}` });
           break;
         case "chat-unlink-confirm":
           await handleChatUnlink(ctx, chatId, parts[2]!);
           break;
         case "autoreports":
-          await sendAutoreportsScreen(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:autoreports:${parts[2]!}` });
           break;
         case "autoreports-toggle":
           await handleAutoreportsToggle(ctx, chatId, parts[2]!);
@@ -1511,7 +1524,7 @@ const handleCallback = async (
           await handleAutoreportsRouteSet(ctx, chatId, parts[2]!, parts[3]! as AutoreportsRecord["sendTo"]);
           break;
         case "alerts":
-          await sendAlertsScreen(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:alerts:${parts[2]!}` });
           break;
         case "alerts-toggle":
           await handleAlertsToggle(ctx, chatId, parts[2]!);
@@ -1536,7 +1549,7 @@ const handleCallback = async (
           break;
         }
         case "kpi":
-          await sendKpiScreen(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:kpi:${parts[2]!}` });
           break;
         case "kpi-mode":
           await handleKpiModeChange(ctx, chatId, parts[2]!, parts[3]! as ProjectRecord["settings"]["kpi"]["mode"]);
@@ -1545,7 +1558,7 @@ const handleCallback = async (
           await handleKpiTypeChange(ctx, chatId, parts[2]!, parts[3]! as ProjectRecord["settings"]["kpi"]["type"]);
           break;
         case "edit":
-          await sendProjectEditScreen(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:edit:${parts[2]!}` });
           break;
         case "edit-name":
         case "edit-ad":
@@ -1570,7 +1583,7 @@ const handleCallback = async (
           });
           break;
         case "delete":
-          await sendDeleteConfirm(ctx, chatId, parts[2]!);
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:delete:${parts[2]!}` });
           break;
         case "delete-confirm":
           await handleProjectDelete(ctx, chatId, parts[2]!, userId);
@@ -1584,9 +1597,9 @@ const handleCallback = async (
       const action = parts[1];
       const projectId = parts[2]!;
       if (action === "add30") {
-        await handleBillingAdd30(ctx, chatId, projectId);
+        await handleBillingAdd30(ctx, panelRuntime, userId, chatId, projectId);
       } else if (action === "tariff") {
-        await handleBillingTariff(ctx, chatId, projectId, Number(parts[3]));
+        await handleBillingTariff(ctx, panelRuntime, userId, chatId, projectId, Number(parts[3]));
       } else if (action === "set-date") {
         await saveBotSession(ctx.kv, {
           userId,
@@ -1607,7 +1620,7 @@ const handleCallback = async (
     case "lead": {
       const action = parts[1];
       if (action === "view") {
-        await sendLeadDetail(ctx, chatId, parts[2]!, parts[3]!);
+        await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `lead:detail:${parts[2]!}:${parts[3]!}` });
       } else if (action === "status") {
         await handleLeadStatusChange(
           ctx,
@@ -1616,6 +1629,7 @@ const handleCallback = async (
           parts[3]!,
           parts[4]! as ProjectLeadsListRecord["leads"][number]["status"],
         );
+        await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `lead:detail:${parts[2]!}:${parts[3]!}` });
       }
       break;
     }
@@ -1757,7 +1771,7 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
 
       if (update.message?.text) {
         const session = await getBotSession(ctx.kv, userId);
-        if (await handleSessionInput(ctx, chatId, userId, update.message.text, session)) {
+        if (await handleSessionInput(ctx, chatId, userId, update.message.text, session, panelRuntime)) {
           return;
         }
         await handleTextCommand(ctx, chatId, userId, update.message.text.trim(), panelRuntime);
@@ -1782,17 +1796,18 @@ const handleSessionInput = async (
   userId: number,
   text: string,
   sessionState: Awaited<ReturnType<typeof getBotSession>>,
+  panelRuntime: ReturnType<typeof buildPanelRuntime>,
 ): Promise<boolean> => {
   if (!sessionState || !sessionState.state || sessionState.state.type === "idle") {
     return false;
   }
   switch (sessionState.state.type) {
     case "billing:set-date":
-      await handleBillingDateInput(ctx, chatId, sessionState.state.projectId, text);
+      await handleBillingDateInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, text);
       await clearBotSession(ctx.kv, userId);
       return true;
     case "billing:manual":
-      await handleBillingManualInput(ctx, chatId, sessionState.state.projectId, text);
+      await handleBillingManualInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, text);
       await clearBotSession(ctx.kv, userId);
       return true;
     case "facebook:token":

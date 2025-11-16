@@ -408,6 +408,13 @@ export const buildPortalMessage = (project: ProjectRecord): string => {
   return `Портал проекта: <a href="${project.portalUrl}">${project.portalUrl}</a>`;
 };
 
+export const buildExportMessage = (project: ProjectRecord): string => {
+  return (
+    `Экспорт данных проекта <b>${escapeHtml(project.name)}</b>\n` +
+    "Выберите, что выгрузить: лиды, кампании или оплаты."
+  );
+};
+
 const formatSpendMap = (map: Record<string, number>): string => {
   const entries = Object.entries(map);
   if (entries.length === 0) {
