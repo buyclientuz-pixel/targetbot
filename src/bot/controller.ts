@@ -73,7 +73,13 @@ import { getProjectsByUser, putProjectsByUser } from "../domain/spec/projects-by
 import { getUserSettingsRecord, updateUserSettingsRecord, type UserSettingsRecord } from "../domain/spec/user-settings";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
-import { answerCallbackQuery, getTelegramChatInfo, getWebhookInfo, sendTelegramMessage } from "../services/telegram";
+import {
+  answerCallbackQuery,
+  getTelegramChatInfo,
+  getWebhookInfo,
+  sendTelegramDocument,
+  sendTelegramMessage,
+} from "../services/telegram";
 import { fetchFacebookAdAccounts } from "../services/facebook-auth";
 import { normaliseBaseUrl } from "../utils/url";
 
@@ -387,6 +393,17 @@ const buildCsv = (rows: string[][]): string =>
     )
     .join("\n");
 
+const EXPORT_LABELS: Record<"leads" | "campaigns" | "payments", string> = {
+  leads: "лидов",
+  campaigns: "кампаний",
+  payments: "оплат",
+};
+
+const buildExportFilename = (projectId: string, type: string): string => {
+  const safeTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${projectId}-${type}-${safeTimestamp}.csv`;
+};
+
 const sendCsvExport = async (
   ctx: BotContext,
   chatId: number,
@@ -394,10 +411,10 @@ const sendCsvExport = async (
   type: "leads" | "campaigns" | "payments",
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  let csv = "";
+  let rows: string[][] = [];
   switch (type) {
     case "leads": {
-      csv = buildCsv([
+      rows = [
         ["id", "name", "phone", "created_at", "status", "campaign"],
         ...bundle.leads.leads.map((lead) => [
           lead.id,
@@ -407,11 +424,11 @@ const sendCsvExport = async (
           lead.status,
           lead.campaignName,
         ]),
-      ]);
+      ];
       break;
     }
     case "campaigns": {
-      csv = buildCsv([
+      rows = [
         ["id", "name", "objective", "spend", "impressions", "clicks", "leads"],
         ...bundle.campaigns.campaigns.map((campaign) => [
           campaign.id,
@@ -422,11 +439,11 @@ const sendCsvExport = async (
           String(campaign.clicks),
           String(campaign.leads),
         ]),
-      ]);
+      ];
       break;
     }
     case "payments": {
-      csv = buildCsv([
+      rows = [
         ["id", "amount", "currency", "period_from", "period_to", "status", "paid_at"],
         ...bundle.payments.payments.map((payment) => [
           payment.id,
@@ -437,14 +454,22 @@ const sendCsvExport = async (
           payment.status,
           payment.paidAt ?? "",
         ]),
-      ]);
+      ];
       break;
     }
   }
-  await sendTelegramMessage(ctx.token, {
+
+  const csv = buildCsv(rows);
+  const filename = buildExportFilename(bundle.project.id, type);
+  const caption = `Вот ваш экспорт ${EXPORT_LABELS[type]} в формате CSV.`;
+
+  await sendTelegramDocument(ctx.token, {
     chatId,
-    text: `Экспорт (${type.toUpperCase()}):\n<pre>${escapeHtml(csv)}</pre>`,
+    filename,
+    content: csv,
+    caption,
     replyMarkup: buildProjectActionsKeyboard(projectId),
+    contentType: "text/csv",
   });
 };
 

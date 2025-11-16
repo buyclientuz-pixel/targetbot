@@ -18,6 +18,17 @@ export interface SendTelegramMessageOptions {
   replyMarkup?: unknown;
 }
 
+export interface SendTelegramDocumentOptions {
+  chatId: number;
+  filename: string;
+  content: string | ArrayBuffer | Uint8Array;
+  caption?: string;
+  messageThreadId?: number | null;
+  parseMode?: "MarkdownV2" | "Markdown" | "HTML";
+  replyMarkup?: unknown;
+  contentType?: string;
+}
+
 interface TelegramChatInfo {
   id: number;
   type: string;
@@ -83,6 +94,62 @@ export const sendTelegramMessage = async <T = unknown>(
     throw new TelegramError(`Telegram sendMessage failed with status ${response.status}`, response.status, bodyText);
   }
 
+  try {
+    const data = JSON.parse(bodyText) as TelegramResponse<T>;
+    if (!data.ok) {
+      throw new TelegramError(`Telegram API error: ${data.description ?? "unknown"}`, response.status, bodyText);
+    }
+    return data.result;
+  } catch (error) {
+    if (error instanceof TelegramError) {
+      throw error;
+    }
+    throw new TelegramError("Failed to parse Telegram response", response.status, bodyText);
+  }
+};
+
+const toBlobPart = (value: string | ArrayBuffer | Uint8Array): string | ArrayBuffer => {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
+  }
+  return value;
+};
+
+export const sendTelegramDocument = async <T = unknown>(
+  token: string,
+  options: SendTelegramDocumentOptions,
+): Promise<T | void> => {
+  const url = `https://api.telegram.org/bot${token}/sendDocument`;
+  const form = new FormData();
+  form.set("chat_id", options.chatId.toString());
+  if (options.messageThreadId != null) {
+    form.set("message_thread_id", options.messageThreadId.toString());
+  }
+  if (options.caption) {
+    form.set("caption", options.caption);
+  }
+  if (options.parseMode) {
+    form.set("parse_mode", options.parseMode);
+  }
+  if (options.replyMarkup) {
+    form.set("reply_markup", JSON.stringify(options.replyMarkup));
+  }
+  const document = new File([toBlobPart(options.content)], options.filename, {
+    type: options.contentType ?? "text/csv",
+  });
+  form.set("document", document);
+
+  const response = await fetch(url, {
+    method: "POST",
+    body: form,
+  });
+  const bodyText = await response.text();
+  if (!response.ok) {
+    throw new TelegramError(`Telegram sendDocument failed with status ${response.status}`, response.status, bodyText);
+  }
   try {
     const data = JSON.parse(bodyText) as TelegramResponse<T>;
     if (!data.ok) {

@@ -79,6 +79,9 @@ const createController = (
 const findLastSendMessage = (requests: FetchRecord[]) =>
   [...requests].reverse().find((entry) => entry.url.includes("/sendMessage"));
 
+const findLastSendDocument = (requests: FetchRecord[]) =>
+  [...requests].reverse().find((entry) => entry.url.includes("/sendDocument"));
+
 const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<typeof R2Client>) => {
   await putProjectsByUser(kv, 100, { projects: ["proj_a"] });
   await putProjectRecord(kv, {
@@ -231,6 +234,32 @@ test("Telegram bot controller shows project card and handles +30 billing", async
     const payments = await getPaymentsHistoryDocument(r2, "proj_a");
     assert.equal(payments?.payments.length, 1);
     assert.equal(payments?.payments[0]?.periodTo, "2025-01-31");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Telegram bot controller exports leads as CSV document", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb1",
+        from: { id: 100 },
+        message: { message_id: 10, chat: { id: 100 } },
+        data: "project:export-leads:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    const docRequest = findLastSendDocument(stub.requests);
+    assert.ok(docRequest, "expected sendDocument request");
+    assert.equal(docRequest?.method, "POST");
   } finally {
     stub.restore();
   }
