@@ -134,6 +134,12 @@ test("/auth/facebook/callback exchanges tokens and stores accounts", async () =>
     assert.ok(record);
     assert.equal(record.accessToken, "long");
     assert.equal(record.adAccounts[0]?.id, "act_1");
+
+    const raw = await kvNamespace.get("facebook-auth:100");
+    assert.ok(raw);
+    const parsed = JSON.parse(raw);
+    assert.equal(parsed.longToken, "long");
+    assert.equal(parsed.accounts[0]?.id, "act_1");
   } finally {
     globalThis.fetch = originalFetch;
   }

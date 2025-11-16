@@ -1,5 +1,6 @@
 export const KV_KEYS = {
   fbAuth: (userId: string | number) => `fb_auth:${userId}`,
+  facebookAuth: (userId: string | number) => `facebook-auth:${userId}`,
   projectsByUser: (userId: string | number) => `projects_by_user:${userId}`,
   config: (name: string) => `config:${name}`,
   user: (telegramId: string | number) => `user:${telegramId}`,
@@ -19,6 +20,7 @@ export const KV_KEYS = {
 
 export const KV_PREFIXES = {
   fbAuth: "fb_auth:",
+  facebookAuth: "facebook-auth:",
   projectsByUser: "projects_by_user:",
   billing: "billing:",
   alerts: "alerts:",

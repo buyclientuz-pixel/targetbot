@@ -12,7 +12,7 @@ import { parseProjectRecord, serialiseProjectRecord } from "../../src/domain/spe
 import { parseProjectsByUserRecord } from "../../src/domain/spec/projects-by-user";
 
 test("fb auth record matches schema", () => {
-  const sample = {
+  const snakeCase = {
     user_id: 7623982602,
     access_token: "EAAG",
     expires_at: "2026-01-13T08:23:00Z",
@@ -22,12 +22,27 @@ test("fb auth record matches schema", () => {
     ],
   };
 
-  const parsed = parseFbAuthRecord(sample);
-  assert.equal(parsed.userId, 7623982602);
-  assert.equal(parsed.adAccounts.length, 2);
+  const parsedSnake = parseFbAuthRecord(snakeCase);
+  assert.equal(parsedSnake.userId, 7623982602);
+  assert.equal(parsedSnake.adAccounts.length, 2);
 
-  const serialised = serialiseFbAuthRecord(parsed);
-  assert.deepEqual(serialised, sample);
+  const serialised = serialiseFbAuthRecord(parsedSnake);
+  assert.equal(serialised.user_id, 7623982602);
+  assert.equal(serialised.userId, 7623982602);
+  assert.equal(serialised.access_token, "EAAG");
+  assert.equal(serialised.longToken, "EAAG");
+  assert.equal(serialised.accounts?.length, 2);
+
+  const camelCase = {
+    userId: 100,
+    longToken: "token",
+    expiresAt: "2026-01-01T00:00:00Z",
+    accounts: [{ id: "act_1", name: "Test", currency: "USD", account_status: 1 }],
+  };
+  const parsedCamel = parseFbAuthRecord(camelCase);
+  assert.equal(parsedCamel.userId, 100);
+  assert.equal(parsedCamel.accessToken, "token");
+  assert.equal(parsedCamel.adAccounts[0]?.name, "Test");
 });
 
 test("project record round trip", () => {
