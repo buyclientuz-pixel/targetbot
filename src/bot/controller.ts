@@ -46,7 +46,7 @@ import type { TelegramUpdate } from "./types";
 
 import { KV_KEYS } from "../config/kv";
 import { R2_KEYS } from "../config/r2";
-import { clearBotSession, getBotSession, saveBotSession } from "../domain/bot-sessions";
+import { clearBotSession, getBotSession, saveBotSession, type BotSession } from "../domain/bot-sessions";
 import { recordKnownChat } from "../domain/chat-registry";
 import {
   deleteFreeChatRecord,
@@ -85,6 +85,7 @@ import {
   getWebhookInfo,
   sendTelegramDocument,
   sendTelegramMessage,
+  TelegramError,
 } from "../services/telegram";
 import { fetchFacebookAdAccounts } from "../services/facebook-auth";
 import { normaliseBaseUrl } from "../utils/url";
@@ -125,6 +126,11 @@ interface CreateTelegramBotControllerOptions {
 
 const DEFAULT_WORKER_DOMAIN = "th-reports.buyclientuz.workers.dev";
 const FACEBOOK_AUTH_GUIDE_FALLBACK = "https://developers.facebook.com/tools/explorer/";
+const GROUP_NOTICE_INTERVAL_MS = 5 * 60 * 1000;
+const GROUP_NOTICE_DM_TEXT =
+  "⚠️ Команды и настройки работают только в личном чате с ботом.\nОткройте диалог с ботом и отправьте /start.";
+const GROUP_NOTICE_CHAT_TEXT =
+  `${GROUP_NOTICE_DM_TEXT}\n\nВ группах бот реагирует только на команду /reg — здесь будут только уведомления о лидах и отчётах.`;
 
 const escapeHtml = (value: string): string =>
   value
@@ -1357,6 +1363,56 @@ const sendChatUnlinkConfirm = async (ctx: BotContext, chatId: number, projectId:
   });
 };
 
+const shouldSendGroupNotice = (session: BotSession): boolean => {
+  if (!session.lastGroupNoticeAt) {
+    return true;
+  }
+  const last = Date.parse(session.lastGroupNoticeAt);
+  if (!Number.isFinite(last)) {
+    return true;
+  }
+  return Date.now() - last > GROUP_NOTICE_INTERVAL_MS;
+};
+
+const sendGroupCommandNotice = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
+  let deliveredToDm = false;
+  try {
+    await sendTelegramMessage(ctx.token, { chatId: userId, text: GROUP_NOTICE_DM_TEXT });
+    deliveredToDm = true;
+  } catch (error) {
+    if (error instanceof TelegramError && error.status === 403) {
+      // user has not started a private chat yet – fall back to group notice
+    } else {
+      console.warn(
+        `[telegram] Failed to notify user ${userId} about private-only commands: ${(error as Error).message}`,
+      );
+    }
+  }
+  if (deliveredToDm) {
+    return;
+  }
+  try {
+    await sendTelegramMessage(ctx.token, { chatId, text: GROUP_NOTICE_CHAT_TEXT });
+  } catch (error) {
+    console.error(
+      `[telegram] Failed to send private-only reminder to group ${chatId}: ${(error as Error).message}`,
+    );
+  }
+};
+
+const notifyGroupCommandRestriction = async (
+  ctx: BotContext,
+  chatId: number,
+  userId: number,
+  session: BotSession,
+): Promise<void> => {
+  if (!shouldSendGroupNotice(session)) {
+    return;
+  }
+  await sendGroupCommandNotice(ctx, chatId, userId);
+  await saveBotSession(ctx.kv, { ...session, lastGroupNoticeAt: new Date().toISOString() });
+};
+
 const handleTextCommand = async (
   ctx: BotContext,
   chatId: number,
@@ -1776,19 +1832,24 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
       if (userId == null || chatId == null) {
         return;
       }
+      let cachedSession: Awaited<ReturnType<typeof getBotSession>> | null = null;
       const chatType = update.message?.chat?.type ?? update.callback_query?.message?.chat?.type ?? "private";
       const isGroupChat = chatType === "group" || chatType === "supergroup";
       if (isGroupChat && update.message?.text) {
         const text = update.message.text.trim();
         if (text.startsWith("/reg")) {
           await handleGroupRegistration(ctx, update.message.chat, userId);
+        } else {
+          cachedSession = await getBotSession(ctx.kv, userId);
+          await notifyGroupCommandRestriction(ctx, chatId, userId, cachedSession);
         }
         return;
       }
       await recordChatFromUpdate(ctx, update);
 
       if (update.message?.text) {
-        const session = await getBotSession(ctx.kv, userId);
+        const session = cachedSession ?? (await getBotSession(ctx.kv, userId));
+        cachedSession = session;
         if (await handleSessionInput(ctx, chatId, userId, update.message.text, session, panelRuntime)) {
           return;
         }

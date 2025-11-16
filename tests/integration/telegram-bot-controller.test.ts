@@ -217,6 +217,52 @@ test("Telegram bot controller serves menu and project list", async () => {
   }
 });
 
+test("Telegram bot warns group chats to switch to private chat", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const controller = createController(kv, r2);
+  let sendAttempts = 0;
+  const stub = installFetchStub((url) => {
+    if (url.includes("sendMessage")) {
+      sendAttempts += 1;
+      if (sendAttempts === 1) {
+        return { status: 403, body: { ok: false, description: "Forbidden" } };
+      }
+    }
+    return undefined;
+  });
+
+  try {
+    await controller.handleUpdate({
+      message: {
+        chat: { id: -100777, type: "supergroup", title: "Team" },
+        from: { id: 555 },
+        text: "/start",
+      },
+    } as unknown as TelegramUpdate);
+
+    assert.equal(stub.requests.length, 2);
+    assert.equal(stub.requests[0]?.body.chat_id, 555);
+    assert.match(String(stub.requests[0]?.body.text), /личном чате/);
+    assert.equal(stub.requests[1]?.body.chat_id, -100777);
+    assert.match(String(stub.requests[1]?.body.text), /В группах бот реагирует только на команду \/reg/);
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      message: {
+        chat: { id: -100777, type: "supergroup", title: "Team" },
+        from: { id: 555 },
+        text: "/start",
+      },
+    } as unknown as TelegramUpdate);
+
+    assert.equal(stub.requests.length, 0, "repeat messages are throttled");
+  } finally {
+    stub.restore();
+  }
+});
+
 test("Telegram bot controller shows project card and handles +30 billing", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());

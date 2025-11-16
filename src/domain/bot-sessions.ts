@@ -22,6 +22,11 @@ export interface BotSession {
   userId: number;
   state: BotSessionState;
   panel?: BotPanelState;
+  /**
+   * Timestamp of the last time we notified the user that commands only work in private chat.
+   * Used to avoid spamming group chats when someone keeps typing /start inside a group thread.
+   */
+  lastGroupNoticeAt?: string;
   updatedAt: string;
 }
 
