@@ -159,6 +159,10 @@ const adminClientFactory = () => {
       throw lastError ?? new Error('API недоступно');
     };
 
+    const pingAdmin = async () => {
+      await request('/ping');
+    };
+
     const formatPortalDateTime = (value) => {
       if (!value) {
         return '—';
@@ -813,7 +817,7 @@ const adminClientFactory = () => {
         handleUnauthorized('Ключ очищен');
       });
     });
-    els.loginForm?.addEventListener('submit', (event) => {
+    els.loginForm?.addEventListener('submit', async (event) => {
       event.preventDefault();
       const key = els.loginInput?.value.trim();
       if (!key) {
@@ -821,8 +825,13 @@ const adminClientFactory = () => {
       }
       localStorage.setItem(STORAGE_KEY, key);
       state.key = key;
-      hideLogin();
-      safeSetView('projects');
+      try {
+        await pingAdmin();
+        hideLogin();
+        safeSetView('projects');
+      } catch (error) {
+        setStatus(error.message);
+      }
     });
 
     els.projectsBody?.addEventListener('click', handleProjectTableClick);
@@ -836,7 +845,7 @@ const adminClientFactory = () => {
       els.settingsInfo.textContent = `WORKER_URL: ${WORKER_URL}`;
     }
 
-    const boot = () => {
+    const boot = async () => {
       if (queryAdminKey && state.key === queryAdminKey) {
         localStorage.setItem(STORAGE_KEY, queryAdminKey);
         try {
@@ -852,18 +861,29 @@ const adminClientFactory = () => {
           // ignore history replacement errors
         }
       }
+
       if (!state.key) {
         showLogin();
-      } else {
+        return;
+      }
+
+      try {
+        await pingAdmin();
         hideLogin();
         safeSetView('projects');
+      } catch (error) {
+        setStatus(error.message);
       }
     };
 
+    const runBoot = () => {
+      void boot();
+    };
+
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', boot, { once: true });
+      document.addEventListener('DOMContentLoaded', runBoot, { once: true });
     } else {
-      boot();
+      runBoot();
     }
   } catch (error) {
     console.error('[admin] Failed to bootstrap dashboard', error);

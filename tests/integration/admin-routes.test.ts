@@ -42,6 +42,19 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
 
   const execution = new TestExecutionContext();
 
+  const pingUnauthorized = await router.dispatch(new Request("https://example.com/api/admin/ping"), env, execution);
+  assert.equal(pingUnauthorized.status, 401);
+
+  const pingResponse = await router.dispatch(
+    createAdminRequest("https://example.com/api/admin/ping"),
+    env,
+    execution,
+  );
+  assert.equal(pingResponse.status, 200);
+  const pingPayload = (await pingResponse.json()) as { ok: boolean; data: { status: string } };
+  assert.ok(pingPayload.ok);
+  assert.equal(pingPayload.data.status, "ok");
+
   const createResponse = await router.dispatch(
     createAdminRequest("https://example.com/api/admin/projects", {
       method: "POST",

@@ -703,7 +703,7 @@ const renderAdminHtml = (workerUrl: string | null): string => {
           </section>
         </main>
       </div>
-      <div class="admin-login admin-login--visible" data-login-panel>
+      <div class="admin-login" data-login-panel>
         <form class="admin-login__form" data-login-form>
           <h2>Админ-доступ</h2>
           <p class="muted">Введите код доступа, чтобы разблокировать панель.</p>
@@ -823,6 +823,8 @@ const buildWebhookUrl = (env: TargetBotEnv): string | null => {
 export const registerAdminRoutes = (router: Router): void => {
   router.on("GET", "/admin", (context) => htmlResponse(renderAdminHtml(context.env.WORKER_URL ?? null)));
   router.on("GET", "/admin/:path*", (context) => htmlResponse(renderAdminHtml(context.env.WORKER_URL ?? null)));
+
+  registerAdminRoute(router, "GET", ["/api/admin/ping"], async () => jsonOk({ status: "ok" }));
 
   registerAdminRoute(router, "GET", ["/api/admin/projects", "/api/projects"], async (context) => {
     const projects = await listAdminProjectSummaries(context.kv, context.r2);
