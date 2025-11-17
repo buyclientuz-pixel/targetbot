@@ -178,6 +178,96 @@ test("fetchMetaLeads returns empty list when both leadgen sources have no forms"
   }
 });
 
+test("fetchMetaLeads falls back to lead campaigns when forms are unavailable", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    requests.push(url);
+    if (url.pathname.includes("/act_campaign/leads") && !url.pathname.includes("/cmp_")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_campaign/leadgen_forms")) {
+      return new Response(JSON.stringify({ error: { message: "edge unavailable" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/act_campaign/campaigns")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            { id: "cmp_leads", objective: "LEAD_GENERATION", status: "ACTIVE" },
+            { id: "cmp_messages", objective: "MESSAGES", status: "ACTIVE" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/cmp_leads/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead_campaign", created_time: "2025-11-17T00:00:00Z" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/cmp_messages/leads")) {
+      return new Response(JSON.stringify({ error: { message: "should not hit" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_campaign", accessToken: "token" });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/cmp_leads/leads")));
+    assert.ok(!requests.some((request) => request.pathname.includes("/cmp_messages/leads")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchMetaLeads skips archived or non-lead campaigns in fallback", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_skip/leads") && !url.pathname.includes("/cmp")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_skip/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_skip/campaigns")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            { id: "cmp_archived", objective: "LEAD_GENERATION", status: "ARCHIVED" },
+            { id: "cmp_messages", objective: "MESSAGES", status: "ACTIVE" },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/cmp_archived/leads")) {
+      return new Response(JSON.stringify({ error: { message: "should not fetch archived" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_skip", accessToken: "token" });
+    assert.equal(leads.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetchMetaLeads enumerates managed pages when campaigns are missing page ids", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {

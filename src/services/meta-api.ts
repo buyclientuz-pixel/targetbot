@@ -381,6 +381,65 @@ interface MetaLeadFetchOptions {
   onFormsEnumerated?: (forms: LeadGenFormDescriptor[]) => Promise<void> | void;
 }
 
+const normaliseCampaignObjective = (value: unknown): string => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim().toUpperCase();
+};
+
+const LEAD_OBJECTIVE_KEYWORDS = ["LEAD", "LEADGEN", "LEAD_GENERATION", "LEADS"];
+
+const isLeadObjectiveCampaign = (campaign: Record<string, unknown>): boolean => {
+  const objective = normaliseCampaignObjective(campaign.objective);
+  if (!objective) {
+    return false;
+  }
+  return LEAD_OBJECTIVE_KEYWORDS.some((keyword) => objective.includes(keyword));
+};
+
+const ACTIVE_CAMPAIGN_STATUSES = new Set([
+  "ACTIVE",
+  "PAUSED",
+  "ADSET_PAUSED",
+  "CAMPAIGN_PAUSED",
+  "PENDING_REVIEW",
+  "IN_PROCESS",
+  "SCHEDULED",
+]);
+
+const isCampaignStatusActive = (value: unknown): boolean => {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const normalised = value.trim().toUpperCase();
+  if (!normalised) {
+    return false;
+  }
+  if (ACTIVE_CAMPAIGN_STATUSES.has(normalised)) {
+    return true;
+  }
+  if (normalised === "ARCHIVED" || normalised === "DELETED" || normalised === "INACTIVE") {
+    return false;
+  }
+  return true;
+};
+
+const isLeadCampaignEligible = (campaign: Record<string, unknown>): boolean => {
+  if (!isLeadObjectiveCampaign(campaign)) {
+    return false;
+  }
+  const statuses = [campaign.status, campaign.effective_status, campaign.configured_status];
+  if (statuses.some((status) => isCampaignStatusActive(status))) {
+    return true;
+  }
+  if (statuses.every((status) => status == null)) {
+    return true;
+  }
+  return false;
+};
+
+
 const buildLeadUrl = (nodeId: string, options: MetaLeadFetchOptions, cursor?: string): URL => {
   const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${nodeId}/leads`);
   url.searchParams.set("access_token", options.accessToken);
@@ -760,6 +819,52 @@ const fetchLeadsForNode = async (
   return limit ? collected.slice(0, limit) : collected;
 };
 
+const fetchLeadsViaCampaigns = async (
+  options: MetaLeadFetchOptions,
+  limit?: number,
+): Promise<MetaLeadRecord[]> => {
+  const campaigns = await fetchMetaCampaignStatuses(options.accountId, options.accessToken);
+  const campaignIds = campaigns
+    .filter((campaign) => campaign && typeof campaign === "object" && isLeadCampaignEligible(campaign))
+    .map((campaign) => {
+      const idValue = campaign.id;
+      if (typeof idValue === "string" && idValue.trim()) {
+        return idValue.trim();
+      }
+      if (typeof idValue === "number" && Number.isFinite(idValue)) {
+        return idValue.toString();
+      }
+      return null;
+    })
+    .filter((id): id is string => Boolean(id));
+  if (campaignIds.length === 0) {
+    return [];
+  }
+  const bucket = new Map<string, MetaLeadRecord>();
+  for (const campaignId of campaignIds) {
+    const remaining = typeof limit === "number" ? Math.max(limit - bucket.size, 0) : undefined;
+    if (remaining === 0) {
+      break;
+    }
+    try {
+      const leads = await fetchLeadsForNode(campaignId, options, remaining);
+      for (const lead of leads) {
+        if (!bucket.has(lead.id)) {
+          bucket.set(lead.id, lead);
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `[meta] Failed to download leads via campaign ${campaignId}: ${(error as Error).message}`,
+      );
+    }
+    if (typeof limit === "number" && bucket.size >= limit) {
+      break;
+    }
+  }
+  return Array.from(bucket.values());
+};
+
 export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<MetaLeadRecord[]> => {
   if (!options.accountId) {
     throw new DataValidationError("Meta Ads account id is required for leads");
@@ -790,6 +895,12 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   let adsFallbackAttempted = false;
   let forms: LeadGenFormDescriptor[] = shouldUseCachedFormsOnly ? cachedForms : [];
   let formsFromApi = false;
+  let campaignFallbackError: Error | null = null;
+  let campaignFallbackAttempted = false;
+  const tryCampaignFallback = async (): Promise<MetaLeadRecord[]> => {
+    campaignFallbackAttempted = true;
+    return fetchLeadsViaCampaigns(options, limit);
+  };
   if (!shouldUseCachedFormsOnly) {
     try {
       const fetchedForms = await fetchLeadGenForms(options.accountId, options.accessToken);
@@ -838,6 +949,19 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     forms = cachedForms;
   }
   if (forms.length === 0) {
+    try {
+      const campaignLeads = await tryCampaignFallback();
+      if (campaignLeads.length > 0) {
+        return limit ? campaignLeads.slice(0, limit) : campaignLeads;
+      }
+    } catch (error) {
+      campaignFallbackError = error as Error;
+      if (isMetaRateLimitError(campaignFallbackError)) {
+        console.warn(
+          `[meta] Rate limited while fetching campaign leads for account ${options.accountId}: ${campaignFallbackError.message}`,
+        );
+      }
+    }
     if (adsFallbackError && !isMetaRateLimitError(adsFallbackError)) {
       throw adsFallbackError;
     }
@@ -851,6 +975,9 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
       !isMetaRateLimitError(primaryError)
     ) {
       throw primaryError;
+    }
+    if (campaignFallbackError && !isMetaRateLimitError(campaignFallbackError)) {
+      throw campaignFallbackError;
     }
     if (accountError && !ignorableAccountError && !isMetaRateLimitError(accountError)) {
       throw accountError;
@@ -873,5 +1000,24 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
       break;
     }
   }
-  return limit ? collected.slice(0, limit) : collected;
+  if (collected.length > 0) {
+    return limit ? collected.slice(0, limit) : collected;
+  }
+  try {
+    const campaignLeads = await tryCampaignFallback();
+    if (campaignLeads.length > 0) {
+      return limit ? campaignLeads.slice(0, limit) : campaignLeads;
+    }
+  } catch (error) {
+    campaignFallbackError = error as Error;
+    if (isMetaRateLimitError(campaignFallbackError)) {
+      console.warn(
+        `[meta] Rate limited while fetching campaign leads for account ${options.accountId}: ${campaignFallbackError.message}`,
+      );
+    }
+  }
+  if (campaignFallbackAttempted && campaignFallbackError && !isMetaRateLimitError(campaignFallbackError)) {
+    throw campaignFallbackError;
+  }
+  return [];
 };
