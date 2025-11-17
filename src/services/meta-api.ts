@@ -52,6 +52,63 @@ export interface MetaLeadRecord {
   field_data?: MetaLeadFieldValue[] | null;
 }
 
+interface MetaErrorRecord {
+  message?: string;
+  code?: number;
+  error_subcode?: number;
+}
+
+const parseMetaErrorPayload = (bodyText: string): MetaErrorRecord | null => {
+  if (!bodyText) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(bodyText) as { error?: MetaErrorRecord } | MetaErrorRecord;
+    if (parsed && typeof parsed === "object") {
+      if ("error" in parsed && parsed.error && typeof parsed.error === "object") {
+        return parsed.error;
+      }
+      if ("code" in parsed || "error_subcode" in parsed) {
+        return parsed as MetaErrorRecord;
+      }
+    }
+  } catch {
+    // ignore JSON parse errors, we'll surface the raw body text instead
+  }
+  return null;
+};
+
+class MetaApiError extends Error {
+  status: number;
+  code?: number;
+  errorSubcode?: number;
+
+  constructor(context: string, status: number, bodyText: string, payload?: MetaErrorRecord | null) {
+    super(`${context} failed with ${status}: ${bodyText}`);
+    this.name = "MetaApiError";
+    this.status = status;
+    this.code = typeof payload?.code === "number" ? payload.code : undefined;
+    this.errorSubcode = typeof payload?.error_subcode === "number" ? payload.error_subcode : undefined;
+  }
+}
+
+const createMetaApiError = async (response: Response, context: string): Promise<MetaApiError> => {
+  const errorBody = await response.text();
+  return new MetaApiError(context, response.status, errorBody, parseMetaErrorPayload(errorBody));
+};
+
+const META_RATE_LIMIT_ERROR_CODE = 17;
+
+const isMetaRateLimitError = (error: unknown): boolean => {
+  if (error instanceof MetaApiError) {
+    return error.code === META_RATE_LIMIT_ERROR_CODE;
+  }
+  if (error instanceof Error) {
+    return /User request limit reached/i.test(error.message) || /"code"\s*:\s*17/.test(error.message);
+  }
+  return false;
+};
+
 const DEFAULT_FIELDS = [
   "spend",
   "impressions",
@@ -189,8 +246,7 @@ export const fetchMetaInsightsRaw = async (options: MetaFetchOptions): Promise<M
   const url = buildInsightsUrl(options);
   const response = await fetch(url);
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Meta API request failed with ${response.status}: ${errorBody}`);
+    throw await createMetaApiError(response, "Meta API request");
   }
   const json = (await response.json()) as MetaInsightsRawResponse;
   json.data = Array.isArray(json.data) ? json.data : [];
@@ -231,8 +287,7 @@ export const fetchMetaCampaignStatuses = async (
     const url = buildCampaignsUrl(accountId, accessToken, after);
     const response = await fetch(url);
     if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Meta campaign request failed with ${response.status}: ${errorBody}`);
+      throw await createMetaApiError(response, "Meta campaign request");
     }
     const json = (await response.json()) as {
       data?: Record<string, unknown>[];
@@ -345,8 +400,7 @@ const fetchLeadGenForms = async (
     }
     const response = await fetch(url);
     if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Meta leadgen forms request failed with ${response.status}: ${errorBody}`);
+      throw await createMetaApiError(response, "Meta leadgen forms request");
     }
     const payload = (await response.json()) as {
       data?: Array<{ id?: string }>;
@@ -397,8 +451,7 @@ const fetchManagedPages = async (accessToken: string): Promise<MetaPageRecord[]>
     const url = buildManagedPagesUrl(accessToken, cursor);
     const response = await fetch(url);
     if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Meta managed pages request failed with ${response.status}: ${errorBody}`);
+      throw await createMetaApiError(response, "Meta managed pages request");
     }
     const payload = (await response.json()) as {
       data?: Array<{ id?: string | number; access_token?: string }>;
@@ -506,8 +559,7 @@ const fetchLeadGenFormsViaAds = async (
     const url = buildAdsUrl(accountId, accessToken, cursor);
     const response = await fetch(url);
     if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Meta ads request failed with ${response.status}: ${errorBody}`);
+      throw await createMetaApiError(response, "Meta ads request");
     }
     const payload = (await response.json()) as {
       data?: Array<{ creative?: Record<string, unknown> | null }>;
@@ -588,8 +640,7 @@ const fetchLeadsForNode = async (
     const url = buildLeadUrl(nodeId, options, cursor);
     const response = await fetch(url);
     if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`Meta leads request failed with ${response.status}: ${errorBody}`);
+      throw await createMetaApiError(response, "Meta leads request");
     }
     const payload = (await response.json()) as {
       data?: Record<string, unknown>[];
@@ -630,7 +681,8 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     }
   } catch (error) {
     accountError = error as Error;
-    ignorableAccountError = isMissingAdAccountLeadsEdgeError(error);
+    ignorableAccountError =
+      isMissingAdAccountLeadsEdgeError(error) || isMetaRateLimitError(error);
     console.warn(`[meta] Failed to download leads via account ${options.accountId}: ${accountError.message}`);
   }
   let primaryError: Error | null = null;
@@ -643,6 +695,11 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     forms = await fetchLeadGenForms(options.accountId, options.accessToken);
   } catch (error) {
     primaryError = error as Error;
+    if (isMetaRateLimitError(primaryError)) {
+      console.warn(
+        `[meta] Rate limited while enumerating leadgen forms for account ${options.accountId}: ${primaryError.message}`,
+      );
+    }
   }
   if (forms.length === 0) {
     pageFallbackAttempted = true;
@@ -650,6 +707,11 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
       forms = await fetchLeadGenFormsViaPages(options.accountId, options.accessToken);
     } catch (error) {
       pageFallbackError = error as Error;
+      if (isMetaRateLimitError(pageFallbackError)) {
+        console.warn(
+          `[meta] Rate limited while enumerating page leadgen forms for account ${options.accountId}: ${pageFallbackError.message}`,
+        );
+      }
     }
   }
   if (forms.length === 0) {
@@ -658,19 +720,29 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
       forms = await fetchLeadGenFormsViaAds(options.accountId, options.accessToken);
     } catch (error) {
       adsFallbackError = error as Error;
+      if (isMetaRateLimitError(adsFallbackError)) {
+        console.warn(
+          `[meta] Rate limited while enumerating ad creative leadgen forms for account ${options.accountId}: ${adsFallbackError.message}`,
+        );
+      }
     }
   }
   if (forms.length === 0) {
-    if (adsFallbackError) {
+    if (adsFallbackError && !isMetaRateLimitError(adsFallbackError)) {
       throw adsFallbackError;
     }
-    if (pageFallbackError) {
+    if (pageFallbackError && !isMetaRateLimitError(pageFallbackError)) {
       throw pageFallbackError;
     }
-    if (primaryError && !pageFallbackAttempted && !adsFallbackAttempted) {
+    if (
+      primaryError &&
+      !pageFallbackAttempted &&
+      !adsFallbackAttempted &&
+      !isMetaRateLimitError(primaryError)
+    ) {
       throw primaryError;
     }
-    if (accountError && !ignorableAccountError) {
+    if (accountError && !ignorableAccountError && !isMetaRateLimitError(accountError)) {
       throw accountError;
     }
     return [];

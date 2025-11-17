@@ -334,3 +334,38 @@ test("fetchMetaLeads falls back to ad creative forms when pages don't expose lea
     globalThis.fetch = originalFetch;
   }
 });
+
+test("fetchMetaLeads tolerates rate limit errors from ad creative fallback", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_ratelimit/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_ratelimit/leadgen_forms")) {
+      return new Response(JSON.stringify({ error: { message: "forms unavailable" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/act_ratelimit/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_ratelimit/ads")) {
+      return new Response(
+        JSON.stringify({ error: { message: "User request limit reached", code: 17, error_subcode: 2446079 } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_ratelimit", accessToken: "acct-token" });
+    assert.equal(leads.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
