@@ -369,3 +369,62 @@ test("fetchMetaLeads tolerates rate limit errors from ad creative fallback", asy
     globalThis.fetch = originalFetch;
   }
 });
+
+test("fetchMetaLeads retries ad creative fallback requests after transient rate limits", async () => {
+  const originalFetch = globalThis.fetch;
+  let adRequests = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_ratelimit_success/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_ratelimit_success/leadgen_forms")) {
+      return new Response(JSON.stringify({ error: { message: "edge unavailable" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/act_ratelimit_success/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_ratelimit_success/ads")) {
+      adRequests += 1;
+      if (adRequests === 1) {
+        return new Response(
+          JSON.stringify({ error: { message: "User request limit reached", code: 17, error_subcode: 2446079 } }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              creative: {
+                object_story_spec: { link_data: { call_to_action: { value: { leadgen_form_id: "form-ads-retry" } } } },
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/form-ads-retry/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-after-retry", created_time: "2025-11-17T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_ratelimit_success", accessToken: "acct-token" });
+    assert.equal(leads.length, 1);
+    assert.equal(leads[0]?.id, "lead-after-retry");
+    assert.equal(adRequests, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

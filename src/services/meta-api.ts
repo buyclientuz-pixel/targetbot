@@ -109,6 +109,30 @@ const isMetaRateLimitError = (error: unknown): boolean => {
   return false;
 };
 
+const sleep = (delayMs: number): Promise<void> => {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+};
+
+const META_RATE_LIMIT_MAX_ATTEMPTS = 3;
+const META_RATE_LIMIT_BASE_DELAY_MS = 250;
+
+const retryOnMetaRateLimit = async <T>(operation: () => Promise<T>): Promise<T> => {
+  let attempt = 0;
+  let delay = META_RATE_LIMIT_BASE_DELAY_MS;
+  while (true) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isMetaRateLimitError(error) || attempt >= META_RATE_LIMIT_MAX_ATTEMPTS - 1) {
+        throw error;
+      }
+      await sleep(delay);
+      delay *= 2;
+      attempt += 1;
+    }
+  }
+};
+
 const DEFAULT_FIELDS = [
   "spend",
   "impressions",
@@ -244,10 +268,13 @@ const buildCampaignsUrl = (accountId: string, accessToken: string, after?: strin
 
 export const fetchMetaInsightsRaw = async (options: MetaFetchOptions): Promise<MetaInsightsRawResponse> => {
   const url = buildInsightsUrl(options);
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw await createMetaApiError(response, "Meta API request");
-  }
+  const response = await retryOnMetaRateLimit(async () => {
+    const apiResponse = await fetch(url);
+    if (!apiResponse.ok) {
+      throw await createMetaApiError(apiResponse, "Meta API request");
+    }
+    return apiResponse;
+  });
   const json = (await response.json()) as MetaInsightsRawResponse;
   json.data = Array.isArray(json.data) ? json.data : [];
   return json;
@@ -285,10 +312,13 @@ export const fetchMetaCampaignStatuses = async (
 
   do {
     const url = buildCampaignsUrl(accountId, accessToken, after);
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw await createMetaApiError(response, "Meta campaign request");
-    }
+    const response = await retryOnMetaRateLimit(async () => {
+      const apiResponse = await fetch(url);
+      if (!apiResponse.ok) {
+        throw await createMetaApiError(apiResponse, "Meta campaign request");
+      }
+      return apiResponse;
+    });
     const json = (await response.json()) as {
       data?: Record<string, unknown>[];
       paging?: { cursors?: { after?: string | null } };
@@ -398,10 +428,13 @@ const fetchLeadGenForms = async (
     if (cursor) {
       url.searchParams.set("after", cursor);
     }
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw await createMetaApiError(response, "Meta leadgen forms request");
-    }
+    const response = await retryOnMetaRateLimit(async () => {
+      const apiResponse = await fetch(url);
+      if (!apiResponse.ok) {
+        throw await createMetaApiError(apiResponse, "Meta leadgen forms request");
+      }
+      return apiResponse;
+    });
     const payload = (await response.json()) as {
       data?: Array<{ id?: string }>;
       paging?: { cursors?: { after?: string | null } };
@@ -449,10 +482,13 @@ const fetchManagedPages = async (accessToken: string): Promise<MetaPageRecord[]>
   let cursor: string | undefined;
   do {
     const url = buildManagedPagesUrl(accessToken, cursor);
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw await createMetaApiError(response, "Meta managed pages request");
-    }
+    const response = await retryOnMetaRateLimit(async () => {
+      const apiResponse = await fetch(url);
+      if (!apiResponse.ok) {
+        throw await createMetaApiError(apiResponse, "Meta managed pages request");
+      }
+      return apiResponse;
+    });
     const payload = (await response.json()) as {
       data?: Array<{ id?: string | number; access_token?: string }>;
       paging?: { cursors?: { after?: string | null } };
@@ -557,10 +593,13 @@ const fetchLeadGenFormsViaAds = async (
   let cursor: string | undefined;
   do {
     const url = buildAdsUrl(accountId, accessToken, cursor);
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw await createMetaApiError(response, "Meta ads request");
-    }
+    const response = await retryOnMetaRateLimit(async () => {
+      const apiResponse = await fetch(url);
+      if (!apiResponse.ok) {
+        throw await createMetaApiError(apiResponse, "Meta ads request");
+      }
+      return apiResponse;
+    });
     const payload = (await response.json()) as {
       data?: Array<{ creative?: Record<string, unknown> | null }>;
       paging?: { cursors?: { after?: string | null } };
@@ -638,10 +677,13 @@ const fetchLeadsForNode = async (
   let cursor: string | undefined;
   do {
     const url = buildLeadUrl(nodeId, options, cursor);
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw await createMetaApiError(response, "Meta leads request");
-    }
+    const response = await retryOnMetaRateLimit(async () => {
+      const apiResponse = await fetch(url);
+      if (!apiResponse.ok) {
+        throw await createMetaApiError(apiResponse, "Meta leads request");
+      }
+      return apiResponse;
+    });
     const payload = (await response.json()) as {
       data?: Record<string, unknown>[];
       paging?: { cursors?: { after?: string | null } };
