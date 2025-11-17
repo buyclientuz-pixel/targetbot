@@ -284,11 +284,18 @@ export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
   }
 };
 
+export interface MetaLeadFormDescriptor {
+  id: string;
+  accessToken?: string;
+}
+
 interface MetaLeadFetchOptions {
   accountId: string;
   accessToken: string;
   limit?: number;
   since?: Date;
+  forms?: MetaLeadFormDescriptor[];
+  onFormsRefreshed?: (forms: MetaLeadFormDescriptor[]) => Promise<void> | void;
 }
 
 const buildLeadUrl = (nodeId: string, options: MetaLeadFetchOptions, cursor?: string): URL => {
@@ -323,17 +330,31 @@ const normaliseLeadRecord = (record: Record<string, unknown>): MetaLeadRecord | 
   } satisfies MetaLeadRecord;
 };
 
-interface LeadGenFormDescriptor {
-  id: string;
-  accessToken?: string;
-}
+const normaliseLeadGenForms = (forms?: MetaLeadFormDescriptor[]): MetaLeadFormDescriptor[] => {
+  if (!Array.isArray(forms)) {
+    return [];
+  }
+  const map = new Map<string, MetaLeadFormDescriptor>();
+  for (const entry of forms) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+    if (!id) {
+      continue;
+    }
+    const token = typeof entry.accessToken === "string" ? entry.accessToken : undefined;
+    map.set(id, { id, accessToken: token });
+  }
+  return Array.from(map.values());
+};
 
 const fetchLeadGenForms = async (
   nodeId: string,
   accessToken: string,
   overrideToken?: string,
-): Promise<LeadGenFormDescriptor[]> => {
-  const forms: LeadGenFormDescriptor[] = [];
+): Promise<MetaLeadFormDescriptor[]> => {
+  const forms: MetaLeadFormDescriptor[] = [];
   let cursor: string | undefined;
   do {
     const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${nodeId}/leadgen_forms`);
@@ -499,8 +520,8 @@ const extractLeadgenFormsFromCreative = (creative: unknown): string[] => {
 const fetchLeadGenFormsViaAds = async (
   accountId: string,
   accessToken: string,
-): Promise<LeadGenFormDescriptor[]> => {
-  const forms = new Map<string, LeadGenFormDescriptor>();
+): Promise<MetaLeadFormDescriptor[]> => {
+  const forms = new Map<string, MetaLeadFormDescriptor>();
   let cursor: string | undefined;
   do {
     const url = buildAdsUrl(accountId, accessToken, cursor);
@@ -531,7 +552,7 @@ const fetchLeadGenFormsViaAds = async (
 const fetchLeadGenFormsViaPages = async (
   accountId: string,
   accessToken: string,
-): Promise<LeadGenFormDescriptor[]> => {
+): Promise<MetaLeadFormDescriptor[]> => {
   const campaigns = await fetchMetaCampaignStatuses(accountId, accessToken);
   const campaignPageIds = extractPromotedPageIds(campaigns);
   let managedPages: MetaPageRecord[] = [];
@@ -557,7 +578,7 @@ const fetchLeadGenFormsViaPages = async (
       tokenByPageId.set(page.id, page.accessToken);
     }
   }
-  const forms = new Map<string, LeadGenFormDescriptor>();
+  const forms = new Map<string, MetaLeadFormDescriptor>();
   for (const pageId of pageIds) {
     const token = tokenByPageId.get(pageId) ?? accessToken;
     try {
@@ -575,6 +596,29 @@ const isMissingAdAccountLeadsEdgeError = (error: unknown): boolean => {
     return false;
   }
   return /nonexisting field \(leads\) on node type \(AdAccount\)/i.test(error.message);
+};
+
+const RATE_LIMIT_HINTS = ["\"code\":17", "\"code\": 17", "error_subcode\":2446079", "User request limit reached"];
+
+const normaliseErrorMessage = (error: unknown): string => {
+  if (!error) {
+    return "";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error instanceof Error) {
+    return error.message ?? "";
+  }
+  return String(error);
+};
+
+export const isMetaRateLimitError = (error: unknown): boolean => {
+  const message = normaliseErrorMessage(error);
+  if (!message) {
+    return false;
+  }
+  return RATE_LIMIT_HINTS.some((hint) => message.includes(hint));
 };
 
 const fetchLeadsForNode = async (
@@ -621,6 +665,9 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     throw new DataValidationError("Meta access token is required for leads");
   }
   const limit = options.limit;
+  const providedForms = normaliseLeadGenForms(options.forms);
+  let forms: MetaLeadFormDescriptor[] = [...providedForms];
+  const usedProvidedForms = forms.length > 0;
   let accountError: Error | null = null;
   let ignorableAccountError = false;
   try {
@@ -638,11 +685,12 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   let adsFallbackError: Error | null = null;
   let pageFallbackAttempted = false;
   let adsFallbackAttempted = false;
-  let forms: LeadGenFormDescriptor[] = [];
-  try {
-    forms = await fetchLeadGenForms(options.accountId, options.accessToken);
-  } catch (error) {
-    primaryError = error as Error;
+  if (forms.length === 0) {
+    try {
+      forms = await fetchLeadGenForms(options.accountId, options.accessToken);
+    } catch (error) {
+      primaryError = error as Error;
+    }
   }
   if (forms.length === 0) {
     pageFallbackAttempted = true;
@@ -674,6 +722,9 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
       throw accountError;
     }
     return [];
+  }
+  if (!usedProvidedForms && forms.length > 0 && options.onFormsRefreshed) {
+    await options.onFormsRefreshed(forms);
   }
   const collected: MetaLeadRecord[] = [];
   for (const form of forms) {

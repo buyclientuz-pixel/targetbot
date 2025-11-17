@@ -4,14 +4,27 @@ import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
 import { getProject, type Project } from "../domain/projects";
 import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
-import { fetchMetaLeads, type MetaLeadRecord } from "./meta-api";
+import {
+  fetchMetaLeads,
+  isMetaRateLimitError,
+  type MetaLeadFormDescriptor,
+  type MetaLeadRecord,
+} from "./meta-api";
 import { markProjectLeadsSynced, mergeProjectLeadsList } from "./project-leads-list";
 import { getLeadRetentionDays } from "../domain/config";
 import { DataValidationError } from "../errors";
 import { getProjectLeadsList } from "../domain/spec/project-leads";
+import {
+  DEFAULT_LEAD_FORM_CACHE_TTL_SECONDS,
+  createMetaLeadFormCacheEntry,
+  getMetaLeadFormCache,
+  isMetaLeadFormCacheFresh,
+  saveMetaLeadFormCache,
+} from "../domain/meta-lead-forms";
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const LEAD_SYNC_LIMIT = 400;
+const LEAD_FORM_CACHE_TTL_SECONDS = DEFAULT_LEAD_FORM_CACHE_TTL_SECONDS;
 const shouldKeepRecord = (record: MetaLeadRecord, cutoffTime: number): boolean => {
   if (!record.created_time) {
     return true;
@@ -117,6 +130,7 @@ export const syncProjectLeadsFromMeta = async (
   if (!options.project.adsAccountId) {
     return { fetched: 0, stored: 0 };
   }
+  const accountId = options.project.adsAccountId;
   const token = await getMetaToken(kv, options.facebookUserId);
   const retentionDays = await getLeadRetentionDays(kv, 30);
   const cutoffTime = Date.now() - retentionDays * DAY_IN_MS;
@@ -128,18 +142,46 @@ export const syncProjectLeadsFromMeta = async (
     console.warn(`[portal-sync] Failed to read lead summary for ${projectId}: ${(error as Error).message}`);
   }
   const hasStoredLeads = Boolean(summary && summary.leads.length > 0);
-  let rawLeads = await fetchMetaLeads({
-    accountId: options.project.adsAccountId,
-    accessToken: token.accessToken,
-    limit: LEAD_SYNC_LIMIT,
-    since,
-  });
-  if (rawLeads.length === 0 && !hasStoredLeads) {
-    rawLeads = await fetchMetaLeads({
-      accountId: options.project.adsAccountId,
+  const cacheEntry = await getMetaLeadFormCache(kv, accountId);
+  let cachedForms = cacheEntry?.forms ?? [];
+  let cacheFresh = cacheEntry ? isMetaLeadFormCacheFresh(cacheEntry) : false;
+  const persistForms = async (forms: MetaLeadFormDescriptor[]): Promise<void> => {
+    cachedForms = forms;
+    cacheFresh = true;
+    const entry = createMetaLeadFormCacheEntry(accountId, forms, LEAD_FORM_CACHE_TTL_SECONDS);
+    await saveMetaLeadFormCache(kv, entry);
+  };
+  const fetchWithCache = async (sinceFilter?: Date): Promise<MetaLeadRecord[]> => {
+    const useCachedForms = cacheFresh && cachedForms.length > 0;
+    const attemptRefresh = !useCachedForms;
+    const baseOptions = {
+      accountId,
       accessToken: token.accessToken,
       limit: LEAD_SYNC_LIMIT,
-    });
+      since: sinceFilter,
+    };
+    try {
+      return await fetchMetaLeads({
+        ...baseOptions,
+        forms: useCachedForms ? cachedForms : undefined,
+        onFormsRefreshed: attemptRefresh ? persistForms : undefined,
+      });
+    } catch (error) {
+      if (!(attemptRefresh && isMetaRateLimitError(error) && cachedForms.length > 0)) {
+        throw error;
+      }
+      console.warn(
+        `[portal-sync] Rate limit while refreshing lead forms for ${projectId}: ${(error as Error).message}`,
+      );
+      return fetchMetaLeads({
+        ...baseOptions,
+        forms: cachedForms,
+      });
+    }
+  };
+  let rawLeads = await fetchWithCache(since);
+  if (rawLeads.length === 0 && !hasStoredLeads) {
+    rawLeads = await fetchWithCache();
   }
   const filteredLeads = rawLeads.filter((record) => shouldKeepRecord(record, cutoffTime));
   if (filteredLeads.length === 0) {

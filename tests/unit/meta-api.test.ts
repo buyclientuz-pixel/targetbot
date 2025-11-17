@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { resolveDatePreset, fetchMetaLeads } = await import("../../src/services/meta-api.ts");
+const { resolveDatePreset, fetchMetaLeads, isMetaRateLimitError } = await import(
+  "../../src/services/meta-api.ts",
+);
 
 test("resolveDatePreset clamps max period to Meta's 37-month limit", () => {
   const realNow = Date.now;
@@ -333,4 +335,84 @@ test("fetchMetaLeads falls back to ad creative forms when pages don't expose lea
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("fetchMetaLeads uses provided lead forms without enumerating Meta edges", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    requests.push(url);
+    if (url.pathname.includes("/form-provided/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-provided", created_time: "2025-11-17T10:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("leadgen_forms") || url.pathname.includes("/ads") || url.pathname.includes("/campaigns")) {
+      return new Response(JSON.stringify({ error: { message: "should not load" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({
+      accountId: "act_provided",
+      accessToken: "token",
+      forms: [{ id: "form-provided", accessToken: "page-token" }],
+    });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/form-provided/leads")));
+    assert.ok(!requests.some((request) => request.pathname.includes("leadgen_forms")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchMetaLeads invokes onFormsRefreshed after fetching new forms", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_refresh/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-refresh" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/form-refresh/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-refresh", created_time: "2025-11-17T12:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    let refreshedForms: unknown = null;
+    const leads = await fetchMetaLeads({
+      accountId: "act_refresh",
+      accessToken: "token",
+      onFormsRefreshed: (forms) => {
+        refreshedForms = forms;
+      },
+    });
+    assert.equal(leads.length, 1);
+    assert.ok(Array.isArray(refreshedForms));
+    assert.equal((refreshedForms as Array<{ id: string }>)[0]?.id, "form-refresh");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("isMetaRateLimitError detects Meta code 17 payloads", () => {
+  const error = new Error(
+    'Meta ads request failed with 400: {"error":{"message":"User request limit reached","code":17,"error_subcode":2446079}}',
+  );
+  assert.equal(isMetaRateLimitError(error), true);
+  assert.equal(isMetaRateLimitError(new Error("other error")), false);
 });

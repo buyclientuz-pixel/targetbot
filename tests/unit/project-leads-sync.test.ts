@@ -10,6 +10,9 @@ const { createDefaultProjectSettings, upsertProjectSettings } = await import("..
 const { createMetaToken, upsertMetaToken } = await import("../../src/domain/meta-tokens.ts");
 const { getLead } = await import("../../src/domain/leads.ts");
 const { getProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
+const { createMetaLeadFormCacheEntry, saveMetaLeadFormCache } = await import(
+  "../../src/domain/meta-lead-forms.ts",
+);
 const { syncProjectLeadsFromMeta } = await import("../../src/services/project-leads-sync.ts");
 
 const installLeadsStub = () => {
@@ -230,5 +233,69 @@ test("syncProjectLeadsFromMeta retries without since when summary is empty", asy
     assert.equal(summary?.leads[0]?.id, "lead-bootstrap");
   } finally {
     restore();
+  }
+});
+
+test("syncProjectLeadsFromMeta falls back to cached forms when Meta rate limits discovery", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const project = createProject({ id: "proj-rate-limit", name: "Rate", adsAccountId: "act_rate", ownerTelegramId: 4 });
+  await putProject(kv, project);
+  const settings = createDefaultProjectSettings("proj-rate-limit");
+  await upsertProjectSettings(kv, {
+    ...settings,
+    projectId: "proj-rate-limit",
+    portalEnabled: true,
+    meta: { facebookUserId: "fb_rate" },
+  });
+  const token = createMetaToken({ facebookUserId: "fb_rate", accessToken: "token_rate" });
+  await upsertMetaToken(kv, token);
+  const cacheEntry = createMetaLeadFormCacheEntry("act_rate", [{ id: "form-rate", accessToken: "page-token" }], 60);
+  cacheEntry.fetchedAt = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+  cacheEntry.ttlSeconds = 60;
+  await saveMetaLeadFormCache(kv, cacheEntry);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_rate/leadgen_forms")) {
+      return new Response(
+        JSON.stringify({ error: { message: "(#100) Tried accessing nonexisting field (leadgen_forms)", code: 100 } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/act_rate/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_rate/ads")) {
+      return new Response(
+        JSON.stringify({ error: { message: "User request limit reached", code: 17, error_subcode: 2446079 } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/form-rate/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-rate", created_time: "2025-11-17T13:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+
+  try {
+    const result = await syncProjectLeadsFromMeta(kv, r2, "proj-rate-limit", {
+      project,
+      settings: { ...settings, meta: { facebookUserId: "fb_rate" } },
+      facebookUserId: "fb_rate",
+    });
+    assert.equal(result.fetched, 1);
+    assert.equal(result.stored, 1);
+    const summary = await getProjectLeadsList(r2, "proj-rate-limit");
+    assert.equal(summary?.leads.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
