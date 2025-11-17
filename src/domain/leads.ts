@@ -2,7 +2,7 @@ import { R2_KEYS } from "../config/r2";
 import type { R2Client } from "../infra/r2";
 import { DataValidationError } from "../errors";
 
-export type LeadStatus = "NEW" | "IN_PROGRESS" | "DONE";
+export type LeadStatus = "NEW" | "IN_PROGRESS" | "DONE" | "TRASH";
 
 export interface Lead {
   id: string;
@@ -79,8 +79,9 @@ export const createLead = (input: CreateLeadInput): Lead => {
   const createdAt = ensureIsoTimestamp(input.createdAt);
   const phone = normaliseOptionalString(input.phone);
   const message = normaliseOptionalString(input.message);
-  const defaultContact = phone ?? (message ? "Сообщение" : "—");
-  const contact = normaliseString(input.contact ?? defaultContact, defaultContact);
+  const providedContact = normaliseOptionalString(input.contact);
+  const defaultContact = phone ?? providedContact ?? (message ? "сообщение" : "—");
+  const contact = normaliseString(defaultContact, defaultContact);
   return {
     id: requireString(input.id, "id"),
     projectId: requireString(input.projectId, "projectId"),
@@ -131,7 +132,17 @@ const migrateLegacyLead = async (
   }
 };
 
-export const saveLead = async (r2: R2Client, lead: Lead): Promise<void> => {
+export const saveLead = async (
+  r2: R2Client,
+  lead: Lead,
+  options: { overwrite?: boolean } = {},
+): Promise<boolean> => {
+  if (!options.overwrite) {
+    const existing = await getLead(r2, lead.projectId, lead.id);
+    if (existing) {
+      return false;
+    }
+  }
   const key = R2_KEYS.projectLead(lead.projectId, lead.id);
   const storedPayload: Record<string, unknown> = {
     ...lead,
@@ -140,6 +151,7 @@ export const saveLead = async (r2: R2Client, lead: Lead): Promise<void> => {
   await r2.putJson(key, storedPayload);
   await deleteQuietly(r2, R2_KEYS.lead(lead.projectId, lead.id));
   await deleteQuietly(r2, R2_KEYS.legacyProjectLead(lead.projectId, lead.id));
+  return true;
 };
 
 export const deleteLead = async (
@@ -173,7 +185,12 @@ export const getLead = async (r2: R2Client, projectId: string, leadId: string): 
 const parseLeadStatus = (value: unknown): LeadStatus => {
   if (typeof value === "string" && value.trim().length > 0) {
     const normalised = value.trim().toUpperCase();
-    if (normalised === "NEW" || normalised === "IN_PROGRESS" || normalised === "DONE") {
+    if (
+      normalised === "NEW" ||
+      normalised === "IN_PROGRESS" ||
+      normalised === "DONE" ||
+      normalised === "TRASH"
+    ) {
       return normalised;
     }
   }
@@ -208,8 +225,8 @@ export const parseStoredLead = (raw: unknown, projectIdHint?: string): Lead => {
   const message = normaliseOptionalString(
     (pickRecordValue<string>(record, ["message", "message_text"]) ?? undefined) as string | undefined,
   );
-  const contactValue = pickRecordValue<string>(record, ["contact"]);
-  const defaultContact = phone ?? (message ? "Сообщение" : "—");
+  const contactValue = normaliseOptionalString(pickRecordValue<string>(record, ["contact"]) ?? undefined);
+  const defaultContact = phone ?? contactValue ?? (message ? "сообщение" : "—");
   return {
     id: requireString(record.id as string | null | undefined, "lead.id"),
     projectId: requireString(projectIdValue, "lead.projectId"),

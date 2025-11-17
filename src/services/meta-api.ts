@@ -51,6 +51,7 @@ export interface MetaLeadRecord {
   adset_name?: string | null;
   ad_name?: string | null;
   form_id?: string | null;
+  form_name?: string | null;
   field_data?: MetaLeadFieldValue[] | null;
 }
 
@@ -116,11 +117,10 @@ const sleep = (delayMs: number): Promise<void> => {
 };
 
 const META_RATE_LIMIT_MAX_ATTEMPTS = 3;
-const META_RATE_LIMIT_BASE_DELAY_MS = 250;
+const META_RATE_LIMIT_RETRY_DELAY_MS = 3000;
 
 const retryOnMetaRateLimit = async <T>(operation: () => Promise<T>): Promise<T> => {
   let attempt = 0;
-  let delay = META_RATE_LIMIT_BASE_DELAY_MS;
   while (true) {
     try {
       return await operation();
@@ -128,8 +128,7 @@ const retryOnMetaRateLimit = async <T>(operation: () => Promise<T>): Promise<T> 
       if (!isMetaRateLimitError(error) || attempt >= META_RATE_LIMIT_MAX_ATTEMPTS - 1) {
         throw error;
       }
-      await sleep(delay);
-      delay *= 2;
+      await sleep(META_RATE_LIMIT_RETRY_DELAY_MS);
       attempt += 1;
     }
   }
@@ -387,7 +386,17 @@ const buildLeadUrl = (nodeId: string, options: MetaLeadFetchOptions, cursor?: st
   url.searchParams.set("access_token", options.accessToken);
   url.searchParams.set(
     "fields",
-    ["id", "created_time", "campaign_name", "campaign_id", "adset_name", "ad_name", "form_id", "field_data"].join(","),
+    [
+      "id",
+      "created_time",
+      "campaign_name",
+      "campaign_id",
+      "adset_name",
+      "ad_name",
+      "form_id",
+      "form_name",
+      "field_data",
+    ].join(","),
   );
   url.searchParams.set("limit", "100");
   if (cursor) {
@@ -415,6 +424,7 @@ const normaliseLeadRecord = (record: Record<string, unknown>): MetaLeadRecord | 
     adset_name: typeof record.adset_name === "string" ? record.adset_name : null,
     ad_name: typeof record.ad_name === "string" ? record.ad_name : null,
     form_id: typeof record.form_id === "string" ? record.form_id : null,
+    form_name: typeof record.form_name === "string" ? record.form_name : null,
     field_data: Array.isArray(record.field_data) ? (record.field_data as MetaLeadFieldValue[]) : null,
   } satisfies MetaLeadRecord;
 };

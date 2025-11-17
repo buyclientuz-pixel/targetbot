@@ -217,6 +217,17 @@ const resolveMessage = (value: MetaWebhookValue, index: Map<string, string>): st
   return normalised.length > 0 ? normalised : null;
 };
 
+const resolveEmail = (value: MetaWebhookValue, index: Map<string, string>): string | null => {
+  const direct =
+    pickFirst(index, ["email", "email_address", "emailAddress", "contact_email"]) ??
+    (typeof value.email === "string" ? value.email : null);
+  if (!direct) {
+    return null;
+  }
+  const trimmed = direct.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 const resolveCampaign = (value: MetaWebhookValue, index: Map<string, string>): string | null => {
   const fromValue = value.campaign_name ?? value.campaign;
   if (typeof fromValue === "string" && fromValue.trim()) {
@@ -284,6 +295,7 @@ export const parseMetaWebhookPayload = (payload: unknown): ParsedLeadEvent[] => 
       const name = resolveName(value, fieldIndex);
       const phone = resolvePhone(value, fieldIndex);
       const message = resolveMessage(value, fieldIndex);
+      const email = resolveEmail(value, fieldIndex);
       const campaign = resolveCampaign(value, fieldIndex);
       const adset = resolveAdset(value, fieldIndex);
       const ad = resolveAd(value, fieldIndex);
@@ -293,6 +305,7 @@ export const parseMetaWebhookPayload = (payload: unknown): ParsedLeadEvent[] => 
         projectId,
         name,
         phone,
+        contact: email ?? undefined,
         message,
         campaign,
         campaignId: typeof value.campaign_id === "string" ? value.campaign_id : undefined,

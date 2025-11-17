@@ -82,6 +82,7 @@ const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead | nu
     record.campaign_name ??
     null;
   const phone = extractFieldValue(record, ["phone_number", "phone", "phone_number_full"]);
+  const email = extractFieldValue(record, ["email", "email_address", "emailaddress", "contact_email"]);
   const message =
     extractFieldValue(record, ["message", "сообщение", "comment", "text", "feedback", "notes"]) ?? null;
   return createLead({
@@ -89,6 +90,7 @@ const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead | nu
     projectId,
     name,
     phone,
+    contact: phone ?? email ?? (message ? "сообщение" : undefined),
     message,
     campaign: typeof record.campaign_name === "string" ? record.campaign_name : null,
     campaignId: typeof record.campaign_id === "string" ? record.campaign_id : null,
@@ -196,30 +198,32 @@ export const syncProjectLeadsFromMeta = async (
     await prune();
     return { fetched: 0, stored: 0 };
   }
-  const created: Lead[] = [];
+  const storedLeads: Lead[] = [];
   for (const raw of rawLeads) {
+    let lead: Lead | null = null;
     try {
-      const lead = buildLeadFromMeta(raw, projectId);
-      if (!lead) {
-        continue;
-      }
-      created.push(lead);
+      lead = buildLeadFromMeta(raw, projectId);
     } catch (error) {
       console.warn(`[portal-sync] Unable to parse Meta lead ${raw.id}: ${(error as Error).message}`);
+      continue;
+    }
+    if (!lead) {
+      continue;
+    }
+    try {
+      const persisted = await saveLead(r2, lead);
+      if (persisted) {
+        storedLeads.push(lead);
+      }
+    } catch (error) {
+      console.warn(`[portal-sync] Failed to persist lead ${lead.id}: ${(error as Error).message}`);
     }
   }
-  if (created.length > 0) {
-    for (const lead of created) {
-      try {
-        await saveLead(r2, lead);
-      } catch (error) {
-        console.warn(`[portal-sync] Failed to persist lead ${lead.id}: ${(error as Error).message}`);
-      }
-    }
-    await mergeProjectLeadsList(r2, projectId, created);
+  if (storedLeads.length > 0) {
+    await mergeProjectLeadsList(r2, projectId, storedLeads);
   }
   await prune();
-  return { fetched: rawLeads.length, stored: created.length };
+  return { fetched: rawLeads.length, stored: storedLeads.length };
 };
 
 export const refreshProjectLeads = async (

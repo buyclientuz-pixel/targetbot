@@ -53,6 +53,15 @@ const installLeadsStub = () => {
                 { name: "message", values: [{ value: "Перезвоните" }] },
               ],
             },
+            {
+              id: "lead-sync-3",
+              created_time: "2025-11-16T12:00:00Z",
+              campaign_name: "Campaign Sync",
+              field_data: [
+                { name: "full_name", values: [{ value: "Email Contact" }] },
+                { name: "email", values: [{ value: "user@example.com" }] },
+              ],
+            },
           ],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -86,18 +95,22 @@ test("syncProjectLeadsFromMeta persists leads and updates summary", async () => 
       settings: { ...settings, meta: { facebookUserId: "fb_sync" } },
       facebookUserId: "fb_sync",
     });
-    assert.equal(result.fetched, 2);
-    assert.equal(result.stored, 2);
+    assert.equal(result.fetched, 3);
+    assert.equal(result.stored, 3);
     const storedLead = await getLead(r2, "proj-sync-leads", "lead-sync-1");
     assert.equal(storedLead?.phone, "+998900000333");
     const messageLead = await getLead(r2, "proj-sync-leads", "lead-sync-2");
     assert.equal(messageLead?.phone, null);
     assert.equal(messageLead?.message, "Перезвоните");
-    assert.equal(messageLead?.contact, "Сообщение");
+    assert.equal(messageLead?.contact, "сообщение");
+    const emailLead = await getLead(r2, "proj-sync-leads", "lead-sync-3");
+    assert.equal(emailLead?.phone, null);
+    assert.equal(emailLead?.contact, "user@example.com");
     const summary = await getProjectLeadsList(r2, "proj-sync-leads");
-    assert.equal(summary?.leads.length, 2);
+    assert.equal(summary?.leads.length, 3);
     assert.ok(summary?.leads.some((lead) => lead.id === "lead-sync-1" && lead.type === "lead"));
     assert.ok(summary?.leads.some((lead) => lead.id === "lead-sync-2" && lead.type === "message"));
+    assert.ok(summary?.leads.some((lead) => lead.id === "lead-sync-3" && lead.phone === "user@example.com"));
     assert.ok(summary?.syncedAt);
   } finally {
     restore();

@@ -12,21 +12,30 @@ const mapLeadStatus = (leadStatus: Lead["status"]): ProjectLeadsListRecord["lead
       return "processing";
     case "DONE":
       return "done";
+    case "TRASH":
+      return "trash";
     default:
       return "new";
   }
 };
 
-const mapLeadToSummary = (lead: Lead): ProjectLeadsListRecord["leads"][number] => ({
-  id: lead.id,
-  name: lead.name,
-  phone: lead.phone ?? (lead.message ? "Сообщение" : ""),
-  createdAt: lead.createdAt,
-  source: lead.source,
-  campaignName: lead.campaign ?? "—",
-  status: mapLeadStatus(lead.status),
-  type: lead.phone ? "lead" : "message",
-});
+const mapLeadToSummary = (lead: Lead): ProjectLeadsListRecord["leads"][number] => {
+  const contactLabel = lead.phone ?? lead.contact ?? (lead.message ? "сообщение" : "");
+  const trimmedContact = contactLabel.trim();
+  const displayContact = trimmedContact || (lead.message ? "сообщение" : "—");
+  const isMessage =
+    !lead.phone && (displayContact === "—" || displayContact.toLowerCase() === "сообщение");
+  return {
+    id: lead.id,
+    name: lead.name,
+    phone: displayContact,
+    createdAt: lead.createdAt,
+    source: lead.source,
+    campaignName: lead.campaign ?? "—",
+    status: mapLeadStatus(lead.status),
+    type: isMessage ? "message" : "lead",
+  };
+};
 
 const createEmptyList = (): ProjectLeadsListRecord => ({ stats: { total: 0, today: 0 }, leads: [], syncedAt: null });
 

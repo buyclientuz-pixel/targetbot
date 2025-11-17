@@ -338,6 +338,11 @@ test("fetchMetaLeads falls back to ad creative forms when pages don't expose lea
 
 test("fetchMetaLeads tolerates rate limit errors from ad creative fallback", async () => {
   const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void) => {
+    callback();
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
     if (url.pathname.includes("/act_ratelimit/leads")) {
@@ -368,11 +373,17 @@ test("fetchMetaLeads tolerates rate limit errors from ad creative fallback", asy
     assert.equal(leads.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
   }
 });
 
 test("fetchMetaLeads retries ad creative fallback requests after transient rate limits", async () => {
   const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void) => {
+    callback();
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
   let adRequests = 0;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
@@ -427,6 +438,7 @@ test("fetchMetaLeads retries ad creative fallback requests after transient rate 
     assert.equal(adRequests, 2);
   } finally {
     globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
   }
 });
 

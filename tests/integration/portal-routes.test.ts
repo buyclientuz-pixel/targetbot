@@ -146,6 +146,21 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.equal(leadsPayload.data.leads[0]?.contact, "+998902867999");
   assert.equal(leadsPayload.data.stats.total, 170);
 
+  const customFrom = new Date(new Date(recentLeadDate).getTime() - 60 * 60 * 1000).toISOString();
+  const customTo = new Date(new Date(recentLeadDate).getTime() + 60 * 60 * 1000).toISOString();
+  const leadsRangeResponse = await router.dispatch(
+    new Request(
+      `https://example.com/api/projects/birlash/leads?from=${encodeURIComponent(customFrom)}&to=${encodeURIComponent(customTo)}`,
+    ),
+    env,
+    execution,
+  );
+  assert.equal(leadsRangeResponse.status, 200);
+  const leadsRangePayload = (await leadsRangeResponse.clone().json()) as typeof leadsPayload;
+  assert.ok(leadsRangePayload.ok);
+  assert.equal(leadsRangePayload.data.periodKey, "custom");
+  assert.equal(leadsRangePayload.data.leads.length, 1);
+
   const campaignsResponse = await router.dispatch(
     new Request("https://example.com/api/projects/birlash/campaigns?period=yesterday"),
     env,

@@ -853,7 +853,7 @@ export const registerAdminRoutes = (router: Router): void => {
       return badRequest("Project ID is required");
     }
     const leads = await listAdminProjectLeads(context.r2, projectId);
-    return jsonOk(leads);
+    return jsonOk({ leads: leads.leads, stats: leads.stats, syncedAt: leads.syncedAt });
   });
 
   registerAdminRoute(router, "GET", ["/api/admin/projects/:projectId/payments"], async (context) => {

@@ -1,7 +1,7 @@
 import { createMetaToken, getMetaToken, parseMetaToken, upsertMetaToken } from "../domain/meta-tokens";
 import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
 import { getProject, type Project } from "../domain/projects";
-import { getLead, saveLead, type Lead } from "../domain/leads";
+import { saveLead, type Lead } from "../domain/leads";
 import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
 import { loadProjectCampaigns, loadProjectSummary } from "../services/project-insights";
@@ -234,14 +234,13 @@ export const registerMetaRoutes = (
 
       const settings = await ensureProjectSettings(context.kv, projectId);
 
-      const existing = await getLead(context.r2, projectId, lead.id);
-      const duplicate = Boolean(existing);
-
-      await saveLead(context.r2, lead);
-      await mergeProjectLeadsList(context.r2, projectId, [lead]).catch(() => {});
+      const stored = await saveLead(context.r2, lead);
+      if (stored) {
+        await mergeProjectLeadsList(context.r2, projectId, [lead]).catch(() => {});
+      }
 
       let notificationsDispatched = false;
-      if (!duplicate) {
+      if (stored) {
         notificationsDispatched = await dispatchLeadNotifications(
           context.kv,
           resolveTelegramToken(context.env),
@@ -255,8 +254,8 @@ export const registerMetaRoutes = (
       processed.push({
         projectId,
         leadId: lead.id,
-        stored: true,
-        duplicate,
+        stored,
+        duplicate: !stored,
         notificationsDispatched,
       });
     }
