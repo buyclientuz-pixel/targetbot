@@ -142,7 +142,7 @@ export const syncPortalMetrics = async (
   }
 
   try {
-    await syncProjectLeadsFromMeta(kv, r2, projectId, { project, settings, facebookUserId });
+    await syncProjectLeadsFromMeta(kv, r2, projectId, { project, settings, facebookUserId, projectRecord });
     recordResult("leads", { ok: true });
   } catch (error) {
     recordResult("leads", { ok: false, error: error as Error });

@@ -6,7 +6,7 @@ import { MemoryKVNamespace, MemoryR2Bucket } from "../utils/mocks.ts";
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
 const { R2_KEYS } = await import("../../src/config/r2.ts");
-const { createProject, putProject } = await import("../../src/domain/projects.ts");
+const { createProject, putProject, getProject } = await import("../../src/domain/projects.ts");
 const { createDefaultProjectSettings, upsertProjectSettings } = await import("../../src/domain/project-settings.ts");
 const { createMetaToken, upsertMetaToken } = await import("../../src/domain/meta-tokens.ts");
 const { getLead } = await import("../../src/domain/leads.ts");
@@ -15,6 +15,7 @@ const { saveMetaLeadFormsCache } = await import("../../src/domain/meta-lead-form
 const { getProjectLeadSyncState, saveProjectLeadSyncState } = await import(
   "../../src/domain/project-lead-sync-state.ts",
 );
+const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { syncProjectLeadsFromMeta } = await import("../../src/services/project-leads-sync.ts");
 
 const installLeadsStub = () => {
@@ -93,11 +94,35 @@ const installLeadsStub = () => {
   return Object.assign(restore, { leadFilterValues });
 };
 
+const writeProjectRecord = async (
+  kv: InstanceType<typeof KvClient>,
+  project: Awaited<ReturnType<typeof createProject>>,
+  overrides: Partial<import("../../src/domain/spec/project.ts").ProjectRecord> = {},
+): Promise<import("../../src/domain/spec/project.ts").ProjectRecord> => {
+  const record: import("../../src/domain/spec/project.ts").ProjectRecord = {
+    id: project.id,
+    name: overrides.name ?? project.name,
+    ownerId: overrides.ownerId ?? project.ownerTelegramId,
+    adAccountId: overrides.adAccountId ?? project.adsAccountId,
+    chatId: overrides.chatId ?? null,
+    portalUrl: overrides.portalUrl ?? `https://example.com/${project.id}`,
+    settings:
+      overrides.settings ?? {
+        currency: "USD",
+        timezone: "Asia/Tashkent",
+        kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
+      },
+  };
+  await putProjectRecord(kv, record);
+  return record;
+};
+
 test("syncProjectLeadsFromMeta persists leads and updates summary", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());
   const project = createProject({ id: "proj-sync-leads", name: "Sync", adsAccountId: "act_sync", ownerTelegramId: 1 });
   await putProject(kv, project);
+  const projectRecord = await writeProjectRecord(kv, project);
   const settings = createDefaultProjectSettings("proj-sync-leads");
   await upsertProjectSettings(kv, {
     ...settings,
@@ -113,6 +138,7 @@ test("syncProjectLeadsFromMeta persists leads and updates summary", async () => 
       project,
       settings: { ...settings, meta: { facebookUserId: "fb_sync" } },
       facebookUserId: "fb_sync",
+      projectRecord,
     });
     assert.equal(result.fetched, 3);
     assert.equal(result.stored, 3);
@@ -145,6 +171,7 @@ test("syncProjectLeadsFromMeta marks syncedAt even when no new leads arrive", as
   const r2 = new R2Client(new MemoryR2Bucket());
   const project = createProject({ id: "proj-empty-sync", name: "Empty", adsAccountId: "act_empty", ownerTelegramId: 2 });
   await putProject(kv, project);
+  const projectRecord = await writeProjectRecord(kv, project);
   const settings = createDefaultProjectSettings("proj-empty-sync");
   await upsertProjectSettings(kv, {
     ...settings,
@@ -185,6 +212,7 @@ test("syncProjectLeadsFromMeta marks syncedAt even when no new leads arrive", as
       project,
       settings: { ...settings, meta: { facebookUserId: "fb_empty" } },
       facebookUserId: "fb_empty",
+      projectRecord,
     });
     assert.equal(result.fetched, 0);
     assert.equal(result.stored, 0);
@@ -205,6 +233,7 @@ test("syncProjectLeadsFromMeta prunes leads older than retention window", async 
   const r2 = new R2Client(new MemoryR2Bucket());
   const project = createProject({ id: "proj-prune", name: "Prune", adsAccountId: "act_prune", ownerTelegramId: 3 });
   await putProject(kv, project);
+  const projectRecord = await writeProjectRecord(kv, project);
   const settings = createDefaultProjectSettings("proj-prune");
   await upsertProjectSettings(kv, { ...settings, projectId: "proj-prune", portalEnabled: true, meta: { facebookUserId: "fb_prune" } });
   const token = createMetaToken({ facebookUserId: "fb_prune", accessToken: "token_prune" });
@@ -254,6 +283,7 @@ test("syncProjectLeadsFromMeta prunes leads older than retention window", async 
       project,
       settings: { ...settings, meta: { facebookUserId: "fb_prune" } },
       facebookUserId: "fb_prune",
+      projectRecord,
     });
     assert.equal(result.fetched, 0);
     assert.equal(result.stored, 0);
@@ -269,6 +299,7 @@ test("syncProjectLeadsFromMeta narrows fetch window using lead sync cursor", asy
   const r2 = new R2Client(new MemoryR2Bucket());
   const project = createProject({ id: "proj-cursor", name: "Cursor", adsAccountId: "act_cursor", ownerTelegramId: 9 });
   await putProject(kv, project);
+  const projectRecord = await writeProjectRecord(kv, project);
   const settings = createDefaultProjectSettings("proj-cursor");
   await upsertProjectSettings(kv, {
     ...settings,
@@ -290,6 +321,7 @@ test("syncProjectLeadsFromMeta narrows fetch window using lead sync cursor", asy
       project,
       settings: { ...settings, meta: { facebookUserId: "fb_cursor" } },
       facebookUserId: "fb_cursor",
+      projectRecord,
     });
     assert.equal(result.fetched, 3);
     assert.equal(result.stored, 3);
@@ -314,6 +346,7 @@ test("syncProjectLeadsFromMeta retries without cached-only mode when no leads ar
     ownerTelegramId: 8,
   });
   await putProject(kv, project);
+  const projectRecord = await writeProjectRecord(kv, project);
   const settings = createDefaultProjectSettings("proj-cache-retry");
   await upsertProjectSettings(kv, {
     ...settings,
@@ -393,6 +426,7 @@ test("syncProjectLeadsFromMeta retries without cached-only mode when no leads ar
       project,
       settings: { ...settings, meta: { facebookUserId: "fb_cache_retry" } },
       facebookUserId: "fb_cache_retry",
+      projectRecord,
     });
     assert.equal(result.fetched, 1);
     assert.equal(result.stored, 1);
@@ -401,5 +435,37 @@ test("syncProjectLeadsFromMeta retries without cached-only mode when no leads ar
     assert.ok(requests.some((path) => path.includes("/act_cache_retry/leadgen_forms")));
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("syncProjectLeadsFromMeta backfills missing ads account from project record", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const project = createProject({ id: "proj-record", name: "Record", adsAccountId: null, ownerTelegramId: 11 });
+  await putProject(kv, project);
+  const projectRecord = await writeProjectRecord(kv, project, { adAccountId: "act_record" });
+  const settings = createDefaultProjectSettings("proj-record");
+  await upsertProjectSettings(kv, {
+    ...settings,
+    projectId: "proj-record",
+    portalEnabled: true,
+    meta: { facebookUserId: "fb_record" },
+  });
+  const token = createMetaToken({ facebookUserId: "fb_record", accessToken: "token_record" });
+  await upsertMetaToken(kv, token);
+  const restore = installLeadsStub();
+  try {
+    const result = await syncProjectLeadsFromMeta(kv, r2, "proj-record", {
+      project,
+      settings: { ...settings, meta: { facebookUserId: "fb_record" } },
+      facebookUserId: "fb_record",
+      projectRecord,
+    });
+    assert.equal(result.fetched, 3);
+    assert.equal(result.stored, 3);
+    const updated = await getProject(kv, "proj-record");
+    assert.equal(updated.adsAccountId, "act_record");
+  } finally {
+    restore();
   }
 });

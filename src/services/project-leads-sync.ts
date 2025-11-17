@@ -2,12 +2,13 @@ import { getMetaToken } from "../domain/meta-tokens";
 import { createLead, deleteLead, listLeads, saveLead, type Lead } from "../domain/leads";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
-import { getProject, type Project } from "../domain/projects";
+import { getProject, putProject, type Project } from "../domain/projects";
 import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
 import { fetchMetaLeads, type LeadGenFormDescriptor, type MetaLeadRecord } from "./meta-api";
 import { markProjectLeadsSynced, mergeProjectLeadsList, rewriteProjectLeadsList } from "./project-leads-list";
 import { getLeadRetentionDays } from "../domain/config";
 import { DataValidationError } from "../errors";
+import { requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
 import {
   getCachedMetaLeadForms,
   saveMetaLeadFormsCache,
@@ -167,6 +168,7 @@ export interface ProjectLeadSyncOptions {
   project: Project;
   settings: ProjectSettings;
   facebookUserId: string;
+  projectRecord: ProjectRecord;
 }
 
 export interface ProjectLeadSyncResult {
@@ -189,13 +191,25 @@ const ensureProjectLeadSyncOptions = async (
   projectId: string,
   options?: Partial<ProjectLeadSyncOptions>,
 ): Promise<ProjectLeadSyncOptions> => {
-  const project = options?.project ?? (await getProject(kv, projectId));
-  if (!project.adsAccountId) {
+  const projectRecord = options?.projectRecord ?? (await requireProjectRecord(kv, projectId));
+  let project = options?.project ?? (await getProject(kv, projectId));
+  const resolvedAccountId = project.adsAccountId ?? projectRecord.adAccountId ?? null;
+  if (!resolvedAccountId) {
     throw new DataValidationError("У проекта нет подключённого рекламного аккаунта Meta");
+  }
+  if (project.adsAccountId !== resolvedAccountId) {
+    project = { ...project, adsAccountId: resolvedAccountId };
+    try {
+      await putProject(kv, project);
+    } catch (error) {
+      console.warn(
+        `[portal-sync] Failed to backfill project account id for ${projectId}: ${(error as Error).message}`,
+      );
+    }
   }
   const settings = options?.settings ?? (await ensureProjectSettings(kv, projectId));
   const facebookUserId = requireFacebookUserId(settings, options?.facebookUserId);
-  return { project, settings, facebookUserId };
+  return { project, settings, facebookUserId, projectRecord };
 };
 
 export const syncProjectLeadsFromMeta = async (
@@ -204,10 +218,10 @@ export const syncProjectLeadsFromMeta = async (
   projectId: string,
   options: ProjectLeadSyncOptions,
 ): Promise<ProjectLeadSyncResult> => {
-  if (!options.project.adsAccountId) {
+  const accountId = options.project.adsAccountId ?? options.projectRecord.adAccountId;
+  if (!accountId) {
     return { fetched: 0, stored: 0 };
   }
-  const accountId = options.project.adsAccountId;
   let cachedLeadForms: MetaLeadFormsCacheRecord | null = null;
   try {
     cachedLeadForms = await getCachedMetaLeadForms(kv, projectId, accountId);
