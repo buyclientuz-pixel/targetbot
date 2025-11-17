@@ -11,6 +11,7 @@ const { createDefaultProjectSettings, upsertProjectSettings } = await import("..
 const { createMetaToken, upsertMetaToken } = await import("../../src/domain/meta-tokens.ts");
 const { getLead } = await import("../../src/domain/leads.ts");
 const { getProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
+const { saveMetaLeadFormsCache } = await import("../../src/domain/meta-lead-forms-cache.ts");
 const { syncProjectLeadsFromMeta } = await import("../../src/services/project-leads-sync.ts");
 
 const installLeadsStub = () => {
@@ -232,6 +233,106 @@ test("syncProjectLeadsFromMeta prunes leads older than retention window", async 
     assert.equal(result.stored, 0);
     const deleted = await r2.getJson(R2_KEYS.projectLead("proj-prune", "old-lead"));
     assert.equal(deleted, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("syncProjectLeadsFromMeta retries without cached-only mode when no leads are returned", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const project = createProject({
+    id: "proj-cache-retry",
+    name: "CacheRetry",
+    adsAccountId: "act_cache_retry",
+    ownerTelegramId: 8,
+  });
+  await putProject(kv, project);
+  const settings = createDefaultProjectSettings("proj-cache-retry");
+  await upsertProjectSettings(kv, {
+    ...settings,
+    projectId: "proj-cache-retry",
+    portalEnabled: true,
+    meta: { facebookUserId: "fb_cache_retry" },
+  });
+  const token = createMetaToken({ facebookUserId: "fb_cache_retry", accessToken: "token_cache_retry" });
+  await upsertMetaToken(kv, token);
+  await saveMetaLeadFormsCache(kv, {
+    projectId: "proj-cache-retry",
+    accountId: "act_cache_retry",
+    fetchedAt: new Date().toISOString(),
+    forms: [{ id: "form-cached", accessToken: null }],
+  });
+
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    requests.push(url.pathname);
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/act_cache_retry/leads")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/form-cached/leads")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/act_cache_retry/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-fresh" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/form-fresh/leads")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: "lead-cache-recovered",
+              created_time: "2025-11-17T15:00:00Z",
+              campaign_name: "Recovered",
+              field_data: [
+                { name: "Full Name", values: [{ value: "Андрей" }] },
+                { name: "Phone number", values: [{ value: "+998901234567" }] },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+
+  try {
+    const result = await syncProjectLeadsFromMeta(kv, r2, "proj-cache-retry", {
+      project,
+      settings: { ...settings, meta: { facebookUserId: "fb_cache_retry" } },
+      facebookUserId: "fb_cache_retry",
+    });
+    assert.equal(result.fetched, 1);
+    assert.equal(result.stored, 1);
+    const stored = await getLead(r2, "proj-cache-retry", "lead-cache-recovered");
+    assert.equal(stored?.phone, "+998901234567");
+    assert.ok(requests.some((path) => path.includes("/act_cache_retry/leadgen_forms")));
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -168,7 +168,7 @@ export const syncProjectLeadsFromMeta = async (
   const token = await getMetaToken(kv, options.facebookUserId);
   const retentionDays = await getLeadRetentionDays(kv, 30);
   const since = new Date(Date.now() - retentionDays * DAY_IN_MS);
-  const rawLeads = await fetchMetaLeads({
+  const leadFetchOptions = {
     accountId,
     accessToken: token.accessToken,
     limit: LEAD_SYNC_LIMIT,
@@ -190,7 +190,14 @@ export const syncProjectLeadsFromMeta = async (
         );
       }
     },
-  });
+  } satisfies Parameters<typeof fetchMetaLeads>[0];
+  let rawLeads = await fetchMetaLeads(leadFetchOptions);
+  if (useCachedFormsOnly && rawLeads.length === 0) {
+    console.warn(
+      `[portal-sync] Cached Meta lead forms for project ${projectId} produced no leads, retrying with enumeration`,
+    );
+    rawLeads = await fetchMetaLeads({ ...leadFetchOptions, useCachedFormsOnly: false });
+  }
   const prune = async () => {
     try {
       await pruneExpiredProjectLeads(r2, projectId, retentionDays);
