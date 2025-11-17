@@ -40,8 +40,8 @@ const installLeadsStub = () => {
               created_time: "2025-11-16T10:00:00Z",
               campaign_name: "Campaign Sync",
               field_data: [
-                { name: "full_name", values: [{ value: "Контакт" }] },
-                { name: "phone_number", values: [{ value: "+998900000333" }] },
+                { name: "Full Name", values: [{ value: "Контакт" }] },
+                { name: "Phone number", values: [{ value: "+998900000333" }] },
               ],
             },
             {
@@ -49,8 +49,8 @@ const installLeadsStub = () => {
               created_time: "2025-11-16T11:00:00Z",
               campaign_name: "Campaign Sync",
               field_data: [
-                { name: "full_name", values: [{ value: "Сообщение" }] },
-                { name: "message", values: [{ value: "Перезвоните" }] },
+                { name: "Full Name", values: [{ value: "Сообщение" }] },
+                { name: "Сообщение", values: [{ value: "Перезвоните" }] },
               ],
             },
             {
@@ -58,8 +58,8 @@ const installLeadsStub = () => {
               created_time: "2025-11-16T12:00:00Z",
               campaign_name: "Campaign Sync",
               field_data: [
-                { name: "full_name", values: [{ value: "Email Contact" }] },
-                { name: "email", values: [{ value: "user@example.com" }] },
+                { name: "Full Name", values: [{ value: "Email Contact" }] },
+                { name: "Email Address", values: [{ value: "user@example.com" }] },
               ],
             },
           ],

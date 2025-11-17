@@ -49,7 +49,12 @@ const normaliseFieldName = (value: unknown): string => {
   if (typeof value !== "string") {
     return "";
   }
-  return value.trim().toLowerCase();
+  return value
+    .normalize("NFKD")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0400-\u04FF]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 };
 
 const extractFieldValue = (record: MetaLeadRecord, keys: string[]): string | null => {
