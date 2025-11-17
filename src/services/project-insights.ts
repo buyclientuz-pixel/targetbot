@@ -60,33 +60,34 @@ export interface PeriodRange {
 }
 
 export const resolvePeriodRange = (periodKey: string): PeriodRange => {
+  const normalised = periodKey === "max" ? "all" : periodKey;
   const now = new Date();
   const today = startOfDay(now);
-  switch (periodKey) {
+  switch (normalised) {
     case "today": {
       const from = today;
       const to = endOfDay(today);
-      return { key: periodKey, from, to, period: { from: toIsoDate(from), to: toIsoDate(from) } };
+      return { key: normalised, from, to, period: { from: toIsoDate(from), to: toIsoDate(from) } };
     }
     case "yesterday": {
       const from = startOfDay(addDays(today, -1));
       const to = endOfDay(from);
-      return { key: periodKey, from, to, period: { from: toIsoDate(from), to: toIsoDate(from) } };
+      return { key: normalised, from, to, period: { from: toIsoDate(from), to: toIsoDate(from) } };
     }
     case "week": {
       const from = startOfDay(addDays(today, -6));
       const to = endOfDay(today);
-      return { key: periodKey, from, to, period: { from: toIsoDate(from), to: toIsoDate(today) } };
+      return { key: normalised, from, to, period: { from: toIsoDate(from), to: toIsoDate(today) } };
     }
     case "month": {
       const from = startOfDay(addDays(today, -29));
       const to = endOfDay(today);
-      return { key: periodKey, from, to, period: { from: toIsoDate(from), to: toIsoDate(today) } };
+      return { key: normalised, from, to, period: { from: toIsoDate(from), to: toIsoDate(today) } };
     }
-    case "max": {
+    case "all": {
       const from = startOfDay(new Date(0));
       const to = endOfDay(today);
-      return { key: periodKey, from, to, period: { from: toIsoDate(from), to: toIsoDate(today) } };
+      return { key: normalised, from, to, period: { from: toIsoDate(from), to: toIsoDate(today) } };
     }
     default:
       return resolvePeriodRange("today");
@@ -161,8 +162,8 @@ export const loadProjectSummary = async (
   const lifetimeInsights = await ensureInsightsEntry(
     kv,
     projectId,
-    "insights:max",
-    "max",
+    "insights:all",
+    "all",
     project,
     token.accessToken,
   );

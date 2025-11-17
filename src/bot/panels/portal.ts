@@ -15,6 +15,7 @@ const PERIOD_LABELS: Record<string, string> = {
   yesterday: "вчера",
   week: "неделя",
   month: "месяц",
+  all: "всё время",
   max: "максимум",
 };
 

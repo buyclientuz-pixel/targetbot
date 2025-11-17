@@ -197,7 +197,7 @@ class FakeDocument {
       return { element, value };
     });
 
-    const periodKeys = ["today", "yesterday", "week", "month", "max"];
+    const periodKeys = ["today", "yesterday", "week", "month", "all"];
     const periodButtons = periodKeys.map((key) => new FakeElement({ "data-period-button": key }));
 
     const retryButtons = [new FakeElement({ "data-retry": "" })];

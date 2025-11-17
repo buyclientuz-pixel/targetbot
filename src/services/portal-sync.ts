@@ -9,9 +9,11 @@ import { loadProjectSummary, syncProjectCampaignDocument } from "./project-insig
 import { DataValidationError } from "../errors";
 import { syncProjectLeadsFromMeta } from "./project-leads-sync";
 
-export type PortalPeriodKey = "today" | "yesterday" | "week" | "month" | "max";
+export type PortalPeriodKey = "today" | "yesterday" | "week" | "month" | "all";
 
-export const PORTAL_PERIOD_KEYS: PortalPeriodKey[] = ["today", "yesterday", "week", "month", "max"];
+const normalisePortalPeriodKey = (key: PortalPeriodKey | "max"): PortalPeriodKey => (key === "max" ? "all" : key);
+
+export const PORTAL_PERIOD_KEYS: PortalPeriodKey[] = ["today", "yesterday", "week", "month", "all"];
 const DEFAULT_PERIOD_PLAN: PortalPeriodKey[] = PORTAL_PERIOD_KEYS.filter((key) => key !== "today").concat("today");
 export const PORTAL_AUTO_PERIOD_PLAN: PortalPeriodKey[] = [...DEFAULT_PERIOD_PLAN];
 
@@ -39,11 +41,12 @@ interface SyncPortalMetricsOptions {
   facebookUserId?: string | null;
 }
 
-const ensurePeriodPlan = (periods?: PortalPeriodKey[]): PortalPeriodKey[] => {
+const ensurePeriodPlan = (periods?: (PortalPeriodKey | "max")[]): PortalPeriodKey[] => {
   if (!periods || periods.length === 0) {
     return [...DEFAULT_PERIOD_PLAN];
   }
-  const unique = Array.from(new Set(periods)) as PortalPeriodKey[];
+  const normalised = periods.map((key) => normalisePortalPeriodKey(key));
+  const unique = Array.from(new Set(normalised)) as PortalPeriodKey[];
   const todayIndex = unique.indexOf("today");
   if (todayIndex === -1) {
     unique.push("today");

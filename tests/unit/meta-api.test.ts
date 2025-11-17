@@ -3,15 +3,16 @@ import test from "node:test";
 
 const { resolveDatePreset, fetchMetaLeads } = await import("../../src/services/meta-api.ts");
 
-test("resolveDatePreset clamps max period to Meta's 37-month limit", () => {
+test("resolveDatePreset clamps all-period window and supports legacy max alias", () => {
   const realNow = Date.now;
   const fixedNow = new Date("2025-11-16T00:00:00.000Z");
   Date.now = () => fixedNow.getTime();
   try {
-    const period = resolveDatePreset("max");
+    const period = resolveDatePreset("all");
     assert.equal(period.preset, "time_range");
     assert.equal(period.to, "2025-11-16");
     assert.equal(period.from, "2022-10-17");
+    assert.deepEqual(resolveDatePreset("max"), period);
   } finally {
     Date.now = realNow;
   }

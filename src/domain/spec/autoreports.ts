@@ -11,6 +11,7 @@ export const AUTOREPORT_MODES = [
   "yesterday",
   "week",
   "month",
+  "all",
   "max",
   "yesterday_plus_week",
 ] as const;

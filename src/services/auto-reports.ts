@@ -442,13 +442,14 @@ const resolvePeriodKeys = (mode: string, now: Date): string[] => {
     }
     return ["yesterday"];
   }
-  switch (normalised) {
+  const canonical = normalised === "max" ? "all" : normalised;
+  switch (canonical) {
     case "today":
     case "yesterday":
     case "week":
     case "month":
-    case "max":
-      return [mode];
+    case "all":
+      return [canonical];
     default:
       return ["yesterday"];
   }
@@ -500,6 +501,7 @@ const periodLabel = (key: string): string => {
       return "Неделя";
     case "month":
       return "Месяц";
+    case "all":
     case "max":
       return "Весь период";
     default:

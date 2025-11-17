@@ -1258,7 +1258,7 @@ export const renderPortalHtml = (projectId: string): string => {
                 <button class="portal-tabs__button" data-period-button="yesterday">Вчера</button>
                 <button class="portal-tabs__button" data-period-button="week">Неделя</button>
                 <button class="portal-tabs__button" data-period-button="month">Месяц</button>
-                <button class="portal-tabs__button" data-period-button="max">Максимум</button>
+                <button class="portal-tabs__button" data-period-button="all">Всё время</button>
               </div>
             </div>
           </div>

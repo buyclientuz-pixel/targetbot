@@ -352,7 +352,8 @@ const clampToMetaTimeRangeLimit = (requestedFrom: Date, today: Date): Date => {
 };
 
 export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
-  switch (periodKey) {
+  const normalised = periodKey === "max" ? "all" : periodKey;
+  switch (normalised) {
     case "today":
       return { preset: "today" };
     case "yesterday":
@@ -361,7 +362,7 @@ export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
       return { preset: "last_7d" };
     case "month":
       return { preset: "last_30d" };
-    case "max": {
+    case "all": {
       const today = new Date(Date.now());
       const from = clampToMetaTimeRangeLimit(new Date(0), today);
       return { preset: "time_range", from: formatDateOnly(from), to: formatDateOnly(today) };
