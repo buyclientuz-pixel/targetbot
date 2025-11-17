@@ -12,10 +12,14 @@ const { createMetaToken, upsertMetaToken } = await import("../../src/domain/meta
 const { getLead } = await import("../../src/domain/leads.ts");
 const { getProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
 const { saveMetaLeadFormsCache } = await import("../../src/domain/meta-lead-forms-cache.ts");
+const { getProjectLeadSyncState, saveProjectLeadSyncState } = await import(
+  "../../src/domain/project-lead-sync-state.ts",
+);
 const { syncProjectLeadsFromMeta } = await import("../../src/services/project-leads-sync.ts");
 
 const installLeadsStub = () => {
   const originalFetch = globalThis.fetch;
+  const leadFilterValues: number[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const target =
       typeof input === "string"
@@ -33,6 +37,19 @@ const installLeadsStub = () => {
       );
     }
     if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leads")) {
+      const filtering = url.searchParams.get("filtering");
+      if (filtering) {
+        try {
+          const parsed = JSON.parse(filtering) as Array<{ field?: string; value?: number }>;
+          for (const entry of parsed) {
+            if (entry?.field === "time_created" && typeof entry.value === "number") {
+              leadFilterValues.push(entry.value);
+            }
+          }
+        } catch {
+          // ignore parsing errors for test helpers
+        }
+      }
       return new Response(
         JSON.stringify({
           data: [
@@ -70,9 +87,10 @@ const installLeadsStub = () => {
     }
     return originalFetch(input);
   }) as typeof fetch;
-  return () => {
+  const restore = () => {
     globalThis.fetch = originalFetch;
   };
+  return Object.assign(restore, { leadFilterValues });
 };
 
 test("syncProjectLeadsFromMeta persists leads and updates summary", async () => {
@@ -113,6 +131,10 @@ test("syncProjectLeadsFromMeta persists leads and updates summary", async () => 
     assert.ok(summary?.leads.some((lead) => lead.id === "lead-sync-2" && lead.type === "message"));
     assert.ok(summary?.leads.some((lead) => lead.id === "lead-sync-3" && lead.phone === "user@example.com"));
     assert.ok(summary?.syncedAt);
+    const state = await getProjectLeadSyncState(kv, "proj-sync-leads");
+    assert.equal(state?.projectId, "proj-sync-leads");
+    assert.equal(state?.lastLeadCreatedAt, "2025-11-16T12:00:00.000Z");
+    assert.ok(state?.lastSyncAt);
   } finally {
     restore();
   }
@@ -169,6 +191,10 @@ test("syncProjectLeadsFromMeta marks syncedAt even when no new leads arrive", as
     const summary = await getProjectLeadsList(r2, "proj-empty-sync");
     assert.equal(summary?.leads.length, 0);
     assert.ok(summary?.syncedAt);
+    const state = await getProjectLeadSyncState(kv, "proj-empty-sync");
+    assert.equal(state?.projectId, "proj-empty-sync");
+    assert.equal(state?.lastLeadCreatedAt, null);
+    assert.ok(state?.lastSyncAt);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -236,6 +262,46 @@ test("syncProjectLeadsFromMeta prunes leads older than retention window", async 
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("syncProjectLeadsFromMeta narrows fetch window using lead sync cursor", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const project = createProject({ id: "proj-cursor", name: "Cursor", adsAccountId: "act_cursor", ownerTelegramId: 9 });
+  await putProject(kv, project);
+  const settings = createDefaultProjectSettings("proj-cursor");
+  await upsertProjectSettings(kv, {
+    ...settings,
+    projectId: "proj-cursor",
+    portalEnabled: true,
+    meta: { facebookUserId: "fb_cursor" },
+  });
+  const token = createMetaToken({ facebookUserId: "fb_cursor", accessToken: "token_cursor" });
+  await upsertMetaToken(kv, token);
+  await saveProjectLeadSyncState(kv, {
+    projectId: "proj-cursor",
+    lastLeadCreatedAt: "2025-11-10T12:00:00Z",
+    lastSyncAt: "2025-11-12T00:00:00Z",
+  });
+
+  const restore = installLeadsStub();
+  try {
+    const result = await syncProjectLeadsFromMeta(kv, r2, "proj-cursor", {
+      project,
+      settings: { ...settings, meta: { facebookUserId: "fb_cursor" } },
+      facebookUserId: "fb_cursor",
+    });
+    assert.equal(result.fetched, 3);
+    assert.equal(result.stored, 3);
+    const firstFilter = restore.leadFilterValues[0];
+    const expected = Math.floor(new Date("2025-11-10T11:45:00Z").getTime() / 1000);
+    assert.equal(firstFilter, expected);
+  } finally {
+    restore();
+  }
+
+  const state = await getProjectLeadSyncState(kv, "proj-cursor");
+  assert.equal(state?.lastLeadCreatedAt, "2025-11-16T12:00:00.000Z");
 });
 
 test("syncProjectLeadsFromMeta retries without cached-only mode when no leads are returned", async () => {

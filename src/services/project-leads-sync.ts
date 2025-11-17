@@ -13,9 +13,15 @@ import {
   saveMetaLeadFormsCache,
   type MetaLeadFormsCacheRecord,
 } from "../domain/meta-lead-forms-cache";
+import {
+  getProjectLeadSyncState,
+  saveProjectLeadSyncState,
+  type ProjectLeadSyncState,
+} from "../domain/project-lead-sync-state";
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const LEAD_SYNC_LIMIT = 400;
+const LEAD_SYNC_LOOKBACK_MS = 15 * 60 * 1000;
 
 const pruneExpiredProjectLeads = async (
   r2: R2Client,
@@ -107,6 +113,56 @@ const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead | nu
   });
 };
 
+const resolveLeadSyncSince = (
+  retentionDays: number,
+  state: ProjectLeadSyncState | null,
+): Date => {
+  const retentionSinceMs = Date.now() - Math.max(retentionDays, 1) * DAY_IN_MS;
+  if (!state?.lastLeadCreatedAt) {
+    return new Date(retentionSinceMs);
+  }
+  const lastLeadTime = Date.parse(state.lastLeadCreatedAt);
+  if (!Number.isFinite(lastLeadTime)) {
+    return new Date(retentionSinceMs);
+  }
+  const buffered = Math.max(lastLeadTime - LEAD_SYNC_LOOKBACK_MS, retentionSinceMs);
+  const clamped = Math.min(buffered, Date.now());
+  return new Date(clamped);
+};
+
+const pickLatestLeadTimestamp = (current: string | null, leads: Lead[]): string | null => {
+  let latest = current ?? null;
+  for (const lead of leads) {
+    if (!lead.createdAt) {
+      continue;
+    }
+    if (!latest || lead.createdAt > latest) {
+      latest = lead.createdAt;
+    }
+  }
+  return latest;
+};
+
+const persistLeadSyncState = async (
+  kv: KvClient,
+  projectId: string,
+  previous: ProjectLeadSyncState | null,
+  storedLeads: Lead[],
+): Promise<void> => {
+  const nextState: ProjectLeadSyncState = {
+    projectId,
+    lastLeadCreatedAt: pickLatestLeadTimestamp(previous?.lastLeadCreatedAt ?? null, storedLeads),
+    lastSyncAt: new Date().toISOString(),
+  };
+  try {
+    await saveProjectLeadSyncState(kv, nextState);
+  } catch (error) {
+    console.warn(
+      `[portal-sync] Failed to persist lead sync state for ${projectId}: ${(error as Error).message}`,
+    );
+  }
+};
+
 export interface ProjectLeadSyncOptions {
   project: Project;
   settings: ProjectSettings;
@@ -167,7 +223,15 @@ export const syncProjectLeadsFromMeta = async (
   const useCachedFormsOnly = Boolean(cachedLeadForms && cachedForms.length > 0);
   const token = await getMetaToken(kv, options.facebookUserId);
   const retentionDays = await getLeadRetentionDays(kv, 30);
-  const since = new Date(Date.now() - retentionDays * DAY_IN_MS);
+  let leadSyncState: ProjectLeadSyncState | null = null;
+  try {
+    leadSyncState = await getProjectLeadSyncState(kv, projectId);
+  } catch (error) {
+    console.warn(
+      `[portal-sync] Failed to read lead sync state for ${projectId}: ${(error as Error).message}`,
+    );
+  }
+  const since = resolveLeadSyncSince(retentionDays, leadSyncState);
   const leadFetchOptions = {
     accountId,
     accessToken: token.accessToken,
@@ -208,6 +272,7 @@ export const syncProjectLeadsFromMeta = async (
   if (rawLeads.length === 0) {
     await markProjectLeadsSynced(r2, projectId);
     await prune();
+    await persistLeadSyncState(kv, projectId, leadSyncState, []);
     return { fetched: 0, stored: 0 };
   }
   const storedLeads: Lead[] = [];
@@ -235,6 +300,7 @@ export const syncProjectLeadsFromMeta = async (
     await mergeProjectLeadsList(r2, projectId, storedLeads);
   }
   await prune();
+  await persistLeadSyncState(kv, projectId, leadSyncState, storedLeads);
   return { fetched: rawLeads.length, stored: storedLeads.length };
 };
 
