@@ -366,6 +366,45 @@ test("fetchMetaLeads still downloads leads when managed pages request fails", as
   }
 });
 
+test("fetchMetaLeads continues when individual form requests fail", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    requests.push(url);
+    if (url.pathname.includes("/act_partial/leads") && !url.pathname.includes("/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_partial/leadgen_forms")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "form-bad" }, { id: "form-good" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/form-bad/leads")) {
+      return new Response(JSON.stringify({ error: { message: "form failed" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/form-good/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-good", created_time: "2025-11-17T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_partial", accessToken: "token" });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/form-bad/leads")));
+    assert.ok(requests.some((request) => request.pathname.includes("/form-good/leads")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetchMetaLeads falls back to ad creative forms when pages don't expose leadgen forms", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {

@@ -988,16 +988,30 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     await options.onFormsEnumerated(forms);
   }
   const collected: MetaLeadRecord[] = [];
+  let formFetchErrors = 0;
+  let lastFormError: Error | null = null;
   for (const form of forms) {
     const remaining = typeof limit === "number" ? Math.max(limit - collected.length, 0) : undefined;
     if (remaining === 0) {
       break;
     }
     const token = form.accessToken ?? options.accessToken;
-    const leads = await fetchLeadsForNode(form.id, { ...options, accessToken: token }, remaining);
-    collected.push(...leads);
-    if (limit && collected.length >= limit) {
-      break;
+    try {
+      const leads = await fetchLeadsForNode(form.id, { ...options, accessToken: token }, remaining);
+      collected.push(...leads);
+      if (limit && collected.length >= limit) {
+        break;
+      }
+    } catch (error) {
+      formFetchErrors += 1;
+      lastFormError = (error as Error) ?? lastFormError;
+      if (isMetaRateLimitError(error)) {
+        console.warn(
+          `[meta] Rate limited while fetching leads for form ${form.id}: ${(error as Error).message}`,
+        );
+      } else {
+        console.warn(`[meta] Failed to fetch leads for form ${form.id}: ${(error as Error).message}`);
+      }
     }
   }
   if (collected.length > 0) {
@@ -1018,6 +1032,10 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   }
   if (campaignFallbackAttempted && campaignFallbackError && !isMetaRateLimitError(campaignFallbackError)) {
     throw campaignFallbackError;
+  }
+  const allFormsFailed = forms.length > 0 && formFetchErrors === forms.length;
+  if (allFormsFailed && lastFormError && !isMetaRateLimitError(lastFormError)) {
+    throw lastFormError;
   }
   return [];
 };
