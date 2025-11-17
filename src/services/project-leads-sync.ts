@@ -8,9 +8,20 @@ import { fetchMetaLeads, type MetaLeadRecord } from "./meta-api";
 import { markProjectLeadsSynced, mergeProjectLeadsList } from "./project-leads-list";
 import { getLeadRetentionDays } from "../domain/config";
 import { DataValidationError } from "../errors";
+import { getProjectLeadsList } from "../domain/spec/project-leads";
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const LEAD_SYNC_LIMIT = 400;
+const shouldKeepRecord = (record: MetaLeadRecord, cutoffTime: number): boolean => {
+  if (!record.created_time) {
+    return true;
+  }
+  const createdTime = Date.parse(record.created_time);
+  if (!Number.isFinite(createdTime)) {
+    return true;
+  }
+  return createdTime >= cutoffTime;
+};
 
 const normaliseFieldName = (value: unknown): string => {
   if (typeof value !== "string") {
@@ -108,19 +119,35 @@ export const syncProjectLeadsFromMeta = async (
   }
   const token = await getMetaToken(kv, options.facebookUserId);
   const retentionDays = await getLeadRetentionDays(kv, 30);
-  const since = new Date(Date.now() - retentionDays * DAY_IN_MS);
-  const rawLeads = await fetchMetaLeads({
+  const cutoffTime = Date.now() - retentionDays * DAY_IN_MS;
+  const since = new Date(cutoffTime);
+  let summary: Awaited<ReturnType<typeof getProjectLeadsList>> = null;
+  try {
+    summary = await getProjectLeadsList(r2, projectId);
+  } catch (error) {
+    console.warn(`[portal-sync] Failed to read lead summary for ${projectId}: ${(error as Error).message}`);
+  }
+  const hasStoredLeads = Boolean(summary && summary.leads.length > 0);
+  let rawLeads = await fetchMetaLeads({
     accountId: options.project.adsAccountId,
     accessToken: token.accessToken,
     limit: LEAD_SYNC_LIMIT,
     since,
   });
-  if (rawLeads.length === 0) {
+  if (rawLeads.length === 0 && !hasStoredLeads) {
+    rawLeads = await fetchMetaLeads({
+      accountId: options.project.adsAccountId,
+      accessToken: token.accessToken,
+      limit: LEAD_SYNC_LIMIT,
+    });
+  }
+  const filteredLeads = rawLeads.filter((record) => shouldKeepRecord(record, cutoffTime));
+  if (filteredLeads.length === 0) {
     await markProjectLeadsSynced(r2, projectId);
     return { fetched: 0, stored: 0 };
   }
   const created: Lead[] = [];
-  for (const raw of rawLeads) {
+  for (const raw of filteredLeads) {
     try {
       created.push(buildLeadFromMeta(raw, projectId));
     } catch (error) {
@@ -137,7 +164,7 @@ export const syncProjectLeadsFromMeta = async (
     }
     await mergeProjectLeadsList(r2, projectId, created);
   }
-  return { fetched: rawLeads.length, stored: created.length };
+  return { fetched: filteredLeads.length, stored: created.length };
 };
 
 export const refreshProjectLeads = async (

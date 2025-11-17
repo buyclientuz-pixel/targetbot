@@ -275,7 +275,7 @@ export const resolveDatePreset = (periodKey: string): MetaInsightsPeriod => {
     case "month":
       return { preset: "last_30d" };
     case "max": {
-      const today = new Date();
+      const today = new Date(Date.now());
       const from = clampToMetaTimeRangeLimit(new Date(0), today);
       return { preset: "time_range", from: formatDateOnly(from), to: formatDateOnly(today) };
     }

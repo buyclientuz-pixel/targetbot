@@ -61,6 +61,56 @@ const installLeadsStub = () => {
   };
 };
 
+const installBootstrapStub = () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-bootstrap" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leads")) {
+      const hasFilter = url.searchParams.has("filtering");
+      const payload = hasFilter
+        ? { data: [] }
+        : {
+            data: [
+              {
+                id: "lead-bootstrap",
+                created_time: new Date().toISOString(),
+                campaign_name: "Bootstrap",
+                field_data: [{ name: "phone_number", values: [{ value: "+998901112233" }] }],
+              },
+            ],
+          };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  return () => {
+    globalThis.fetch = originalFetch;
+  };
+};
+
 test("syncProjectLeadsFromMeta persists leads and updates summary", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());
@@ -149,5 +199,36 @@ test("syncProjectLeadsFromMeta marks syncedAt even when no new leads arrive", as
     assert.ok(summary?.syncedAt);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("syncProjectLeadsFromMeta retries without since when summary is empty", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const project = createProject({ id: "proj-bootstrap", name: "Bootstrap", adsAccountId: "act_bootstrap", ownerTelegramId: 3 });
+  await putProject(kv, project);
+  const settings = createDefaultProjectSettings("proj-bootstrap");
+  await upsertProjectSettings(kv, {
+    ...settings,
+    projectId: "proj-bootstrap",
+    portalEnabled: true,
+    meta: { facebookUserId: "fb_bootstrap" },
+  });
+  const token = createMetaToken({ facebookUserId: "fb_bootstrap", accessToken: "token_bootstrap" });
+  await upsertMetaToken(kv, token);
+  const restore = installBootstrapStub();
+  try {
+    const result = await syncProjectLeadsFromMeta(kv, r2, "proj-bootstrap", {
+      project,
+      settings: { ...settings, meta: { facebookUserId: "fb_bootstrap" } },
+      facebookUserId: "fb_bootstrap",
+    });
+    assert.equal(result.fetched, 1);
+    assert.equal(result.stored, 1);
+    const summary = await getProjectLeadsList(r2, "proj-bootstrap");
+    assert.equal(summary?.leads.length, 1);
+    assert.equal(summary?.leads[0]?.id, "lead-bootstrap");
+  } finally {
+    restore();
   }
 });

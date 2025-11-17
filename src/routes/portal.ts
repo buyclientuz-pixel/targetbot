@@ -170,6 +170,7 @@ export const renderPortalHtml = (projectId: string): string => {
         const TOKEN = new URLSearchParams(window.location.search).get('token');
         const REQUEST_TIMEOUT = 12000;
         const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+        const LEADS_EMPTY_RETRY_WINDOW_MS = 2 * 60 * 1000;
         const elements = {
           preloader: document.querySelector('[data-preloader]'),
           error: document.querySelector('[data-error]'),
@@ -473,7 +474,14 @@ export const renderPortalHtml = (projectId: string): string => {
           if (!payload) {
             return true;
           }
+          const hasLeads = Array.isArray(payload.leads) && payload.leads.length > 0;
           const syncedAt = payload.syncedAt ? Date.parse(payload.syncedAt) : NaN;
+          if (!hasLeads) {
+            if (!Number.isFinite(syncedAt)) {
+              return true;
+            }
+            return Date.now() - syncedAt > LEADS_EMPTY_RETRY_WINDOW_MS;
+          }
           if (!Number.isFinite(syncedAt)) {
             return true;
           }
