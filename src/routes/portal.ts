@@ -449,7 +449,7 @@ export const renderPortalHtml = (projectId: string): string => {
               .map((lead) => {
                 const name = escapeHtml(lead.name || 'Без имени');
                 const phone = (lead.phone || '').trim().length ? escapeHtml(lead.phone) : null;
-                const contact = phone || '<span class="portal-tag">Сообщение</span>';
+                const contact = phone || '<span class="portal-tag">сообщение</span>';
                 const campaign = escapeHtml(lead.campaignName || lead.campaign || '—');
                 return (
                   '<tr>' +
@@ -638,7 +638,7 @@ export const renderPortalHtml = (projectId: string): string => {
           if (!state.leads?.leads?.length) return;
           const header = toCsvRow(['ID', 'Имя', 'Контакт', 'Кампания', 'Статус', 'Дата']);
           const rows = state.leads.leads.map((lead) => {
-            const contact = (lead.phone || '').trim().length ? lead.phone : 'Сообщение';
+            const contact = (lead.phone || '').trim().length ? lead.phone : 'сообщение';
             return toCsvRow([lead.id, lead.name, contact, lead.campaignName, lead.status, lead.createdAt]);
           });
           downloadFile('leads-' + state.period + '.csv', [header, ...rows].join('\n'), 'text/csv');

@@ -83,13 +83,15 @@ test("syncProjectLeadsFromMeta persists leads and updates summary", async () => 
       facebookUserId: "fb_sync",
     });
     assert.equal(result.fetched, 2);
-    assert.equal(result.stored, 2);
+    assert.equal(result.stored, 1);
     const storedLead = await getLead(r2, "proj-sync-leads", "lead-sync-1");
     assert.equal(storedLead?.phone, "+998900000333");
+    const skippedLead = await getLead(r2, "proj-sync-leads", "lead-sync-2");
+    assert.equal(skippedLead, null);
     const summary = await getProjectLeadsList(r2, "proj-sync-leads");
-    assert.equal(summary?.leads.length, 2);
-    assert.equal(summary?.leads[0]?.id, "lead-sync-2");
-    assert.equal(summary?.leads[0]?.type, "message");
+    assert.equal(summary?.leads.length, 1);
+    assert.equal(summary?.leads[0]?.id, "lead-sync-1");
+    assert.equal(summary?.leads[0]?.type, "lead");
     assert.ok(summary?.syncedAt);
   } finally {
     restore();

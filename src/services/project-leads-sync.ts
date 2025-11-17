@@ -47,13 +47,16 @@ const extractFieldValue = (record: MetaLeadRecord, keys: string[]): string | nul
   return null;
 };
 
-const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead => {
+const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead | null => {
   const name =
     extractFieldValue(record, ["full_name", "name", "first_name"]) ??
     extractFieldValue(record, ["last_name"]) ??
     record.campaign_name ??
     null;
   const phone = extractFieldValue(record, ["phone_number", "phone", "phone_number_full"]);
+  if (!phone) {
+    return null;
+  }
   return createLead({
     id: record.id,
     projectId,
@@ -158,7 +161,12 @@ export const syncProjectLeadsFromMeta = async (
   const created: Lead[] = [];
   for (const raw of rawLeads) {
     try {
-      created.push(buildLeadFromMeta(raw, projectId));
+      const lead = buildLeadFromMeta(raw, projectId);
+      if (!lead) {
+        console.warn(`[portal-sync] Skipping Meta lead ${raw.id} without phone number`);
+        continue;
+      }
+      created.push(lead);
     } catch (error) {
       console.warn(`[portal-sync] Unable to parse Meta lead ${raw.id}: ${(error as Error).message}`);
     }
