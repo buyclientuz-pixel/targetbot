@@ -11,6 +11,7 @@ const { createDefaultProjectSettings, upsertProjectSettings } = await import("..
 const { createMetaToken, upsertMetaToken } = await import("../../src/domain/meta-tokens.ts");
 const { getPortalSyncState } = await import("../../src/domain/portal-sync.ts");
 const { getMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
+const { getLead } = await import("../../src/domain/leads.ts");
 
 const installGraphStub = () => {
   const originalFetch = globalThis.fetch;
@@ -149,4 +150,82 @@ test("syncPortalMetrics syncs the full period plan by default", async () => {
   } finally {
     stub.restore();
   }
+});
+
+const installFailingInsightsStub = () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? new URL(input) : new URL(input instanceof Request ? input.url : input.toString());
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/insights")) {
+      return new Response(JSON.stringify({ error: { message: "insights fail" } }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-resilient" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leads")) {
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: "lead-resilient",
+              created_time: new Date().toISOString(),
+              campaign_name: "Lead",
+              field_data: [
+                { name: "full_name", values: [{ value: "Resilient" }] },
+                { name: "Phone number", values: [{ value: "+998971112233" }] },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+  return { restore: () => (globalThis.fetch = originalFetch) };
+};
+
+test("syncPortalMetrics still refreshes leads when insights sync fails", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await putProjectRecord(kv, {
+    id: "proj-resilient",
+    name: "Resilient",
+    ownerId: 1,
+    adAccountId: "act_resilient",
+    chatId: null,
+    portalUrl: "https://example.com/p/proj-resilient",
+    settings: { currency: "USD", timezone: "Asia/Tashkent", kpi: { mode: "auto", type: "LEAD", label: "Лиды" } },
+  });
+  const project = createProject({ id: "proj-resilient", name: "Resilient", adsAccountId: "act_resilient", ownerTelegramId: 1 });
+  await putProject(kv, project);
+  const defaults = createDefaultProjectSettings("proj-resilient");
+  await upsertProjectSettings(kv, { ...defaults, projectId: "proj-resilient", portalEnabled: true, meta: { facebookUserId: "fb_resilient" } });
+  const token = createMetaToken({ facebookUserId: "fb_resilient", accessToken: "token" });
+  await upsertMetaToken(kv, token);
+  const stub = installFailingInsightsStub();
+  try {
+    await assert.rejects(async () => {
+      await syncPortalMetrics(kv, r2, "proj-resilient", { periods: ["today"] });
+    }, (error: unknown) => {
+      assert.match((error as Error).message, /Meta API request failed/i);
+      return true;
+    });
+  } finally {
+    stub.restore();
+  }
+  const lead = await getLead(r2, "proj-resilient", "lead-resilient");
+  assert.equal(lead?.phone, "+998971112233");
 });

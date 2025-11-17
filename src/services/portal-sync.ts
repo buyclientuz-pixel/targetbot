@@ -107,6 +107,22 @@ export const syncPortalMetrics = async (
   const periodResults: PortalSyncPeriodResult[] = [];
   let firstError: Error | null = null;
   const allowPartial = options.allowPartial === true;
+
+  const recordResult = (
+    periodKey: PortalSyncTaskKey,
+    outcome: { ok: true } | { ok: false; error: Error },
+  ): void => {
+    if (outcome.ok) {
+      periodResults.push({ periodKey, ok: true });
+      return;
+    }
+    const message = outcome.error.message;
+    periodResults.push({ periodKey, ok: false, error: message });
+    if (!firstError) {
+      firstError = outcome.error;
+    }
+  };
+
   for (const periodKey of periods) {
     try {
       await loadProjectSummary(kv, projectId, periodKey, { project, settings, facebookUserId });
@@ -116,33 +132,22 @@ export const syncPortalMetrics = async (
         projectRecord,
         facebookUserId,
       });
-      periodResults.push({ periodKey, ok: true });
+      recordResult(periodKey, { ok: true });
     } catch (error) {
-      const message = (error as Error).message;
-      periodResults.push({ periodKey, ok: false, error: message });
-      if (!firstError) {
-        firstError = error as Error;
-      }
+      recordResult(periodKey, { ok: false, error: error as Error });
       if (!allowPartial) {
         break;
       }
     }
   }
-  if (allowPartial || !firstError) {
-    try {
-      await syncProjectLeadsFromMeta(kv, r2, projectId, { project, settings, facebookUserId });
-      periodResults.push({ periodKey: "leads", ok: true });
-    } catch (error) {
-      const message = (error as Error).message;
-      periodResults.push({ periodKey: "leads", ok: false, error: message });
-      if (!firstError) {
-        firstError = error as Error;
-      }
-      if (!allowPartial) {
-        // propagate failure after updating sync state below
-      }
-    }
+
+  try {
+    await syncProjectLeadsFromMeta(kv, r2, projectId, { project, settings, facebookUserId });
+    recordResult("leads", { ok: true });
+  } catch (error) {
+    recordResult("leads", { ok: false, error: error as Error });
   }
+
   const ok = periodResults.some((entry) => entry.ok);
   const hadErrors = periodResults.some((entry) => !entry.ok);
   if (options.updateState !== false) {
