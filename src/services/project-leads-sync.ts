@@ -4,10 +4,15 @@ import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
 import { getProject, type Project } from "../domain/projects";
 import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
-import { fetchMetaLeads, type MetaLeadRecord } from "./meta-api";
+import { fetchMetaLeads, type LeadGenFormDescriptor, type MetaLeadRecord } from "./meta-api";
 import { markProjectLeadsSynced, mergeProjectLeadsList } from "./project-leads-list";
 import { getLeadRetentionDays } from "../domain/config";
 import { DataValidationError } from "../errors";
+import {
+  getCachedMetaLeadForms,
+  saveMetaLeadFormsCache,
+  type MetaLeadFormsCacheRecord,
+} from "../domain/meta-lead-forms-cache";
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const LEAD_SYNC_LIMIT = 400;
@@ -106,14 +111,45 @@ export const syncProjectLeadsFromMeta = async (
   if (!options.project.adsAccountId) {
     return { fetched: 0, stored: 0 };
   }
+  const accountId = options.project.adsAccountId;
+  let cachedLeadForms: MetaLeadFormsCacheRecord | null = null;
+  try {
+    cachedLeadForms = await getCachedMetaLeadForms(kv, projectId, accountId);
+  } catch (error) {
+    console.warn(
+      `[portal-sync] Failed to read cached Meta lead forms for project ${projectId}: ${(error as Error).message}`,
+    );
+  }
+  const cachedForms: LeadGenFormDescriptor[] = (cachedLeadForms?.forms ?? []).map((form) => ({
+    id: form.id,
+    accessToken: form.accessToken ?? undefined,
+  }));
+  const useCachedFormsOnly = Boolean(cachedLeadForms && cachedForms.length > 0);
   const token = await getMetaToken(kv, options.facebookUserId);
   const retentionDays = await getLeadRetentionDays(kv, 30);
   const since = new Date(Date.now() - retentionDays * DAY_IN_MS);
   const rawLeads = await fetchMetaLeads({
-    accountId: options.project.adsAccountId,
+    accountId,
     accessToken: token.accessToken,
     limit: LEAD_SYNC_LIMIT,
     since,
+    cachedForms,
+    useCachedFormsOnly,
+    onFormsEnumerated: async (forms) => {
+      const cacheEntry: MetaLeadFormsCacheRecord = {
+        projectId,
+        accountId,
+        fetchedAt: new Date().toISOString(),
+        forms: forms.map((form) => ({ id: form.id, accessToken: form.accessToken ?? null })),
+      };
+      try {
+        await saveMetaLeadFormsCache(kv, cacheEntry);
+      } catch (error) {
+        console.warn(
+          `[portal-sync] Failed to cache Meta lead forms for project ${projectId}: ${(error as Error).message}`,
+        );
+      }
+    },
   });
   if (rawLeads.length === 0) {
     await markProjectLeadsSynced(r2, projectId);

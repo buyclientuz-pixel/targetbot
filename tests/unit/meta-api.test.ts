@@ -428,3 +428,112 @@ test("fetchMetaLeads retries ad creative fallback requests after transient rate 
     globalThis.fetch = originalFetch;
   }
 });
+
+test("fetchMetaLeads reuses cached forms when enumeration fails", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    requests.push(url);
+    if (url.pathname.includes("/act_cache/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_cache/leadgen_forms")) {
+      return new Response(
+        JSON.stringify({ error: { message: "User request limit reached", code: 17, error_subcode: 2446079 } }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/form-cache/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-cache", created_time: "2025-11-17T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({
+      accountId: "act_cache",
+      accessToken: "token",
+      cachedForms: [{ id: "form-cache" }],
+    });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/form-cache/leads")));
+    assert.ok(requests.some((request) => request.pathname.includes("/act_cache/leadgen_forms")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchMetaLeads skips enumeration when cached forms are marked authoritative", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    requests.push(url);
+    if (url.pathname.includes("/act_cache_only/leadgen_forms")) {
+      return new Response(JSON.stringify({ error: { message: "should not fetch" } }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/form-cache-only/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-cache-only", created_time: "2025-11-17T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({
+      accountId: "act_cache_only",
+      accessToken: "token",
+      cachedForms: [{ id: "form-cache-only" }],
+      useCachedFormsOnly: true,
+    });
+    assert.equal(leads.length, 1);
+    assert.ok(!requests.some((request) => request.pathname.includes("/act_cache_only/leadgen_forms")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchMetaLeads invokes persistence callback when forms are enumerated", async () => {
+  const originalFetch = globalThis.fetch;
+  const persisted: string[][] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    if (url.pathname.includes("/act_forms_cb/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_forms_cb/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-callback" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/form-callback/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-from-callback", created_time: "2025-11-17T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({
+      accountId: "act_forms_cb",
+      accessToken: "token",
+      onFormsEnumerated: async (forms) => {
+        persisted.push(forms.map((form) => form.id));
+      },
+    });
+    assert.equal(leads.length, 1);
+    assert.equal(persisted.length, 1);
+    assert.deepEqual(persisted[0], ["form-callback"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

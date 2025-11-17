@@ -374,6 +374,9 @@ interface MetaLeadFetchOptions {
   accessToken: string;
   limit?: number;
   since?: Date;
+  cachedForms?: LeadGenFormDescriptor[];
+  useCachedFormsOnly?: boolean;
+  onFormsEnumerated?: (forms: LeadGenFormDescriptor[]) => Promise<void> | void;
 }
 
 const buildLeadUrl = (nodeId: string, options: MetaLeadFetchOptions, cursor?: string): URL => {
@@ -408,7 +411,40 @@ const normaliseLeadRecord = (record: Record<string, unknown>): MetaLeadRecord | 
   } satisfies MetaLeadRecord;
 };
 
-interface LeadGenFormDescriptor {
+const normaliseLeadGenFormDescriptor = (form: LeadGenFormDescriptor | null | undefined):
+  | LeadGenFormDescriptor
+  | null => {
+  if (!form || typeof form !== "object") {
+    return null;
+  }
+  if (typeof form.id !== "string") {
+    return null;
+  }
+  const id = form.id.trim();
+  if (!id) {
+    return null;
+  }
+  const accessToken = typeof form.accessToken === "string" && form.accessToken.trim().length > 0
+    ? form.accessToken
+    : undefined;
+  return { id, accessToken };
+};
+
+const normaliseLeadGenFormList = (forms?: LeadGenFormDescriptor[] | null): LeadGenFormDescriptor[] => {
+  if (!Array.isArray(forms)) {
+    return [];
+  }
+  const bucket = new Map<string, LeadGenFormDescriptor>();
+  for (const entry of forms) {
+    const normalised = normaliseLeadGenFormDescriptor(entry);
+    if (normalised) {
+      bucket.set(normalised.id, normalised);
+    }
+  }
+  return Array.from(bucket.values());
+};
+
+export interface LeadGenFormDescriptor {
   id: string;
   accessToken?: string;
 }
@@ -714,6 +750,8 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     throw new DataValidationError("Meta access token is required for leads");
   }
   const limit = options.limit;
+  const cachedForms = normaliseLeadGenFormList(options.cachedForms);
+  const shouldUseCachedFormsOnly = Boolean(options.useCachedFormsOnly && cachedForms.length > 0);
   let accountError: Error | null = null;
   let ignorableAccountError = false;
   try {
@@ -732,42 +770,54 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   let adsFallbackError: Error | null = null;
   let pageFallbackAttempted = false;
   let adsFallbackAttempted = false;
-  let forms: LeadGenFormDescriptor[] = [];
-  try {
-    forms = await fetchLeadGenForms(options.accountId, options.accessToken);
-  } catch (error) {
-    primaryError = error as Error;
-    if (isMetaRateLimitError(primaryError)) {
-      console.warn(
-        `[meta] Rate limited while enumerating leadgen forms for account ${options.accountId}: ${primaryError.message}`,
-      );
-    }
-  }
-  if (forms.length === 0) {
-    pageFallbackAttempted = true;
+  let forms: LeadGenFormDescriptor[] = shouldUseCachedFormsOnly ? cachedForms : [];
+  let formsFromApi = false;
+  if (!shouldUseCachedFormsOnly) {
     try {
-      forms = await fetchLeadGenFormsViaPages(options.accountId, options.accessToken);
+      const fetchedForms = await fetchLeadGenForms(options.accountId, options.accessToken);
+      forms = fetchedForms;
+      formsFromApi = fetchedForms.length > 0;
     } catch (error) {
-      pageFallbackError = error as Error;
-      if (isMetaRateLimitError(pageFallbackError)) {
+      primaryError = error as Error;
+      if (isMetaRateLimitError(primaryError)) {
         console.warn(
-          `[meta] Rate limited while enumerating page leadgen forms for account ${options.accountId}: ${pageFallbackError.message}`,
+          `[meta] Rate limited while enumerating leadgen forms for account ${options.accountId}: ${primaryError.message}`,
         );
       }
     }
-  }
-  if (forms.length === 0) {
-    adsFallbackAttempted = true;
-    try {
-      forms = await fetchLeadGenFormsViaAds(options.accountId, options.accessToken);
-    } catch (error) {
-      adsFallbackError = error as Error;
-      if (isMetaRateLimitError(adsFallbackError)) {
-        console.warn(
-          `[meta] Rate limited while enumerating ad creative leadgen forms for account ${options.accountId}: ${adsFallbackError.message}`,
-        );
+    if (forms.length === 0) {
+      pageFallbackAttempted = true;
+      try {
+        const pageForms = await fetchLeadGenFormsViaPages(options.accountId, options.accessToken);
+        forms = pageForms;
+        formsFromApi = pageForms.length > 0;
+      } catch (error) {
+        pageFallbackError = error as Error;
+        if (isMetaRateLimitError(pageFallbackError)) {
+          console.warn(
+            `[meta] Rate limited while enumerating page leadgen forms for account ${options.accountId}: ${pageFallbackError.message}`,
+          );
+        }
       }
     }
+    if (forms.length === 0) {
+      adsFallbackAttempted = true;
+      try {
+        const adForms = await fetchLeadGenFormsViaAds(options.accountId, options.accessToken);
+        forms = adForms;
+        formsFromApi = adForms.length > 0;
+      } catch (error) {
+        adsFallbackError = error as Error;
+        if (isMetaRateLimitError(adsFallbackError)) {
+          console.warn(
+            `[meta] Rate limited while enumerating ad creative leadgen forms for account ${options.accountId}: ${adsFallbackError.message}`,
+          );
+        }
+      }
+    }
+  }
+  if (forms.length === 0 && cachedForms.length > 0) {
+    forms = cachedForms;
   }
   if (forms.length === 0) {
     if (adsFallbackError && !isMetaRateLimitError(adsFallbackError)) {
@@ -788,6 +838,9 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
       throw accountError;
     }
     return [];
+  }
+  if (formsFromApi && forms.length > 0 && options.onFormsEnumerated) {
+    await options.onFormsEnumerated(forms);
   }
   const collected: MetaLeadRecord[] = [];
   for (const form of forms) {
