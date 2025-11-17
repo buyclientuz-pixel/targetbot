@@ -9,10 +9,14 @@ export interface Lead {
   projectId: string;
   name: string;
   phone: string | null;
+  message: string | null;
+  contact: string;
   source: string;
   campaign: string | null;
+  campaignId: string | null;
   adset: string | null;
   ad: string | null;
+  formId: string | null;
   createdAt: string;
   status: LeadStatus;
   lastStatusUpdate: string;
@@ -24,10 +28,14 @@ export interface CreateLeadInput {
   projectId: string;
   name: string | null | undefined;
   phone: string | null | undefined;
+  message?: string | null | undefined;
+  contact?: string | null | undefined;
   source?: string | null | undefined;
   campaign?: string | null | undefined;
+  campaignId?: string | null | undefined;
   adset?: string | null | undefined;
   ad?: string | null | undefined;
+  formId?: string | null | undefined;
   createdAt?: string | null | undefined;
   metaRaw?: unknown;
 }
@@ -69,15 +77,23 @@ const ensureIsoTimestamp = (value: string | null | undefined): string => {
 
 export const createLead = (input: CreateLeadInput): Lead => {
   const createdAt = ensureIsoTimestamp(input.createdAt);
+  const phone = normaliseOptionalString(input.phone);
+  const message = normaliseOptionalString(input.message);
+  const defaultContact = phone ?? (message ? "Сообщение" : "—");
+  const contact = normaliseString(input.contact ?? defaultContact, defaultContact);
   return {
     id: requireString(input.id, "id"),
     projectId: requireString(input.projectId, "projectId"),
     name: normaliseString(input.name, "Без имени"),
-    phone: normaliseOptionalString(input.phone),
+    phone,
+    message,
+    contact,
     source: normaliseString(input.source ?? "facebook", "facebook"),
     campaign: normaliseOptionalString(input.campaign),
+    campaignId: normaliseOptionalString(input.campaignId),
     adset: normaliseOptionalString(input.adset),
     ad: normaliseOptionalString(input.ad),
+    formId: normaliseOptionalString(input.formId),
     createdAt,
     status: "NEW",
     lastStatusUpdate: createdAt,
@@ -123,6 +139,7 @@ export const saveLead = async (r2: R2Client, lead: Lead): Promise<void> => {
   };
   await r2.putJson(key, storedPayload);
   await deleteQuietly(r2, R2_KEYS.lead(lead.projectId, lead.id));
+  await deleteQuietly(r2, R2_KEYS.legacyProjectLead(lead.projectId, lead.id));
 };
 
 export const deleteLead = async (
@@ -131,21 +148,26 @@ export const deleteLead = async (
   leadId: string,
 ): Promise<void> => {
   await deleteQuietly(r2, R2_KEYS.projectLead(projectId, leadId));
+  await deleteQuietly(r2, R2_KEYS.legacyProjectLead(projectId, leadId));
   await deleteQuietly(r2, R2_KEYS.lead(projectId, leadId));
 };
 
 export const getLead = async (r2: R2Client, projectId: string, leadId: string): Promise<Lead | null> => {
-  const primaryKey = R2_KEYS.projectLead(projectId, leadId);
-  const primary = await r2.getJson<Lead>(primaryKey);
-  if (primary) {
-    return primary;
+  const keys = [
+    R2_KEYS.projectLead(projectId, leadId),
+    R2_KEYS.legacyProjectLead(projectId, leadId),
+    R2_KEYS.lead(projectId, leadId),
+  ];
+  for (const key of keys) {
+    const payload = await r2.getJson<Lead>(key);
+    if (payload) {
+      if (key === R2_KEYS.projectLead(projectId, leadId)) {
+        return payload;
+      }
+      return migrateLegacyLead(r2, projectId, leadId, payload);
+    }
   }
-  const legacyKey = R2_KEYS.lead(projectId, leadId);
-  const legacy = await r2.getJson<Lead>(legacyKey);
-  if (!legacy) {
-    return null;
-  }
-  return migrateLegacyLead(r2, projectId, leadId, legacy);
+  return null;
 };
 
 const parseLeadStatus = (value: unknown): LeadStatus => {
@@ -180,23 +202,36 @@ export const parseStoredLead = (raw: unknown, projectIdHint?: string): Lead => {
   const lastStatusUpdate = ensureIsoTimestamp(lastStatusUpdateValue);
   const projectIdValue =
     pickRecordValue<string>(record, ["projectId", "project_id"]) ?? projectIdHint ?? null;
+  const phone = normaliseOptionalString(
+    (pickRecordValue<string>(record, ["phone", "phone_number"]) ?? undefined) as string | undefined,
+  );
+  const message = normaliseOptionalString(
+    (pickRecordValue<string>(record, ["message", "message_text"]) ?? undefined) as string | undefined,
+  );
+  const contactValue = pickRecordValue<string>(record, ["contact"]);
+  const defaultContact = phone ?? (message ? "Сообщение" : "—");
   return {
     id: requireString(record.id as string | null | undefined, "lead.id"),
     projectId: requireString(projectIdValue, "lead.projectId"),
     name: normaliseString(record.name as string | null | undefined, "Без имени"),
-    phone:
-      normaliseOptionalString(
-        (pickRecordValue<string>(record, ["phone", "phone_number"]) ?? undefined) as string | undefined,
-      ),
+    phone,
+    message,
+    contact: normaliseString(contactValue ?? defaultContact, defaultContact),
     source: normaliseString((record.source as string | null | undefined) ?? "facebook", "facebook"),
     campaign: normaliseOptionalString(
       (pickRecordValue<string>(record, ["campaign", "campaign_name"]) ?? undefined) as string | undefined,
+    ),
+    campaignId: normaliseOptionalString(
+      (pickRecordValue<string>(record, ["campaignId", "campaign_id"]) ?? undefined) as string | undefined,
     ),
     adset: normaliseOptionalString(
       (pickRecordValue<string>(record, ["adset", "adset_name"]) ?? undefined) as string | undefined,
     ),
     ad: normaliseOptionalString(
       (pickRecordValue<string>(record, ["ad", "ad_name", "creative"]) ?? undefined) as string | undefined,
+    ),
+    formId: normaliseOptionalString(
+      (pickRecordValue<string>(record, ["formId", "form_id", "leadgen_form_id"]) ?? undefined) as string | undefined,
     ),
     createdAt,
     status: parseLeadStatus(pickRecordValue(record, ["status"]) ?? undefined),

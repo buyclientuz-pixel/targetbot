@@ -47,8 +47,10 @@ export interface MetaLeadRecord {
   id: string;
   created_time?: string | null;
   campaign_name?: string | null;
+  campaign_id?: string | null;
   adset_name?: string | null;
   ad_name?: string | null;
+  form_id?: string | null;
   field_data?: MetaLeadFieldValue[] | null;
 }
 
@@ -382,7 +384,10 @@ interface MetaLeadFetchOptions {
 const buildLeadUrl = (nodeId: string, options: MetaLeadFetchOptions, cursor?: string): URL => {
   const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${nodeId}/leads`);
   url.searchParams.set("access_token", options.accessToken);
-  url.searchParams.set("fields", ["id", "created_time", "campaign_name", "adset_name", "ad_name", "field_data"].join(","));
+  url.searchParams.set(
+    "fields",
+    ["id", "created_time", "campaign_name", "campaign_id", "adset_name", "ad_name", "form_id", "field_data"].join(","),
+  );
   url.searchParams.set("limit", "100");
   if (cursor) {
     url.searchParams.set("after", cursor);
@@ -405,8 +410,10 @@ const normaliseLeadRecord = (record: Record<string, unknown>): MetaLeadRecord | 
     id: idValue.trim(),
     created_time: typeof record.created_time === "string" ? record.created_time : null,
     campaign_name: typeof record.campaign_name === "string" ? record.campaign_name : null,
+    campaign_id: typeof record.campaign_id === "string" ? record.campaign_id : null,
     adset_name: typeof record.adset_name === "string" ? record.adset_name : null,
     ad_name: typeof record.ad_name === "string" ? record.ad_name : null,
+    form_id: typeof record.form_id === "string" ? record.form_id : null,
     field_data: Array.isArray(record.field_data) ? (record.field_data as MetaLeadFieldValue[]) : null,
   } satisfies MetaLeadRecord;
 };

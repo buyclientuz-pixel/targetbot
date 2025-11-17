@@ -5,6 +5,7 @@ import { MemoryKVNamespace, MemoryR2Bucket } from "../utils/mocks.ts";
 
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
+const { R2_KEYS } = await import("../../src/config/r2.ts");
 const { createProject, putProject } = await import("../../src/domain/projects.ts");
 const { createDefaultProjectSettings, upsertProjectSettings } = await import("../../src/domain/project-settings.ts");
 const { createMetaToken, upsertMetaToken } = await import("../../src/domain/meta-tokens.ts");
@@ -47,7 +48,10 @@ const installLeadsStub = () => {
               id: "lead-sync-2",
               created_time: "2025-11-16T11:00:00Z",
               campaign_name: "Campaign Sync",
-              field_data: [{ name: "full_name", values: [{ value: "Сообщение" }] }],
+              field_data: [
+                { name: "full_name", values: [{ value: "Сообщение" }] },
+                { name: "message", values: [{ value: "Перезвоните" }] },
+              ],
             },
           ],
         }),
@@ -83,15 +87,17 @@ test("syncProjectLeadsFromMeta persists leads and updates summary", async () => 
       facebookUserId: "fb_sync",
     });
     assert.equal(result.fetched, 2);
-    assert.equal(result.stored, 1);
+    assert.equal(result.stored, 2);
     const storedLead = await getLead(r2, "proj-sync-leads", "lead-sync-1");
     assert.equal(storedLead?.phone, "+998900000333");
-    const skippedLead = await getLead(r2, "proj-sync-leads", "lead-sync-2");
-    assert.equal(skippedLead, null);
+    const messageLead = await getLead(r2, "proj-sync-leads", "lead-sync-2");
+    assert.equal(messageLead?.phone, null);
+    assert.equal(messageLead?.message, "Перезвоните");
+    assert.equal(messageLead?.contact, "Сообщение");
     const summary = await getProjectLeadsList(r2, "proj-sync-leads");
-    assert.equal(summary?.leads.length, 1);
-    assert.equal(summary?.leads[0]?.id, "lead-sync-1");
-    assert.equal(summary?.leads[0]?.type, "lead");
+    assert.equal(summary?.leads.length, 2);
+    assert.ok(summary?.leads.some((lead) => lead.id === "lead-sync-1" && lead.type === "lead"));
+    assert.ok(summary?.leads.some((lead) => lead.id === "lead-sync-2" && lead.type === "message"));
     assert.ok(summary?.syncedAt);
   } finally {
     restore();
@@ -149,6 +155,70 @@ test("syncProjectLeadsFromMeta marks syncedAt even when no new leads arrive", as
     const summary = await getProjectLeadsList(r2, "proj-empty-sync");
     assert.equal(summary?.leads.length, 0);
     assert.ok(summary?.syncedAt);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("syncProjectLeadsFromMeta prunes leads older than retention window", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const project = createProject({ id: "proj-prune", name: "Prune", adsAccountId: "act_prune", ownerTelegramId: 3 });
+  await putProject(kv, project);
+  const settings = createDefaultProjectSettings("proj-prune");
+  await upsertProjectSettings(kv, { ...settings, projectId: "proj-prune", portalEnabled: true, meta: { facebookUserId: "fb_prune" } });
+  const token = createMetaToken({ facebookUserId: "fb_prune", accessToken: "token_prune" });
+  await upsertMetaToken(kv, token);
+
+  const thirtyOneDaysAgo = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+  await r2.putJson(R2_KEYS.projectLead("proj-prune", "old-lead"), {
+    id: "old-lead",
+    projectId: "proj-prune",
+    name: "Legacy",
+    phone: "+998900000555",
+    contact: "+998900000555",
+    source: "facebook",
+    campaign: "Old",
+    createdAt: thirtyOneDaysAgo,
+    status: "new",
+    lastStatusUpdate: thirtyOneDaysAgo,
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target = typeof input === "string" ? input : input instanceof Request ? input.url : input instanceof URL ? input.toString() : String(input);
+    const url = new URL(target);
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-prune" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leads")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.hostname === "graph.facebook.com" && url.pathname.includes("/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return originalFetch(input);
+  }) as typeof fetch;
+
+  try {
+    const result = await syncProjectLeadsFromMeta(kv, r2, "proj-prune", {
+      project,
+      settings: { ...settings, meta: { facebookUserId: "fb_prune" } },
+      facebookUserId: "fb_prune",
+    });
+    assert.equal(result.fetched, 0);
+    assert.equal(result.stored, 0);
+    const deleted = await r2.getJson(R2_KEYS.projectLead("proj-prune", "old-lead"));
+    assert.equal(deleted, null);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -378,7 +378,7 @@ test("portal hides preloader and renders sections when data loads", async () => 
       },
     ],
     [
-      "/api/projects/birlash/leads?period=today",
+      "/api/projects/birlash/leads/today",
       {
         projectId: "birlash",
         periodKey: "today",
@@ -389,6 +389,29 @@ test("portal hides preloader and renders sections when data loads", async () => 
           {
             id: "lead-1",
             name: "Sharofat Ona",
+            contact: "+998902867999",
+            phone: "+998902867999",
+            campaignName: "Лиды - тест",
+            createdAt: "2025-11-15T10:00:00.000Z",
+            status: "new",
+            type: "lead",
+          },
+        ],
+      },
+    ],
+    [
+      "/api/projects/birlash/leads/today/refresh",
+      {
+        projectId: "birlash",
+        periodKey: "today",
+        period: { from: "2025-11-15T00:00:00.000Z", to: "2025-11-15T23:59:59.000Z" },
+        stats: { total: 168, today: 2 },
+        syncedAt: new Date().toISOString(),
+        leads: [
+          {
+            id: "lead-1",
+            name: "Sharofat Ona",
+            contact: "+998902867999",
             phone: "+998902867999",
             campaignName: "Лиды - тест",
             createdAt: "2025-11-15T10:00:00.000Z",

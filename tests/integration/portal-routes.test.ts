@@ -10,6 +10,7 @@ const { R2Client } = await import("../../src/infra/r2.ts");
 const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { putBillingRecord } = await import("../../src/domain/spec/billing.ts");
 const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
+const { createLead, saveLead } = await import("../../src/domain/leads.ts");
 const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
 const { putPaymentsHistoryDocument } = await import("../../src/domain/spec/payments-history.ts");
 const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/meta-cache.ts");
@@ -66,6 +67,17 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
     ],
     syncedAt: recentLeadDate,
   });
+  await saveLead(
+    r2,
+    createLead({
+      id: "lead-1",
+      projectId: projectRecord.id,
+      name: "Sharofat Ona",
+      phone: "+998902867999",
+      campaign: "Campaign A",
+      createdAt: recentLeadDate,
+    }),
+  );
 
   await putMetaCampaignsDocument(r2, projectRecord.id, {
     period: { from: "2025-11-14", to: "2025-11-14" },
@@ -118,19 +130,20 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.equal(summaryPayload.data.period.from, summaryPayload.data.period.to);
 
   const leadsResponse = await router.dispatch(
-    new Request("https://example.com/api/projects/birlash/leads?period=yesterday"),
+    new Request("https://example.com/api/projects/birlash/leads/yesterday"),
     env,
     execution,
   );
   assert.equal(leadsResponse.status, 200);
   const leadsPayload = (await leadsResponse.clone().json()) as {
     ok: boolean;
-    data: { leads: Array<{ id: string; status: string }>; stats: { total: number; today: number } };
+    data: { leads: Array<{ id: string; status: string; contact: string }>; stats: { total: number; today: number } };
   };
   assert.ok(leadsPayload.ok);
   assert.equal(leadsPayload.data.leads.length, 1);
   assert.equal(leadsPayload.data.leads[0]?.id, "lead-1");
   assert.equal(leadsPayload.data.leads[0]?.status, "new");
+  assert.equal(leadsPayload.data.leads[0]?.contact, "+998902867999");
   assert.equal(leadsPayload.data.stats.total, 170);
 
   const campaignsResponse = await router.dispatch(

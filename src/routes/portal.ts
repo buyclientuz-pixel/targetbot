@@ -10,6 +10,9 @@ import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
 import { applyCors, preflight } from "../http/cors";
 import { requireProjectRecord } from "../domain/spec/project";
+import { listLeads, type Lead, type LeadStatus } from "../domain/leads";
+import { getProjectLeadsList, type ProjectLeadsListRecord } from "../domain/spec/project-leads";
+import type { R2Client } from "../infra/r2";
 import type { Router } from "../worker/router";
 import type { RequestContext } from "../worker/context";
 import { translateMetaObjective } from "../services/meta-objectives";
@@ -96,31 +99,84 @@ const buildSummaryPayload = (
   };
 };
 
-const filterLeadsForPeriod = (bundle: ProjectBundle, periodKey: string) => {
+const mapLeadStatusForPortal = (
+  status: ProjectLeadsListRecord["leads"][number]["status"] | LeadStatus,
+): ProjectLeadsListRecord["leads"][number]["status"] => {
+  if (typeof status === "string") {
+    const normalised = status.toLowerCase();
+    if (normalised === "new" || normalised === "processing" || normalised === "done" || normalised === "trash") {
+      return normalised;
+    }
+  }
+  return "new";
+};
+
+const normaliseLeadContact = (lead: Lead): string => {
+  if (lead.contact && lead.contact.trim().length > 0) {
+    return lead.contact.trim();
+  }
+  if (lead.phone) {
+    return lead.phone;
+  }
+  if (lead.message) {
+    return "Сообщение";
+  }
+  return "—";
+};
+
+const loadPortalLeadsPayload = async (
+  r2: R2Client,
+  projectId: string,
+  periodKey: string,
+): Promise<{
+  period: ReturnType<typeof resolvePeriodRange>["period"];
+  periodKey: string;
+  leads: Array<{
+    id: string;
+    name: string;
+    contact: string;
+    phone: string | null;
+    message: string | null;
+    createdAt: string;
+    campaignName: string;
+    campaignId: string | null;
+    status: ProjectLeadsListRecord["leads"][number]["status"];
+    type: string;
+    source: string;
+  }>;
+  stats: ProjectLeadsListRecord["stats"];
+  syncedAt: string | null;
+}> => {
   const range = resolvePeriodRange(periodKey);
   const fromTime = range.from.getTime();
   const toTime = range.to.getTime();
-  const leads = bundle.leads.leads ?? [];
-  const filtered = leads.filter((lead) => {
-    const createdTime = Date.parse(lead.createdAt);
-    return Number.isFinite(createdTime) && createdTime >= fromTime && createdTime <= toTime;
-  });
-  return {
-    period: range.period,
-    leads: filtered
-      .slice()
-      .sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt > b.createdAt ? -1 : 1))
-      .map((lead) => ({
-        id: lead.id,
-        name: lead.name,
-        phone: lead.phone,
-        campaignName: lead.campaignName,
-        createdAt: lead.createdAt,
-        status: lead.status,
-        type: lead.type,
-        source: lead.source,
-      })),
+  const leads = await listLeads(r2, projectId);
+  const filtered = leads
+    .filter((lead) => {
+      const created = Date.parse(lead.createdAt);
+      return Number.isFinite(created) && created >= fromTime && created <= toTime;
+    })
+    .map((lead) => ({
+      id: lead.id,
+      name: lead.name,
+      contact: normaliseLeadContact(lead),
+      phone: lead.phone,
+      message: lead.message,
+      createdAt: lead.createdAt,
+      campaignName: lead.campaign ?? "—",
+      campaignId: lead.campaignId,
+      status: mapLeadStatusForPortal(lead.status as LeadStatus),
+      type: lead.phone ? "lead" : "message",
+      source: lead.source,
+    }))
+    .sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt > b.createdAt ? -1 : 1));
+  const summary = (await getProjectLeadsList(r2, projectId)) ?? null;
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const stats = summary?.stats ?? {
+    total: leads.length,
+    today: leads.filter((lead) => lead.createdAt.slice(0, 10) === todayKey).length,
   };
+  return { period: range.period, periodKey, leads: filtered, stats, syncedAt: summary?.syncedAt ?? null };
 };
 
 const buildCampaignsPayload = (
@@ -160,6 +216,29 @@ const buildPaymentsPayload = (bundle: ProjectBundle) => ({
   billing: bundle.billing,
   payments: bundle.payments.payments,
 });
+
+const respondWithProjectLeads = async (
+  context: RequestContext,
+  projectId: string,
+  periodKey: string,
+  options?: { refresh?: boolean },
+): Promise<Response> => {
+  try {
+    if (options?.refresh) {
+      await refreshProjectLeads(context.kv, context.r2, projectId);
+    }
+    const payload = await loadPortalLeadsPayload(context.r2, projectId, periodKey);
+    return jsonOk({ projectId, ...payload });
+  } catch (error) {
+    if (error instanceof EntityNotFoundError) {
+      return notFound(error.message);
+    }
+    if (error instanceof DataValidationError) {
+      return unprocessable(error.message);
+    }
+    throw error;
+  }
+};
 
 export const renderPortalHtml = (projectId: string): string => {
   const projectIdJson = JSON.stringify(projectId);
@@ -357,8 +436,8 @@ export const renderPortalHtml = (projectId: string): string => {
         const portalClient = {
           project: () => fetchJson(API_BASE),
           summary: (period) => fetchJson(API_BASE + '/summary?period=' + encodeURIComponent(period)),
-          leads: (period) => fetchJson(API_BASE + '/leads?period=' + encodeURIComponent(period)),
-          refreshLeads: (period) => postJson(API_BASE + '/leads/sync?period=' + encodeURIComponent(period)),
+        leads: (period) => fetchJson(API_BASE + '/leads/' + encodeURIComponent(period)),
+        refreshLeads: (period) => postJson(API_BASE + '/leads/' + encodeURIComponent(period) + '/refresh'),
           campaigns: (period) => fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period)),
           payments: () => fetchJson(API_BASE + '/payments'),
         };
@@ -448,8 +527,11 @@ export const renderPortalHtml = (projectId: string): string => {
             elements.leadsBody.innerHTML = leads
               .map((lead) => {
                 const name = escapeHtml(lead.name || 'Без имени');
-                const phone = (lead.phone || '').trim().length ? escapeHtml(lead.phone) : null;
-                const contact = phone || '<span class="portal-tag">сообщение</span>';
+                const contactText = (lead.contact || lead.phone || '').trim();
+                const isMessage = !contactText || contactText.toLowerCase() === 'сообщение';
+                const contact = isMessage
+                  ? '<span class="portal-tag">Сообщение</span>'
+                  : escapeHtml(contactText);
                 const campaign = escapeHtml(lead.campaignName || lead.campaign || '—');
                 return (
                   '<tr>' +
@@ -638,7 +720,7 @@ export const renderPortalHtml = (projectId: string): string => {
           if (!state.leads?.leads?.length) return;
           const header = toCsvRow(['ID', 'Имя', 'Контакт', 'Кампания', 'Статус', 'Дата']);
           const rows = state.leads.leads.map((lead) => {
-            const contact = (lead.phone || '').trim().length ? lead.phone : 'сообщение';
+            const contact = (lead.contact || lead.phone || '').trim() || 'Сообщение';
             return toCsvRow([lead.id, lead.name, contact, lead.campaignName, lead.status, lead.createdAt]);
           });
           downloadFile('leads-' + state.period + '.csv', [header, ...rows].join('\n'), 'text/csv');
@@ -1421,28 +1503,19 @@ export const registerPortalRoutes = (router: Router): void => {
     }
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
-    try {
-      const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
-      const filtered = filterLeadsForPeriod(bundle, periodKey);
-      return jsonOk({
-        projectId,
-        period: filtered.period,
-        periodKey,
-        leads: filtered.leads,
-        stats: bundle.leads.stats,
-        syncedAt: bundle.leads.syncedAt ?? null,
-      });
-    } catch (error) {
-      if (error instanceof EntityNotFoundError) {
-        return notFound(error.message);
-      }
-      if (error instanceof DataValidationError) {
-        return unprocessable(error.message);
-      }
-      throw error;
-    }
+    return respondWithProjectLeads(context, projectId, periodKey);
   });
   router.on("OPTIONS", "/api/projects/:projectId/leads", (context) => preflight(context.request));
+
+  router.on("GET", "/api/projects/:projectId/leads/:period", async (context) => {
+    const projectId = context.state.params.projectId;
+    const periodKey = context.state.params.period ?? "today";
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    return respondWithProjectLeads(context, projectId, periodKey);
+  });
+  router.on("OPTIONS", "/api/projects/:projectId/leads/:period", (context) => preflight(context.request));
 
   router.on("POST", "/api/projects/:projectId/leads/sync", async (context) => {
     const projectId = context.state.params.projectId;
@@ -1451,29 +1524,19 @@ export const registerPortalRoutes = (router: Router): void => {
     }
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
-    try {
-      await refreshProjectLeads(context.kv, context.r2, projectId);
-      const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
-      const filtered = filterLeadsForPeriod(bundle, periodKey);
-      return jsonOk({
-        projectId,
-        period: filtered.period,
-        periodKey,
-        leads: filtered.leads,
-        stats: bundle.leads.stats,
-        syncedAt: bundle.leads.syncedAt ?? null,
-      });
-    } catch (error) {
-      if (error instanceof EntityNotFoundError) {
-        return notFound(error.message);
-      }
-      if (error instanceof DataValidationError) {
-        return unprocessable(error.message);
-      }
-      throw error;
-    }
+    return respondWithProjectLeads(context, projectId, periodKey, { refresh: true });
   });
   router.on("OPTIONS", "/api/projects/:projectId/leads/sync", (context) => preflight(context.request));
+
+  router.on("POST", "/api/projects/:projectId/leads/:period/refresh", async (context) => {
+    const projectId = context.state.params.projectId;
+    const periodKey = context.state.params.period ?? "today";
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    return respondWithProjectLeads(context, projectId, periodKey, { refresh: true });
+  });
+  router.on("OPTIONS", "/api/projects/:projectId/leads/:period/refresh", (context) => preflight(context.request));
 
   router.on("GET", "/api/projects/:projectId/campaigns", async (context) => {
     const projectId = context.state.params.projectId;

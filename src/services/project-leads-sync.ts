@@ -1,11 +1,11 @@
 import { getMetaToken } from "../domain/meta-tokens";
-import { createLead, saveLead, type Lead } from "../domain/leads";
+import { createLead, deleteLead, listLeads, saveLead, type Lead } from "../domain/leads";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
 import { getProject, type Project } from "../domain/projects";
 import { ensureProjectSettings, type ProjectSettings } from "../domain/project-settings";
 import { fetchMetaLeads, type LeadGenFormDescriptor, type MetaLeadRecord } from "./meta-api";
-import { markProjectLeadsSynced, mergeProjectLeadsList } from "./project-leads-list";
+import { markProjectLeadsSynced, mergeProjectLeadsList, rewriteProjectLeadsList } from "./project-leads-list";
 import { getLeadRetentionDays } from "../domain/config";
 import { DataValidationError } from "../errors";
 import {
@@ -16,6 +16,34 @@ import {
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const LEAD_SYNC_LIMIT = 400;
+
+const pruneExpiredProjectLeads = async (
+  r2: R2Client,
+  projectId: string,
+  retentionDays: number,
+): Promise<void> => {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) {
+    return;
+  }
+  const cutoff = Date.now() - retentionDays * DAY_IN_MS;
+  const leads = await listLeads(r2, projectId);
+  if (leads.length === 0) {
+    return;
+  }
+  const expired = leads.filter((lead) => {
+    const createdAt = Date.parse(lead.createdAt);
+    return Number.isFinite(createdAt) && createdAt < cutoff;
+  });
+  if (expired.length === 0) {
+    return;
+  }
+  for (const lead of expired) {
+    await deleteLead(r2, projectId, lead.id);
+  }
+  const expiredIds = new Set(expired.map((lead) => lead.id));
+  const remaining = leads.filter((lead) => !expiredIds.has(lead.id));
+  await rewriteProjectLeadsList(r2, projectId, remaining);
+};
 
 const normaliseFieldName = (value: unknown): string => {
   if (typeof value !== "string") {
@@ -54,17 +82,19 @@ const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead | nu
     record.campaign_name ??
     null;
   const phone = extractFieldValue(record, ["phone_number", "phone", "phone_number_full"]);
-  if (!phone) {
-    return null;
-  }
+  const message =
+    extractFieldValue(record, ["message", "сообщение", "comment", "text", "feedback", "notes"]) ?? null;
   return createLead({
     id: record.id,
     projectId,
     name,
     phone,
+    message,
     campaign: typeof record.campaign_name === "string" ? record.campaign_name : null,
+    campaignId: typeof record.campaign_id === "string" ? record.campaign_id : null,
     adset: typeof record.adset_name === "string" ? record.adset_name : null,
     ad: typeof record.ad_name === "string" ? record.ad_name : null,
+    formId: typeof record.form_id === "string" ? record.form_id : null,
     createdAt: record.created_time,
     metaRaw: record,
   });
@@ -154,8 +184,16 @@ export const syncProjectLeadsFromMeta = async (
       }
     },
   });
+  const prune = async () => {
+    try {
+      await pruneExpiredProjectLeads(r2, projectId, retentionDays);
+    } catch (error) {
+      console.warn(`[portal-sync] Failed to prune expired leads for ${projectId}: ${(error as Error).message}`);
+    }
+  };
   if (rawLeads.length === 0) {
     await markProjectLeadsSynced(r2, projectId);
+    await prune();
     return { fetched: 0, stored: 0 };
   }
   const created: Lead[] = [];
@@ -163,7 +201,6 @@ export const syncProjectLeadsFromMeta = async (
     try {
       const lead = buildLeadFromMeta(raw, projectId);
       if (!lead) {
-        console.warn(`[portal-sync] Skipping Meta lead ${raw.id} without phone number`);
         continue;
       }
       created.push(lead);
@@ -181,6 +218,7 @@ export const syncProjectLeadsFromMeta = async (
     }
     await mergeProjectLeadsList(r2, projectId, created);
   }
+  await prune();
   return { fetched: rawLeads.length, stored: created.length };
 };
 

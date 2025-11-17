@@ -21,7 +21,7 @@ const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-ca
 const { putPaymentsHistoryDocument } = await import("../../src/domain/spec/payments-history.ts");
 const { getFbAuthRecord } = await import("../../src/domain/spec/fb-auth.ts");
 const { R2_KEYS } = await import("../../src/config/r2.ts");
-const { getLead } = await import("../../src/domain/leads.ts");
+const { createLead, saveLead, getLead } = await import("../../src/domain/leads.ts");
 import type { DispatchProjectMessageOptions } from "../../src/services/project-messaging.ts";
 
 const seedProjectData = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<typeof R2Client>) => {
@@ -75,6 +75,17 @@ const seedProjectData = async (kv: InstanceType<typeof KvClient>, r2: InstanceTy
     ],
     syncedAt: "2025-11-15T09:05:00Z",
   });
+  await saveLead(
+    r2,
+    createLead({
+      id: "lead_static",
+      projectId: "proj_acceptance",
+      name: "Existing",
+      phone: "+998901112233",
+      campaign: "BirLash Лиды",
+      createdAt: "2025-11-15T09:00:00Z",
+    }),
+  );
   await putMetaCampaignsDocument(r2, "proj_acceptance", {
     period: { from: "2025-11-15", to: "2025-11-15" },
     summary: { spend: 25, impressions: 2500, clicks: 180, leads: 7, messages: 3 },
@@ -304,7 +315,7 @@ test("full system acceptance scenario", async () => {
 
     const leadsResponse = await dispatchRequest(
       router,
-      new Request("https://example.com/api/projects/proj_acceptance/leads?period=max"),
+      new Request("https://example.com/api/projects/proj_acceptance/leads/max"),
       env,
     );
     const leadsPayload = (await leadsResponse.json()) as { ok: boolean; data: { leads: Array<{ id: string }> } };

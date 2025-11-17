@@ -25,6 +25,7 @@ interface MetaWebhookValue {
   created_time?: number | string;
   createdAt?: number | string;
   campaign_name?: string;
+  campaign_id?: string;
   adset_name?: string;
   ad_name?: string;
   form_id?: string;
@@ -34,6 +35,7 @@ interface MetaWebhookValue {
   custom_data?: Record<string, unknown> | null;
   custom_properties?: Record<string, unknown> | null;
   metadata?: Record<string, unknown> | null;
+  message?: string | null;
   [key: string]: unknown;
 }
 
@@ -204,6 +206,17 @@ const resolvePhone = (value: MetaWebhookValue, index: Map<string, string>): stri
   return trimmed;
 };
 
+const resolveMessage = (value: MetaWebhookValue, index: Map<string, string>): string | null => {
+  const direct =
+    pickFirst(index, ["message", "сообщение", "comment", "text", "feedback", "notes"]) ??
+    (typeof value.message === "string" ? value.message : null);
+  if (!direct) {
+    return null;
+  }
+  const normalised = direct.trim();
+  return normalised.length > 0 ? normalised : null;
+};
+
 const resolveCampaign = (value: MetaWebhookValue, index: Map<string, string>): string | null => {
   const fromValue = value.campaign_name ?? value.campaign;
   if (typeof fromValue === "string" && fromValue.trim()) {
@@ -270,6 +283,7 @@ export const parseMetaWebhookPayload = (payload: unknown): ParsedLeadEvent[] => 
       const createdAt = resolveTimestamp(value);
       const name = resolveName(value, fieldIndex);
       const phone = resolvePhone(value, fieldIndex);
+      const message = resolveMessage(value, fieldIndex);
       const campaign = resolveCampaign(value, fieldIndex);
       const adset = resolveAdset(value, fieldIndex);
       const ad = resolveAd(value, fieldIndex);
@@ -279,9 +293,12 @@ export const parseMetaWebhookPayload = (payload: unknown): ParsedLeadEvent[] => 
         projectId,
         name,
         phone,
+        message,
         campaign,
+        campaignId: typeof value.campaign_id === "string" ? value.campaign_id : undefined,
         adset,
         ad,
+        formId: typeof value.form_id === "string" ? value.form_id : undefined,
         createdAt,
         metaRaw: value,
       });

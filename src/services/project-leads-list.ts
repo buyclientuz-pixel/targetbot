@@ -4,13 +4,6 @@ import type { Lead } from "../domain/leads";
 
 const MAX_SUMMARY_LEADS = 400;
 
-const normalisePhone = (value: string | null): string => {
-  if (!value) {
-    return "";
-  }
-  return value;
-};
-
 const mapLeadStatus = (leadStatus: Lead["status"]): ProjectLeadsListRecord["leads"][number]["status"] => {
   switch (leadStatus) {
     case "NEW":
@@ -27,7 +20,7 @@ const mapLeadStatus = (leadStatus: Lead["status"]): ProjectLeadsListRecord["lead
 const mapLeadToSummary = (lead: Lead): ProjectLeadsListRecord["leads"][number] => ({
   id: lead.id,
   name: lead.name,
-  phone: normalisePhone(lead.phone),
+  phone: lead.phone ?? (lead.message ? "Сообщение" : ""),
   createdAt: lead.createdAt,
   source: lead.source,
   campaignName: lead.campaign ?? "—",
@@ -47,6 +40,28 @@ const sortByCreatedAtDesc = (
   return a.createdAt > b.createdAt ? -1 : 1;
 };
 
+const bucketToRecord = (bucket: Map<string, ProjectLeadsListRecord["leads"][number]>): ProjectLeadsListRecord => {
+  const sorted = Array.from(bucket.values()).sort(sortByCreatedAtDesc);
+  const limited = sorted.slice(0, MAX_SUMMARY_LEADS);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const today = limited.filter((lead) => lead.createdAt.slice(0, 10) === todayKey).length;
+  return {
+    stats: { total: limited.length, today },
+    leads: limited,
+    syncedAt: new Date().toISOString(),
+  };
+};
+
+const writeBucket = async (
+  r2: R2Client,
+  projectId: string,
+  bucket: Map<string, ProjectLeadsListRecord["leads"][number]>,
+): Promise<ProjectLeadsListRecord> => {
+  const record = bucketToRecord(bucket);
+  await putProjectLeadsList(r2, projectId, record);
+  return record;
+};
+
 export const mergeProjectLeadsList = async (
   r2: R2Client,
   projectId: string,
@@ -60,17 +75,7 @@ export const mergeProjectLeadsList = async (
   for (const lead of leads) {
     bucket.set(lead.id, mapLeadToSummary(lead));
   }
-  const sorted = Array.from(bucket.values()).sort(sortByCreatedAtDesc);
-  const limited = sorted.slice(0, MAX_SUMMARY_LEADS);
-  const todayKey = new Date().toISOString().slice(0, 10);
-  const today = limited.filter((lead) => lead.createdAt.slice(0, 10) === todayKey).length;
-  const nextRecord: ProjectLeadsListRecord = {
-    stats: { total: limited.length, today },
-    leads: limited,
-    syncedAt: new Date().toISOString(),
-  };
-  await putProjectLeadsList(r2, projectId, nextRecord);
-  return nextRecord;
+  return writeBucket(r2, projectId, bucket);
 };
 
 export const markProjectLeadsSynced = async (r2: R2Client, projectId: string): Promise<ProjectLeadsListRecord> => {
@@ -81,4 +86,16 @@ export const markProjectLeadsSynced = async (r2: R2Client, projectId: string): P
   };
   await putProjectLeadsList(r2, projectId, nextRecord);
   return nextRecord;
+};
+
+export const rewriteProjectLeadsList = async (
+  r2: R2Client,
+  projectId: string,
+  leads: Lead[],
+): Promise<ProjectLeadsListRecord> => {
+  const bucket = new Map<string, ProjectLeadsListRecord["leads"][number]>();
+  for (const lead of leads) {
+    bucket.set(lead.id, mapLeadToSummary(lead));
+  }
+  return writeBucket(r2, projectId, bucket);
 };
