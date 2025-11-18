@@ -701,7 +701,7 @@ test("summariseMetaInsights does not double count duplicate lead actions", () =>
   assert.equal(summary.leads, 9);
 });
 
-test("summariseMetaInsights keeps the highest available lead value", () => {
+test("summariseMetaInsights keeps submit_application counts when lead metric is missing", () => {
   const summary = summariseMetaInsights({
     data: [
       {
@@ -709,11 +709,45 @@ test("summariseMetaInsights keeps the highest available lead value", () => {
         impressions: "1000",
         clicks: "100",
         actions: [
-          { action_type: "lead", value: "4" },
           { action_type: "submit_application", value: "7" },
         ],
       },
     ],
   });
   assert.equal(summary.leads, 7);
+});
+
+test("summariseMetaInsights prefers canonical lead metrics before generic lead matches", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "12",
+        impressions: "1200",
+        clicks: "240",
+        actions: [
+          { action_type: "leadgen_grouped", value: "45" },
+          { action_type: "lead", value: "9" },
+          { action_type: "leadgen.custom_form", value: "30" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 9);
+});
+
+test("summariseMetaInsights still falls back to fuzzy lead matches when canonical metrics are missing", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "7",
+        impressions: "900",
+        clicks: "30",
+        actions: [
+          { action_type: "custom_lead_signal", value: "5" },
+          { action_type: "leadgen_callback", value: "12" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 12);
 });

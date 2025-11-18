@@ -30,7 +30,7 @@ jobs:
         run: node ./scripts/ensure-registry.mjs
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --force --progress=false
 
       - name: Lint
         run: npm run lint

@@ -217,11 +217,36 @@ const includesAny = (value: string, keywords: string[]): boolean => {
   return keywords.some((keyword) => value.includes(keyword));
 };
 
+const createExactMatcher = (target: string): ActionMatcher => {
+  return (type) => type === target;
+};
+
+const createPrefixMatcher = (prefix: string): ActionMatcher => {
+  return (type) => type.startsWith(prefix);
+};
+
+const LEAD_ACTION_PRIORITY: ActionMatcher[] = [
+  createExactMatcher("lead"),
+  createExactMatcher("onsite_conversion.lead"),
+  createExactMatcher("onsite_conversion.lead_grouped"),
+  createExactMatcher("onsite_conversion.submit_lead_form"),
+  createExactMatcher("leadgen"),
+  createExactMatcher("leadgen_grouped"),
+  createExactMatcher("leadgen.other"),
+  createExactMatcher("submit_application"),
+  createPrefixMatcher("leadgen."),
+  createPrefixMatcher("leadgen_"),
+  createPrefixMatcher("onsite_conversion.lead"),
+];
+
 export const countLeadsFromActions = (actions: unknown): number => {
-  return maxActionValueByMatcher(
-    actions,
-    (type) => type === "lead" || type.includes("lead") || type.includes("submit_application"),
-  );
+  for (const matcher of LEAD_ACTION_PRIORITY) {
+    const value = maxActionValueByMatcher(actions, matcher);
+    if (value > 0) {
+      return value;
+    }
+  }
+  return maxActionValueByMatcher(actions, (type) => type.includes("lead") || type.includes("submit_application"));
 };
 
 const isMessageAction = (type: string): boolean => {
