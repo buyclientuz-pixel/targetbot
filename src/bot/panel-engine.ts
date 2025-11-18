@@ -40,9 +40,6 @@ const resolvePanel = (panelId: string): ResolveResult => {
   if (panelId === "panel:projects" || panelId === "cmd:projects") {
     return { renderer: renderProjects, params: [], id: "projects" };
   }
-  if (panelId === "panel:projects:list" || panelId === "project:list") {
-    return { renderer: renderProjects, params: ["list"], id: "projects:list" };
-  }
   if (panelId === "project:menu") {
     return { renderer: renderMain, params: [], id: "main" };
   }

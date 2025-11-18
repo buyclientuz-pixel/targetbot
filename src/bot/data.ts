@@ -68,9 +68,16 @@ export interface AccountSpendSnapshot {
   currency: string;
 }
 
+export interface AccountBindingOverview {
+  projectId: string;
+  projectName: string;
+  hasChat: boolean;
+}
+
 export interface ProjectListOverview {
   projects: ProjectListItem[];
   accountSpends: Record<string, AccountSpendSnapshot>;
+  accountBindings: Record<string, AccountBindingOverview>;
 }
 
 export interface AnalyticsProjectSummary {
@@ -130,6 +137,7 @@ export const loadProjectListOverview = async (
 ): Promise<ProjectListOverview> => {
   const projects = await loadUserProjects(kv, userId);
   const accountSpends: Record<string, AccountSpendSnapshot> = {};
+  const accountBindings: Record<string, AccountBindingOverview> = {};
 
   const items = await Promise.all(
     projects.map(async (project) => {
@@ -147,6 +155,16 @@ export const loadProjectListOverview = async (
         if (shouldReplace) {
           accountSpends[project.adAccountId] = nextEntry;
         }
+        const hasChat = project.chatId != null;
+        const currentBinding = accountBindings[project.adAccountId];
+        const shouldReplaceBinding = !currentBinding || (!currentBinding.hasChat && hasChat);
+        if (shouldReplaceBinding) {
+          accountBindings[project.adAccountId] = {
+            projectId: project.id,
+            projectName: project.name,
+            hasChat,
+          } satisfies AccountBindingOverview;
+        }
       }
       return {
         id: project.id,
@@ -158,7 +176,7 @@ export const loadProjectListOverview = async (
     }),
   );
 
-  return { projects: items, accountSpends };
+  return { projects: items, accountSpends, accountBindings };
 };
 
 export const loadProjectBundlesForUser = async (

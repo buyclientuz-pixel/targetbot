@@ -8,7 +8,7 @@ import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
 import type { FreeChatRecord } from "../domain/project-chats";
 
-import type { AnalyticsOverview, FinanceOverview, ProjectBundle, ProjectListItem } from "./data";
+import type { AnalyticsOverview, FinanceOverview, ProjectBundle } from "./data";
 import { translateMetaObjective } from "../services/meta-objectives";
 
 const escapeHtml = (value: string): string =>
@@ -148,19 +148,6 @@ export const buildMenuMessage = (options: { fbAuth: FbAuthRecord | null }): stri
   return lines.join("\n");
 };
 
-export const buildProjectsListMessage = (projects: ProjectListItem[]): string => {
-  if (projects.length === 0) {
-    return "У вас пока нет проектов. Добавьте их через портал или админ-панель.";
-  }
-  const lines: string[] = ["Ваши проекты:"];
-  projects.forEach((project) => {
-    const spend = formatMoney(project.spend, project.currency);
-    const icon = project.hasChat ? "✅" : "⚙️";
-    lines.push(`${icon} ${escapeHtml(project.name)} [${spend}]`);
-  });
-  return lines.join("\n");
-};
-
 export const buildProjectCreationMessage = (options: {
   accounts: { id: string; name: string; currency: string }[];
   hasProjects: boolean;
@@ -170,17 +157,15 @@ export const buildProjectCreationMessage = (options: {
     lines.push("Не найдено рекламных аккаунтов.");
     lines.push("Подключите Facebook в разделе «Авторизация Facebook».\n");
   } else {
-    lines.push("Выберите рекламный аккаунт через кнопки ниже и укажите чат проекта.");
-    lines.push("");
-    lines.push("Бот покажет актуальные расходы за сегодня рядом с названием аккаунта.");
-    lines.push("После выбора аккаунта бот попросит привязать чат-группу.");
+    lines.push("Выберите рекламный аккаунт через кнопки ниже.");
+    lines.push("Бот показывает текущие расходы и статус чата прямо в кнопках.");
+    lines.push("✅ — чат подключён, нажатие откроет карточку проекта.");
+    lines.push("⚙️ — чат не привязан, нажатие откроет выбор свободной группы.");
   }
-  lines.push("");
-  lines.push(
-    options.hasProjects
-      ? "Нажмите «📂 Мои проекты», чтобы открыть существующие проекты."
-      : "У вас пока нет проектов. Добавьте их через портал или админ-панель.",
-  );
+  if (!options.hasProjects) {
+    lines.push("");
+    lines.push("У вас пока нет проектов. Добавьте их через портал или админ-панель.");
+  }
   return lines.join("\n");
 };
 
@@ -324,11 +309,14 @@ export const buildReportMessage = (
   lines.push(`Отчёт по рекламе — <b>${escapeHtml(project.name)}</b>`);
   lines.push(`Период: ${campaigns.period.from} — ${campaigns.period.to}`);
   lines.push("");
+  const summaryLeads = campaigns.summary.leads ?? 0;
+  const summaryMessages = campaigns.summary.messages ?? 0;
   lines.push(`💰 Затраты: <b>${formatMoney(campaigns.summary.spend, project.settings.currency)}</b>`);
   lines.push(`👀 Показов: <b>${campaigns.summary.impressions}</b>`);
   lines.push(`👆 Кликов: <b>${campaigns.summary.clicks}</b>`);
-  lines.push(`🎯 KPI: <b>${campaigns.summary.leads}</b>`);
-  const cpa = computeCpa(campaigns.summary.spend, campaigns.summary.leads) ?? null;
+  lines.push(`🎯 Лиды: <b>${summaryLeads}</b>`);
+  lines.push(`💬 Сообщений: <b>${summaryMessages}</b>`);
+  const cpa = computeCpa(campaigns.summary.spend, summaryLeads) ?? null;
   lines.push(`📊 CPA: <b>${cpa ? formatMoney(cpa, project.settings.currency) : "—"}</b>`);
   lines.push("");
   if (campaigns.campaigns.length === 0) {

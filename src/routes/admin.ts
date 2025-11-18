@@ -105,12 +105,12 @@ const SYNC_KEY_LABELS: Record<string, string> = {
   leads: "лиды",
 };
 
-const describePortalSyncResult = (result: PortalSyncResult): string => {
-  const successful = result.periods.filter((entry) => entry.ok).length;
+const describePortalSyncResult = (result: PortalSyncResult): string | null => {
   const failed = result.periods.filter((entry) => !entry.ok);
   if (failed.length === 0) {
-    return `Портал обновлён (${successful}/${result.periods.length}).`;
+    return null;
   }
+  const successful = result.periods.length - failed.length;
   const issues = failed
     .map((entry) => `${SYNC_KEY_LABELS[entry.periodKey] ?? entry.periodKey}: ${entry.error ?? "ошибка"}`)
     .join(", ");

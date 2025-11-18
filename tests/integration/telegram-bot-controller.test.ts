@@ -212,17 +212,23 @@ test("Telegram bot controller serves menu and project list", async () => {
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
     } as unknown as TelegramUpdate);
 
-    assert.equal(stub.requests.length, 1);
-    const creationKeyboard = stub.requests[0]?.body.reply_markup as {
-      inline_keyboard: Array<Array<{ callback_data?: string }>>;
+    const projectRequest = findLastSendMessage(stub.requests);
+    assert.ok(projectRequest, "expected project selection message");
+    const creationKeyboard = projectRequest?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data?: string }>>;
     };
     assert.ok(creationKeyboard);
-    assert.equal(creationKeyboard.inline_keyboard[0]?.[0]?.callback_data, "project:add:act_123");
-    const myProjectsButton = creationKeyboard.inline_keyboard
+    const firstButton = creationKeyboard.inline_keyboard[0]?.[0];
+    const secondButton = creationKeyboard.inline_keyboard[1]?.[0];
+    assert.equal(firstButton?.callback_data, "project:card:proj_a");
+    assert.match(String(firstButton?.text ?? ""), /^✅/);
+    assert.equal(secondButton?.callback_data, "project:add:act_456");
+    assert.match(String(secondButton?.text ?? ""), /^⚙️/);
+    const hasLegacyButton = creationKeyboard.inline_keyboard
       .flat()
-      .find((btn) => btn.callback_data === "project:list");
-    assert.ok(myProjectsButton);
-    assert.match(String(stub.requests[0]?.body.text), /Выберите рекламный аккаунт/);
+      .some((btn) => btn?.callback_data === "project:list");
+    assert.equal(hasLegacyButton, false);
+    assert.match(String(projectRequest?.body.text), /Выберите рекламный аккаунт/);
   } finally {
     stub.restore();
   }
@@ -272,29 +278,17 @@ test("Project list buttons reflect chat binding state", async () => {
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
     } as unknown as TelegramUpdate);
 
-    stub.requests.length = 0;
-    await controller.handleUpdate({
-      callback_query: {
-        id: "cb_project_list",
-        from: { id: 100 },
-        message: { chat: { id: 100 }, message_id: 41 },
-        data: "project:list",
-      },
-    } as unknown as TelegramUpdate);
-
-    const listRequest = stub.requests.find((entry) => String(entry.body?.text ?? "").includes("Ваши проекты"));
-    assert.ok(listRequest, "project list message should be rendered");
-    assert.match(String(listRequest?.body.text), /✅/);
-    assert.match(String(listRequest?.body.text), /⚙️/);
-    const listKeyboard = listRequest?.body.reply_markup as {
+    const projectRequest = findLastSendMessage(stub.requests);
+    assert.ok(projectRequest, "project selection message should be sent");
+    const keyboard = projectRequest?.body.reply_markup as {
       inline_keyboard: Array<Array<{ text: string; callback_data?: string }>>;
     };
-    assert.ok(listKeyboard);
-    const firstButton = listKeyboard.inline_keyboard[0]?.[0];
-    const secondButton = listKeyboard.inline_keyboard[1]?.[0];
+    const firstButton = keyboard.inline_keyboard[0]?.[0];
+    const secondButton = keyboard.inline_keyboard[1]?.[0];
     assert.equal(firstButton?.callback_data, "project:card:proj_a");
+    assert.match(String(firstButton?.text ?? ""), /^✅/);
     assert.equal(secondButton?.callback_data, "project:chat-change:proj_b");
-    assert.match(String(secondButton?.text), /⚙️/);
+    assert.match(String(secondButton?.text ?? ""), /^⚙️/);
   } finally {
     stub.restore();
   }
@@ -321,24 +315,16 @@ test("Ad account buttons show spend summary without IDs", async () => {
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
     } as unknown as TelegramUpdate);
 
-    const creationRequest = stub.requests
-      .filter((entry) => entry.url.includes("sendMessage"))
-      .find((entry) => {
-        const keyboard = entry.body?.reply_markup as {
-          inline_keyboard?: Array<Array<{ callback_data?: string }>>;
-        };
-        return keyboard?.inline_keyboard?.flat().some((button) =>
-          String(button.callback_data ?? "").startsWith("project:add:"),
-        );
-      });
+    const creationRequest = findLastSendMessage(stub.requests);
     assert.ok(creationRequest, "account creation keyboard should be sent");
     const keyboard = creationRequest?.body.reply_markup as {
       inline_keyboard: Array<Array<{ text: string }>>;
     };
     const buttonText = keyboard.inline_keyboard[0]?.[0]?.text ?? "";
     assert.match(buttonText, /BirLash/);
-    assert.match(buttonText, /сегодня/);
+    assert.match(buttonText, /^[✅⚙️]/);
     assert.match(buttonText, /\$/);
+    assert.ok(!/сегодня/i.test(buttonText));
     assert.ok(!buttonText.includes("act_"));
   } finally {
     stub.restore();

@@ -4,20 +4,8 @@ import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FreeChatRecord } from "../domain/project-chats";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
 
-import type { AccountSpendSnapshot, ProjectListItem } from "./data";
+import type { AccountBindingOverview, AccountSpendSnapshot } from "./data";
 import type { InlineKeyboardMarkup } from "./types";
-
-const formatMoney = (value: number | null, currency: string): string => {
-  if (value == null) {
-    return "—";
-  }
-  return new Intl.NumberFormat("ru-RU", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(value);
-};
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: "$",
@@ -32,11 +20,14 @@ const getCurrencySymbol = (currency: string): string => {
   return CURRENCY_SYMBOLS[upper] ?? (upper || "$");
 };
 
-const formatAccountSpendToday = (snapshot: AccountSpendSnapshot, fallbackCurrency: string): string => {
-  const formatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-  const amountText = formatter.format(snapshot.amount ?? 0).replace(/\u00a0/g, " ");
+const formatAccountSpend = (snapshot: AccountSpendSnapshot, fallbackCurrency: string): string => {
   const symbol = getCurrencySymbol(snapshot.currency || fallbackCurrency);
-  return `${amountText}${symbol} сегодня`;
+  if (snapshot.amount == null) {
+    return `—${symbol}`;
+  }
+  const formatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const amountText = formatter.format(snapshot.amount).replace(/\u00a0/g, " ");
+  return `${amountText}${symbol}`;
 };
 
 interface MainMenuKeyboardOptions {
@@ -66,32 +57,36 @@ export const buildMainMenuKeyboard = (options: MainMenuKeyboardOptions): InlineK
   };
 };
 
-export const buildProjectListKeyboard = (projects: ProjectListItem[]): InlineKeyboardMarkup => ({
-  inline_keyboard: projects.map((project) => [
-    {
-      text: `${project.hasChat ? "✅" : "⚙️"} ${project.name} [${formatMoney(project.spend, project.currency)}]`,
-      callback_data: project.hasChat ? `project:card:${project.id}` : `project:chat-change:${project.id}`,
-    },
-  ]),
-});
-
 export const buildProjectCreationKeyboard = (
   accounts: FbAuthRecord["adAccounts"],
-  options: { hasProjects: boolean; accountSpends?: Record<string, AccountSpendSnapshot> },
+  options: {
+    hasProjects: boolean;
+    accountSpends?: Record<string, AccountSpendSnapshot>;
+    accountBindings?: Record<string, AccountBindingOverview>;
+  },
 ): InlineKeyboardMarkup => {
   const spendMap = options.accountSpends ?? {};
+  const bindings = options.accountBindings ?? {};
   return {
     inline_keyboard: [
-      ...accounts.map((account) => [
-        {
-          text: `${account.name} — ${formatAccountSpendToday(
-            spendMap[account.id] ?? { amount: null, currency: account.currency },
-            account.currency,
-          )}`,
-          callback_data: `project:add:${account.id}`,
-        },
-      ]),
-      ...(options.hasProjects ? [[{ text: "📂 Мои проекты", callback_data: "project:list" }]] : []),
+      ...accounts.map((account) => {
+        const binding = bindings[account.id];
+        const icon = binding?.hasChat ? "✅" : "⚙️";
+        const callback = binding
+          ? binding.hasChat
+            ? `project:card:${binding.projectId}`
+            : `project:chat-change:${binding.projectId}`
+          : `project:add:${account.id}`;
+        return [
+          {
+            text: `${icon} ${account.name} — ${formatAccountSpend(
+              spendMap[account.id] ?? { amount: null, currency: account.currency },
+              account.currency,
+            )}`,
+            callback_data: callback,
+          },
+        ];
+      }),
       [{ text: "🏠 Меню", callback_data: "project:menu" }],
     ],
   };
@@ -128,7 +123,7 @@ export const buildProjectActionsKeyboard = (projectId: string): InlineKeyboardMa
       { text: "🧨 Удалить", callback_data: `project:delete:${projectId}` },
     ],
     [
-      { text: "⬅️ К списку", callback_data: "project:list" },
+      { text: "⬅️ К списку", callback_data: "cmd:projects" },
       { text: "🏠 Меню", callback_data: "project:menu" },
     ],
   ],
@@ -220,6 +215,7 @@ export const buildChatBindingKeyboard = (
       },
     ]),
     [{ text: "🔗 Отправить ссылку вручную", callback_data: `project:bind-manual:${accountId}` }],
+    [{ text: "⬅️ Назад", callback_data: "cmd:projects" }],
     [{ text: "🏠 Меню", callback_data: "project:menu" }],
   ],
 });

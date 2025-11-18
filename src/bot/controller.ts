@@ -17,8 +17,6 @@ import {
   buildLeadsKeyboard,
   buildMainMenuKeyboard,
   buildProjectActionsKeyboard,
-  buildProjectCreationKeyboard,
-  buildProjectListKeyboard,
 } from "./keyboards";
 import {
   buildAnalyticsOverviewMessage,
@@ -33,8 +31,6 @@ import {
   buildMenuMessage,
   buildPortalMessage,
   buildProjectCardMessage,
-  buildProjectCreationMessage,
-  buildProjectsListMessage,
   buildReportMessage,
   buildNoFreeChatsMessage,
   buildUsersMessage,
@@ -354,72 +350,6 @@ const ensureLegacyKeyboardCleared = async (
   return updatedSession;
 };
 
-const sendExistingProjectsList = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
-  const { projects } = await loadProjectListOverview(ctx.kv, ctx.r2, userId);
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildProjectsListMessage(projects),
-    replyMarkup: projects.length > 0 ? buildProjectListKeyboard(projects) : undefined,
-  });
-};
-
-const sendProjectsEntry = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
-  const fbAuth = await getFbAuthRecord(ctx.kv, userId);
-  const adAccounts = (fbAuth?.adAccounts ?? []) as FbAuthRecord["adAccounts"];
-  const overview = await loadProjectListOverview(ctx.kv, ctx.r2, userId);
-  const projects = overview.projects;
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildProjectCreationMessage({ accounts: adAccounts, hasProjects: projects.length > 0 }),
-    replyMarkup: buildProjectCreationKeyboard(adAccounts, {
-      hasProjects: projects.length > 0,
-      accountSpends: overview.accountSpends,
-    }),
-  });
-  if (projects.length === 0) {
-    return;
-  }
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildProjectsListMessage(projects),
-    replyMarkup: buildProjectListKeyboard(projects),
-  });
-};
-
-const handleProjectAccountSelect = async (
-  ctx: BotContext,
-  chatId: number,
-  userId: number,
-  accountId: string,
-): Promise<void> => {
-  const fbAuth = await getFbAuthRecord(ctx.kv, userId);
-  if (!fbAuth) {
-    await sendTelegramMessage(ctx.token, {
-      chatId,
-      text: "Подключите Facebook в разделе «Авторизация Facebook», чтобы увидеть рекламные аккаунты.",
-    });
-    return;
-  }
-  const account = fbAuth.adAccounts.find((entry) => entry.id === accountId);
-  if (!account) {
-    await sendTelegramMessage(ctx.token, {
-      chatId,
-      text: "Рекламный аккаунт не найден. Нажмите «📦 Список рекламных аккаунтов», чтобы обновить данные.",
-    });
-    return;
-  }
-  const chats = await listAvailableProjectChats(ctx.kv, userId);
-  if (chats.length === 0) {
-    await sendTelegramMessage(ctx.token, { chatId, text: buildNoFreeChatsMessage() });
-    return;
-  }
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildChatBindingMessage({ accountName: account.name }),
-    replyMarkup: buildChatBindingKeyboard(account.id, chats),
-  });
-};
-
 const completeProjectBinding = async (
   ctx: BotContext,
   chatId: number,
@@ -441,7 +371,7 @@ const completeProjectBinding = async (
     text:
       "📦 Проект подключён!\n" +
       `Название: <b>${escapeHtml(project.name)}</b>\n` +
-      `Рекламный аккаунт: <b>${escapeHtml(account.id)}</b>\n` +
+      `Рекламный аккаунт: <b>${escapeHtml(account.name || account.id)}</b>\n` +
       `Чат-группа: <b>${freeChat.chatTitle ?? freeChat.chatId}</b>`,
     replyMarkup: buildProjectActionsKeyboard(project.id),
   });
@@ -841,13 +771,13 @@ const PORTAL_SYNC_KEY_LABELS: Record<string, string> = {
   leads: "лиды",
 };
 
-const describePortalSyncResult = (result: PortalSyncResult): string => {
-  const success = result.periods.filter((entry) => entry.ok).length;
-  const total = result.periods.length;
+const describePortalSyncResult = (result: PortalSyncResult): string | null => {
   const failed = result.periods.filter((entry) => !entry.ok);
   if (failed.length === 0) {
-    return `Портал обновлён (${success}/${total}).`;
+    return null;
   }
+  const success = result.periods.length - failed.length;
+  const total = result.periods.length;
   const issues = failed
     .map((entry) => `${PORTAL_SYNC_KEY_LABELS[entry.periodKey] ?? entry.periodKey}: ${entry.error ?? "ошибка"}`)
     .join(", ");
@@ -883,7 +813,10 @@ const handlePortalCreate = async (
     }
     try {
       const result = await syncPortalMetrics(ctx.kv, ctx.r2, projectId, { allowPartial: true });
-      await sendTelegramMessage(ctx.token, { chatId, text: describePortalSyncResult(result) });
+      const summary = describePortalSyncResult(result);
+      if (summary) {
+        await sendTelegramMessage(ctx.token, { chatId, text: summary });
+      }
     } catch (error) {
       await sendTelegramMessage(ctx.token, {
         chatId,
@@ -933,7 +866,10 @@ const handlePortalSyncRequest = async (
         allowPartial: true,
         periods: PORTAL_PERIOD_KEYS,
       });
-      await sendTelegramMessage(ctx.token, { chatId, text: describePortalSyncResult(result) });
+      const summary = describePortalSyncResult(result);
+      if (summary) {
+        await sendTelegramMessage(ctx.token, { chatId, text: summary });
+      }
     }
   } catch (error) {
     await sendTelegramMessage(ctx.token, { chatId, text: `Не удалось обновить данные портала: ${(error as Error).message}` });
@@ -1500,10 +1436,16 @@ const handleKpiTypeChange = async (
   await renderKpiPanel(runtime, userId, chatId, projectId);
 };
 
-const handleProjectDelete = async (ctx: BotContext, chatId: number, projectId: string, userId: number): Promise<void> => {
+const handleProjectDelete = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
   await deleteProjectCascade(ctx.kv, ctx.r2, projectId);
   await sendTelegramMessage(ctx.token, { chatId, text: "✅ Проект удалён." });
-  await sendExistingProjectsList(ctx, chatId, userId);
+  await renderPanel({ runtime, userId, chatId, panelId: "panel:projects" });
 };
 
 const handleLeadStatusChange = async (
@@ -1652,9 +1594,6 @@ const handleCallback = async (
       switch (action) {
         case "card":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "project:card:" + parts[2]! });
-          break;
-        case "list":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects:list" });
           break;
         case "menu":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
@@ -1820,7 +1759,7 @@ const handleCallback = async (
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:delete:${parts[2]!}` });
           break;
         case "delete-confirm":
-          await handleProjectDelete(ctx, chatId, parts[2]!, userId);
+          await handleProjectDelete(ctx, panelRuntime, userId, chatId, parts[2]!);
           break;
         default:
           break;
