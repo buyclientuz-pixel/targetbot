@@ -2,7 +2,6 @@ import { loadProjectBundle, type ProjectBundle } from "../bot/data";
 import {
   loadProjectSummary,
   loadProjectCampaignStatuses,
-  resolvePeriodRange,
   syncProjectCampaignDocument,
   type CampaignStatus,
 } from "../services/project-insights";
@@ -10,13 +9,14 @@ import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
 import { applyCors, preflight } from "../http/cors";
 import { requireProjectRecord } from "../domain/spec/project";
-import { listLeads, type Lead, type LeadStatus } from "../domain/leads";
 import { getProjectLeadsList, type ProjectLeadsListRecord } from "../domain/spec/project-leads";
 import type { R2Client } from "../infra/r2";
 import type { Router } from "../worker/router";
 import type { RequestContext } from "../worker/context";
 import { translateMetaObjective } from "../services/meta-objectives";
 import { refreshProjectLeads } from "../services/project-leads-sync";
+import { resolvePortalPeriodRange } from "../services/period-range";
+import { loadProjectLeadsView } from "../services/project-leads-view";
 
 const htmlResponse = (body: string): Response =>
   new Response(body, {
@@ -43,6 +43,19 @@ const badRequest = (message: string): Response => jsonError(400, message);
 const forbidden = (message: string): Response => jsonError(403, message);
 const notFound = (message: string): Response => jsonError(404, message);
 const unprocessable = (message: string): Response => jsonError(422, message);
+
+const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+
+export const shouldRefreshLeadSnapshot = (record: ProjectLeadsListRecord | null): boolean => {
+  if (!record?.syncedAt) {
+    return true;
+  }
+  const syncedAt = Date.parse(record.syncedAt);
+  if (!Number.isFinite(syncedAt)) {
+    return true;
+  }
+  return Date.now() - syncedAt > LEADS_REFRESH_WINDOW_MS;
+};
 
 const computeCpa = (spend: number, value: number): number | null => {
   if (!Number.isFinite(spend) || !Number.isFinite(value) || value <= 0) {
@@ -99,120 +112,6 @@ const buildSummaryPayload = (
   };
 };
 
-const mapLeadStatusForPortal = (
-  status: ProjectLeadsListRecord["leads"][number]["status"] | LeadStatus,
-): ProjectLeadsListRecord["leads"][number]["status"] => {
-  if (typeof status === "string") {
-    const normalised = status.toLowerCase();
-    if (normalised === "new" || normalised === "processing" || normalised === "done" || normalised === "trash") {
-      return normalised;
-    }
-  }
-  return "new";
-};
-
-const normaliseLeadContact = (lead: Lead): string => {
-  if (lead.contact && lead.contact.trim().length > 0) {
-    const contact = lead.contact.trim();
-    return contact.toLowerCase() === "сообщение" ? "сообщение" : contact;
-  }
-  if (lead.phone) {
-    return lead.phone;
-  }
-  if (lead.message) {
-    return "сообщение";
-  }
-  return "—";
-};
-
-const formatDateOnly = (date: Date): string => date.toISOString().split("T")[0] ?? date.toISOString();
-
-const resolveLeadsRange = (
-  periodKey: string,
-  from?: string | null,
-  to?: string | null,
-): ReturnType<typeof resolvePeriodRange> => {
-  if (!from && !to) {
-    return resolvePeriodRange(periodKey);
-  }
-  if (!from || !to) {
-    throw new DataValidationError("Параметры from и to должны быть указаны вместе");
-  }
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
-  if (Number.isNaN(fromDate.getTime())) {
-    throw new DataValidationError("Некорректное значение параметра from");
-  }
-  if (Number.isNaN(toDate.getTime())) {
-    throw new DataValidationError("Некорректное значение параметра to");
-  }
-  if (fromDate.getTime() > toDate.getTime()) {
-    throw new DataValidationError("Параметр from должен быть раньше to");
-  }
-  return {
-    key: "custom",
-    from: fromDate,
-    to: toDate,
-    period: { from: formatDateOnly(fromDate), to: formatDateOnly(toDate) },
-  } satisfies ReturnType<typeof resolvePeriodRange>;
-};
-
-const loadPortalLeadsPayload = async (
-  r2: R2Client,
-  projectId: string,
-  periodKey: string,
-  options?: { from?: string | null; to?: string | null },
-): Promise<{
-  period: ReturnType<typeof resolvePeriodRange>["period"];
-  periodKey: string;
-  leads: Array<{
-    id: string;
-    name: string;
-    contact: string;
-    phone: string | null;
-    message: string | null;
-    createdAt: string;
-    campaignName: string;
-    campaignId: string | null;
-    status: ProjectLeadsListRecord["leads"][number]["status"];
-    type: string;
-    source: string;
-  }>;
-  stats: ProjectLeadsListRecord["stats"];
-  syncedAt: string | null;
-}> => {
-  const range = resolveLeadsRange(periodKey, options?.from ?? null, options?.to ?? null);
-  const fromTime = range.from.getTime();
-  const toTime = range.to.getTime();
-  const leads = await listLeads(r2, projectId);
-  const filtered = leads
-    .filter((lead) => {
-      const created = Date.parse(lead.createdAt);
-      return Number.isFinite(created) && created >= fromTime && created <= toTime;
-    })
-    .map((lead) => ({
-      id: lead.id,
-      name: lead.name,
-      contact: normaliseLeadContact(lead),
-      phone: lead.phone,
-      message: lead.message,
-      createdAt: lead.createdAt,
-      campaignName: lead.campaign ?? "—",
-      campaignId: lead.campaignId,
-      status: mapLeadStatusForPortal(lead.status as LeadStatus),
-      type: lead.phone ? "lead" : "message",
-      source: lead.source,
-    }))
-    .sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt > b.createdAt ? -1 : 1));
-  const summary = (await getProjectLeadsList(r2, projectId)) ?? null;
-  const todayKey = new Date().toISOString().slice(0, 10);
-  const stats = summary?.stats ?? {
-    total: leads.length,
-    today: leads.filter((lead) => lead.createdAt.slice(0, 10) === todayKey).length,
-  };
-  return { period: range.period, periodKey: range.key, leads: filtered, stats, syncedAt: summary?.syncedAt ?? null };
-};
-
 const buildCampaignsPayload = (
   bundle: ProjectBundle,
   requestedPeriod: string,
@@ -258,10 +157,21 @@ const respondWithProjectLeads = async (
   options?: { refresh?: boolean; from?: string | null; to?: string | null },
 ): Promise<Response> => {
   try {
-    if (options?.refresh) {
-      await refreshProjectLeads(context.kv, context.r2, projectId);
+    const projectRecord = await requireProjectRecord(context.kv, projectId);
+    const timeZone = projectRecord.settings.timezone ?? null;
+    let snapshot: ProjectLeadsListRecord | null = null;
+    try {
+      snapshot = await getProjectLeadsList(context.r2, projectId);
+    } catch (error) {
+      console.warn(`[portal] Failed to read lead snapshot for ${projectId}: ${(error as Error).message}`);
     }
-    const payload = await loadPortalLeadsPayload(context.r2, projectId, periodKey, {
+    const needsRefresh = options?.refresh === true || shouldRefreshLeadSnapshot(snapshot);
+    if (needsRefresh) {
+      await refreshProjectLeads(context.kv, context.r2, projectId, { projectRecord });
+    }
+    const payload = await loadProjectLeadsView(context.r2, projectId, {
+      periodKey,
+      timeZone,
       from: options?.from ?? null,
       to: options?.to ?? null,
     });
@@ -303,6 +213,8 @@ export const renderPortalHtml = (projectId: string): string => {
           leadsEmpty: document.querySelector('[data-leads-empty]'),
           leadsSkeleton: document.querySelector('[data-leads-skeleton]'),
           leadsPeriod: document.querySelector('[data-leads-period]'),
+          leadsPeriodStats: document.querySelector('[data-leads-period-stats]'),
+          leadsTotalStats: document.querySelector('[data-leads-total-stats]'),
           campaignsBody: document.querySelector('[data-campaigns-body]'),
           campaignsEmpty: document.querySelector('[data-campaigns-empty]'),
           campaignsSkeleton: document.querySelector('[data-campaigns-skeleton]'),
@@ -321,12 +233,24 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const state = {
           period: 'today',
+          range: null,
           project: null,
           summary: null,
           leads: null,
           campaigns: null,
           payments: null,
         };
+        const initialSearch = typeof window !== 'undefined' ? window.location.search || '' : '';
+        const initialParams = new URLSearchParams(initialSearch);
+        const initialPeriod = initialParams.get('period');
+        const initialFrom = initialParams.get('from');
+        const initialTo = initialParams.get('to');
+        if (initialFrom && initialTo) {
+          state.period = initialPeriod || 'custom';
+          state.range = { from: initialFrom, to: initialTo };
+        } else if (initialPeriod) {
+          state.period = initialPeriod;
+        }
         const appendToken = (url) => {
           if (!TOKEN) return url;
           const separator = url.includes('?') ? '&' : '?';
@@ -470,13 +394,36 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const fetchJson = (path) => requestJson(path);
         const postJson = (path) => requestJson(path, { method: 'POST' });
+        const rangeQuery = (hasQuery = false) => {
+          if (!state.range) return '';
+          const params = new URLSearchParams();
+          params.set('from', state.range.from);
+          params.set('to', state.range.to);
+          return (hasQuery ? '&' : '?') + params.toString();
+        };
         const portalClient = {
           project: () => fetchJson(API_BASE),
-          summary: (period) => fetchJson(API_BASE + '/summary?period=' + encodeURIComponent(period)),
-        leads: (period) => fetchJson(API_BASE + '/leads/' + encodeURIComponent(period)),
-        refreshLeads: (period) => postJson(API_BASE + '/leads/' + encodeURIComponent(period) + '/refresh'),
-          campaigns: (period) => fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period)),
+          summary: (period) =>
+            fetchJson(API_BASE + '/summary?period=' + encodeURIComponent(period) + rangeQuery(true)),
+          leads: (period) => fetchJson(API_BASE + '/leads/' + encodeURIComponent(period) + rangeQuery()),
+          refreshLeads: (period) =>
+            postJson(API_BASE + '/leads/' + encodeURIComponent(period) + '/refresh' + rangeQuery()),
+          campaigns: (period) =>
+            fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period) + rangeQuery(true)),
           payments: () => fetchJson(API_BASE + '/payments'),
+        };
+        const updateUrlState = () => {
+          if (!window?.history?.replaceState) return;
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set('period', state.period);
+          if (state.range) {
+            nextUrl.searchParams.set('from', state.range.from);
+            nextUrl.searchParams.set('to', state.range.to);
+          } else {
+            nextUrl.searchParams.delete('from');
+            nextUrl.searchParams.delete('to');
+          }
+          window.history.replaceState({}, '', nextUrl.toString());
         };
         const KPI_LABELS = {
           LEAD: 'Лиды',
@@ -555,9 +502,23 @@ export const renderPortalHtml = (projectId: string): string => {
             elements.focusCpl.textContent = cplValue ?? '—';
           }
         };
+        const describeLeadStats = (label, stats) => {
+          if (!stats) {
+            return label + ': —';
+          }
+          const total = formatNumber(stats.total);
+          const today = formatNumber(stats.today);
+          return label + ': ' + total + ' | Сегодня: ' + today;
+        };
         const renderLeads = (payload) => {
           if (elements.leadsPeriod) {
             elements.leadsPeriod.textContent = formatDateRange(payload?.period);
+          }
+          if (elements.leadsPeriodStats) {
+            elements.leadsPeriodStats.textContent = describeLeadStats('Всего за период', payload?.periodStats);
+          }
+          if (elements.leadsTotalStats) {
+            elements.leadsTotalStats.textContent = describeLeadStats('За всё время', payload?.stats);
           }
           const leads = payload?.leads || [];
           if (elements.leadsBody) {
@@ -793,6 +754,7 @@ export const renderPortalHtml = (projectId: string): string => {
         const loadSummary = async (period) => {
           state.period = period;
           markActivePeriod(period);
+          updateUrlState();
           const summary = await portalClient.summary(period);
           state.summary = summary;
           renderMetrics(summary);
@@ -841,6 +803,7 @@ export const renderPortalHtml = (projectId: string): string => {
           }
         };
         const refreshPeriodData = async (period) => {
+          state.range = null;
           try {
             await Promise.all([loadSummary(period), loadLeads(period), loadCampaigns(period)]);
           } catch (error) {
@@ -973,6 +936,19 @@ export const renderPortalHtml = (projectId: string): string => {
       .portal-section__subtitle {
         color: var(--portal-muted);
         font-size: 14px;
+      }
+      .portal-section__meta {
+        margin-top: 6px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--portal-muted);
+      }
+      .portal-section__meta span {
+        background: rgba(15, 23, 42, 0.08);
+        border-radius: 999px;
+        padding: 2px 10px;
       }
       .portal-metrics {
         display: grid;
@@ -1353,6 +1329,10 @@ export const renderPortalHtml = (projectId: string): string => {
             <div>
               <div class="portal-section__title">Лиды</div>
               <div class="portal-section__subtitle" data-leads-period>—</div>
+              <div class="portal-section__meta">
+                <span data-leads-period-stats>Всего за период: —</span>
+                <span data-leads-total-stats>За всё время: —</span>
+              </div>
             </div>
             <button class="portal-retry" type="button" data-retry-leads>Обновить</button>
           </div>
@@ -1492,12 +1472,18 @@ export const registerPortalRoutes = (router: Router): void => {
     }
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
     try {
       const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      const resolvedRange = resolvePortalPeriodRange(periodKey, bundle.project.settings?.timezone ?? null, from, to);
+      const effectivePeriodKey = resolvedRange.key;
       let summaryEntry: import("../domain/meta-cache").MetaCacheEntry<import("../domain/meta-summary").MetaSummaryPayload> | null =
         null;
       try {
-        const summaryResult = await loadProjectSummary(context.kv, projectId, periodKey);
+        const summaryResult = await loadProjectSummary(context.kv, projectId, effectivePeriodKey, {
+          periodRange: resolvedRange,
+        });
         summaryEntry = summaryResult.entry;
       } catch (error) {
         if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
@@ -1507,9 +1493,10 @@ export const registerPortalRoutes = (router: Router): void => {
         }
       }
       let campaignsDoc = bundle.campaigns;
-      if (!campaignsDoc || campaignsDoc.periodKey !== periodKey || campaignsDoc.campaigns.length === 0) {
+      if (!campaignsDoc || campaignsDoc.periodKey !== effectivePeriodKey || campaignsDoc.campaigns.length === 0) {
         try {
-          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, effectivePeriodKey, {
+            periodRange: resolvedRange,
             projectRecord: bundle.project,
           });
         } catch (error) {
@@ -1520,7 +1507,7 @@ export const registerPortalRoutes = (router: Router): void => {
           }
         }
       }
-      return jsonOk(buildSummaryPayload(bundle, periodKey, { summaryEntry, campaigns: campaignsDoc }));
+      return jsonOk(buildSummaryPayload(bundle, effectivePeriodKey, { summaryEntry, campaigns: campaignsDoc }));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
@@ -1592,14 +1579,19 @@ export const registerPortalRoutes = (router: Router): void => {
     }
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
     try {
       const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      const resolvedRange = resolvePortalPeriodRange(periodKey, bundle.project.settings?.timezone ?? null, from, to);
+      const effectivePeriodKey = resolvedRange.key;
       let campaignsDoc = bundle.campaigns;
       let campaignStatuses: CampaignStatus[] | null = null;
-      if (!campaignsDoc || campaignsDoc.periodKey !== periodKey || campaignsDoc.campaigns.length === 0) {
+      if (!campaignsDoc || campaignsDoc.periodKey !== effectivePeriodKey || campaignsDoc.campaigns.length === 0) {
         try {
-          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, effectivePeriodKey, {
             projectRecord: bundle.project,
+            periodRange: resolvedRange,
           });
         } catch (error) {
           if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
@@ -1619,7 +1611,7 @@ export const registerPortalRoutes = (router: Router): void => {
           throw error;
         }
       }
-      return jsonOk(buildCampaignsPayload(bundle, periodKey, campaignsDoc, campaignStatuses));
+      return jsonOk(buildCampaignsPayload(bundle, effectivePeriodKey, campaignsDoc, campaignStatuses));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);

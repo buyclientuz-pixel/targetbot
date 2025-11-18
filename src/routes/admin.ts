@@ -10,6 +10,7 @@ import { getProject, parseProject } from "../domain/projects";
 import { getMetaToken, parseMetaToken, upsertMetaToken, deleteMetaToken } from "../domain/meta-tokens";
 import { putFbAuthRecord, type FbAdAccount, type FbAuthRecord } from "../domain/spec/fb-auth";
 import { getBillingRecord, putBillingRecord } from "../domain/spec/billing";
+import { getAutoreportsRecord, putAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import {
   appendPaymentRecord,
   getPaymentsHistoryDocument,
@@ -22,14 +23,12 @@ import { jsonResponse } from "../http/responses";
 import type { KvClient } from "../infra/kv";
 import type { Router } from "../worker/router";
 import type { TargetBotEnv } from "../worker/types";
-import { ensureAdminRequest } from "../services/admin-auth";
 import {
   listAdminProjectSummaries,
   loadAdminProjectDetail,
   buildAdminAnalyticsOverview,
   buildAdminFinanceOverview,
   listAdminUsers,
-  listAdminMetaAccounts,
   listAdminProjectLeads,
 } from "../services/admin-dashboard";
 import { getWebhookInfo, setWebhook } from "../services/telegram";
@@ -39,7 +38,7 @@ import { buildAdminClientScript } from "./admin-client";
 
 const ADMIN_CORS_HEADERS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-headers": "content-type, authorization, x-admin-key",
+  "access-control-allow-headers": "content-type, authorization",
   "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
 };
 
@@ -106,12 +105,12 @@ const SYNC_KEY_LABELS: Record<string, string> = {
   leads: "лиды",
 };
 
-const describePortalSyncResult = (result: PortalSyncResult): string => {
-  const successful = result.periods.filter((entry) => entry.ok).length;
+const describePortalSyncResult = (result: PortalSyncResult): string | null => {
   const failed = result.periods.filter((entry) => !entry.ok);
   if (failed.length === 0) {
-    return `Портал обновлён (${successful}/${result.periods.length}).`;
+    return null;
   }
+  const successful = result.periods.length - failed.length;
   const issues = failed
     .map((entry) => `${SYNC_KEY_LABELS[entry.periodKey] ?? entry.periodKey}: ${entry.error ?? "ошибка"}`)
     .join(", ");
@@ -416,34 +415,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
         ul {
           padding-left: 18px;
         }
-        .admin-login {
-          position: fixed;
-          inset: 0;
-          background: rgba(0, 0, 0, 0.75);
-          display: none;
-          align-items: center;
-          justify-content: center;
-          z-index: 100;
-        }
-        .admin-login--visible {
-          display: flex;
-        }
-        .admin-login__form {
-          background: var(--panel);
-          padding: 32px;
-          border-radius: 20px;
-          width: min(420px, 92vw);
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-          border: 1px solid var(--border);
-        }
-        .admin-login__form input {
-          width: 100%;
-        }
-        .admin-login__form button {
-          margin-left: 0;
-        }
         @media (max-width: 960px) {
           .admin-shell {
             flex-direction: column;
@@ -478,15 +449,13 @@ const renderAdminHtml = (workerUrl: string | null): string => {
             <button class="admin-nav__item" data-nav="analytics">Аналитика</button>
             <button class="admin-nav__item" data-nav="finance">Финансы</button>
             <button class="admin-nav__item" data-nav="users">Пользователи</button>
-            <button class="admin-nav__item" data-nav="meta">Meta / Facebook</button>
             <button class="admin-nav__item" data-nav="webhooks">Webhook</button>
             <button class="admin-nav__item" data-nav="settings">Настройки</button>
           </nav>
-          <div class="admin-sidebar__actions">
-            <button class="admin-btn admin-btn--ghost" data-action="refresh">Обновить</button>
-            <button class="admin-btn admin-btn--danger" data-action="logout">Выйти</button>
-          </div>
-        </aside>
+            <div class="admin-sidebar__actions">
+              <button class="admin-btn admin-btn--ghost" data-action="refresh">Обновить</button>
+            </div>
+          </aside>
         <main class="admin-shell__content">
           <header class="admin-header">
             <div>
@@ -554,6 +523,14 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                   </div>
                 </div>
                 <h4>Лиды</h4>
+                <form class="form-grid" data-lead-settings-form>
+                  <label>
+                    Уведомления о лидах
+                    <span><input type="checkbox" name="leadSendChat" /> В чат</span>
+                    <span><input type="checkbox" name="leadSendAdmin" /> Админу</span>
+                  </label>
+                  <button class="admin-btn" type="submit">Сохранить уведомления</button>
+                </form>
                 <div class="table-wrapper">
                   <table>
                     <thead>
@@ -616,11 +593,12 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                   <label>Режим KPI<select name="kpiMode"><option value="auto">Авто</option><option value="manual">Ручной</option></select></label>
                   <label>Тип KPI<select name="kpiType"><option value="LEAD">Лиды</option><option value="MESSAGE">Сообщения</option><option value="CLICK">Клики</option><option value="VIEW">Просмотры</option><option value="PURCHASE">Покупки</option></select></label>
                   <label>Название KPI<input name="kpiLabel" /></label>
-                  <label>Канал алертов<select name="alertsChannel"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="alertsEnabled" /> Включить</span></label>
-                  <label><input type="checkbox" name="alertLead" /> Напоминать о лидах</label>
-                  <label><input type="checkbox" name="alertPause" /> Кампании на паузе</label>
-                  <label><input type="checkbox" name="alertPayment" /> Напоминать об оплате</label>
-                  <label>Автоотчёты<select name="autoreportsSendTo"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="autoreportsEnabled" /> Включить</span></label>
+                  <label>Автоотчёты<span><input type="checkbox" name="autoreportsEnabled" /> Включить</span></label>
+                  <label>
+                    Каналы автоотчёта
+                    <span><input type="checkbox" name="autoreportsSendChat" /> В чат</span>
+                    <span><input type="checkbox" name="autoreportsSendAdmin" /> Админу</span>
+                  </label>
                   <label>Время отчёта<input type="time" name="autoreportsTime" value="10:00" /></label>
                   <button class="admin-btn" type="submit">Сохранить настройки</button>
                 </form>
@@ -667,23 +645,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
               </table>
             </div>
           </section>
-          <section class="admin-section" data-section="meta" hidden>
-            <div class="admin-panel__header">
-              <h2>Meta / Facebook</h2>
-            </div>
-            <div class="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>User ID</th>
-                    <th>Токен до</th>
-                    <th>Аккаунты</th>
-                  </tr>
-                </thead>
-                <tbody data-meta-body></tbody>
-              </table>
-            </div>
-          </section>
           <section class="admin-section" data-section="webhooks" hidden>
             <div class="admin-panel__header">
               <div>
@@ -703,14 +664,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
           </section>
         </main>
       </div>
-      <div class="admin-login" data-login-panel>
-        <form class="admin-login__form" data-login-form>
-          <h2>Админ-доступ</h2>
-          <p class="muted">Введите код доступа, чтобы разблокировать панель.</p>
-          <input type="password" name="adminKey" data-admin-key placeholder="••••" required />
-          <button class="admin-btn" type="submit">Войти</button>
-        </form>
-      </div>
       <script>${script}</script>
     </body>
   </html>`;
@@ -728,7 +681,18 @@ interface UpdateProjectBody {
   ownerTelegramId?: number;
 }
 
-interface UpdateSettingsBody extends Record<string, unknown> {}
+interface UpdateSettingsBody extends Record<string, unknown> {
+  autoreports?: {
+    enabled?: boolean;
+    time?: string;
+    sendToChat?: boolean;
+    sendToAdmin?: boolean;
+  };
+  leads?: {
+    sendToChat?: boolean;
+    sendToAdmin?: boolean;
+  };
+}
 
 interface UpsertMetaTokenBody {
   accessToken?: string;
@@ -763,13 +727,7 @@ const registerAdminRoute = (
 ): void => {
   for (const pathname of paths) {
     router.on("OPTIONS", pathname, () => optionsResponse());
-    router.on(method, pathname, async (context) => {
-      const guard = ensureAdminRequest(context);
-      if (guard) {
-        return guard;
-      }
-      return handler(context);
-    });
+    router.on(method, pathname, async (context) => handler(context));
   }
 };
 
@@ -1057,11 +1015,6 @@ export const registerAdminRoutes = (router: Router): void => {
     return jsonOk({ users });
   });
 
-  registerAdminRoute(router, "GET", ["/api/admin/meta/accounts"], async (context) => {
-    const accounts = await listAdminMetaAccounts(context.kv);
-    return jsonOk({ accounts });
-  });
-
   registerAdminRoute(router, "POST", ["/api/admin/update-facebook-token"], async (context) => {
     let body: UpdateFbAuthBody;
     try {
@@ -1253,6 +1206,38 @@ export const registerAdminRoutes = (router: Router): void => {
     try {
       await getProject(context.kv, projectId);
       const existing = await ensureProjectSettings(context.kv, projectId);
+      let updatedAutoreports: AutoreportsRecord | null = null;
+      if (body.autoreports) {
+        const currentAutoreports =
+          (await getAutoreportsRecord(context.kv, projectId).catch(() => null)) ??
+          ({
+            enabled: false,
+            time: "10:00",
+            mode: "yesterday_plus_week",
+            sendToChat: true,
+            sendToAdmin: false,
+          } satisfies AutoreportsRecord);
+        updatedAutoreports = {
+          ...currentAutoreports,
+          enabled:
+            typeof body.autoreports.enabled === "boolean"
+              ? body.autoreports.enabled
+              : currentAutoreports.enabled,
+          time:
+            typeof body.autoreports.time === "string" && body.autoreports.time.trim().length > 0
+              ? body.autoreports.time
+              : currentAutoreports.time,
+          sendToChat:
+            typeof body.autoreports.sendToChat === "boolean"
+              ? body.autoreports.sendToChat
+              : currentAutoreports.sendToChat,
+          sendToAdmin:
+            typeof body.autoreports.sendToAdmin === "boolean"
+              ? body.autoreports.sendToAdmin
+              : currentAutoreports.sendToAdmin,
+        } satisfies AutoreportsRecord;
+        await putAutoreportsRecord(context.kv, projectId, updatedAutoreports);
+      }
       const merged = {
         ...existing,
         ...body,
@@ -1268,9 +1253,9 @@ export const registerAdminRoutes = (router: Router): void => {
           ...existing.reports,
           ...(body.reports as Record<string, unknown> | undefined),
         },
-        alerts: {
-          ...existing.alerts,
-          ...(body.alerts as Record<string, unknown> | undefined),
+        leads: {
+          ...existing.leads,
+          ...(body.leads as Record<string, unknown> | undefined),
         },
         meta: {
           ...existing.meta,
@@ -1279,6 +1264,16 @@ export const registerAdminRoutes = (router: Router): void => {
         updatedAt: new Date().toISOString(),
         projectId,
       } satisfies Record<string, unknown>;
+      if (updatedAutoreports) {
+        merged.reports = {
+          autoReportsEnabled: updatedAutoreports.enabled,
+          timeSlots:
+            updatedAutoreports.enabled && updatedAutoreports.time
+              ? [updatedAutoreports.time]
+              : [],
+          mode: updatedAutoreports.mode,
+        };
+      }
       const validated = parseProjectSettings(merged, projectId);
       await upsertProjectSettings(context.kv, validated);
       return jsonResponse({ settings: validated });

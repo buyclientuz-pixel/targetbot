@@ -16,7 +16,6 @@ const { putProjectsByUser, getProjectsByUser } = await import("../../src/domain/
 const { putProjectRecord, requireProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { putProject, createProject } = await import("../../src/domain/projects.ts");
 const { putBillingRecord, getBillingRecord } = await import("../../src/domain/spec/billing.ts");
-const { putAlertsRecord, getAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
 const { putAutoreportsRecord, getAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
 const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
 const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
@@ -111,35 +110,52 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     nextPaymentDate: "2025-01-01",
     autobilling: true,
   });
-  await putAlertsRecord(kv, "proj_a", {
-    enabled: true,
-    channel: "both",
-    types: { leadInQueue: true, pause24h: true, paymentReminder: true },
-    leadQueueThresholdHours: 1,
-    pauseThresholdHours: 24,
-    paymentReminderDays: [7, 1],
-  });
   await putAutoreportsRecord(kv, "proj_a", {
     enabled: true,
     time: "10:00",
     mode: "yesterday_plus_week",
-    sendTo: "both",
+    sendToChat: true,
+    sendToAdmin: true,
   });
+  const now = new Date();
+  const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+  const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const twentyDaysAgo = new Date(now.getTime() - 20 * 24 * 60 * 60 * 1000).toISOString();
   await putProjectLeadsList(r2, "proj_a", {
-    stats: { total: 10, today: 2 },
+    stats: { total: 3, today: 1 },
     leads: [
       {
         id: "lead_1",
         name: "User",
         phone: "+99890",
-        createdAt: "2025-01-01T00:00:00Z",
+        createdAt: thirtyMinutesAgo,
         source: "facebook",
         campaignName: "Test",
         status: "new",
-        type: null,
+        type: "lead",
+      },
+      {
+        id: "lead_2",
+        name: "Processing",
+        phone: "сообщение",
+        createdAt: threeDaysAgo,
+        source: "facebook",
+        campaignName: "Test",
+        status: "processing",
+        type: "message",
+      },
+      {
+        id: "lead_3",
+        name: "Closed",
+        phone: "+99899",
+        createdAt: twentyDaysAgo,
+        source: "facebook",
+        campaignName: "Archive",
+        status: "done",
+        type: "lead",
       },
     ],
-    syncedAt: "2025-01-01T00:05:00Z",
+    syncedAt: new Date().toISOString(),
   });
   await putMetaCampaignsDocument(r2, "proj_a", {
     period: { from: "2025-01-01", to: "2025-01-01" },
@@ -159,6 +175,11 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     ],
   });
   await putPaymentsHistoryDocument(r2, "proj_a", { payments: [] });
+  return {
+    todayLeadDate: thirtyMinutesAgo.slice(0, 10),
+    weekLeadDate: threeDaysAgo.slice(0, 10),
+    monthLeadDate: twentyDaysAgo.slice(0, 10),
+  } as const;
 };
 
 test("Telegram bot controller serves menu and project list", async () => {
@@ -213,7 +234,6 @@ test("Telegram bot controller serves menu and project list", async () => {
       menuKeyboard.inline_keyboard[0]?.[0]?.url,
       "https://th-reports.buyclientuz.workers.dev/api/meta/oauth/start?tid=100",
     );
-    assert.equal(menuKeyboard.inline_keyboard[0]?.[1]?.callback_data, "cmd:meta");
 
     stub.requests.length = 0;
 
@@ -221,17 +241,120 @@ test("Telegram bot controller serves menu and project list", async () => {
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
     } as unknown as TelegramUpdate);
 
-    assert.equal(stub.requests.length, 1);
-    const creationKeyboard = stub.requests[0]?.body.reply_markup as {
-      inline_keyboard: Array<Array<{ callback_data?: string }>>;
+    const projectRequest = findLastSendMessage(stub.requests);
+    assert.ok(projectRequest, "expected project selection message");
+    const creationKeyboard = projectRequest?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data?: string }>>;
     };
     assert.ok(creationKeyboard);
-    assert.equal(creationKeyboard.inline_keyboard[0]?.[0]?.callback_data, "project:add:act_123");
-    const myProjectsButton = creationKeyboard.inline_keyboard
+    const firstButton = creationKeyboard.inline_keyboard[0]?.[0];
+    const secondButton = creationKeyboard.inline_keyboard[1]?.[0];
+    assert.equal(firstButton?.callback_data, "project:card:proj_a");
+    assert.match(String(firstButton?.text ?? ""), /^✅/);
+    assert.equal(secondButton?.callback_data, "project:add:act_456");
+    assert.match(String(secondButton?.text ?? ""), /^⚙️/);
+    const hasLegacyButton = creationKeyboard.inline_keyboard
       .flat()
-      .find((btn) => btn.callback_data === "project:list");
-    assert.ok(myProjectsButton);
-    assert.match(String(stub.requests[0]?.body.text), /Выберите рекламный аккаунт/);
+      .some((btn) => btn?.callback_data === "project:list");
+    assert.equal(hasLegacyButton, false);
+    assert.match(String(projectRequest?.body.text), /Выберите рекламный аккаунт/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Project list buttons reflect chat binding state", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await putProjectsByUser(kv, 100, { projects: ["proj_a", "proj_b"] });
+  await putProjectRecord(kv, {
+    id: "proj_b",
+    name: "Free Slot",
+    ownerId: 100,
+    adAccountId: "act_789",
+    chatId: null,
+    portalUrl: "https://th-reports.buyclientuz.workers.dev/p/proj_b",
+    settings: {
+      currency: "USD",
+      timezone: "Asia/Tashkent",
+      kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
+    },
+  });
+  await putMetaCampaignsDocument(r2, "proj_b", {
+    period: { from: "2025-01-01", to: "2025-01-01" },
+    summary: { spend: 45, impressions: 0, clicks: 0, leads: 0, messages: 0 },
+    campaigns: [],
+    periodKey: null,
+  });
+  await putFbAuthRecord(kv, {
+    userId: 100,
+    accessToken: "token",
+    expiresAt: "2025-01-01T00:00:00.000Z",
+    adAccounts: [
+      { id: "act_123", name: "BirLash", currency: "USD", status: 1 },
+      { id: "act_789", name: "Free Slot", currency: "USD", status: 1 },
+    ],
+    facebookUserId: "fb_user_100",
+    facebookName: "Meta Owner",
+  });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
+    } as unknown as TelegramUpdate);
+
+    const projectRequest = findLastSendMessage(stub.requests);
+    assert.ok(projectRequest, "project selection message should be sent");
+    const keyboard = projectRequest?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data?: string }>>;
+    };
+    const firstButton = keyboard.inline_keyboard[0]?.[0];
+    const secondButton = keyboard.inline_keyboard[1]?.[0];
+    assert.equal(firstButton?.callback_data, "project:card:proj_a");
+    assert.match(String(firstButton?.text ?? ""), /^✅/);
+    assert.equal(secondButton?.callback_data, "project:chat-change:proj_b");
+    assert.match(String(secondButton?.text ?? ""), /^⚙️/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Ad account buttons show spend summary without IDs", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await putFbAuthRecord(kv, {
+    userId: 100,
+    accessToken: "token",
+    expiresAt: "2025-01-01T00:00:00.000Z",
+    adAccounts: [{ id: "act_123", name: "BirLash", currency: "USD", status: 1 }],
+    facebookUserId: "fb_user_100",
+    facebookName: "Meta Owner",
+  });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
+    } as unknown as TelegramUpdate);
+
+    const creationRequest = findLastSendMessage(stub.requests);
+    assert.ok(creationRequest, "account creation keyboard should be sent");
+    const keyboard = creationRequest?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string }>>;
+    };
+    const buttonText = keyboard.inline_keyboard[0]?.[0]?.text ?? "";
+    assert.match(buttonText, /BirLash/);
+    assert.match(buttonText, /^[✅⚙️]/);
+    assert.match(buttonText, /\$/);
+    assert.ok(!/сегодня/i.test(buttonText));
+    assert.ok(!buttonText.includes("act_"));
   } finally {
     stub.restore();
   }
@@ -494,20 +617,11 @@ test("Telegram bot controller exports leads as CSV document", async () => {
   }
 });
 
-test("cmd:meta shows stored ad accounts", async () => {
+test("lead notifications can be toggled from the leads panel", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());
-  await putFbAuthRecord(kv, {
-    userId: 100,
-    accessToken: "token",
-    expiresAt: "2026-01-01T00:00:00.000Z",
-    adAccounts: [
-      { id: "act_1", name: "BirLash", currency: "USD", status: 1 },
-      { id: "act_2", name: "Test", currency: "USD", status: 1 },
-    ],
-    facebookUserId: "fb_user_100",
-    facebookName: "Meta Owner",
-  });
+  await seedProject(kv, r2);
+  await ensureProjectSettings(kv, "proj_a");
 
   const controller = createController(kv, r2);
   const stub = installFetchStub();
@@ -515,17 +629,127 @@ test("cmd:meta shows stored ad accounts", async () => {
   try {
     await controller.handleUpdate({
       callback_query: {
-        id: "cb-meta",
+        id: "cb-show-leads",
         from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "cmd:meta",
+        message: { chat: { id: 100 }, message_id: 77 },
+        data: "project:leads:new:proj_a",
       },
     } as unknown as TelegramUpdate);
 
-    const lastMessage = findLastSendMessage(stub.requests);
-    assert.ok(lastMessage);
-    assert.ok(String(lastMessage.body.text).includes("Доступные рекламные аккаунты"));
-    assert.ok(String(lastMessage.body.text).includes("BirLash"));
+    const leadsMessage = findLastSendMessage(stub.requests);
+    assert.ok(leadsMessage, "expected leads panel render");
+    const leadsText = String(leadsMessage?.body?.text ?? "");
+    assert.match(leadsText, /Период:/);
+    assert.match(leadsText, /Всего за период:/);
+    assert.match(leadsText, /Уведомления:/);
+    const leadsKeyboard = leadsMessage?.body?.reply_markup as {
+      inline_keyboard: { text: string; callback_data?: string }[][];
+    };
+    const toggleButton = leadsKeyboard?.inline_keyboard
+      ?.flat()
+      .find((button) => button.text?.startsWith("👥 Чат"));
+    assert.ok(toggleButton);
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-toggle",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 78 },
+        data: "project:leads-target:new:proj_a:chat:today",
+      },
+    } as unknown as TelegramUpdate);
+
+    const updatedSettings = await ensureProjectSettings(kv, "proj_a");
+    assert.equal(updatedSettings.leads.sendToChat, false);
+    const rerender = findLastSendMessage(stub.requests);
+    assert.ok(rerender, "expected panel rerender after toggle");
+    const rerenderKeyboard = rerender?.body?.reply_markup as {
+      inline_keyboard: { text: string; callback_data?: string }[][];
+    };
+    const rerenderChatButton = rerenderKeyboard?.inline_keyboard
+      ?.flat()
+      .find((button) => button.text?.startsWith("👥 Чат"));
+    assert.ok(rerenderChatButton?.text?.includes("выкл"));
+  } finally {
+    stub.restore();
+  }
+});
+
+test("leads panel period buttons expand the dataset", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await ensureProjectSettings(kv, "proj_a");
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-show-leads",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 77 },
+        data: "project:leads:new:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-period-week",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 78 },
+        data: "project:leads:new:proj_a:week",
+      },
+    } as unknown as TelegramUpdate);
+
+    const weekMessage = findLastSendMessage(stub.requests);
+    assert.ok(weekMessage, "expected leads panel rerender for week period");
+    const text = String(weekMessage?.body?.text ?? "");
+    assert.match(text, /Всего за период: <b>2<\/b>/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("custom lead ranges can be entered manually", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const { monthLeadDate } = await seedProject(kv, r2);
+  await ensureProjectSettings(kv, "proj_a");
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-range",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 80 },
+        data: "project:leads-range:new:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    const prompt = findLastSendMessage(stub.requests);
+    assert.ok(prompt, "expected manual range prompt");
+    assert.match(String(prompt?.body?.text ?? ""), /Введите период/);
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      message: { chat: { id: 100, type: "private" }, from: { id: 100 }, text: `${monthLeadDate} ${monthLeadDate}` },
+    } as unknown as TelegramUpdate);
+
+    const customMessage = findLastSendMessage(stub.requests);
+    assert.ok(customMessage, "expected custom range render");
+    const text = String(customMessage?.body?.text ?? "");
+    assert.match(text, new RegExp(`Период: ${monthLeadDate}`));
+    assert.match(text, /Всего за период: <b>1<\/b>/);
   } finally {
     stub.restore();
   }
@@ -828,88 +1052,6 @@ test("Telegram bot controller updates chat bindings via selection and manual inp
   }
 });
 
-test("Telegram bot controller toggles autoreports and alerts", async () => {
-  const kv = new KvClient(new MemoryKVNamespace());
-  const r2 = new R2Client(new MemoryR2Bucket());
-  await seedProject(kv, r2);
-
-  const controller = createController(kv, r2);
-  const stub = installFetchStub();
-
-  try {
-    await controller.handleUpdate({
-      callback_query: {
-        id: "auto1",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:autoreports-toggle:proj_a",
-      },
-    } as unknown as TelegramUpdate);
-    let autoreports = await getAutoreportsRecord(kv, "proj_a");
-    assert.equal(autoreports?.enabled, false);
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "auto2",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:autoreports-time:proj_a",
-      },
-    } as unknown as TelegramUpdate);
-
-    await controller.handleUpdate({
-      message: { chat: { id: 100 }, from: { id: 100 }, text: "11:30" },
-    } as unknown as TelegramUpdate);
-    autoreports = await getAutoreportsRecord(kv, "proj_a");
-    assert.equal(autoreports?.time, "11:30");
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "auto3",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:autoreports-send:proj_a:admin",
-      },
-    } as unknown as TelegramUpdate);
-    autoreports = await getAutoreportsRecord(kv, "proj_a");
-    assert.equal(autoreports?.sendTo, "admin");
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "alert1",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:alerts-toggle:proj_a",
-      },
-    } as unknown as TelegramUpdate);
-    let alerts = await getAlertsRecord(kv, "proj_a");
-    assert.equal(alerts?.enabled, false);
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "alert2",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:alerts-route-set:proj_a:admin",
-      },
-    } as unknown as TelegramUpdate);
-    alerts = await getAlertsRecord(kv, "proj_a");
-    assert.equal(alerts?.channel, "admin");
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "alert3",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:alerts-type:proj_a:lead",
-      },
-    } as unknown as TelegramUpdate);
-    alerts = await getAlertsRecord(kv, "proj_a");
-    assert.equal(alerts?.types.leadInQueue, false);
-  } finally {
-    stub.restore();
-  }
-});
 
 test("auto_send_now dispatches manual auto-report", async () => {
   const kv = new KvClient(new MemoryKVNamespace());

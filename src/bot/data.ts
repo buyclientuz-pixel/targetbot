@@ -4,7 +4,6 @@ import type { R2Client } from "../infra/r2";
 import { getProjectsByUser } from "../domain/spec/projects-by-user";
 import { requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
 import { getBillingRecord, type BillingRecord } from "../domain/spec/billing";
-import { getAlertsRecord, type AlertsRecord } from "../domain/spec/alerts";
 import { getAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import {
   getProjectLeadsList,
@@ -25,24 +24,12 @@ const createDefaultBilling = (project: ProjectRecord): BillingRecord => ({
   autobilling: false,
 });
 
-const createDefaultAlerts = (): AlertsRecord => ({
-  enabled: false,
-  channel: "chat",
-  types: {
-    leadInQueue: false,
-    pause24h: false,
-    paymentReminder: false,
-  },
-  leadQueueThresholdHours: 1,
-  pauseThresholdHours: 24,
-  paymentReminderDays: [7, 1],
-});
-
 const createDefaultAutoreports = (): AutoreportsRecord => ({
   enabled: false,
   time: "10:00",
   mode: "yesterday_plus_week",
-  sendTo: "chat",
+  sendToChat: true,
+  sendToAdmin: false,
 });
 
 const createEmptyLeadsList = (): ProjectLeadsListRecord => ({
@@ -63,11 +50,35 @@ const createEmptyPayments = (): PaymentsHistoryDocument => ({ payments: [] });
 export interface ProjectBundle {
   project: ProjectRecord;
   billing: BillingRecord;
-  alerts: AlertsRecord;
   autoreports: AutoreportsRecord;
   leads: ProjectLeadsListRecord;
   campaigns: MetaCampaignsDocument;
   payments: PaymentsHistoryDocument;
+}
+
+export interface ProjectListItem {
+  id: string;
+  name: string;
+  spend: number | null;
+  currency: string;
+  hasChat: boolean;
+}
+
+export interface AccountSpendSnapshot {
+  amount: number | null;
+  currency: string;
+}
+
+export interface AccountBindingOverview {
+  projectId: string;
+  projectName: string;
+  hasChat: boolean;
+}
+
+export interface ProjectListOverview {
+  projects: ProjectListItem[];
+  accountSpends: Record<string, AccountSpendSnapshot>;
+  accountBindings: Record<string, AccountBindingOverview>;
 }
 
 export interface AnalyticsProjectSummary {
@@ -118,6 +129,55 @@ export const loadUserProjects = async (kv: KvClient, userId: number): Promise<Pr
   );
 
   return projects.filter((project): project is ProjectRecord => project !== null);
+};
+
+export const loadProjectListOverview = async (
+  kv: KvClient,
+  r2: R2Client,
+  userId: number,
+): Promise<ProjectListOverview> => {
+  const projects = await loadUserProjects(kv, userId);
+  const accountSpends: Record<string, AccountSpendSnapshot> = {};
+  const accountBindings: Record<string, AccountBindingOverview> = {};
+
+  const items = await Promise.all(
+    projects.map(async (project) => {
+      const campaigns = await getMetaCampaignsDocument(r2, project.id);
+      const spend = campaigns?.summary?.spend ?? null;
+      if (project.adAccountId) {
+        const nextEntry: AccountSpendSnapshot = {
+          amount: spend,
+          currency: project.settings.currency,
+        };
+        const current = accountSpends[project.adAccountId];
+        const shouldReplace =
+          !current ||
+          (nextEntry.amount != null && (current.amount == null || nextEntry.amount >= current.amount));
+        if (shouldReplace) {
+          accountSpends[project.adAccountId] = nextEntry;
+        }
+        const hasChat = project.chatId != null;
+        const currentBinding = accountBindings[project.adAccountId];
+        const shouldReplaceBinding = !currentBinding || (!currentBinding.hasChat && hasChat);
+        if (shouldReplaceBinding) {
+          accountBindings[project.adAccountId] = {
+            projectId: project.id,
+            projectName: project.name,
+            hasChat,
+          } satisfies AccountBindingOverview;
+        }
+      }
+      return {
+        id: project.id,
+        name: project.name,
+        spend,
+        currency: project.settings.currency,
+        hasChat: project.chatId != null,
+      } satisfies ProjectListItem;
+    }),
+  );
+
+  return { projects: items, accountSpends, accountBindings };
 };
 
 export const loadProjectBundlesForUser = async (
@@ -198,9 +258,8 @@ export const loadProjectBundle = async (
   projectId: string,
 ): Promise<ProjectBundle> => {
   const project = await requireProjectRecord(kv, projectId);
-  const [billingRaw, alertsRaw, autoreportsRaw, leadsRaw, campaignsRaw, paymentsRaw] = await Promise.all([
+  const [billingRaw, autoreportsRaw, leadsRaw, campaignsRaw, paymentsRaw] = await Promise.all([
     getBillingRecord(kv, projectId),
-    getAlertsRecord(kv, projectId),
     getAutoreportsRecord(kv, projectId),
     getProjectLeadsList(r2, projectId),
     getMetaCampaignsDocument(r2, projectId),
@@ -210,7 +269,6 @@ export const loadProjectBundle = async (
   return {
     project,
     billing: billingRaw ?? createDefaultBilling(project),
-    alerts: alertsRaw ?? createDefaultAlerts(),
     autoreports: autoreportsRaw ?? createDefaultAutoreports(),
     leads: leadsRaw ?? createEmptyLeadsList(),
     campaigns: campaignsRaw ?? createEmptyMetaCampaigns(),

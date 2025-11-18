@@ -3,9 +3,6 @@ import type { KvClient } from "../../infra/kv";
 import { DataValidationError } from "../../errors";
 import { assertBoolean, assertEnum, assertString } from "../validation";
 
-export const AUTOREPORT_SEND_TO = ["chat", "admin", "both"] as const;
-export type AutoreportSendTo = (typeof AUTOREPORT_SEND_TO)[number];
-
 export const AUTOREPORT_MODES = [
   "today",
   "yesterday",
@@ -21,7 +18,8 @@ export interface AutoreportsRecord {
   enabled: boolean;
   time: string;
   mode: AutoreportMode;
-  sendTo: AutoreportSendTo;
+  sendToChat: boolean;
+  sendToAdmin: boolean;
 }
 
 export const parseAutoreportsRecord = (raw: unknown): AutoreportsRecord => {
@@ -29,11 +27,38 @@ export const parseAutoreportsRecord = (raw: unknown): AutoreportsRecord => {
     throw new DataValidationError("autoreports payload must be an object");
   }
   const record = raw as Record<string, unknown>;
+  const legacyRoute = (() => {
+    const value = record.send_to ?? record["send_to"];
+    const stringValue = typeof value === "string" ? value : null;
+    switch (stringValue) {
+      case "admin":
+        return { chat: false, admin: true };
+      case "both":
+        return { chat: true, admin: true };
+      case "chat":
+      default:
+        return { chat: true, admin: false };
+    }
+  })();
+  const pickBoolean = (
+    keys: string[],
+    field: string,
+  ): { present: boolean; value: boolean | null } => {
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(record, key)) {
+        return { present: true, value: assertBoolean(record[key], field) };
+      }
+    }
+    return { present: false, value: null };
+  };
+  const chatField = pickBoolean(["send_to_chat", "sendToChat"], "autoreports.send_to_chat");
+  const adminField = pickBoolean(["send_to_admin", "sendToAdmin"], "autoreports.send_to_admin");
   return {
     enabled: assertBoolean(record.enabled ?? record["enabled"], "autoreports.enabled"),
     time: assertString(record.time ?? record["time"], "autoreports.time"),
     mode: assertEnum(record.mode ?? record["mode"], "autoreports.mode", AUTOREPORT_MODES),
-    sendTo: assertEnum(record.send_to ?? record["send_to"], "autoreports.send_to", AUTOREPORT_SEND_TO),
+    sendToChat: chatField.present ? Boolean(chatField.value) : legacyRoute.chat,
+    sendToAdmin: adminField.present ? Boolean(adminField.value) : legacyRoute.admin,
   };
 };
 
@@ -41,7 +66,8 @@ export const serialiseAutoreportsRecord = (record: AutoreportsRecord): Record<st
   enabled: record.enabled,
   time: record.time,
   mode: record.mode,
-  send_to: record.sendTo,
+  send_to_chat: record.sendToChat,
+  send_to_admin: record.sendToAdmin,
 });
 
 export const getAutoreportsRecord = async (

@@ -8,7 +8,6 @@ export const KV_KEYS = {
   user: (telegramId: string | number) => `user:${telegramId}`,
   project: (projectId: string) => `project:${projectId}`,
   billing: (projectId: string) => `billing:${projectId}`,
-  alerts: (projectId: string) => `alerts:${projectId}`,
   autoreports: (projectId: string) => `autoreports:${projectId}`,
   projectSettings: (projectId: string) => `project-settings:${projectId}`,
   metaToken: (facebookUserId: string) => `meta-token:${facebookUserId}`,
@@ -20,7 +19,6 @@ export const KV_KEYS = {
   telemetry: (key: string) => `telemetry:${key}`,
   botSession: (telegramId: number | string) => `bot-session:${telegramId}`,
   reportState: (projectId: string) => `report-state:${projectId}`,
-  alertState: (projectId: string, type: string) => `alert-state:${projectId}:${type}`,
 } as const;
 
 export const KV_PREFIXES = {
@@ -30,7 +28,6 @@ export const KV_PREFIXES = {
   freeChats: "free-chats:",
   occupiedChats: "occupied-chats:",
   billing: "billing:",
-  alerts: "alerts:",
   autoreports: "autoreports:",
   projects: "project:",
   projectSettings: "project-settings:",
@@ -42,5 +39,4 @@ export const KV_PREFIXES = {
   portalSyncState: "portal-sync:",
   botSessions: "bot-session:",
   reportStates: "report-state:",
-  alertStates: "alert-state:",
 } as const;

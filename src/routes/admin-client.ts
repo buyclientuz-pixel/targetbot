@@ -2,7 +2,6 @@
 
 const adminClientFactory = () => {
   try {
-    const STORAGE_KEY = 'targetbot.admin.key';
     const WORKER_URL = "WORKER_URL_PLACEHOLDER";
     const apiHost = WORKER_URL && WORKER_URL.length ? WORKER_URL.trim() : '';
     const hasScheme = apiHost.startsWith('http://') || apiHost.startsWith('https://');
@@ -17,33 +16,7 @@ const adminClientFactory = () => {
     const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
     const sections = Array.from(document.querySelectorAll('[data-section]'));
     const refreshButtons = Array.from(document.querySelectorAll('[data-action="refresh"]'));
-    const logoutButtons = Array.from(document.querySelectorAll('[data-action="logout"]'));
-    const resolveSearchParams = () => {
-      try {
-        if (typeof window === 'undefined' || !window.location) {
-          return null;
-        }
-        return new URLSearchParams(window.location.search ?? '');
-      } catch {
-        return null;
-      }
-    };
-
-    const searchParams = resolveSearchParams();
-    const queryAdminKey = (() => {
-      if (!searchParams) {
-        return null;
-      }
-      const value = searchParams.get('adminKey');
-      if (!value) {
-        return null;
-      }
-      const trimmed = value.trim();
-      return trimmed.length ? trimmed : null;
-    })();
-
     const state = {
-      key: queryAdminKey ?? localStorage.getItem(STORAGE_KEY),
       view: 'projects',
       projects: [],
       selectedProjectId: null,
@@ -55,10 +28,6 @@ const adminClientFactory = () => {
       sections,
       status: document.querySelector('[data-status]'),
       viewTitle: document.querySelector('[data-view-title]'),
-      loginPanel: document.querySelector('[data-login-panel]'),
-      loginForm: document.querySelector('[data-login-form]'),
-      loginInput: document.querySelector('[data-admin-key]'),
-      logoutButtons,
       refreshButtons,
     projectsBody: document.querySelector('[data-projects-body]'),
     projectDetail: document.querySelector('[data-project-detail]'),
@@ -78,6 +47,7 @@ const adminClientFactory = () => {
     portalDeleteButton: document.querySelector('[data-portal-delete]'),
     portalOpenButton: document.querySelector('[data-portal-open]'),
     leadsTable: document.querySelector('[data-leads-body]'),
+    leadSettingsForm: document.querySelector('[data-lead-settings-form]'),
     campaignsTable: document.querySelector('[data-campaigns-body]'),
     paymentsTable: document.querySelector('[data-payments-body]'),
     paymentForm: document.querySelector('[data-payment-form]'),
@@ -89,7 +59,6 @@ const adminClientFactory = () => {
     financeTotals: document.querySelector('[data-finance-totals]'),
     financeProjects: document.querySelector('[data-finance-projects]'),
     usersTable: document.querySelector('[data-users-body]'),
-    metaTable: document.querySelector('[data-meta-body]'),
     webhookInfo: document.querySelector('[data-webhook-info]'),
     webhookButton: document.querySelector('[data-webhook-reset]'),
     settingsInfo: document.querySelector('[data-settings-info]'),
@@ -101,28 +70,7 @@ const adminClientFactory = () => {
       }
     };
 
-    const showLogin = () => {
-      els.loginPanel?.classList.add('admin-login--visible');
-      setStatus('Введите код доступа');
-      els.loginInput?.focus();
-    };
-
-    const hideLogin = () => {
-      els.loginPanel?.classList.remove('admin-login--visible');
-    };
-
-    const handleUnauthorized = (message = 'Необходимо ввести код доступа') => {
-      localStorage.removeItem(STORAGE_KEY);
-      state.key = null;
-      setStatus(message);
-      showLogin();
-    };
-
     const request = async (path, options = {}) => {
-      if (!state.key) {
-        handleUnauthorized();
-        throw new Error('Требуется код доступа');
-      }
       const baseOrder = [primaryApiBase, ...candidates.filter((candidate) => candidate !== primaryApiBase)];
       let lastError = null;
       for (const base of baseOrder) {
@@ -131,8 +79,6 @@ const adminClientFactory = () => {
             ...options,
             headers: {
               'content-type': 'application/json',
-              'x-admin-key': state.key,
-              authorization: `Bearer ${state.key}`,
               ...(options.headers ?? {}),
             },
           });
@@ -141,10 +87,6 @@ const adminClientFactory = () => {
             payload = await response.clone().json();
           } catch {
             payload = null;
-          }
-          if (response.status === 401) {
-            handleUnauthorized();
-            throw new Error('Неверный код доступа');
           }
           if (!response.ok || !payload?.ok) {
             throw new Error(payload?.error ?? `Ошибка ${response.status}`);
@@ -369,20 +311,53 @@ const adminClientFactory = () => {
   };
 
     const fillSettingsForm = (detail) => {
-      if (!els.settingsForm || !detail) {
+      if (!els.settingsForm) {
         return;
       }
+    const enabled = Boolean(detail);
+    els.settingsForm.elements.kpiMode.disabled = !enabled;
+    els.settingsForm.elements.kpiType.disabled = !enabled;
+    els.settingsForm.elements.kpiLabel.disabled = !enabled;
+    els.settingsForm.elements.autoreportsEnabled.disabled = !enabled;
+    els.settingsForm.elements.autoreportsTime.disabled = !enabled;
+    els.settingsForm.elements.autoreportsSendChat.disabled = !enabled;
+    els.settingsForm.elements.autoreportsSendAdmin.disabled = !enabled;
+    const submitButton = els.settingsForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+      submitButton.disabled = !enabled;
+    }
+    if (!detail) {
+      els.settingsForm.reset();
+      return;
+    }
     els.settingsForm.elements.kpiMode.value = detail.project.settings.kpi.mode;
     els.settingsForm.elements.kpiType.value = detail.project.settings.kpi.type;
     els.settingsForm.elements.kpiLabel.value = detail.project.settings.kpi.label;
-    els.settingsForm.elements.alertsEnabled.checked = detail.alerts.enabled;
-    els.settingsForm.elements.alertsChannel.value = detail.alerts.channel;
-    els.settingsForm.elements.alertLead.checked = detail.alerts.types.leadInQueue;
-    els.settingsForm.elements.alertPause.checked = detail.alerts.types.pause24h;
-    els.settingsForm.elements.alertPayment.checked = detail.alerts.types.paymentReminder;
     els.settingsForm.elements.autoreportsEnabled.checked = detail.autoreports.enabled;
     els.settingsForm.elements.autoreportsTime.value = detail.autoreports.time;
-    els.settingsForm.elements.autoreportsSendTo.value = detail.autoreports.sendTo;
+    els.settingsForm.elements.autoreportsSendChat.checked = detail.autoreports.sendToChat;
+    els.settingsForm.elements.autoreportsSendAdmin.checked = detail.autoreports.sendToAdmin;
+  };
+
+    const fillLeadSettingsForm = (detail) => {
+      if (!els.leadSettingsForm) {
+        return;
+      }
+    const enabled = Boolean(detail);
+    const chatInput = els.leadSettingsForm.elements.leadSendChat;
+    const adminInput = els.leadSettingsForm.elements.leadSendAdmin;
+    if (chatInput) {
+      chatInput.disabled = !enabled;
+      chatInput.checked = Boolean(detail?.leadNotifications?.sendToChat);
+    }
+    if (adminInput) {
+      adminInput.disabled = !enabled;
+      adminInput.checked = Boolean(detail?.leadNotifications?.sendToAdmin);
+    }
+    const submitButton = els.leadSettingsForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+      submitButton.disabled = !enabled;
+    }
   };
     const clearProjectDetailTables = () => {
       if (els.leadsTable) {
@@ -455,6 +430,7 @@ const adminClientFactory = () => {
       if (!detail || !els.projectDetail) {
         els.projectDetail?.setAttribute('hidden', '');
         clearProjectDetailTables();
+        fillLeadSettingsForm(null);
         return;
       }
     els.projectDetail.removeAttribute('hidden');
@@ -468,6 +444,7 @@ const adminClientFactory = () => {
     renderCampaigns(detail.campaigns);
     renderPayments(detail.billing, detail.payments.payments ?? []);
     fillSettingsForm(detail);
+    fillLeadSettingsForm(detail);
   };
 
     const loadProjects = async () => {
@@ -655,27 +632,6 @@ const adminClientFactory = () => {
       setStatus(error.message);
     }
   };
-    const loadMetaAccounts = async () => {
-      try {
-        const data = await request('/meta/accounts');
-      if (!els.metaTable) {
-        return;
-      }
-      els.metaTable.innerHTML = '';
-      data.accounts.forEach((account) => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${account.userId}</td>
-          <td>${new Date(account.expiresAt).toLocaleString('ru-RU')}</td>
-          <td>${account.adAccounts.map((item) => `${item.name} (${item.id})`).join(', ')}</td>
-        `;
-        els.metaTable.appendChild(tr);
-      });
-    } catch (error) {
-      setStatus(error.message);
-    }
-  };
-
     const loadWebhookStatus = async () => {
       try {
         const data = await request('/webhook-status');
@@ -727,19 +683,11 @@ const adminClientFactory = () => {
         type: form.elements.kpiType.value,
         label: form.elements.kpiLabel.value,
       },
-      alerts: {
-        enabled: form.elements.alertsEnabled.checked,
-        channel: form.elements.alertsChannel.value,
-        types: {
-          leadInQueue: form.elements.alertLead.checked,
-          pause24h: form.elements.alertPause.checked,
-          paymentReminder: form.elements.alertPayment.checked,
-        },
-      },
       autoreports: {
         enabled: form.elements.autoreportsEnabled.checked,
         time: form.elements.autoreportsTime.value,
-        sendTo: form.elements.autoreportsSendTo.value,
+        sendToChat: form.elements.autoreportsSendChat.checked,
+        sendToAdmin: form.elements.autoreportsSendAdmin.checked,
       },
     };
     try {
@@ -748,6 +696,29 @@ const adminClientFactory = () => {
         body: JSON.stringify(payload),
       });
       setStatus('Настройки обновлены');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
+    const submitLeadSettings = async (event) => {
+      event.preventDefault();
+      if (!state.selectedProjectId) {
+        return;
+      }
+    const form = event.currentTarget;
+    const payload = {
+      leads: {
+        sendToChat: form.elements.leadSendChat.checked,
+        sendToAdmin: form.elements.leadSendAdmin.checked,
+      },
+    };
+    try {
+      await request(`/projects/${state.selectedProjectId}/settings`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+      setStatus('Настройки уведомлений обновлены');
     } catch (error) {
       setStatus(error.message);
     }
@@ -784,9 +755,6 @@ const adminClientFactory = () => {
       case 'users':
         await loadUsers();
         break;
-      case 'meta':
-        await loadMetaAccounts();
-        break;
       case 'webhooks':
         await loadWebhookStatus();
         break;
@@ -810,35 +778,12 @@ const adminClientFactory = () => {
       button.addEventListener('click', () => safeSetView(state.view));
     });
 
-    els.logoutButtons.forEach((button) => {
-      button.addEventListener('click', () => {
-        localStorage.removeItem(STORAGE_KEY);
-        state.key = null;
-        handleUnauthorized('Ключ очищен');
-      });
-    });
-    els.loginForm?.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const key = els.loginInput?.value.trim();
-      if (!key) {
-        return;
-      }
-      localStorage.setItem(STORAGE_KEY, key);
-      state.key = key;
-      try {
-        await pingAdmin();
-        hideLogin();
-        safeSetView('projects');
-      } catch (error) {
-        setStatus(error.message);
-      }
-    });
-
     els.projectsBody?.addEventListener('click', handleProjectTableClick);
     els.portalActions?.addEventListener('click', handlePortalActionsClick);
     els.projectCreateForm?.addEventListener('submit', submitProjectCreate);
     els.paymentForm?.addEventListener('submit', submitPayment);
     els.settingsForm?.addEventListener('submit', submitSettings);
+    els.leadSettingsForm?.addEventListener('submit', submitLeadSettings);
     els.webhookButton?.addEventListener('click', resetWebhook);
 
     if (els.settingsInfo && WORKER_URL) {
@@ -846,30 +791,8 @@ const adminClientFactory = () => {
     }
 
     const boot = async () => {
-      if (queryAdminKey && state.key === queryAdminKey) {
-        localStorage.setItem(STORAGE_KEY, queryAdminKey);
-        try {
-          if (searchParams && typeof window !== 'undefined' && window.history && window.location) {
-            searchParams.delete('adminKey');
-            const params = searchParams.toString();
-            const nextUrl = params.length
-              ? `${window.location.pathname}?${params}${window.location.hash ?? ''}`
-              : `${window.location.pathname}${window.location.hash ?? ''}`;
-            window.history.replaceState({}, document.title, nextUrl);
-          }
-        } catch {
-          // ignore history replacement errors
-        }
-      }
-
-      if (!state.key) {
-        showLogin();
-        return;
-      }
-
       try {
         await pingAdmin();
-        hideLogin();
         safeSetView('projects');
       } catch (error) {
         setStatus(error.message);
@@ -891,7 +814,6 @@ const adminClientFactory = () => {
     if (status) {
       status.textContent = `UI ошибка: ${(error && error.message) || 'см. консоль'}`;
     }
-    document.querySelector('[data-login-panel]')?.classList.add('admin-login--visible');
   }
 };
 

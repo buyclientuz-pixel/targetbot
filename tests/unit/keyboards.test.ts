@@ -7,7 +7,8 @@ const baseAutoreports = {
   enabled: true,
   time: "10:00",
   mode: "today",
-  sendTo: "both",
+  sendToChat: true,
+  sendToAdmin: true,
 } as const;
 
 test("buildAutoreportsKeyboard exposes manual send button", () => {

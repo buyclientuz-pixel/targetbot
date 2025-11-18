@@ -1,4 +1,5 @@
 import { applyCors, preflight } from "../http/cors";
+import { handleRouteError } from "../http/error-handler";
 import { methodNotAllowed, notFound } from "../http/responses";
 import type { RequestContext } from "./context";
 import { createRequestContext } from "./context";
@@ -59,10 +60,23 @@ class WorkerRouter implements Router {
         }
         continue;
       }
-      context.setParams(match.pathname.groups ?? {});
-      const response = await route.handler(context);
-      const origin = route.options?.cors?.allowOrigin ?? request.headers.get("origin") ?? "*";
-      return applyCors(response, origin);
+      try {
+        context.setParams(match.pathname.groups ?? {});
+        const response = await route.handler(context);
+        const origin = route.options?.cors?.allowOrigin ?? request.headers.get("origin") ?? "*";
+        return applyCors(response, origin);
+      } catch (error) {
+        console.error(
+          "[router] handler failed",
+          {
+            method: request.method,
+            pathname: url.pathname,
+          },
+          error,
+        );
+        const origin = route.options?.cors?.allowOrigin ?? request.headers.get("origin") ?? "*";
+        return applyCors(handleRouteError(error), origin);
+      }
     }
 
     if (allowedMethods) {

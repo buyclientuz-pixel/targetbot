@@ -1,23 +1,35 @@
 import type { AutoreportsRecord } from "../domain/spec/autoreports";
-import type { AlertsRecord } from "../domain/spec/alerts";
 import type { ProjectLeadsListRecord } from "../domain/spec/project-leads";
+import type { ProjectLeadNotificationSettings } from "../domain/project-settings";
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FreeChatRecord } from "../domain/project-chats";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
+import type { ProjectLeadsViewPayload } from "../services/project-leads-view";
 
-import type { ProjectListItem } from "./messages";
+import type { AccountBindingOverview, AccountSpendSnapshot } from "./data";
 import type { InlineKeyboardMarkup } from "./types";
 
-const formatMoney = (value: number | null, currency: string): string => {
-  if (value == null) {
-    return "—";
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: "$",
+  EUR: "€",
+  RUB: "₽",
+  UZS: "сум",
+  KZT: "₸",
+};
+
+const getCurrencySymbol = (currency: string): string => {
+  const upper = currency?.toUpperCase?.() ?? "";
+  return CURRENCY_SYMBOLS[upper] ?? (upper || "$");
+};
+
+const formatAccountSpend = (snapshot: AccountSpendSnapshot, fallbackCurrency: string): string => {
+  const symbol = getCurrencySymbol(snapshot.currency || fallbackCurrency);
+  if (snapshot.amount == null) {
+    return `—${symbol}`;
   }
-  return new Intl.NumberFormat("ru-RU", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(value);
+  const formatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const amountText = formatter.format(snapshot.amount).replace(/\u00a0/g, " ");
+  return `${amountText}${symbol}`;
 };
 
 interface MainMenuKeyboardOptions {
@@ -30,7 +42,7 @@ export const buildMainMenuKeyboard = (options: MainMenuKeyboardOptions): InlineK
     : { text: "Авторизация Facebook", callback_data: "cmd:auth" };
   return {
     inline_keyboard: [
-      [facebookButton, { text: "Meta-аккаунты", callback_data: "cmd:meta" }],
+      [facebookButton],
       [
         { text: "Проекты", callback_data: "cmd:projects" },
         { text: "Аналитика", callback_data: "cmd:analytics" },
@@ -47,30 +59,40 @@ export const buildMainMenuKeyboard = (options: MainMenuKeyboardOptions): InlineK
   };
 };
 
-export const buildProjectListKeyboard = (projects: ProjectListItem[]): InlineKeyboardMarkup => ({
-  inline_keyboard: projects.map((project, index) => [
-    {
-      text: `${index + 1}️⃣ ${project.name} [${formatMoney(project.spend, project.currency)}]`,
-      callback_data: `project:card:${project.id}`,
-    },
-  ]),
-});
-
 export const buildProjectCreationKeyboard = (
   accounts: FbAuthRecord["adAccounts"],
-  options: { hasProjects: boolean },
-): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    ...accounts.map((account) => [
-      {
-        text: `${account.name} (${account.id}) — ${account.currency}`,
-        callback_data: `project:add:${account.id}`,
-      },
-    ]),
-    ...(options.hasProjects ? [[{ text: "📂 Мои проекты", callback_data: "project:list" }]] : []),
-    [{ text: "🏠 Меню", callback_data: "project:menu" }],
-  ],
-});
+  options: {
+    hasProjects: boolean;
+    accountSpends?: Record<string, AccountSpendSnapshot>;
+    accountBindings?: Record<string, AccountBindingOverview>;
+  },
+): InlineKeyboardMarkup => {
+  const spendMap = options.accountSpends ?? {};
+  const bindings = options.accountBindings ?? {};
+  return {
+    inline_keyboard: [
+      ...accounts.map((account) => {
+        const binding = bindings[account.id];
+        const icon = binding?.hasChat ? "✅" : "⚙️";
+        const callback = binding
+          ? binding.hasChat
+            ? `project:card:${binding.projectId}`
+            : `project:chat-change:${binding.projectId}`
+          : `project:add:${account.id}`;
+        return [
+          {
+            text: `${icon} ${account.name} — ${formatAccountSpend(
+              spendMap[account.id] ?? { amount: null, currency: account.currency },
+              account.currency,
+            )}`,
+            callback_data: callback,
+          },
+        ];
+      }),
+      [{ text: "🏠 Меню", callback_data: "project:menu" }],
+    ],
+  };
+};
 
 export const buildProjectActionsKeyboard = (projectId: string): InlineKeyboardMarkup => ({
   inline_keyboard: [
@@ -96,17 +118,14 @@ export const buildProjectActionsKeyboard = (projectId: string): InlineKeyboardMa
     ],
     [
       { text: "🕒 Авто-отчёты", callback_data: `project:autoreports:${projectId}` },
-      { text: "🚨 Алерты", callback_data: `project:alerts:${projectId}` },
-    ],
-    [
       { text: "⚙ Изменить KPI проекта", callback_data: `project:kpi:${projectId}` },
-      { text: "📂 Настройки", callback_data: `project:edit:${projectId}` },
     ],
     [
+      { text: "📂 Настройки", callback_data: `project:edit:${projectId}` },
       { text: "🧨 Удалить", callback_data: `project:delete:${projectId}` },
     ],
     [
-      { text: "⬅️ К списку", callback_data: "project:list" },
+      { text: "⬅️ К списку", callback_data: "cmd:projects" },
       { text: "🏠 Меню", callback_data: "project:menu" },
     ],
   ],
@@ -129,31 +148,85 @@ export const buildBillingKeyboard = (projectId: string): InlineKeyboardMarkup =>
 
 export const buildLeadsKeyboard = (
   projectId: string,
-  leads: ProjectLeadsListRecord["leads"],
+  view: ProjectLeadsViewPayload,
   status: ProjectLeadsListRecord["leads"][number]["status"],
-): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: "🆕 Новые", callback_data: `project:leads:new:${projectId}` },
-      { text: "⏳ В обработке", callback_data: `project:leads:processing:${projectId}` },
-    ],
-    [
-      { text: "✅ Завершённые", callback_data: `project:leads:done:${projectId}` },
-      { text: "🗑 В корзине", callback_data: `project:leads:trash:${projectId}` },
-    ],
-    ...leads
-      .filter((lead) => lead.status === status)
-      .slice(0, 5)
-      .map((lead) => [
+  leadSettings: ProjectLeadNotificationSettings,
+): InlineKeyboardMarkup => {
+  const buildPeriodSuffix = (periodKey: string): string => {
+    if (periodKey === "custom") {
+      return `:${view.period.from}:${view.period.to}`;
+    }
+    return "";
+  };
+  const buildStatusCallback = (
+    nextStatus: ProjectLeadsListRecord["leads"][number]["status"],
+    periodKey = view.periodKey,
+  ) => `project:leads:${nextStatus}:${projectId}:${periodKey}${buildPeriodSuffix(periodKey)}`;
+  const formatStatusButton = (
+    label: string,
+    icon: string,
+    target: ProjectLeadsListRecord["leads"][number]["status"],
+  ) => {
+    const count = view.countsByStatus[target] ?? 0;
+    const suffix = count > 0 ? ` (${count})` : "";
+    return {
+      text: `${icon} ${label}${suffix}`,
+      callback_data: buildStatusCallback(target),
+    };
+  };
+  const buildPeriodButton = (label: string, periodKey: string) => {
+    const isActive = view.periodKey === periodKey;
+    const prefix = isActive ? "• " : "";
+    return {
+      text: `${prefix}${label}`,
+      callback_data: buildStatusCallback(status, periodKey),
+    };
+  };
+  const encodeTargetToggle = (channel: "chat" | "admin") =>
+    `project:leads-target:${status}:${projectId}:${channel}:${view.periodKey}${buildPeriodSuffix(view.periodKey)}`;
+  const exportCallback = `project:export-leads:${projectId}:${view.periodKey}${buildPeriodSuffix(view.periodKey)}`;
+  return {
+    inline_keyboard: [
+      [
+        formatStatusButton("Новые", "🆕", "new"),
+        formatStatusButton("В обработке", "⏳", "processing"),
+      ],
+      [
+        formatStatusButton("Завершённые", "✅", "done"),
+        formatStatusButton("В корзине", "🗑", "trash"),
+      ],
+      [buildPeriodButton("Сегодня", "today"), buildPeriodButton("Неделя", "week")],
+      [buildPeriodButton("Месяц", "month"), buildPeriodButton("Все время", "all")],
+      [
         {
-          text: `🔎 ${lead.name}`,
-          callback_data: `lead:view:${projectId}:${lead.id}`,
+          text: view.periodKey === "custom" ? "📅 Период: свой" : "📅 Указать даты",
+          callback_data: `project:leads-range:${status}:${projectId}`,
         },
-      ]),
-    [{ text: "📤 Экспорт лидов", callback_data: `project:export-leads:${projectId}` }],
-    [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],
-  ],
-});
+      ],
+      ...view.leads
+        .filter((lead) => lead.status === status)
+        .slice(0, 5)
+        .map((lead) => [
+          {
+            text: `🔎 ${lead.name}`,
+            callback_data: `lead:view:${projectId}:${lead.id}`,
+          },
+        ]),
+      [
+        {
+          text: leadSettings.sendToChat ? "👥 Чат — вкл" : "👥 Чат — выкл",
+          callback_data: encodeTargetToggle("chat"),
+        },
+        {
+          text: leadSettings.sendToAdmin ? "👤 Админ — вкл" : "👤 Админ — выкл",
+          callback_data: encodeTargetToggle("admin"),
+        },
+      ],
+      [{ text: "📤 Экспорт лидов", callback_data: exportCallback }],
+      [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],
+    ],
+  };
+};
 
 export const buildExportKeyboard = (projectId: string): InlineKeyboardMarkup => ({
   inline_keyboard: [
@@ -198,6 +271,7 @@ export const buildChatBindingKeyboard = (
       },
     ]),
     [{ text: "🔗 Отправить ссылку вручную", callback_data: `project:bind-manual:${accountId}` }],
+    [{ text: "⬅️ Назад", callback_data: "cmd:projects" }],
     [{ text: "🏠 Меню", callback_data: "project:menu" }],
   ],
 });
@@ -231,7 +305,14 @@ export const buildAutoreportsKeyboard = (
       { text: "🕒 Изменить время", callback_data: `project:autoreports-time:${projectId}` },
     ],
     [
-      { text: "👥 Кому отправлять", callback_data: `project:autoreports-route:${projectId}` },
+      {
+        text: autoreports.sendToChat ? "👥 Чат — вкл" : "👥 Чат — выкл",
+        callback_data: `project:autoreports-target:${projectId}:chat`,
+      },
+      {
+        text: autoreports.sendToAdmin ? "👤 Админ — вкл" : "👤 Админ — выкл",
+        callback_data: `project:autoreports-target:${projectId}:admin`,
+      },
     ],
     [
       { text: "📤 Отправить сейчас", callback_data: `auto_send_now:${projectId}` },
@@ -240,48 +321,6 @@ export const buildAutoreportsKeyboard = (
   ],
 });
 
-export const buildAutoreportsRouteKeyboard = (projectId: string): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: "В чат", callback_data: `project:autoreports-send:${projectId}:chat` },
-      { text: "Админу", callback_data: `project:autoreports-send:${projectId}:admin` },
-      { text: "В чат и админу", callback_data: `project:autoreports-send:${projectId}:both` },
-    ],
-    [{ text: "⬅️ Назад", callback_data: `project:autoreports:${projectId}` }],
-  ],
-});
-
-export const buildAlertsKeyboard = (
-  projectId: string,
-  alerts: AlertsRecord,
-): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: alerts.enabled ? "⛔️ Выключить" : "✅ Включить", callback_data: `project:alerts-toggle:${projectId}` },
-      { text: "Маршрут", callback_data: `project:alerts-route:${projectId}` },
-    ],
-    [
-      { text: `Лиды: ${alerts.types.leadInQueue ? "вкл" : "выкл"}`, callback_data: `project:alerts-type:${projectId}:lead` },
-      { text: `Паузы: ${alerts.types.pause24h ? "вкл" : "выкл"}`, callback_data: `project:alerts-type:${projectId}:pause` },
-      {
-        text: `Оплаты: ${alerts.types.paymentReminder ? "вкл" : "выкл"}`,
-        callback_data: `project:alerts-type:${projectId}:payment`,
-      },
-    ],
-    [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],
-  ],
-});
-
-export const buildAlertsRouteKeyboard = (projectId: string): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: "В чат", callback_data: `project:alerts-route-set:${projectId}:chat` },
-      { text: "Админу", callback_data: `project:alerts-route-set:${projectId}:admin` },
-      { text: "Обе стороны", callback_data: `project:alerts-route-set:${projectId}:both` },
-    ],
-    [{ text: "⬅️ Назад", callback_data: `project:alerts:${projectId}` }],
-  ],
-});
 
 export const buildKpiKeyboard = (projectId: string): InlineKeyboardMarkup => ({
   inline_keyboard: [

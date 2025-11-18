@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { resolveDatePreset, fetchMetaLeads } = await import("../../src/services/meta-api.ts");
+const { resolveDatePreset, fetchMetaLeads, summariseMetaInsights } = await import(
+  "../../src/services/meta-api.ts",
+);
 
 test("resolveDatePreset clamps all-period window and supports legacy max alias", () => {
   const realNow = Date.now;
@@ -678,4 +680,74 @@ test("fetchMetaLeads invokes persistence callback when forms are enumerated", as
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("summariseMetaInsights does not double count duplicate lead actions", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "10",
+        impressions: "1000",
+        clicks: "100",
+        actions: [
+          { action_type: "lead", value: "9" },
+          { action_type: "leadgen_grouped", value: "9" },
+          { action_type: "onsite_conversion.lead_grouped", value: "9" },
+          { action_type: "submit_application", value: "9" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 9);
+});
+
+test("summariseMetaInsights keeps submit_application counts when lead metric is missing", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "10",
+        impressions: "1000",
+        clicks: "100",
+        actions: [
+          { action_type: "submit_application", value: "7" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 7);
+});
+
+test("summariseMetaInsights prefers canonical lead metrics before generic lead matches", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "12",
+        impressions: "1200",
+        clicks: "240",
+        actions: [
+          { action_type: "leadgen_grouped", value: "45" },
+          { action_type: "lead", value: "9" },
+          { action_type: "leadgen.custom_form", value: "30" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 9);
+});
+
+test("summariseMetaInsights still falls back to fuzzy lead matches when canonical metrics are missing", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "7",
+        impressions: "900",
+        clicks: "30",
+        actions: [
+          { action_type: "custom_lead_signal", value: "5" },
+          { action_type: "leadgen_callback", value: "12" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 12);
 });

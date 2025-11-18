@@ -10,7 +10,8 @@ export type BotSessionState =
   | { type: "project:edit"; projectId: string; field: "name" | "ad" | "owner" }
   | { type: "project:create-manual"; accountId: string }
   | { type: "chat:manual"; projectId: string }
-  | { type: "autoreports:set-time"; projectId: string };
+  | { type: "autoreports:set-time"; projectId: string }
+  | { type: "leads:set-range"; projectId: string; status: string };
 
 export interface BotPanelState {
   panelId: string;

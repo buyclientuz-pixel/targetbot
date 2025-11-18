@@ -14,7 +14,6 @@ const { R2Client } = await import("../../src/infra/r2.ts");
 const { putProjectsByUser } = await import("../../src/domain/spec/projects-by-user.ts");
 const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { putBillingRecord } = await import("../../src/domain/spec/billing.ts");
-const { putAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
 const { putAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
 const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
 const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
@@ -45,19 +44,12 @@ const seedProjectData = async (kv: InstanceType<typeof KvClient>, r2: InstanceTy
     nextPaymentDate: "2025-12-15",
     autobilling: true,
   });
-  await putAlertsRecord(kv, "proj_acceptance", {
-    enabled: true,
-    channel: "chat",
-    types: { leadInQueue: true, pause24h: true, paymentReminder: true },
-    leadQueueThresholdHours: 1,
-    pauseThresholdHours: 24,
-    paymentReminderDays: [7, 1],
-  });
   await putAutoreportsRecord(kv, "proj_acceptance", {
     enabled: true,
     time: "10:00",
     mode: "yesterday_plus_week",
-    sendTo: "both",
+    sendToChat: true,
+    sendToAdmin: true,
   });
   await putProjectLeadsList(r2, "proj_acceptance", {
     stats: { total: 5, today: 2 },
@@ -213,14 +205,18 @@ const dispatchRequest = async (
 test("full system acceptance scenario", async () => {
   const kvNamespace = new MemoryKVNamespace();
   const r2Bucket = new MemoryR2Bucket();
+  const leadsNamespace = new MemoryKVNamespace();
   const env: import("../../src/worker/types.ts").TargetBotEnv = {
     KV: kvNamespace,
     R2: r2Bucket,
+    LEADS_KV: leadsNamespace,
     TELEGRAM_BOT_TOKEN: "test-token",
     FB_APP_ID: "fb-app",
     FB_APP_SECRET: "fb-secret",
     WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
     META_WEBHOOK_VERIFY_TOKEN: "VERIFY_TOKEN",
+    FACEBOOK_API_VERSION: "v18.0",
+    FACEBOOK_TOKEN: "test-facebook-token",
   };
 
   const projectMessages: DispatchProjectMessageOptions[] = [];
@@ -302,7 +298,7 @@ test("full system acceptance scenario", async () => {
     const parsedLead = await getLead(r2, "proj_acceptance", "lead_acceptance");
     assert.equal(parsedLead?.projectId, "proj_acceptance");
     assert.ok(projectMessages.length >= 1);
-    assert.match(projectMessages[0]?.text ?? "", /Новый лид/);
+    assert.match(projectMessages[0]?.text ?? "", /Лид ожидает ответа/);
 
     const summaryResponse = await dispatchRequest(
       router,
