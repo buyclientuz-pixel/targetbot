@@ -228,6 +228,123 @@ test("Telegram bot controller serves menu and project list", async () => {
   }
 });
 
+test("Project list buttons reflect chat binding state", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await putProjectsByUser(kv, 100, { projects: ["proj_a", "proj_b"] });
+  await putProjectRecord(kv, {
+    id: "proj_b",
+    name: "Free Slot",
+    ownerId: 100,
+    adAccountId: "act_789",
+    chatId: null,
+    portalUrl: "https://th-reports.buyclientuz.workers.dev/p/proj_b",
+    settings: {
+      currency: "USD",
+      timezone: "Asia/Tashkent",
+      kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
+    },
+  });
+  await putMetaCampaignsDocument(r2, "proj_b", {
+    period: { from: "2025-01-01", to: "2025-01-01" },
+    summary: { spend: 45, impressions: 0, clicks: 0, leads: 0, messages: 0 },
+    campaigns: [],
+    periodKey: null,
+  });
+  await putFbAuthRecord(kv, {
+    userId: 100,
+    accessToken: "token",
+    expiresAt: "2025-01-01T00:00:00.000Z",
+    adAccounts: [
+      { id: "act_123", name: "BirLash", currency: "USD", status: 1 },
+      { id: "act_789", name: "Free Slot", currency: "USD", status: 1 },
+    ],
+    facebookUserId: "fb_user_100",
+    facebookName: "Meta Owner",
+  });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
+    } as unknown as TelegramUpdate);
+
+    stub.requests.length = 0;
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb_project_list",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 41 },
+        data: "project:list",
+      },
+    } as unknown as TelegramUpdate);
+
+    const listRequest = stub.requests.find((entry) => String(entry.body?.text ?? "").includes("Ваши проекты"));
+    assert.ok(listRequest, "project list message should be rendered");
+    assert.match(String(listRequest?.body.text), /✅/);
+    assert.match(String(listRequest?.body.text), /⚙️/);
+    const listKeyboard = listRequest?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data?: string }>>;
+    };
+    assert.ok(listKeyboard);
+    const firstButton = listKeyboard.inline_keyboard[0]?.[0];
+    const secondButton = listKeyboard.inline_keyboard[1]?.[0];
+    assert.equal(firstButton?.callback_data, "project:card:proj_a");
+    assert.equal(secondButton?.callback_data, "project:chat-change:proj_b");
+    assert.match(String(secondButton?.text), /⚙️/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("Ad account buttons show spend summary without IDs", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await putFbAuthRecord(kv, {
+    userId: 100,
+    accessToken: "token",
+    expiresAt: "2025-01-01T00:00:00.000Z",
+    adAccounts: [{ id: "act_123", name: "BirLash", currency: "USD", status: 1 }],
+    facebookUserId: "fb_user_100",
+    facebookName: "Meta Owner",
+  });
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      message: { chat: { id: 100 }, from: { id: 100 }, text: "Проекты" },
+    } as unknown as TelegramUpdate);
+
+    const creationRequest = stub.requests
+      .filter((entry) => entry.url.includes("sendMessage"))
+      .find((entry) => {
+        const keyboard = entry.body?.reply_markup as {
+          inline_keyboard?: Array<Array<{ callback_data?: string }>>;
+        };
+        return keyboard?.inline_keyboard?.flat().some((button) =>
+          String(button.callback_data ?? "").startsWith("project:add:"),
+        );
+      });
+    assert.ok(creationRequest, "account creation keyboard should be sent");
+    const keyboard = creationRequest?.body.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string }>>;
+    };
+    const buttonText = keyboard.inline_keyboard[0]?.[0]?.text ?? "";
+    assert.match(buttonText, /BirLash/);
+    assert.match(buttonText, /сегодня/);
+    assert.match(buttonText, /\$/);
+    assert.ok(!buttonText.includes("act_"));
+  } finally {
+    stub.restore();
+  }
+});
+
 test("Inline main menu buttons route through cmd:* callbacks", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());

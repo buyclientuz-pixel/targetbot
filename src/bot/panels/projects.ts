@@ -1,7 +1,5 @@
 import { getFbAuthRecord } from "../../domain/spec/fb-auth";
-import { getProjectsByUser } from "../../domain/spec/projects-by-user";
-import { requireProjectRecord } from "../../domain/spec/project";
-import { listAvailableProjectChats } from "../data";
+import { listAvailableProjectChats, loadProjectListOverview } from "../data";
 import { buildProjectCreationKeyboard, buildProjectListKeyboard } from "../keyboards";
 import { buildProjectCreationMessage, buildProjectsListMessage } from "../messages";
 import type { PanelRenderer } from "./types";
@@ -9,20 +7,8 @@ import type { PanelRenderer } from "./types";
 export const render: PanelRenderer = async ({ runtime, userId, params }) => {
   const view = params[0] ?? "accounts";
   if (view === "list") {
-    const membership = await getProjectsByUser(runtime.kv, userId);
-    const items = membership
-      ? await Promise.all(
-          membership.projects.map(async (id) => {
-            try {
-              const project = await requireProjectRecord(runtime.kv, id);
-              return { id: project.id, name: project.name, spend: null, currency: project.settings.currency };
-            } catch {
-              return null;
-            }
-          }),
-        )
-      : [];
-    const filtered = items.filter((item): item is NonNullable<typeof item> => Boolean(item));
+    const overview = await loadProjectListOverview(runtime.kv, runtime.r2, userId);
+    const filtered = overview.projects;
     return {
       text: buildProjectsListMessage(filtered),
       keyboard: filtered.length > 0 ? buildProjectListKeyboard(filtered) : { inline_keyboard: [[{ text: "⬅️ Назад", callback_data: "panel:projects" }]] },
@@ -52,8 +38,12 @@ export const render: PanelRenderer = async ({ runtime, userId, params }) => {
   }
 
   const fbAuth = await getFbAuthRecord(runtime.kv, userId);
+  const overview = await loadProjectListOverview(runtime.kv, runtime.r2, userId);
   return {
-    text: buildProjectCreationMessage({ accounts: fbAuth?.adAccounts ?? [], hasProjects: Boolean(fbAuth) }),
-    keyboard: buildProjectCreationKeyboard(fbAuth?.adAccounts ?? [], { hasProjects: Boolean(fbAuth) }),
+    text: buildProjectCreationMessage({ accounts: fbAuth?.adAccounts ?? [], hasProjects: overview.projects.length > 0 }),
+    keyboard: buildProjectCreationKeyboard(fbAuth?.adAccounts ?? [], {
+      hasProjects: overview.projects.length > 0,
+      accountSpends: overview.accountSpends,
+    }),
   };
 };

@@ -55,6 +55,24 @@ export interface ProjectBundle {
   payments: PaymentsHistoryDocument;
 }
 
+export interface ProjectListItem {
+  id: string;
+  name: string;
+  spend: number | null;
+  currency: string;
+  hasChat: boolean;
+}
+
+export interface AccountSpendSnapshot {
+  amount: number | null;
+  currency: string;
+}
+
+export interface ProjectListOverview {
+  projects: ProjectListItem[];
+  accountSpends: Record<string, AccountSpendSnapshot>;
+}
+
 export interface AnalyticsProjectSummary {
   id: string;
   name: string;
@@ -103,6 +121,44 @@ export const loadUserProjects = async (kv: KvClient, userId: number): Promise<Pr
   );
 
   return projects.filter((project): project is ProjectRecord => project !== null);
+};
+
+export const loadProjectListOverview = async (
+  kv: KvClient,
+  r2: R2Client,
+  userId: number,
+): Promise<ProjectListOverview> => {
+  const projects = await loadUserProjects(kv, userId);
+  const accountSpends: Record<string, AccountSpendSnapshot> = {};
+
+  const items = await Promise.all(
+    projects.map(async (project) => {
+      const campaigns = await getMetaCampaignsDocument(r2, project.id);
+      const spend = campaigns?.summary?.spend ?? null;
+      if (project.adAccountId) {
+        const nextEntry: AccountSpendSnapshot = {
+          amount: spend,
+          currency: project.settings.currency,
+        };
+        const current = accountSpends[project.adAccountId];
+        const shouldReplace =
+          !current ||
+          (nextEntry.amount != null && (current.amount == null || nextEntry.amount >= current.amount));
+        if (shouldReplace) {
+          accountSpends[project.adAccountId] = nextEntry;
+        }
+      }
+      return {
+        id: project.id,
+        name: project.name,
+        spend,
+        currency: project.settings.currency,
+        hasChat: project.chatId != null,
+      } satisfies ProjectListItem;
+    }),
+  );
+
+  return { projects: items, accountSpends };
 };
 
 export const loadProjectBundlesForUser = async (

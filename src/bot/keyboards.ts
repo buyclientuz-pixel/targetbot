@@ -4,7 +4,7 @@ import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FreeChatRecord } from "../domain/project-chats";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
 
-import type { ProjectListItem } from "./messages";
+import type { AccountSpendSnapshot, ProjectListItem } from "./data";
 import type { InlineKeyboardMarkup } from "./types";
 
 const formatMoney = (value: number | null, currency: string): string => {
@@ -17,6 +17,26 @@ const formatMoney = (value: number | null, currency: string): string => {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   }).format(value);
+};
+
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: "$",
+  EUR: "€",
+  RUB: "₽",
+  UZS: "сум",
+  KZT: "₸",
+};
+
+const getCurrencySymbol = (currency: string): string => {
+  const upper = currency?.toUpperCase?.() ?? "";
+  return CURRENCY_SYMBOLS[upper] ?? (upper || "$");
+};
+
+const formatAccountSpendToday = (snapshot: AccountSpendSnapshot, fallbackCurrency: string): string => {
+  const formatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const amountText = formatter.format(snapshot.amount ?? 0).replace(/\u00a0/g, " ");
+  const symbol = getCurrencySymbol(snapshot.currency || fallbackCurrency);
+  return `${amountText}${symbol} сегодня`;
 };
 
 interface MainMenuKeyboardOptions {
@@ -47,29 +67,35 @@ export const buildMainMenuKeyboard = (options: MainMenuKeyboardOptions): InlineK
 };
 
 export const buildProjectListKeyboard = (projects: ProjectListItem[]): InlineKeyboardMarkup => ({
-  inline_keyboard: projects.map((project, index) => [
+  inline_keyboard: projects.map((project) => [
     {
-      text: `${index + 1}️⃣ ${project.name} [${formatMoney(project.spend, project.currency)}]`,
-      callback_data: `project:card:${project.id}`,
+      text: `${project.hasChat ? "✅" : "⚙️"} ${project.name} [${formatMoney(project.spend, project.currency)}]`,
+      callback_data: project.hasChat ? `project:card:${project.id}` : `project:chat-change:${project.id}`,
     },
   ]),
 });
 
 export const buildProjectCreationKeyboard = (
   accounts: FbAuthRecord["adAccounts"],
-  options: { hasProjects: boolean },
-): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    ...accounts.map((account) => [
-      {
-        text: `${account.name} (${account.id}) — ${account.currency}`,
-        callback_data: `project:add:${account.id}`,
-      },
-    ]),
-    ...(options.hasProjects ? [[{ text: "📂 Мои проекты", callback_data: "project:list" }]] : []),
-    [{ text: "🏠 Меню", callback_data: "project:menu" }],
-  ],
-});
+  options: { hasProjects: boolean; accountSpends?: Record<string, AccountSpendSnapshot> },
+): InlineKeyboardMarkup => {
+  const spendMap = options.accountSpends ?? {};
+  return {
+    inline_keyboard: [
+      ...accounts.map((account) => [
+        {
+          text: `${account.name} — ${formatAccountSpendToday(
+            spendMap[account.id] ?? { amount: null, currency: account.currency },
+            account.currency,
+          )}`,
+          callback_data: `project:add:${account.id}`,
+        },
+      ]),
+      ...(options.hasProjects ? [[{ text: "📂 Мои проекты", callback_data: "project:list" }]] : []),
+      [{ text: "🏠 Меню", callback_data: "project:menu" }],
+    ],
+  };
+};
 
 export const buildProjectActionsKeyboard = (projectId: string): InlineKeyboardMarkup => ({
   inline_keyboard: [

@@ -8,7 +8,7 @@ import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
 import type { FreeChatRecord } from "../domain/project-chats";
 
-import type { AnalyticsOverview, FinanceOverview, ProjectBundle } from "./data";
+import type { AnalyticsOverview, FinanceOverview, ProjectBundle, ProjectListItem } from "./data";
 import { translateMetaObjective } from "../services/meta-objectives";
 
 const escapeHtml = (value: string): string =>
@@ -130,13 +130,6 @@ const buildPortalLine = (project: ProjectRecord): string => {
   return `🌐 Портал: <a href="${project.portalUrl}">Открыть клиентский портал</a>`;
 };
 
-export interface ProjectListItem {
-  id: string;
-  name: string;
-  spend: number | null;
-  currency: string;
-}
-
 export const buildMenuMessage = (options: { fbAuth: FbAuthRecord | null }): string => {
   const lines: string[] = [];
   if (options.fbAuth) {
@@ -160,9 +153,10 @@ export const buildProjectsListMessage = (projects: ProjectListItem[]): string =>
     return "У вас пока нет проектов. Добавьте их через портал или админ-панель.";
   }
   const lines: string[] = ["Ваши проекты:"];
-  projects.forEach((project, index) => {
+  projects.forEach((project) => {
     const spend = formatMoney(project.spend, project.currency);
-    lines.push(`${index + 1}️⃣ ${escapeHtml(project.name)} [${spend}]`);
+    const icon = project.hasChat ? "✅" : "⚙️";
+    lines.push(`${icon} ${escapeHtml(project.name)} [${spend}]`);
   });
   return lines.join("\n");
 };
@@ -172,18 +166,16 @@ export const buildProjectCreationMessage = (options: {
   hasProjects: boolean;
 }): string => {
   const lines: string[] = [];
-  lines.push("Выберите рекламный аккаунт для подключения:");
-  lines.push("");
   if (options.accounts.length === 0) {
     lines.push("Не найдено рекламных аккаунтов.");
     lines.push("Подключите Facebook в разделе «Авторизация Facebook».\n");
   } else {
-    options.accounts.forEach((account, index) => {
-      lines.push(`${index + 1}. ${escapeHtml(account.name)} (${account.id}) — ${account.currency}`);
-    });
+    lines.push("Выберите рекламный аккаунт через кнопки ниже и укажите чат проекта.");
     lines.push("");
+    lines.push("Бот покажет актуальные расходы за сегодня рядом с названием аккаунта.");
     lines.push("После выбора аккаунта бот попросит привязать чат-группу.");
   }
+  lines.push("");
   lines.push(
     options.hasProjects
       ? "Нажмите «📂 Мои проекты», чтобы открыть существующие проекты."

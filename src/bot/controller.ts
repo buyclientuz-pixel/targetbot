@@ -3,6 +3,7 @@ import {
   loadAnalyticsOverview,
   loadFinanceOverview,
   loadProjectBundle,
+  loadProjectListOverview,
   loadUserProjects,
   listAvailableProjectChats,
   leadStatusLabel,
@@ -38,7 +39,6 @@ import {
   buildNoFreeChatsMessage,
   buildUsersMessage,
   buildWebhookStatusMessage,
-  type ProjectListItem,
 } from "./messages";
 import { addDaysIso, parseDateInput, todayIsoDate } from "./dates";
 import { renderPanel } from "./panel-engine";
@@ -59,7 +59,6 @@ import {
 import { appendPaymentRecord, type PaymentRecord } from "../domain/spec/payments-history";
 import { putBillingRecord } from "../domain/spec/billing";
 import { getFbAuthRecord, putFbAuthRecord, type FbAuthRecord } from "../domain/spec/fb-auth";
-import { getMetaCampaignsDocument } from "../domain/spec/meta-campaigns";
 import { putAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import {
   getLeadDetailRecord,
@@ -355,27 +354,8 @@ const ensureLegacyKeyboardCleared = async (
   return updatedSession;
 };
 
-const buildProjectListItems = async (
-  ctx: BotContext,
-  userId: number,
-): Promise<ProjectListItem[]> => {
-  const projects = await loadUserProjects(ctx.kv, userId);
-  const items = await Promise.all(
-    projects.map(async (project) => {
-      const campaigns = await getMetaCampaignsDocument(ctx.r2, project.id);
-      return {
-        id: project.id,
-        name: project.name,
-        spend: campaigns?.summary?.spend ?? null,
-        currency: project.settings.currency,
-      } satisfies ProjectListItem;
-    }),
-  );
-  return items;
-};
-
 const sendExistingProjectsList = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
-  const projects = await buildProjectListItems(ctx, userId);
+  const { projects } = await loadProjectListOverview(ctx.kv, ctx.r2, userId);
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildProjectsListMessage(projects),
@@ -386,11 +366,15 @@ const sendExistingProjectsList = async (ctx: BotContext, chatId: number, userId:
 const sendProjectsEntry = async (ctx: BotContext, chatId: number, userId: number): Promise<void> => {
   const fbAuth = await getFbAuthRecord(ctx.kv, userId);
   const adAccounts = (fbAuth?.adAccounts ?? []) as FbAuthRecord["adAccounts"];
-  const projects = await buildProjectListItems(ctx, userId);
+  const overview = await loadProjectListOverview(ctx.kv, ctx.r2, userId);
+  const projects = overview.projects;
   await sendTelegramMessage(ctx.token, {
     chatId,
     text: buildProjectCreationMessage({ accounts: adAccounts, hasProjects: projects.length > 0 }),
-    replyMarkup: buildProjectCreationKeyboard(adAccounts, { hasProjects: projects.length > 0 }),
+    replyMarkup: buildProjectCreationKeyboard(adAccounts, {
+      hasProjects: projects.length > 0,
+      accountSpends: overview.accountSpends,
+    }),
   });
   if (projects.length === 0) {
     return;
