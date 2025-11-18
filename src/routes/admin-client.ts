@@ -317,11 +317,6 @@ const adminClientFactory = () => {
     els.settingsForm.elements.kpiMode.value = detail.project.settings.kpi.mode;
     els.settingsForm.elements.kpiType.value = detail.project.settings.kpi.type;
     els.settingsForm.elements.kpiLabel.value = detail.project.settings.kpi.label;
-    els.settingsForm.elements.alertsEnabled.checked = detail.alerts.enabled;
-    els.settingsForm.elements.alertsChannel.value = detail.alerts.channel;
-    els.settingsForm.elements.alertLead.checked = detail.alerts.types.leadInQueue;
-    els.settingsForm.elements.alertPause.checked = detail.alerts.types.pause24h;
-    els.settingsForm.elements.alertPayment.checked = detail.alerts.types.paymentReminder;
     els.settingsForm.elements.autoreportsEnabled.checked = detail.autoreports.enabled;
     els.settingsForm.elements.autoreportsTime.value = detail.autoreports.time;
     els.settingsForm.elements.autoreportsSendTo.value = detail.autoreports.sendTo;
@@ -668,15 +663,6 @@ const adminClientFactory = () => {
         mode: form.elements.kpiMode.value,
         type: form.elements.kpiType.value,
         label: form.elements.kpiLabel.value,
-      },
-      alerts: {
-        enabled: form.elements.alertsEnabled.checked,
-        channel: form.elements.alertsChannel.value,
-        types: {
-          leadInQueue: form.elements.alertLead.checked,
-          pause24h: form.elements.alertPause.checked,
-          paymentReminder: form.elements.alertPayment.checked,
-        },
       },
       autoreports: {
         enabled: form.elements.autoreportsEnabled.checked,

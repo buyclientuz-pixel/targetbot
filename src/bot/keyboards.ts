@@ -1,5 +1,4 @@
 import type { AutoreportsRecord } from "../domain/spec/autoreports";
-import type { AlertsRecord } from "../domain/spec/alerts";
 import type { ProjectLeadsListRecord } from "../domain/spec/project-leads";
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FreeChatRecord } from "../domain/project-chats";
@@ -96,13 +95,10 @@ export const buildProjectActionsKeyboard = (projectId: string): InlineKeyboardMa
     ],
     [
       { text: "🕒 Авто-отчёты", callback_data: `project:autoreports:${projectId}` },
-      { text: "🚨 Алерты", callback_data: `project:alerts:${projectId}` },
-    ],
-    [
       { text: "⚙ Изменить KPI проекта", callback_data: `project:kpi:${projectId}` },
-      { text: "📂 Настройки", callback_data: `project:edit:${projectId}` },
     ],
     [
+      { text: "📂 Настройки", callback_data: `project:edit:${projectId}` },
       { text: "🧨 Удалить", callback_data: `project:delete:${projectId}` },
     ],
     [
@@ -251,37 +247,6 @@ export const buildAutoreportsRouteKeyboard = (projectId: string): InlineKeyboard
   ],
 });
 
-export const buildAlertsKeyboard = (
-  projectId: string,
-  alerts: AlertsRecord,
-): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: alerts.enabled ? "⛔️ Выключить" : "✅ Включить", callback_data: `project:alerts-toggle:${projectId}` },
-      { text: "Маршрут", callback_data: `project:alerts-route:${projectId}` },
-    ],
-    [
-      { text: `Лиды: ${alerts.types.leadInQueue ? "вкл" : "выкл"}`, callback_data: `project:alerts-type:${projectId}:lead` },
-      { text: `Паузы: ${alerts.types.pause24h ? "вкл" : "выкл"}`, callback_data: `project:alerts-type:${projectId}:pause` },
-      {
-        text: `Оплаты: ${alerts.types.paymentReminder ? "вкл" : "выкл"}`,
-        callback_data: `project:alerts-type:${projectId}:payment`,
-      },
-    ],
-    [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],
-  ],
-});
-
-export const buildAlertsRouteKeyboard = (projectId: string): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: "В чат", callback_data: `project:alerts-route-set:${projectId}:chat` },
-      { text: "Админу", callback_data: `project:alerts-route-set:${projectId}:admin` },
-      { text: "Обе стороны", callback_data: `project:alerts-route-set:${projectId}:both` },
-    ],
-    [{ text: "⬅️ Назад", callback_data: `project:alerts:${projectId}` }],
-  ],
-});
 
 export const buildKpiKeyboard = (projectId: string): InlineKeyboardMarkup => ({
   inline_keyboard: [

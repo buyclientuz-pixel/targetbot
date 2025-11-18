@@ -23,7 +23,6 @@ import { render as renderChatInfo } from "./panels/chat-info";
 import { render as renderChatChange } from "./panels/chat-change";
 import { render as renderChatUnlink } from "./panels/chat-unlink";
 import { render as renderAutoreports } from "./panels/autoreports";
-import { render as renderAlerts } from "./panels/alerts";
 import { render as renderKpi } from "./panels/kpi";
 import { render as renderProjectEditPanel } from "./panels/project-edit";
 import { render as renderProjectDelete } from "./panels/project-delete";
@@ -88,13 +87,6 @@ const resolvePanel = (panelId: string): ResolveResult => {
   if (panelId.startsWith("project:autoreports-route:")) {
     const [, , , projectId] = panelId.split(":");
     return { renderer: renderAutoreports, params: [projectId ?? "", "route"], id: panelId };
-  }
-  if (panelId.startsWith("project:alerts:")) {
-    return { renderer: renderAlerts, params: [panelId.split(":")[2]!], id: panelId };
-  }
-  if (panelId.startsWith("project:alerts-route:")) {
-    const [, , , projectId] = panelId.split(":");
-    return { renderer: renderAlerts, params: [projectId ?? "", "route"], id: panelId };
   }
   if (panelId.startsWith("project:kpi:")) {
     return { renderer: renderKpi, params: [panelId.split(":")[2]!], id: panelId };

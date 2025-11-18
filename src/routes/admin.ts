@@ -586,10 +586,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                   <label>Режим KPI<select name="kpiMode"><option value="auto">Авто</option><option value="manual">Ручной</option></select></label>
                   <label>Тип KPI<select name="kpiType"><option value="LEAD">Лиды</option><option value="MESSAGE">Сообщения</option><option value="CLICK">Клики</option><option value="VIEW">Просмотры</option><option value="PURCHASE">Покупки</option></select></label>
                   <label>Название KPI<input name="kpiLabel" /></label>
-                  <label>Канал алертов<select name="alertsChannel"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="alertsEnabled" /> Включить</span></label>
-                  <label><input type="checkbox" name="alertLead" /> Напоминать о лидах</label>
-                  <label><input type="checkbox" name="alertPause" /> Кампании на паузе</label>
-                  <label><input type="checkbox" name="alertPayment" /> Напоминать об оплате</label>
                   <label>Автоотчёты<select name="autoreportsSendTo"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="autoreportsEnabled" /> Включить</span></label>
                   <label>Время отчёта<input type="time" name="autoreportsTime" value="10:00" /></label>
                   <button class="admin-btn" type="submit">Сохранить настройки</button>
@@ -1223,10 +1219,6 @@ export const registerAdminRoutes = (router: Router): void => {
         reports: {
           ...existing.reports,
           ...(body.reports as Record<string, unknown> | undefined),
-        },
-        alerts: {
-          ...existing.alerts,
-          ...(body.alerts as Record<string, unknown> | undefined),
         },
         meta: {
           ...existing.meta,

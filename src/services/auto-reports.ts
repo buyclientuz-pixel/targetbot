@@ -7,7 +7,7 @@ import {
 } from "../domain/report-state";
 import { loadProjectSummary, loadProjectCampaigns, mapCampaignRows, type CampaignRow } from "./project-insights";
 import type { MetaSummaryMetrics } from "../domain/meta-summary";
-import { dispatchProjectMessage } from "./project-messaging";
+import { dispatchProjectMessage, type ProjectMessageRoute } from "./project-messaging";
 import { DataValidationError } from "../errors";
 import { getAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import { requireProjectRecord, type ProjectRecord, type KpiType } from "../domain/spec/project";
@@ -455,9 +455,7 @@ const resolvePeriodKeys = (mode: string, now: Date): string[] => {
   }
 };
 
-const mapAutoreportRoute = (
-  sendTo: AutoreportsRecord["sendTo"],
-): ProjectSettings["alerts"]["route"] => {
+const mapAutoreportRoute = (sendTo: AutoreportsRecord["sendTo"]): ProjectMessageRoute => {
   switch (sendTo) {
     case "chat":
       return "CHAT";
@@ -473,14 +471,14 @@ const resolveAutoreportProfile = async (
   kv: KvClient,
   projectId: string,
   settings: ProjectSettings,
-): Promise<{ enabled: boolean; slots: string[]; mode: string; route: ProjectSettings["alerts"]["route"] }> => {
+): Promise<{ enabled: boolean; slots: string[]; mode: string; route: ProjectMessageRoute }> => {
   const record = await getAutoreportsRecord(kv, projectId);
   if (!record) {
     return {
       enabled: settings.reports.autoReportsEnabled,
       slots: [...settings.reports.timeSlots],
       mode: settings.reports.mode,
-      route: settings.alerts.route,
+      route: "CHAT",
     };
   }
   return {
@@ -695,7 +693,7 @@ export const runAutoReports = async (
       const settings = await ensureProjectSettings(kv, project.id);
       const projectRecord = await requireProjectRecord(kv, project.id);
       const profile = await resolveAutoreportProfile(kv, project.id, settings);
-      if (!profile.enabled || profile.slots.length === 0 || profile.route === "NONE") {
+      if (!profile.enabled || profile.slots.length === 0) {
         continue;
       }
 
@@ -764,9 +762,6 @@ export const sendAutoReportNow = async (
   const projectRecord = await requireProjectRecord(kv, projectId);
   const settings = await ensureProjectSettings(kv, projectId);
   const profile = await resolveAutoreportProfile(kv, projectId, settings);
-  if (profile.route === "NONE") {
-    throw new Error("Auto-report route is disabled for this project");
-  }
 
   const template = await loadAutoReportTemplate({
     kv,

@@ -85,10 +85,6 @@ export const registerProjectRoutes = (router: Router): void => {
           ...existing.reports,
           ...(payload.reports as Record<string, unknown> | undefined),
         },
-        alerts: {
-          ...existing.alerts,
-          ...(payload.alerts as Record<string, unknown> | undefined),
-        },
         meta: {
           ...existing.meta,
           ...(payload.meta as Record<string, unknown> | undefined),

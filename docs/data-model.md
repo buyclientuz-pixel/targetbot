@@ -41,14 +41,6 @@
     "timeSlots": ["10:00"],
     "mode": "yesterday+week"
   },
-  "alerts": {
-    "leadNotifications": true,
-    "billingAlerts": true,
-    "budgetAlerts": true,
-    "metaApiAlerts": true,
-    "pauseAlerts": true,
-    "route": "CHAT"
-  },
   "meta": {
     "facebookUserId": "1234567890"
   },
@@ -130,7 +122,7 @@
 
 * `createMetaCacheEntry` выставляет `fetchedAt` и TTL, а `saveMetaCache` дублирует TTL в `expirationTtl`.
 * `isMetaCacheEntryFresh` проверяет свежесть без повторной десериализации.
-* Ключевые scope’ы: `insights:{period}` (сырые данные Graph API), `summary:{period}`/`campaigns:{period}` для подготовленных ответов портала и `campaign-status` для кеша статусов кампаний при отправке алертов.
+* Ключевые scope’ы: `insights:{period}` (сырые данные Graph API), `summary:{period}`/`campaigns:{period}` для подготовленных ответов портала и `campaign-status` для кеша статусов кампаний при рендеринге карточек проекта.
 
 ### Retention
 
@@ -153,22 +145,6 @@
 
 * Состояние автоотчётов: `slots` хранит последний запуск каждого таймслота.
 * `markReportSlotDispatched` обновляет `slots[slot]` и `lastRunAt` при успешной отправке отчёта, предотвращая дубликаты.
-
-## Alert State (KV: `alert-state:{projectId}:{type}`)
-
-```json
-{
-  "projectId": "birlash",
-  "type": "billing",
-  "lastSentAt": "2025-11-15T08:00:00.000Z",
-  "lastEventKey": "due:2025-12-15T00:00:00.000Z",
-  "updatedAt": "2025-11-15T08:00:00.000Z"
-}
-```
-
-* `type` принимает значения `billing`, `budget`, `meta-api`, `pause`.
-* `shouldSendAlert` сравнивает `eventKey` и таймаут для подавления повторных уведомлений.
-* `markAlertSent` обновляет запись после успешного пуша в Telegram.
 
 ## Lead (R2: `leads/{projectId}/{leadId}.json`)
 

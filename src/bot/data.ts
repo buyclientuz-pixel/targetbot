@@ -4,7 +4,6 @@ import type { R2Client } from "../infra/r2";
 import { getProjectsByUser } from "../domain/spec/projects-by-user";
 import { requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
 import { getBillingRecord, type BillingRecord } from "../domain/spec/billing";
-import { getAlertsRecord, type AlertsRecord } from "../domain/spec/alerts";
 import { getAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import {
   getProjectLeadsList,
@@ -23,19 +22,6 @@ const createDefaultBilling = (project: ProjectRecord): BillingRecord => ({
   currency: project.settings.currency,
   nextPaymentDate: new Date().toISOString().slice(0, 10),
   autobilling: false,
-});
-
-const createDefaultAlerts = (): AlertsRecord => ({
-  enabled: false,
-  channel: "chat",
-  types: {
-    leadInQueue: false,
-    pause24h: false,
-    paymentReminder: false,
-  },
-  leadQueueThresholdHours: 1,
-  pauseThresholdHours: 24,
-  paymentReminderDays: [7, 1],
 });
 
 const createDefaultAutoreports = (): AutoreportsRecord => ({
@@ -63,7 +49,6 @@ const createEmptyPayments = (): PaymentsHistoryDocument => ({ payments: [] });
 export interface ProjectBundle {
   project: ProjectRecord;
   billing: BillingRecord;
-  alerts: AlertsRecord;
   autoreports: AutoreportsRecord;
   leads: ProjectLeadsListRecord;
   campaigns: MetaCampaignsDocument;
@@ -198,9 +183,8 @@ export const loadProjectBundle = async (
   projectId: string,
 ): Promise<ProjectBundle> => {
   const project = await requireProjectRecord(kv, projectId);
-  const [billingRaw, alertsRaw, autoreportsRaw, leadsRaw, campaignsRaw, paymentsRaw] = await Promise.all([
+  const [billingRaw, autoreportsRaw, leadsRaw, campaignsRaw, paymentsRaw] = await Promise.all([
     getBillingRecord(kv, projectId),
-    getAlertsRecord(kv, projectId),
     getAutoreportsRecord(kv, projectId),
     getProjectLeadsList(r2, projectId),
     getMetaCampaignsDocument(r2, projectId),
@@ -210,7 +194,6 @@ export const loadProjectBundle = async (
   return {
     project,
     billing: billingRaw ?? createDefaultBilling(project),
-    alerts: alertsRaw ?? createDefaultAlerts(),
     autoreports: autoreportsRaw ?? createDefaultAutoreports(),
     leads: leadsRaw ?? createEmptyLeadsList(),
     campaigns: campaignsRaw ?? createEmptyMetaCampaigns(),

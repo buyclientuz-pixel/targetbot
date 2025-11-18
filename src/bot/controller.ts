@@ -61,7 +61,6 @@ import { putBillingRecord } from "../domain/spec/billing";
 import { getFbAuthRecord, putFbAuthRecord, type FbAuthRecord } from "../domain/spec/fb-auth";
 import { getMetaCampaignsDocument } from "../domain/spec/meta-campaigns";
 import { putAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
-import { putAlertsRecord, type AlertsRecord } from "../domain/spec/alerts";
 import {
   getLeadDetailRecord,
   putLeadDetailRecord,
@@ -196,15 +195,6 @@ const buildDefaultBillingRecord = (currency: string) => ({
   autobilling: false,
 });
 
-const buildDefaultAlertsRecord = (): AlertsRecord => ({
-  enabled: true,
-  channel: "chat",
-  types: { leadInQueue: true, pause24h: true, paymentReminder: true },
-  leadQueueThresholdHours: 1,
-  pauseThresholdHours: 24,
-  paymentReminderDays: [7, 1],
-});
-
 const buildDefaultAutoreportsRecord = (): AutoreportsRecord => ({
   enabled: false,
   time: "10:00",
@@ -283,7 +273,6 @@ const createProjectFromAccount = async (
   await putProjectRecord(ctx.kv, project);
   await addProjectToUserMembership(ctx, userId, projectId);
   await putBillingRecord(ctx.kv, projectId, buildDefaultBillingRecord(account.currency));
-  await putAlertsRecord(ctx.kv, projectId, buildDefaultAlertsRecord());
   await putAutoreportsRecord(ctx.kv, projectId, buildDefaultAutoreportsRecord());
   await reserveChatForProject(ctx, project, chat);
   await syncProjectChatSettings(ctx, projectId, { chatId: chat.chatId, topicId: chat.topicId });
@@ -1162,17 +1151,6 @@ const renderAutoreportsPanel = async (
   await renderPanel({ runtime, userId, chatId, panelId: target });
 };
 
-const renderAlertsPanel = async (
-  runtime: ReturnType<typeof buildPanelRuntime>,
-  userId: number,
-  chatId: number,
-  projectId: string,
-  view: "main" | "route" = "main",
-): Promise<void> => {
-  const target = view === "route" ? `project:alerts-route:${projectId}` : `project:alerts:${projectId}`;
-  await renderPanel({ runtime, userId, chatId, panelId: target });
-};
-
 const renderKpiPanel = async (
   runtime: ReturnType<typeof buildPanelRuntime>,
   userId: number,
@@ -1491,47 +1469,6 @@ const handleAutoreportsSendNow = async (
   await renderAutoreportsPanel(runtime, userId, chatId, projectId);
 };
 
-const handleAlertsToggle = async (
-  ctx: BotContext,
-  runtime: ReturnType<typeof buildPanelRuntime>,
-  userId: number,
-  chatId: number,
-  projectId: string,
-): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  await putAlertsRecord(ctx.kv, projectId, { ...bundle.alerts, enabled: !bundle.alerts.enabled });
-  await renderAlertsPanel(runtime, userId, chatId, projectId);
-};
-
-const handleAlertsRouteSet = async (
-  ctx: BotContext,
-  runtime: ReturnType<typeof buildPanelRuntime>,
-  userId: number,
-  chatId: number,
-  projectId: string,
-  channel: AlertsRecord["channel"],
-): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  await putAlertsRecord(ctx.kv, projectId, { ...bundle.alerts, channel });
-  await renderAlertsPanel(runtime, userId, chatId, projectId, "route");
-};
-
-const handleAlertsTypeToggle = async (
-  ctx: BotContext,
-  runtime: ReturnType<typeof buildPanelRuntime>,
-  userId: number,
-  chatId: number,
-  projectId: string,
-  key: keyof AlertsRecord["types"],
-): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  await putAlertsRecord(ctx.kv, projectId, {
-    ...bundle.alerts,
-    types: { ...bundle.alerts.types, [key]: !bundle.alerts.types[key] },
-  });
-  await renderAlertsPanel(runtime, userId, chatId, projectId);
-};
-
 const handleKpiModeChange = async (
   ctx: BotContext,
   runtime: ReturnType<typeof buildPanelRuntime>,
@@ -1847,41 +1784,6 @@ const handleCallback = async (
             parts[3]! as AutoreportsRecord["sendTo"],
           );
           break;
-        case "alerts":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:alerts:${parts[2]!}` });
-          break;
-        case "alerts-toggle":
-          await handleAlertsToggle(ctx, panelRuntime, userId, chatId, parts[2]!);
-          break;
-        case "alerts-route":
-          await renderAlertsPanel(panelRuntime, userId, chatId, parts[2]!, "route");
-          break;
-        case "alerts-route-set":
-          await handleAlertsRouteSet(
-            ctx,
-            panelRuntime,
-            userId,
-            chatId,
-            parts[2]!,
-            parts[3]! as AlertsRecord["channel"],
-          );
-          break;
-        case "alerts-type": {
-          const typeKeyMap: Record<string, keyof AlertsRecord["types"]> = {
-            lead: "leadInQueue",
-            pause: "pause24h",
-            payment: "paymentReminder",
-          };
-          await handleAlertsTypeToggle(
-            ctx,
-            panelRuntime,
-            userId,
-            chatId,
-            parts[2]!,
-            typeKeyMap[parts[3]!] ?? "leadInQueue",
-          );
-          break;
-        }
         case "kpi":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:kpi:${parts[2]!}` });
           break;

@@ -78,7 +78,6 @@
 | `proj:settings-frequency:{projectId}:{mode}` | Переключить период автоотчётов (`daily`, `weekly`). |
 | `proj:settings-quiet:{projectId}:{state}` | Включить или выключить тихие выходные (`on`, `off`). |
 | `proj:settings-silent:{projectId}:{state}` | Включить или выключить тихую отправку отчётов (`on`, `off`). |
-| `proj:settings-alerts:{projectId}:{state}` | Управлять алертами по лидам (`on`, `off`). |
 | `proj:delete:{projectId}` | Запрос удаления проекта. |
 | `proj:delete-confirm:{projectId}` | Подтвердить удаление проекта и отвязку всех связей. |
 | `proj:delete-cancel:{projectId}` | Отменить сценарий удаления проекта и вернуться в карточку. |
@@ -147,17 +146,6 @@
 | `auto_monday_toggle:{projectId}` | Включить/выключить режим двойного понедельничного отчёта. |
 | `auto_send_now:{projectId}` | Немедленно отправить автоотчёт по сохранённым настройкам. |
 
-## Алерты (`alert:*`)
-
-| Callback шаблон | Описание |
-| --- | --- |
-| `alert_menu:{projectId}` | Открыть панель алертов проекта. |
-| `alert_toggle_payment:{projectId}` | Переключить напоминания о платеже. |
-| `alert_toggle_spend:{projectId}` | Переключить алерты аномального расхода. |
-| `alert_toggle_api:{projectId}` | Переключить уведомления об ошибках Meta API. |
-| `alert_toggle_pause:{projectId}` | Переключить алерты долгих пауз кампаний. |
-| `alert_route:{projectId}:{target}` | Выбрать маршрут доставки алертов (`chat`, `admin`, `both`, `none`). |
-
 ## KPI настройки (`kpi:*`)
 
 | Callback шаблон | Описание |
@@ -181,7 +169,7 @@
 
 ## История изменений
 
-- 2025-02-24 — Добавлены пространства `auto_*`, `alert_*`, `kpi_*`, `report_manual`/`report_export` согласно SPEC-AUTO-REPORT-v3; README и ER-диаграмма обновлены под новый стандарт.
+- 2025-02-24 — Добавлены пространства `auto_*`, `kpi_*`, `report_manual`/`report_export` согласно SPEC-AUTO-REPORT-v3; README и ER-диаграмма обновлены под новый стандарт.
 - 2025-02-24 — Ссылки на чат-группы перешли на формат `https://t.me/c/.../2`; структура callback'ов не изменилась, все действия используют прежние `proj:*` хендлеры.
 - 2025-02-24 — Уточнены тексты ответов `cmd:*`/`proj:*` без добавления новых callback'ов: бот больше не перенаправляет админов в веб-панель, все действия доступны внутри Telegram.
 - 2025-02-24 — Нормализация ссылок Telegram для `proj:view`/`proj:chat` не потребовала новых callback'ов: используются прежние `proj:*` шаблоны, а URL формируются на лету.

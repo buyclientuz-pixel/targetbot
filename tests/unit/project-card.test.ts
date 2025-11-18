@@ -19,14 +19,6 @@ test("buildProjectCardMessage renders project snapshot", () => {
       },
     },
     billing: { tariff: 500, currency: "USD", nextPaymentDate: "2025-12-15", autobilling: true },
-    alerts: {
-      enabled: true,
-      channel: "both",
-      types: { leadInQueue: true, pause24h: true, paymentReminder: true },
-      leadQueueThresholdHours: 1,
-      pauseThresholdHours: 24,
-      paymentReminderDays: [7, 1],
-    },
     autoreports: { enabled: true, time: "10:00", mode: "yesterday_plus_week", sendTo: "both" },
     leads: {
       stats: { total: 168, today: 2 },
@@ -70,7 +62,6 @@ test("buildProjectCardMessage renders project snapshot", () => {
   assert.match(message, /💬 Лиды: <b>2<\/b> \(сегодня\) \| <b>168<\/b> \(всего\)/);
   assert.match(message, /🤖 Автобиллинг: включен/);
   assert.match(message, /🕒 Автоотчёты: <b>10:00<\/b> \(вкл, режим: вчера \+ неделя/);
-  assert.match(message, /🚨 Алерты: включены \(в чат и админу\)/);
   assert.match(message, /Чат-группа: <a href="https:\/\/t\.me\/c\/100123">Перейти<\/a> \(ID: -100123\)/);
   assert.match(message, /🌐 Портал: <a href="https:\/\/example\.test\/p\/proj_a">/);
 });

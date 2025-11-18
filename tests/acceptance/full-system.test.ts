@@ -14,7 +14,6 @@ const { R2Client } = await import("../../src/infra/r2.ts");
 const { putProjectsByUser } = await import("../../src/domain/spec/projects-by-user.ts");
 const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { putBillingRecord } = await import("../../src/domain/spec/billing.ts");
-const { putAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
 const { putAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
 const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
 const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
@@ -44,14 +43,6 @@ const seedProjectData = async (kv: InstanceType<typeof KvClient>, r2: InstanceTy
     currency: "USD",
     nextPaymentDate: "2025-12-15",
     autobilling: true,
-  });
-  await putAlertsRecord(kv, "proj_acceptance", {
-    enabled: true,
-    channel: "chat",
-    types: { leadInQueue: true, pause24h: true, paymentReminder: true },
-    leadQueueThresholdHours: 1,
-    pauseThresholdHours: 24,
-    paymentReminderDays: [7, 1],
   });
   await putAutoreportsRecord(kv, "proj_acceptance", {
     enabled: true,

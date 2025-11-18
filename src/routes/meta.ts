@@ -77,7 +77,7 @@ const dispatchLeadNotifications = async (
   lead: Lead,
   sendMessage: ProjectMessageDispatcher,
 ): Promise<boolean> => {
-  if (!token || !settings.alerts.leadNotifications) {
+  if (!token) {
     return false;
   }
 

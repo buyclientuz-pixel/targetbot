@@ -16,7 +16,6 @@ const { putProjectsByUser, getProjectsByUser } = await import("../../src/domain/
 const { putProjectRecord, requireProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { putProject, createProject } = await import("../../src/domain/projects.ts");
 const { putBillingRecord, getBillingRecord } = await import("../../src/domain/spec/billing.ts");
-const { putAlertsRecord, getAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
 const { putAutoreportsRecord, getAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
 const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
 const { putMetaCampaignsDocument } = await import("../../src/domain/spec/meta-campaigns.ts");
@@ -110,14 +109,6 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     currency: "USD",
     nextPaymentDate: "2025-01-01",
     autobilling: true,
-  });
-  await putAlertsRecord(kv, "proj_a", {
-    enabled: true,
-    channel: "both",
-    types: { leadInQueue: true, pause24h: true, paymentReminder: true },
-    leadQueueThresholdHours: 1,
-    pauseThresholdHours: 24,
-    paymentReminderDays: [7, 1],
   });
   await putAutoreportsRecord(kv, "proj_a", {
     enabled: true,
@@ -828,88 +819,6 @@ test("Telegram bot controller updates chat bindings via selection and manual inp
   }
 });
 
-test("Telegram bot controller toggles autoreports and alerts", async () => {
-  const kv = new KvClient(new MemoryKVNamespace());
-  const r2 = new R2Client(new MemoryR2Bucket());
-  await seedProject(kv, r2);
-
-  const controller = createController(kv, r2);
-  const stub = installFetchStub();
-
-  try {
-    await controller.handleUpdate({
-      callback_query: {
-        id: "auto1",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:autoreports-toggle:proj_a",
-      },
-    } as unknown as TelegramUpdate);
-    let autoreports = await getAutoreportsRecord(kv, "proj_a");
-    assert.equal(autoreports?.enabled, false);
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "auto2",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:autoreports-time:proj_a",
-      },
-    } as unknown as TelegramUpdate);
-
-    await controller.handleUpdate({
-      message: { chat: { id: 100 }, from: { id: 100 }, text: "11:30" },
-    } as unknown as TelegramUpdate);
-    autoreports = await getAutoreportsRecord(kv, "proj_a");
-    assert.equal(autoreports?.time, "11:30");
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "auto3",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:autoreports-send:proj_a:admin",
-      },
-    } as unknown as TelegramUpdate);
-    autoreports = await getAutoreportsRecord(kv, "proj_a");
-    assert.equal(autoreports?.sendTo, "admin");
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "alert1",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:alerts-toggle:proj_a",
-      },
-    } as unknown as TelegramUpdate);
-    let alerts = await getAlertsRecord(kv, "proj_a");
-    assert.equal(alerts?.enabled, false);
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "alert2",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:alerts-route-set:proj_a:admin",
-      },
-    } as unknown as TelegramUpdate);
-    alerts = await getAlertsRecord(kv, "proj_a");
-    assert.equal(alerts?.channel, "admin");
-
-    await controller.handleUpdate({
-      callback_query: {
-        id: "alert3",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "project:alerts-type:proj_a:lead",
-      },
-    } as unknown as TelegramUpdate);
-    alerts = await getAlertsRecord(kv, "proj_a");
-    assert.equal(alerts?.types.leadInQueue, false);
-  } finally {
-    stub.restore();
-  }
-});
 
 test("auto_send_now dispatches manual auto-report", async () => {
   const kv = new KvClient(new MemoryKVNamespace());

@@ -1,5 +1,4 @@
 import type { BillingRecord } from "../domain/spec/billing";
-import type { AlertsRecord } from "../domain/spec/alerts";
 import type { AutoreportsRecord } from "../domain/spec/autoreports";
 import type { ProjectRecord } from "../domain/spec/project";
 import type { ProjectLeadsListRecord } from "../domain/spec/project-leads";
@@ -84,22 +83,6 @@ const formatChatLink = (chatId: number | null): string | null => {
     return `https://t.me/c/${channelId}`;
   }
   return `tg://user?id=${chatId}`;
-};
-
-const mapAlertsChannel = (alerts: AlertsRecord): string => {
-  if (!alerts.enabled) {
-    return "выключены";
-  }
-  switch (alerts.channel) {
-    case "chat":
-      return "включены (в чат)";
-    case "admin":
-      return "включены (админу)";
-    case "both":
-      return "включены (в чат и админу)";
-    default:
-      return "включены";
-  }
 };
 
 const mapAutoreportSendTo = (autoreports: AutoreportsRecord): string => {
@@ -228,7 +211,7 @@ export const buildChatAlreadyUsedMessage = (): string =>
   "❌ Эта чат-группа уже используется другим проектом. Выберите другую.";
 
 export const buildProjectCardMessage = (bundle: ProjectBundle): string => {
-  const { project, billing, leads, campaigns, alerts, autoreports } = bundle;
+  const { project, billing, leads, campaigns, autoreports } = bundle;
   const spend = campaigns.summary.spend ?? null;
   const leadsToday = leads.stats.today ?? null;
   const cpa = computeCpa(spend, leadsToday);
@@ -260,7 +243,6 @@ export const buildProjectCardMessage = (bundle: ProjectBundle): string => {
   } else {
     lines.push("🕒 Автоотчёты: выключены");
   }
-  lines.push(`🚨 Алерты: ${mapAlertsChannel(alerts)}`);
   lines.push("");
   lines.push(buildChatGroupLine(project));
   lines.push(buildPortalLine(project));
@@ -599,31 +581,6 @@ export const buildAutoreportsRouteMessage = (
   lines.push(`Маршрут авто-отчётов — <b>${escapeHtml(project.name)}</b>`);
   lines.push("Выберите, куда отправлять ежедневные авто-отчёты.");
   lines.push(`Текущий маршрут: ${mapAutoreportSendTo(autoreports)}`);
-  return lines.join("\n");
-};
-
-export const buildAlertsMessage = (project: ProjectRecord, alerts: AlertsRecord): string => {
-  const lines: string[] = [];
-  lines.push(`Алерты — <b>${escapeHtml(project.name)}</b>`);
-  lines.push(`Статус: ${alerts.enabled ? "включены" : "выключены"}`);
-  lines.push(`Маршрут: ${mapAlertsChannel(alerts)}`);
-  lines.push(
-    `Типы: лиды ${alerts.types.leadInQueue ? "вкл" : "выкл"}, паузы ${
-      alerts.types.pause24h ? "вкл" : "выкл"
-    }, оплаты ${alerts.types.paymentReminder ? "вкл" : "выкл"}`,
-  );
-  lines.push(
-    `Порог очереди: ${alerts.leadQueueThresholdHours} ч, паузы: ${alerts.pauseThresholdHours} ч, ` +
-      `оплата за ${alerts.paymentReminderDays.join(", ")} дн.`,
-  );
-  return lines.join("\n");
-};
-
-export const buildAlertsRouteMessage = (project: ProjectRecord, alerts: AlertsRecord): string => {
-  const lines: string[] = [];
-  lines.push(`Маршрут алертов — <b>${escapeHtml(project.name)}</b>`);
-  lines.push("Укажите, куда отправлять напоминания и предупреждения.");
-  lines.push(`Сейчас: ${mapAlertsChannel(alerts)}`);
   return lines.join("\n");
 };
 

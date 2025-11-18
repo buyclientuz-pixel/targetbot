@@ -10,9 +10,8 @@ const { registerMetaRoutes } = await import("../../src/routes/meta.ts");
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
 const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
-const { putAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
 
-test("Meta webhook route persists leads and dispatches Telegram alerts", async () => {
+test("Meta webhook route persists leads and dispatches Telegram notifications", async () => {
   let lastMessage: { token: string | undefined; text: string; chatId: number | null } | null = null;
 
   const kvNamespace = new MemoryKVNamespace();
@@ -36,14 +35,6 @@ test("Meta webhook route persists leads and dispatches Telegram alerts", async (
       timezone: "Asia/Tashkent",
       kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
     },
-  });
-  await putAlertsRecord(kv, "birlash", {
-    enabled: true,
-    channel: "chat",
-    types: { leadInQueue: true, pause24h: false, paymentReminder: false },
-    leadQueueThresholdHours: 1,
-    pauseThresholdHours: 24,
-    paymentReminderDays: [7, 1],
   });
 
   const router = createRouter();

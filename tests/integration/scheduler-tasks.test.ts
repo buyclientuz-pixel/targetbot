@@ -8,14 +8,12 @@ const { createProject, putProject } = await import("../../src/domain/projects.ts
 const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { putBillingRecord } = await import("../../src/domain/spec/billing.ts");
 const { putAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
-const { putAlertsRecord } = await import("../../src/domain/spec/alerts.ts");
 const { putProjectLeadsList, putLeadDetailRecord } = await import(
   "../../src/domain/spec/project-leads.ts"
 );
 const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/meta-cache.ts");
 const { KV_KEYS } = await import("../../src/config/kv.ts");
 const { runAutoReports } = await import("../../src/services/auto-reports.ts");
-const { runAlerts } = await import("../../src/services/alerts.ts");
 const { runMaintenance } = await import("../../src/services/maintenance.ts");
 const { R2_KEYS } = await import("../../src/config/r2.ts");
 
@@ -179,124 +177,6 @@ test(
   },
 );
 
-test(
-  "runAlerts dispatches billing, meta, budget and pause alerts",
-  { concurrency: false },
-  async () => {
-    const kvNamespace = new MemoryKVNamespace();
-    const kv = new KvClient(kvNamespace);
-    const r2Bucket = new MemoryR2Bucket();
-    const r2 = new R2Client(r2Bucket);
-    const project = createProject({
-      id: "proj-alerts",
-      name: "Alerts Demo",
-      adsAccountId: "act_2",
-      ownerTelegramId: 555001,
-    });
-    await putProject(kv, project);
-    await putProjectRecord(kv, {
-      id: project.id,
-      name: project.name,
-      ownerId: project.ownerTelegramId,
-      adAccountId: project.adsAccountId,
-      chatId: -100500600,
-      portalUrl: "https://th-reports.buyclientuz.workers.dev/p/proj-alerts",
-      settings: { currency: "USD", timezone: "Asia/Tashkent", kpi: { mode: "auto", type: "LEAD", label: "Лиды" } },
-    });
-    await putBillingRecord(kv, project.id, {
-      tariff: 500,
-      currency: "USD",
-      nextPaymentDate: "2025-01-12",
-      autobilling: true,
-    });
-    await putAlertsRecord(kv, project.id, {
-      enabled: true,
-      channel: "admin",
-      types: { leadInQueue: true, pause24h: true, paymentReminder: true },
-      leadQueueThresholdHours: 1,
-      pauseThresholdHours: 24,
-      paymentReminderDays: [7, 1],
-    });
-    await putProjectLeadsList(r2, project.id, {
-      stats: { total: 2, today: 0 },
-      leads: [
-        {
-          id: "lead-old",
-          name: "Очередь",
-          phone: "+998901112233",
-          createdAt: "2025-01-11T06:00:00.000Z",
-          source: "facebook",
-          campaignName: "BirLash",
-          status: "new",
-          type: null,
-        },
-        {
-          id: "lead-fresh",
-          name: "Свежий",
-          phone: "+998909998877",
-          createdAt: "2025-01-11T08:30:00.000Z",
-          source: "facebook",
-          campaignName: "BirLash",
-          status: "processing",
-          type: null,
-        },
-      ],
-      syncedAt: "2025-01-11T08:45:00.000Z",
-    });
-
-    const campaignEntry = createMetaCacheEntry(
-      project.id,
-      "campaign-status",
-      { from: "2025-01-11", to: "2025-01-11" },
-      {
-        campaigns: [
-          {
-            id: "cmp-low",
-            name: "Low Budget",
-            status: "ACTIVE",
-            effectiveStatus: "ACTIVE",
-            dailyBudget: 20,
-            budgetRemaining: 100,
-            updatedTime: "2025-01-11T08:00:00.000Z",
-          },
-          {
-            id: "cmp-pause",
-            name: "Paused Long",
-            status: "PAUSED",
-            effectiveStatus: "PAUSED",
-            dailyBudget: 60,
-            budgetRemaining: 80,
-            updatedTime: "2025-01-08T03:00:00.000Z",
-          },
-        ],
-      },
-      3600,
-    );
-    await saveMetaCache(kv, campaignEntry);
-
-    const now = new Date("2025-01-11T09:00:00.000Z");
-    const telegram = stubTelegramFetch();
-
-    try {
-      await runAlerts(kv, r2, "TEST_TOKEN", now);
-    } finally {
-      telegram.restore();
-    }
-
-    assert.equal(telegram.calls.length, 3);
-    const texts = telegram.calls.map((call) => String(call.body.text ?? ""));
-    assert.ok(texts.some((text) => text.includes("Напоминание об оплате")));
-    assert.ok(texts.some((text) => text.includes("Лид ожидает ответа")));
-    assert.ok(texts.some((text) => text.includes("Кампании на паузе")));
-
-    const billingState = await kv.getJson<{ lastEventKey?: string }>(KV_KEYS.alertState(project.id, "billing"));
-    assert.ok(billingState?.lastEventKey?.startsWith("due:"));
-    const leadState = await kv.getJson<{ lastEventKey?: string }>(KV_KEYS.alertState(project.id, "lead-queue"));
-    assert.ok(leadState?.lastEventKey?.includes("lead-old"));
-    const pauseState = await kv.getJson<{ lastEventKey?: string }>(KV_KEYS.alertState(project.id, "pause"));
-    assert.ok(pauseState?.lastEventKey?.includes("cmp-pause"));
-  },
-);
 
 test(
   "runMaintenance removes stale leads and cache entries",
