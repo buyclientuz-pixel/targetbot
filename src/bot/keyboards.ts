@@ -1,5 +1,6 @@
 import type { AutoreportsRecord } from "../domain/spec/autoreports";
 import type { ProjectLeadsListRecord } from "../domain/spec/project-leads";
+import type { ProjectLeadNotificationSettings } from "../domain/project-settings";
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FreeChatRecord } from "../domain/project-chats";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
@@ -148,6 +149,7 @@ export const buildLeadsKeyboard = (
   projectId: string,
   leads: ProjectLeadsListRecord["leads"],
   status: ProjectLeadsListRecord["leads"][number]["status"],
+  leadSettings: ProjectLeadNotificationSettings,
 ): InlineKeyboardMarkup => ({
   inline_keyboard: [
     [
@@ -167,6 +169,16 @@ export const buildLeadsKeyboard = (
           callback_data: `lead:view:${projectId}:${lead.id}`,
         },
       ]),
+    [
+      {
+        text: leadSettings.sendToChat ? "👥 Чат — вкл" : "👥 Чат — выкл",
+        callback_data: `project:leads-target:${status}:${projectId}:chat`,
+      },
+      {
+        text: leadSettings.sendToAdmin ? "👤 Админ — вкл" : "👤 Админ — выкл",
+        callback_data: `project:leads-target:${status}:${projectId}:admin`,
+      },
+    ],
     [{ text: "📤 Экспорт лидов", callback_data: `project:export-leads:${projectId}` }],
     [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],
   ],

@@ -70,7 +70,7 @@ import {
 } from "../domain/spec/project";
 import { getProjectsByUser, putProjectsByUser } from "../domain/spec/projects-by-user";
 import { getUserSettingsRecord, updateUserSettingsRecord, type UserSettingsRecord } from "../domain/spec/user-settings";
-import { ensureProjectSettings, upsertProjectSettings } from "../domain/project-settings";
+import { ensureProjectSettings, upsertProjectSettings, type ProjectSettings } from "../domain/project-settings";
 import { deletePortalSyncState } from "../domain/portal-sync";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
@@ -697,14 +697,38 @@ const sendLeadsSection = async (
   ctx: BotContext,
   chatId: number,
   projectId: string,
-  status: "new" | "processing" | "done" | "trash",
+  status: ProjectLeadsListRecord["leads"][number]["status"],
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const settings = await ensureProjectSettings(ctx.kv, projectId);
   await sendTelegramMessage(ctx.token, {
     chatId,
-    text: buildLeadsMessage(bundle.project, bundle.leads, status),
-    replyMarkup: buildLeadsKeyboard(projectId, bundle.leads.leads, status),
+    text: buildLeadsMessage(bundle.project, bundle.leads, status, settings.leads),
+    replyMarkup: buildLeadsKeyboard(projectId, bundle.leads.leads, status, settings.leads),
   });
+};
+
+const handleLeadNotificationToggle = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+  status: ProjectLeadsListRecord["leads"][number]["status"],
+  target: "chat" | "admin",
+): Promise<void> => {
+  const settings = await ensureProjectSettings(ctx.kv, projectId);
+  const nextSettings = {
+    ...settings,
+    leads: {
+      ...settings.leads,
+      sendToChat: target === "chat" ? !settings.leads.sendToChat : settings.leads.sendToChat,
+      sendToAdmin: target === "admin" ? !settings.leads.sendToAdmin : settings.leads.sendToAdmin,
+    },
+    updatedAt: new Date().toISOString(),
+  } satisfies ProjectSettings;
+  await upsertProjectSettings(ctx.kv, nextSettings);
+  await renderPanel({ runtime, userId, chatId, panelId: `project:leads:${status}:${projectId}` });
 };
 
 const sendLeadDetail = async (
@@ -1628,6 +1652,17 @@ const handleCallback = async (
           break;
         case "leads":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:leads:${parts[2]!}:${parts[3]!}` });
+          break;
+        case "leads-target":
+          await handleLeadNotificationToggle(
+            ctx,
+            panelRuntime,
+            userId,
+            chatId,
+            parts[3]!,
+            parts[2]! as ProjectLeadsListRecord["leads"][number]["status"],
+            parts[4]! as "chat" | "admin",
+          );
           break;
         case "report":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:report:${parts[2]!}` });

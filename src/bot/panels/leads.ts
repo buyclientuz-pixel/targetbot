@@ -1,3 +1,4 @@
+import { ensureProjectSettings } from "../../domain/project-settings";
 import { loadProjectBundle } from "../data";
 import type { InlineKeyboardMarkup } from "../types";
 import type { PanelRenderer } from "./types";
@@ -39,8 +40,9 @@ export const render: PanelRenderer = async ({ runtime, params }) => {
       console.warn(`[bot:leads] Failed to refresh leads for ${projectId}: ${(error as Error).message}`);
     }
   }
+  const settings = await ensureProjectSettings(runtime.kv, projectId);
   return {
-    text: buildLeadsMessage(bundle.project, bundle.leads, status),
-    keyboard: buildLeadsKeyboard(projectId, bundle.leads.leads, status),
+    text: buildLeadsMessage(bundle.project, bundle.leads, status, settings.leads),
+    keyboard: buildLeadsKeyboard(projectId, bundle.leads.leads, status, settings.leads),
   };
 };

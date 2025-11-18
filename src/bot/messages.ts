@@ -7,6 +7,7 @@ import type { PaymentsHistoryDocument } from "../domain/spec/payments-history";
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
 import type { FreeChatRecord } from "../domain/project-chats";
+import type { ProjectLeadNotificationSettings } from "../domain/project-settings";
 
 import type { AnalyticsOverview, FinanceOverview, ProjectBundle } from "./data";
 import { translateMetaObjective } from "../services/meta-objectives";
@@ -89,6 +90,13 @@ const describeAutoreportTargets = (autoreports: AutoreportsRecord): string => {
   const segments: string[] = [];
   segments.push(`👥 чат — ${autoreports.sendToChat ? "вкл" : "выкл"}`);
   segments.push(`👤 админ — ${autoreports.sendToAdmin ? "вкл" : "выкл"}`);
+  return segments.join(", ");
+};
+
+const describeLeadNotificationTargets = (settings: ProjectLeadNotificationSettings): string => {
+  const segments: string[] = [];
+  segments.push(`👥 чат — ${settings.sendToChat ? "вкл" : "выкл"}`);
+  segments.push(`👤 админ — ${settings.sendToAdmin ? "вкл" : "выкл"}`);
   return segments.join(", ");
 };
 
@@ -310,11 +318,14 @@ export const buildLeadsMessage = (
   project: ProjectRecord,
   leads: ProjectLeadsListRecord,
   status: ProjectLeadsListRecord["leads"][number]["status"],
+  leadSettings: ProjectLeadNotificationSettings,
 ): string => {
   const filtered = leads.leads.filter((lead) => lead.status === status).slice(0, 5);
   const lines: string[] = [];
   lines.push(`Лиды проекта <b>${escapeHtml(project.name)}</b>`);
   lines.push(`Всего: <b>${leads.stats.total}</b> | Сегодня: <b>${leads.stats.today}</b>`);
+  lines.push("");
+  lines.push(`🔔 Уведомления: ${describeLeadNotificationTargets(leadSettings)}`);
   lines.push("");
   if (filtered.length === 0) {
     lines.push("В этом статусе заявок нет.");

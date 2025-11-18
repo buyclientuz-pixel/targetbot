@@ -588,6 +588,64 @@ test("Telegram bot controller exports leads as CSV document", async () => {
   }
 });
 
+test("lead notifications can be toggled from the leads panel", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await ensureProjectSettings(kv, "proj_a");
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-show-leads",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 77 },
+        data: "project:leads:new:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    const leadsMessage = findLastSendMessage(stub.requests);
+    assert.ok(leadsMessage, "expected leads panel render");
+    const leadsText = String(leadsMessage?.body?.text ?? "");
+    assert.match(leadsText, /Уведомления:/);
+    const leadsKeyboard = leadsMessage?.body?.reply_markup as {
+      inline_keyboard: { text: string; callback_data?: string }[][];
+    };
+    const toggleButton = leadsKeyboard?.inline_keyboard
+      ?.flat()
+      .find((button) => button.text?.startsWith("👥 Чат"));
+    assert.ok(toggleButton);
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-toggle",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 78 },
+        data: "project:leads-target:new:proj_a:chat",
+      },
+    } as unknown as TelegramUpdate);
+
+    const updatedSettings = await ensureProjectSettings(kv, "proj_a");
+    assert.equal(updatedSettings.leads.sendToChat, false);
+    const rerender = findLastSendMessage(stub.requests);
+    assert.ok(rerender, "expected panel rerender after toggle");
+    const rerenderKeyboard = rerender?.body?.reply_markup as {
+      inline_keyboard: { text: string; callback_data?: string }[][];
+    };
+    const rerenderChatButton = rerenderKeyboard?.inline_keyboard
+      ?.flat()
+      .find((button) => button.text?.startsWith("👥 Чат"));
+    assert.ok(rerenderChatButton?.text?.includes("выкл"));
+  } finally {
+    stub.restore();
+  }
+});
+
 test("cmd:webhooks normalises worker URL", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());
