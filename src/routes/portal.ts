@@ -2,7 +2,6 @@ import { loadProjectBundle, type ProjectBundle } from "../bot/data";
 import {
   loadProjectSummary,
   loadProjectCampaignStatuses,
-  resolvePeriodRange,
   syncProjectCampaignDocument,
   type CampaignStatus,
 } from "../services/project-insights";
@@ -10,13 +9,13 @@ import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
 import { applyCors, preflight } from "../http/cors";
 import { requireProjectRecord } from "../domain/spec/project";
-import { listLeads, type Lead, type LeadStatus } from "../domain/leads";
-import { getProjectLeadsList, type ProjectLeadsListRecord } from "../domain/spec/project-leads";
 import type { R2Client } from "../infra/r2";
 import type { Router } from "../worker/router";
 import type { RequestContext } from "../worker/context";
 import { translateMetaObjective } from "../services/meta-objectives";
 import { refreshProjectLeads } from "../services/project-leads-sync";
+import { resolvePortalPeriodRange } from "../services/period-range";
+import { loadProjectLeadsView } from "../services/project-leads-view";
 
 const htmlResponse = (body: string): Response =>
   new Response(body, {
@@ -99,122 +98,6 @@ const buildSummaryPayload = (
   };
 };
 
-const mapLeadStatusForPortal = (
-  status: ProjectLeadsListRecord["leads"][number]["status"] | LeadStatus,
-): ProjectLeadsListRecord["leads"][number]["status"] => {
-  if (typeof status === "string") {
-    const normalised = status.toLowerCase();
-    if (normalised === "new" || normalised === "processing" || normalised === "done" || normalised === "trash") {
-      return normalised;
-    }
-  }
-  return "new";
-};
-
-const normaliseLeadContact = (lead: Lead): string => {
-  if (lead.contact && lead.contact.trim().length > 0) {
-    const contact = lead.contact.trim();
-    return contact.toLowerCase() === "сообщение" ? "сообщение" : contact;
-  }
-  if (lead.phone) {
-    return lead.phone;
-  }
-  if (lead.message) {
-    return "сообщение";
-  }
-  return "—";
-};
-
-const formatDateOnly = (date: Date): string => date.toISOString().split("T")[0] ?? date.toISOString();
-
-const resolvePortalPeriodRange = (
-  periodKey: string,
-  timeZone: string | null,
-  from?: string | null,
-  to?: string | null,
-): ReturnType<typeof resolvePeriodRange> => {
-  if (!from && !to) {
-    return resolvePeriodRange(periodKey, timeZone);
-  }
-  if (!from || !to) {
-    throw new DataValidationError("Параметры from и to должны быть указаны вместе");
-  }
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
-  if (Number.isNaN(fromDate.getTime())) {
-    throw new DataValidationError("Некорректное значение параметра from");
-  }
-  if (Number.isNaN(toDate.getTime())) {
-    throw new DataValidationError("Некорректное значение параметра to");
-  }
-  if (fromDate.getTime() > toDate.getTime()) {
-    throw new DataValidationError("Параметр from должен быть раньше to");
-  }
-  return {
-    key: "custom",
-    from: fromDate,
-    to: toDate,
-    period: { from: formatDateOnly(fromDate), to: formatDateOnly(toDate) },
-  } satisfies ReturnType<typeof resolvePeriodRange>;
-};
-
-const loadPortalLeadsPayload = async (
-  r2: R2Client,
-  projectId: string,
-  periodKey: string,
-  timeZone: string | null,
-  options?: { from?: string | null; to?: string | null },
-): Promise<{
-  period: ReturnType<typeof resolvePeriodRange>["period"];
-  periodKey: string;
-  leads: Array<{
-    id: string;
-    name: string;
-    contact: string;
-    phone: string | null;
-    message: string | null;
-    createdAt: string;
-    campaignName: string;
-    campaignId: string | null;
-    status: ProjectLeadsListRecord["leads"][number]["status"];
-    type: string;
-    source: string;
-  }>;
-  stats: ProjectLeadsListRecord["stats"];
-  syncedAt: string | null;
-}> => {
-  const range = resolvePortalPeriodRange(periodKey, timeZone, options?.from ?? null, options?.to ?? null);
-  const fromTime = range.from.getTime();
-  const toTime = range.to.getTime();
-  const leads = await listLeads(r2, projectId);
-  const filtered = leads
-    .filter((lead) => {
-      const created = Date.parse(lead.createdAt);
-      return Number.isFinite(created) && created >= fromTime && created <= toTime;
-    })
-    .map((lead) => ({
-      id: lead.id,
-      name: lead.name,
-      contact: normaliseLeadContact(lead),
-      phone: lead.phone,
-      message: lead.message,
-      createdAt: lead.createdAt,
-      campaignName: lead.campaign ?? "—",
-      campaignId: lead.campaignId,
-      status: mapLeadStatusForPortal(lead.status as LeadStatus),
-      type: lead.phone ? "lead" : "message",
-      source: lead.source,
-    }))
-    .sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt > b.createdAt ? -1 : 1));
-  const summary = (await getProjectLeadsList(r2, projectId)) ?? null;
-  const todayKey = new Date().toISOString().slice(0, 10);
-  const stats = summary?.stats ?? {
-    total: leads.length,
-    today: leads.filter((lead) => lead.createdAt.slice(0, 10) === todayKey).length,
-  };
-  return { period: range.period, periodKey: range.key, leads: filtered, stats, syncedAt: summary?.syncedAt ?? null };
-};
-
 const buildCampaignsPayload = (
   bundle: ProjectBundle,
   requestedPeriod: string,
@@ -265,7 +148,9 @@ const respondWithProjectLeads = async (
     if (options?.refresh) {
       await refreshProjectLeads(context.kv, context.r2, projectId, { projectRecord });
     }
-    const payload = await loadPortalLeadsPayload(context.r2, projectId, periodKey, timeZone, {
+    const payload = await loadProjectLeadsView(context.r2, projectId, {
+      periodKey,
+      timeZone,
       from: options?.from ?? null,
       to: options?.to ?? null,
     });
@@ -307,6 +192,8 @@ export const renderPortalHtml = (projectId: string): string => {
           leadsEmpty: document.querySelector('[data-leads-empty]'),
           leadsSkeleton: document.querySelector('[data-leads-skeleton]'),
           leadsPeriod: document.querySelector('[data-leads-period]'),
+          leadsPeriodStats: document.querySelector('[data-leads-period-stats]'),
+          leadsTotalStats: document.querySelector('[data-leads-total-stats]'),
           campaignsBody: document.querySelector('[data-campaigns-body]'),
           campaignsEmpty: document.querySelector('[data-campaigns-empty]'),
           campaignsSkeleton: document.querySelector('[data-campaigns-skeleton]'),
@@ -594,9 +481,23 @@ export const renderPortalHtml = (projectId: string): string => {
             elements.focusCpl.textContent = cplValue ?? '—';
           }
         };
+        const describeLeadStats = (label, stats) => {
+          if (!stats) {
+            return label + ': —';
+          }
+          const total = formatNumber(stats.total);
+          const today = formatNumber(stats.today);
+          return label + ': ' + total + ' | Сегодня: ' + today;
+        };
         const renderLeads = (payload) => {
           if (elements.leadsPeriod) {
             elements.leadsPeriod.textContent = formatDateRange(payload?.period);
+          }
+          if (elements.leadsPeriodStats) {
+            elements.leadsPeriodStats.textContent = describeLeadStats('Всего за период', payload?.periodStats);
+          }
+          if (elements.leadsTotalStats) {
+            elements.leadsTotalStats.textContent = describeLeadStats('За всё время', payload?.stats);
           }
           const leads = payload?.leads || [];
           if (elements.leadsBody) {
@@ -1015,6 +916,19 @@ export const renderPortalHtml = (projectId: string): string => {
         color: var(--portal-muted);
         font-size: 14px;
       }
+      .portal-section__meta {
+        margin-top: 6px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--portal-muted);
+      }
+      .portal-section__meta span {
+        background: rgba(15, 23, 42, 0.08);
+        border-radius: 999px;
+        padding: 2px 10px;
+      }
       .portal-metrics {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -1394,6 +1308,10 @@ export const renderPortalHtml = (projectId: string): string => {
             <div>
               <div class="portal-section__title">Лиды</div>
               <div class="portal-section__subtitle" data-leads-period>—</div>
+              <div class="portal-section__meta">
+                <span data-leads-period-stats>Всего за период: —</span>
+                <span data-leads-total-stats>За всё время: —</span>
+              </div>
             </div>
             <button class="portal-retry" type="button" data-retry-leads>Обновить</button>
           </div>

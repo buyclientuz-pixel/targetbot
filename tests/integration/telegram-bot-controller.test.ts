@@ -117,21 +117,45 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     sendToChat: true,
     sendToAdmin: true,
   });
+  const now = new Date();
+  const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+  const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString();
+  const twentyDaysAgo = new Date(now.getTime() - 20 * 24 * 60 * 60 * 1000).toISOString();
   await putProjectLeadsList(r2, "proj_a", {
-    stats: { total: 10, today: 2 },
+    stats: { total: 3, today: 1 },
     leads: [
       {
         id: "lead_1",
         name: "User",
         phone: "+99890",
-        createdAt: "2025-01-01T00:00:00Z",
+        createdAt: thirtyMinutesAgo,
         source: "facebook",
         campaignName: "Test",
         status: "new",
-        type: null,
+        type: "lead",
+      },
+      {
+        id: "lead_2",
+        name: "Processing",
+        phone: "сообщение",
+        createdAt: threeDaysAgo,
+        source: "facebook",
+        campaignName: "Test",
+        status: "processing",
+        type: "message",
+      },
+      {
+        id: "lead_3",
+        name: "Closed",
+        phone: "+99899",
+        createdAt: twentyDaysAgo,
+        source: "facebook",
+        campaignName: "Archive",
+        status: "done",
+        type: "lead",
       },
     ],
-    syncedAt: "2025-01-01T00:05:00Z",
+    syncedAt: new Date().toISOString(),
   });
   await putMetaCampaignsDocument(r2, "proj_a", {
     period: { from: "2025-01-01", to: "2025-01-01" },
@@ -151,6 +175,11 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     ],
   });
   await putPaymentsHistoryDocument(r2, "proj_a", { payments: [] });
+  return {
+    todayLeadDate: thirtyMinutesAgo.slice(0, 10),
+    weekLeadDate: threeDaysAgo.slice(0, 10),
+    monthLeadDate: twentyDaysAgo.slice(0, 10),
+  } as const;
 };
 
 test("Telegram bot controller serves menu and project list", async () => {
@@ -610,6 +639,8 @@ test("lead notifications can be toggled from the leads panel", async () => {
     const leadsMessage = findLastSendMessage(stub.requests);
     assert.ok(leadsMessage, "expected leads panel render");
     const leadsText = String(leadsMessage?.body?.text ?? "");
+    assert.match(leadsText, /Период:/);
+    assert.match(leadsText, /Всего за период:/);
     assert.match(leadsText, /Уведомления:/);
     const leadsKeyboard = leadsMessage?.body?.reply_markup as {
       inline_keyboard: { text: string; callback_data?: string }[][];
@@ -626,7 +657,7 @@ test("lead notifications can be toggled from the leads panel", async () => {
         id: "cb-toggle",
         from: { id: 100 },
         message: { chat: { id: 100 }, message_id: 78 },
-        data: "project:leads-target:new:proj_a:chat",
+        data: "project:leads-target:new:proj_a:chat:today",
       },
     } as unknown as TelegramUpdate);
 
@@ -641,6 +672,84 @@ test("lead notifications can be toggled from the leads panel", async () => {
       ?.flat()
       .find((button) => button.text?.startsWith("👥 Чат"));
     assert.ok(rerenderChatButton?.text?.includes("выкл"));
+  } finally {
+    stub.restore();
+  }
+});
+
+test("leads panel period buttons expand the dataset", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await ensureProjectSettings(kv, "proj_a");
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-show-leads",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 77 },
+        data: "project:leads:new:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-period-week",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 78 },
+        data: "project:leads:new:proj_a:week",
+      },
+    } as unknown as TelegramUpdate);
+
+    const weekMessage = findLastSendMessage(stub.requests);
+    assert.ok(weekMessage, "expected leads panel rerender for week period");
+    const text = String(weekMessage?.body?.text ?? "");
+    assert.match(text, /Всего за период: <b>2<\/b>/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("custom lead ranges can be entered manually", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const { monthLeadDate } = await seedProject(kv, r2);
+  await ensureProjectSettings(kv, "proj_a");
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-range",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 80 },
+        data: "project:leads-range:new:proj_a",
+      },
+    } as unknown as TelegramUpdate);
+
+    const prompt = findLastSendMessage(stub.requests);
+    assert.ok(prompt, "expected manual range prompt");
+    assert.match(String(prompt?.body?.text ?? ""), /Введите период/);
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      message: { chat: { id: 100, type: "private" }, from: { id: 100 }, text: `${monthLeadDate} ${monthLeadDate}` },
+    } as unknown as TelegramUpdate);
+
+    const customMessage = findLastSendMessage(stub.requests);
+    assert.ok(customMessage, "expected custom range render");
+    const text = String(customMessage?.body?.text ?? "");
+    assert.match(text, new RegExp(`Период: ${monthLeadDate}`));
+    assert.match(text, /Всего за период: <b>1<\/b>/);
   } finally {
     stub.restore();
   }

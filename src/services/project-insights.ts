@@ -98,6 +98,13 @@ const extractZonedParts = (date: Date, timeZone: string): Record<string, number>
   };
 };
 
+const resolveZoneOffset = (date: Date, timeZone: string) => {
+  const parts = extractZonedParts(date, timeZone);
+  const localAsUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second, 0);
+  const offsetMs = localAsUtc - date.getTime();
+  return { parts, offsetMs };
+};
+
 const formatZonedDate = (date: Date, timeZone: string | null): string => {
   if (!timeZone) {
     return toIsoDate(date);
@@ -111,16 +118,18 @@ const startOfDayWithZone = (date: Date, timeZone: string | null): Date => {
   if (!timeZone) {
     return startOfDay(date);
   }
-  const parts = extractZonedParts(date, timeZone);
-  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0, 0));
+  const { parts, offsetMs } = resolveZoneOffset(date, timeZone);
+  const utcTime = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0, 0) - offsetMs;
+  return new Date(utcTime);
 };
 
 const endOfDayWithZone = (date: Date, timeZone: string | null): Date => {
   if (!timeZone) {
     return endOfDay(date);
   }
-  const parts = extractZonedParts(date, timeZone);
-  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 23, 59, 59, 999));
+  const { parts, offsetMs } = resolveZoneOffset(date, timeZone);
+  const utcTime = Date.UTC(parts.year, parts.month - 1, parts.day, 23, 59, 59, 999) - offsetMs;
+  return new Date(utcTime);
 };
 
 const buildPeriodRange = (

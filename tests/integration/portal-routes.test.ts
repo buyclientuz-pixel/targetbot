@@ -137,7 +137,11 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.equal(leadsResponse.status, 200);
   const leadsPayload = (await leadsResponse.clone().json()) as {
     ok: boolean;
-    data: { leads: Array<{ id: string; status: string; contact: string }>; stats: { total: number; today: number } };
+    data: {
+      leads: Array<{ id: string; status: string; contact: string }>;
+      stats: { total: number; today: number };
+      periodStats: { total: number; today: number };
+    };
   };
   assert.ok(leadsPayload.ok);
   assert.equal(leadsPayload.data.leads.length, 1);
@@ -145,6 +149,8 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.equal(leadsPayload.data.leads[0]?.status, "new");
   assert.equal(leadsPayload.data.leads[0]?.contact, "+998902867999");
   assert.equal(leadsPayload.data.stats.total, 170);
+  assert.equal(leadsPayload.data.periodStats.total, 1);
+  assert.equal(leadsPayload.data.periodStats.today, 0);
 
   const customFrom = new Date(new Date(recentLeadDate).getTime() - 60 * 60 * 1000).toISOString();
   const customTo = new Date(new Date(recentLeadDate).getTime() + 60 * 60 * 1000).toISOString();
@@ -160,6 +166,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.ok(leadsRangePayload.ok);
   assert.equal(leadsRangePayload.data.periodKey, "custom");
   assert.equal(leadsRangePayload.data.leads.length, 1);
+  assert.equal(leadsRangePayload.data.periodStats.total, 1);
 
   const campaignsResponse = await router.dispatch(
     new Request("https://example.com/api/projects/birlash/campaigns?period=yesterday"),

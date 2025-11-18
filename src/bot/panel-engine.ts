@@ -52,8 +52,12 @@ const resolvePanel = (panelId: string): ResolveResult => {
     return { renderer: renderBilling, params: [panelId.split(":")[2]!], id: panelId };
   }
   if (panelId.startsWith("project:leads:")) {
-    const [, , status, projectId] = panelId.split(":");
-    return { renderer: renderLeads, params: [status ?? "new", projectId ?? ""], id: panelId };
+    const [, , status, projectId, periodKey, from, to] = panelId.split(":");
+    return {
+      renderer: renderLeads,
+      params: [status ?? "new", projectId ?? "", periodKey ?? "today", from ?? "", to ?? ""],
+      id: panelId,
+    };
   }
   if (panelId.startsWith("lead:detail:")) {
     const [, , projectId, leadId] = panelId.split(":");

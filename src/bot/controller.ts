@@ -87,6 +87,7 @@ import { deleteProjectCascade, releaseProjectChat } from "../services/project-li
 import { PORTAL_PERIOD_KEYS, syncPortalMetrics, type PortalSyncResult } from "../services/portal-sync";
 import { sendAutoReportNow } from "../services/auto-reports";
 import { translateMetaObjective } from "../services/meta-objectives";
+import { loadProjectLeadsView } from "../services/project-leads-view";
 import { syncProjectMetaAccount, syncUserProjectsMetaAccount } from "../services/project-meta";
 import { upsertMetaTokenRecord } from "../domain/meta-tokens";
 import { normaliseBaseUrl } from "../utils/url";
@@ -127,6 +128,7 @@ interface CreateTelegramBotControllerOptions {
 
 const DEFAULT_WORKER_DOMAIN = "th-reports.buyclientuz.workers.dev";
 const FACEBOOK_AUTH_GUIDE_FALLBACK = "https://developers.facebook.com/tools/explorer/";
+const DEFAULT_LEAD_STATUS: ProjectLeadsListRecord["leads"][number]["status"] = "new";
 
 const escapeHtml = (value: string): string =>
   value
@@ -693,21 +695,6 @@ const handleBillingManualInput = async (
   await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Оплата обновлена: ${parsedDate}`);
 };
 
-const sendLeadsSection = async (
-  ctx: BotContext,
-  chatId: number,
-  projectId: string,
-  status: ProjectLeadsListRecord["leads"][number]["status"],
-): Promise<void> => {
-  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  const settings = await ensureProjectSettings(ctx.kv, projectId);
-  await sendTelegramMessage(ctx.token, {
-    chatId,
-    text: buildLeadsMessage(bundle.project, bundle.leads, status, settings.leads),
-    replyMarkup: buildLeadsKeyboard(projectId, bundle.leads.leads, status, settings.leads),
-  });
-};
-
 const handleLeadNotificationToggle = async (
   ctx: BotContext,
   runtime: ReturnType<typeof buildPanelRuntime>,
@@ -716,6 +703,9 @@ const handleLeadNotificationToggle = async (
   projectId: string,
   status: ProjectLeadsListRecord["leads"][number]["status"],
   target: "chat" | "admin",
+  periodKey?: string | null,
+  from?: string | null,
+  to?: string | null,
 ): Promise<void> => {
   const settings = await ensureProjectSettings(ctx.kv, projectId);
   const nextSettings = {
@@ -728,7 +718,30 @@ const handleLeadNotificationToggle = async (
     updatedAt: new Date().toISOString(),
   } satisfies ProjectSettings;
   await upsertProjectSettings(ctx.kv, nextSettings);
-  await renderPanel({ runtime, userId, chatId, panelId: `project:leads:${status}:${projectId}` });
+  await renderPanel({
+    runtime,
+    userId,
+    chatId,
+    panelId: buildLeadsPanelId(status, projectId, { periodKey, from, to }),
+  });
+};
+
+const handleLeadsRangeInput = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+  status: ProjectLeadsListRecord["leads"][number]["status"],
+  input: string,
+): Promise<void> => {
+  const { from, to } = parseDateRangeInput(input);
+  await renderPanel({
+    runtime,
+    userId,
+    chatId,
+    panelId: buildLeadsPanelId(status, projectId, { periodKey: "custom", from, to }),
+  });
 };
 
 const sendLeadDetail = async (
@@ -953,19 +966,56 @@ const buildExportFilename = (projectId: string, type: string): string => {
   return `${projectId}-${type}-${safeTimestamp}.csv`;
 };
 
+const buildLeadsPanelId = (
+  status: ProjectLeadsListRecord["leads"][number]["status"],
+  projectId: string,
+  options?: { periodKey?: string | null; from?: string | null; to?: string | null },
+): string => {
+  const periodKey = options?.periodKey && options.periodKey.trim().length > 0 ? options.periodKey : "today";
+  if (periodKey === "custom") {
+    const from = options?.from && options.from.length > 0 ? options.from : "";
+    const to = options?.to && options.to.length > 0 ? options.to : "";
+    return `project:leads:${status}:${projectId}:custom:${from}:${to}`;
+  }
+  return `project:leads:${status}:${projectId}:${periodKey}`;
+};
+
+const parseDateRangeInput = (input: string): { from: string; to: string } => {
+  const matches = input.match(/(\d{4}-\d{2}-\d{2}|\d{2}[.]\d{2}[.]\d{4})/g);
+  if (!matches || matches.length < 2) {
+    throw new Error("Укажите две даты в формате YYYY-MM-DD или DD.MM.YYYY");
+  }
+  const [rawFrom, rawTo] = matches;
+  const from = parseDateInput(rawFrom);
+  const to = parseDateInput(rawTo);
+  if (from > to) {
+    throw new Error("Дата начала должна быть раньше даты окончания");
+  }
+  return { from, to };
+};
+
 const sendCsvExport = async (
   ctx: BotContext,
   chatId: number,
   projectId: string,
   type: "leads" | "campaigns" | "payments",
+  options?: { periodKey?: string | null; from?: string | null; to?: string | null },
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   let rows: string[][] = [];
   switch (type) {
     case "leads": {
+      const periodKey = options?.periodKey ?? "all";
+      const timeZone = bundle.project.settings?.timezone ?? ctx.defaultTimezone ?? null;
+      const view = await loadProjectLeadsView(ctx.r2, projectId, {
+        periodKey,
+        timeZone,
+        from: options?.from ?? null,
+        to: options?.to ?? null,
+      });
       rows = [
-        ["id", "name", "phone", "created_at", "status", "campaign"],
-        ...bundle.leads.leads.map((lead) => [
+        ["id", "name", "contact", "created_at", "status", "campaign"],
+        ...view.leads.map((lead) => [
           lead.id,
           lead.name,
           lead.phone,
@@ -1650,20 +1700,65 @@ const handleCallback = async (
         case "billing":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:billing:${parts[2]!}` });
           break;
-        case "leads":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:leads:${parts[2]!}:${parts[3]!}` });
+        case "leads": {
+          const status = (parts[2] as ProjectLeadsListRecord["leads"][number]["status"]) ?? DEFAULT_LEAD_STATUS;
+          const projectId = parts[3];
+          if (!projectId) {
+            await sendTelegramMessage(ctx.token, { chatId, text: "Проект не найден" });
+            break;
+          }
+          const periodKey = parts[4] ?? "today";
+          const from = parts[5] ?? null;
+          const to = parts[6] ?? null;
+          await renderPanel({
+            runtime: panelRuntime,
+            userId,
+            chatId,
+            panelId: buildLeadsPanelId(status, projectId, { periodKey, from, to }),
+          });
           break;
-        case "leads-target":
+        }
+        case "leads-target": {
+          const status = (parts[2] as ProjectLeadsListRecord["leads"][number]["status"]) ?? DEFAULT_LEAD_STATUS;
+          const projectId = parts[3];
+          const target = parts[4] as "chat" | "admin";
+          if (!projectId || !target) {
+            break;
+          }
+          const periodKey = parts[5] ?? null;
+          const from = parts[6] ?? null;
+          const to = parts[7] ?? null;
           await handleLeadNotificationToggle(
             ctx,
             panelRuntime,
             userId,
             chatId,
-            parts[3]!,
-            parts[2]! as ProjectLeadsListRecord["leads"][number]["status"],
-            parts[4]! as "chat" | "admin",
+            projectId,
+            status,
+            target,
+            periodKey,
+            from,
+            to,
           );
           break;
+        }
+        case "leads-range": {
+          const status = (parts[2] as ProjectLeadsListRecord["leads"][number]["status"]) ?? DEFAULT_LEAD_STATUS;
+          const projectId = parts[3];
+          if (!projectId) {
+            break;
+          }
+          await saveBotSession(ctx.kv, {
+            userId,
+            state: { type: "leads:set-range", projectId, status },
+            updatedAt: new Date().toISOString(),
+          });
+          await sendTelegramMessage(ctx.token, {
+            chatId,
+            text: "Введите период в формате '2024-01-01 2024-01-31'",
+          });
+          break;
+        }
         case "report":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:report:${parts[2]!}` });
           break;
@@ -1688,9 +1783,17 @@ const handleCallback = async (
         case "export":
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:export:${parts[2]!}` });
           break;
-        case "export-leads":
-          await sendCsvExport(ctx, chatId, parts[2]!, "leads");
+        case "export-leads": {
+          const projectId = parts[2];
+          if (!projectId) {
+            break;
+          }
+          const periodKey = parts[3] ?? null;
+          const from = parts[4] ?? null;
+          const to = parts[5] ?? null;
+          await sendCsvExport(ctx, chatId, projectId, "leads", { periodKey, from, to });
           break;
+        }
         case "export-campaigns":
           await sendCsvExport(ctx, chatId, parts[2]!, "campaigns");
           break;
@@ -2031,14 +2134,26 @@ const handleSessionInput = async (
         await handleChatManualInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, trimmed);
         await clearBotSession(ctx.kv, userId);
         return true;
-      case "autoreports:set-time":
-        await handleAutoreportsTimeInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, trimmed);
-        await clearBotSession(ctx.kv, userId);
-        return true;
-      default:
-        return false;
-    }
-  } catch (error) {
+    case "autoreports:set-time":
+      await handleAutoreportsTimeInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, trimmed);
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    case "leads:set-range":
+      await handleLeadsRangeInput(
+        ctx,
+        panelRuntime,
+        userId,
+        chatId,
+        sessionState.state.projectId,
+        (sessionState.state.status as ProjectLeadsListRecord["leads"][number]["status"]) ?? "new",
+        trimmed,
+      );
+      await clearBotSession(ctx.kv, userId);
+      return true;
+    default:
+      return false;
+  }
+} catch (error) {
     await sendTelegramMessage(ctx.token, {
       chatId,
       text: `⚠️ ${((error as Error).message ?? 'Не удалось обработать ввод').slice(0, 300)}`,

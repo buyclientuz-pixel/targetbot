@@ -10,7 +10,9 @@ import type { FreeChatRecord } from "../domain/project-chats";
 import type { ProjectLeadNotificationSettings } from "../domain/project-settings";
 
 import type { AnalyticsOverview, FinanceOverview, ProjectBundle } from "./data";
+import { leadStatusLabel } from "./data";
 import { translateMetaObjective } from "../services/meta-objectives";
+import type { ProjectLeadsViewPayload } from "../services/project-leads-view";
 
 const escapeHtml = (value: string): string =>
   value
@@ -303,8 +305,8 @@ const formatLeadEntry = (lead: ProjectLeadsListRecord["leads"][number]): string 
   const lines: string[] = [];
   lines.push("🔔 Лид ожидает ответа");
   lines.push(`Имя: <b>${escapeHtml(lead.name)}</b>`);
-  lines.push(`Телефон: ${escapeHtml(lead.phone)}`);
-  lines.push(`Получен: ${formatDate(lead.createdAt)}`);
+  lines.push(`Контакт: ${escapeHtml(lead.phone)}`);
+  lines.push(`Получен: ${formatDateTime(lead.createdAt)}`);
   lines.push(`Реклама: ${escapeHtml(lead.campaignName)}`);
   if (lead.status === "new") {
     lines.push(`В очереди уже ${formatLeadDuration(lead.createdAt)}`);
@@ -316,14 +318,21 @@ const formatLeadEntry = (lead: ProjectLeadsListRecord["leads"][number]): string 
 
 export const buildLeadsMessage = (
   project: ProjectRecord,
-  leads: ProjectLeadsListRecord,
+  view: ProjectLeadsViewPayload,
   status: ProjectLeadsListRecord["leads"][number]["status"],
   leadSettings: ProjectLeadNotificationSettings,
 ): string => {
-  const filtered = leads.leads.filter((lead) => lead.status === status).slice(0, 5);
+  const filtered = view.leads.filter((lead) => lead.status === status).slice(0, 5);
   const lines: string[] = [];
   lines.push(`Лиды проекта <b>${escapeHtml(project.name)}</b>`);
-  lines.push(`Всего: <b>${leads.stats.total}</b> | Сегодня: <b>${leads.stats.today}</b>`);
+  lines.push(`Период: ${view.period.from} — ${view.period.to}`);
+  lines.push(`Всего за период: <b>${view.periodStats.total}</b> | Сегодня: <b>${view.periodStats.today}</b>`);
+  if (view.periodKey !== "all" || view.stats.total !== view.periodStats.total) {
+    lines.push(`За всё время: <b>${view.stats.total}</b> | Сегодня: <b>${view.stats.today}</b>`);
+  }
+  const statusLabel = leadStatusLabel(status);
+  const statusCount = view.countsByStatus[status] ?? 0;
+  lines.push(`${statusLabel}: <b>${statusCount}</b>`);
   lines.push("");
   lines.push(`🔔 Уведомления: ${describeLeadNotificationTargets(leadSettings)}`);
   lines.push("");
