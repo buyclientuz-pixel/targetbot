@@ -85,16 +85,44 @@ const formatChatLink = (chatId: number | null): string | null => {
   return `tg://user?id=${chatId}`;
 };
 
-const mapAutoreportSendTo = (autoreports: AutoreportsRecord): string => {
-  switch (autoreports.sendTo) {
-    case "chat":
-      return "в чат";
-    case "admin":
-      return "админу";
-    case "both":
-      return "в чат и админу";
+const describeAutoreportTargets = (autoreports: AutoreportsRecord): string => {
+  const segments: string[] = [];
+  segments.push(`👥 чат — ${autoreports.sendToChat ? "вкл" : "выкл"}`);
+  segments.push(`👤 админ — ${autoreports.sendToAdmin ? "вкл" : "выкл"}`);
+  return segments.join(", ");
+};
+
+const summariseAutoreportRecipients = (autoreports: AutoreportsRecord): string => {
+  const targets: string[] = [];
+  if (autoreports.sendToChat) {
+    targets.push("чат");
+  }
+  if (autoreports.sendToAdmin) {
+    targets.push("админ");
+  }
+  if (targets.length === 0) {
+    return "каналы: отключены";
+  }
+  return `каналы: ${targets.join(" + ")}`;
+};
+
+const describeAutoreportMode = (mode: string): string => {
+  switch (mode) {
+    case "today":
+      return "сегодня";
+    case "yesterday":
+      return "вчера";
+    case "week":
+      return "неделя";
+    case "month":
+      return "месяц";
+    case "all":
+    case "max":
+      return "максимум";
+    case "yesterday_plus_week":
+      return "вчера + неделя";
     default:
-      return "—";
+      return mode;
   }
 };
 
@@ -213,9 +241,9 @@ export const buildProjectCardMessage = (bundle: ProjectBundle): string => {
   lines.push("");
   if (autoreports.enabled) {
     lines.push(
-      `🕒 Автоотчёты: <b>${autoreports.time}</b> (вкл, режим: вчера + неделя, ${mapAutoreportSendTo(
-        autoreports,
-      )})`,
+      `🕒 Автоотчёты: <b>${autoreports.time}</b> (вкл, режим: ${describeAutoreportMode(
+        autoreports.mode,
+      )}, ${summariseAutoreportRecipients(autoreports)})`,
     );
   } else {
     lines.push("🕒 Автоотчёты: выключены");
@@ -548,19 +576,8 @@ export const buildAutoreportsMessage = (
   lines.push(`Авто-отчёты — <b>${escapeHtml(project.name)}</b>`);
   lines.push(`Статус: ${autoreports.enabled ? "включены" : "выключены"}`);
   lines.push(`Время: ${autoreports.time}`);
-  lines.push("Формат: вчера + неделя");
-  lines.push(`Кому: ${mapAutoreportSendTo(autoreports)}`);
-  return lines.join("\n");
-};
-
-export const buildAutoreportsRouteMessage = (
-  project: ProjectRecord,
-  autoreports: AutoreportsRecord,
-): string => {
-  const lines: string[] = [];
-  lines.push(`Маршрут авто-отчётов — <b>${escapeHtml(project.name)}</b>`);
-  lines.push("Выберите, куда отправлять ежедневные авто-отчёты.");
-  lines.push(`Текущий маршрут: ${mapAutoreportSendTo(autoreports)}`);
+  lines.push(`Формат: ${describeAutoreportMode(autoreports.mode)}`);
+  lines.push(`Получатели: ${describeAutoreportTargets(autoreports)}`);
   return lines.join("\n");
 };
 

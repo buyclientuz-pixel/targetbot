@@ -318,7 +318,8 @@ const adminClientFactory = () => {
     els.settingsForm.elements.kpiLabel.value = detail.project.settings.kpi.label;
     els.settingsForm.elements.autoreportsEnabled.checked = detail.autoreports.enabled;
     els.settingsForm.elements.autoreportsTime.value = detail.autoreports.time;
-    els.settingsForm.elements.autoreportsSendTo.value = detail.autoreports.sendTo;
+    els.settingsForm.elements.autoreportsSendChat.checked = detail.autoreports.sendToChat;
+    els.settingsForm.elements.autoreportsSendAdmin.checked = detail.autoreports.sendToAdmin;
   };
     const clearProjectDetailTables = () => {
       if (els.leadsTable) {
@@ -645,7 +646,8 @@ const adminClientFactory = () => {
       autoreports: {
         enabled: form.elements.autoreportsEnabled.checked,
         time: form.elements.autoreportsTime.value,
-        sendTo: form.elements.autoreportsSendTo.value,
+        sendToChat: form.elements.autoreportsSendChat.checked,
+        sendToAdmin: form.elements.autoreportsSendAdmin.checked,
       },
     };
     try {

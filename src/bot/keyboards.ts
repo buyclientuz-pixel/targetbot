@@ -249,23 +249,19 @@ export const buildAutoreportsKeyboard = (
       { text: "🕒 Изменить время", callback_data: `project:autoreports-time:${projectId}` },
     ],
     [
-      { text: "👥 Кому отправлять", callback_data: `project:autoreports-route:${projectId}` },
+      {
+        text: autoreports.sendToChat ? "👥 Чат — вкл" : "👥 Чат — выкл",
+        callback_data: `project:autoreports-target:${projectId}:chat`,
+      },
+      {
+        text: autoreports.sendToAdmin ? "👤 Админ — вкл" : "👤 Админ — выкл",
+        callback_data: `project:autoreports-target:${projectId}:admin`,
+      },
     ],
     [
       { text: "📤 Отправить сейчас", callback_data: `auto_send_now:${projectId}` },
     ],
     [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],
-  ],
-});
-
-export const buildAutoreportsRouteKeyboard = (projectId: string): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: "В чат", callback_data: `project:autoreports-send:${projectId}:chat` },
-      { text: "Админу", callback_data: `project:autoreports-send:${projectId}:admin` },
-      { text: "В чат и админу", callback_data: `project:autoreports-send:${projectId}:both` },
-    ],
-    [{ text: "⬅️ Назад", callback_data: `project:autoreports:${projectId}` }],
   ],
 });
 

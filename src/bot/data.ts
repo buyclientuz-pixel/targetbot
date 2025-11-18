@@ -28,7 +28,8 @@ const createDefaultAutoreports = (): AutoreportsRecord => ({
   enabled: false,
   time: "10:00",
   mode: "yesterday_plus_week",
-  sendTo: "chat",
+  sendToChat: true,
+  sendToAdmin: false,
 });
 
 const createEmptyLeadsList = (): ProjectLeadsListRecord => ({

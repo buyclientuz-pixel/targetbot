@@ -7,11 +7,12 @@ import {
 } from "../domain/report-state";
 import { loadProjectSummary, loadProjectCampaigns, mapCampaignRows, type CampaignRow } from "./project-insights";
 import type { MetaSummaryMetrics } from "../domain/meta-summary";
-import { dispatchProjectMessage, type ProjectMessageRoute } from "./project-messaging";
+import { dispatchProjectMessage } from "./project-messaging";
 import { DataValidationError } from "../errors";
 import { getAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import { requireProjectRecord, type ProjectRecord, type KpiType } from "../domain/spec/project";
 
+const DEFAULT_AUTOREPORT_TIMEZONE = "Asia/Tashkent";
 const SLOT_WINDOW_MS = 5 * 60 * 1000;
 
 type AutoGoalKey =
@@ -516,37 +517,32 @@ const resolvePeriodKeys = (mode: string, now: Date): string[] => {
   }
 };
 
-const mapAutoreportRoute = (sendTo: AutoreportsRecord["sendTo"]): ProjectMessageRoute => {
-  switch (sendTo) {
-    case "chat":
-      return "CHAT";
-    case "admin":
-      return "ADMIN";
-    case "both":
-    default:
-      return "BOTH";
-  }
-};
+interface AutoreportProfile {
+  enabled: boolean;
+  slots: string[];
+  mode: string;
+  recipients: { chat: boolean; admin: boolean };
+}
 
 const resolveAutoreportProfile = async (
   kv: KvClient,
   projectId: string,
   settings: ProjectSettings,
-): Promise<{ enabled: boolean; slots: string[]; mode: string; route: ProjectMessageRoute }> => {
+): Promise<AutoreportProfile> => {
   const record = await getAutoreportsRecord(kv, projectId);
   if (!record) {
     return {
       enabled: settings.reports.autoReportsEnabled,
       slots: [...settings.reports.timeSlots],
       mode: settings.reports.mode,
-      route: "CHAT",
+      recipients: { chat: true, admin: false },
     };
   }
   return {
     enabled: record.enabled,
     slots: record.enabled && record.time ? [record.time] : [],
     mode: record.mode,
-    route: mapAutoreportRoute(record.sendTo),
+    recipients: { chat: record.sendToChat, admin: record.sendToAdmin },
   };
 };
 
@@ -578,8 +574,20 @@ const buildReportMessage = (options: {
   goal: AutoGoalKey;
   campaigns: CampaignRow[];
   topPeriod: string;
+  includeFindings?: boolean;
 }): string => {
-  const { project, projectRecord, settings, slot, now, metricsByPeriod, goal, campaigns, topPeriod } = options;
+  const {
+    project,
+    projectRecord,
+    settings,
+    slot,
+    now,
+    metricsByPeriod,
+    goal,
+    campaigns,
+    topPeriod,
+    includeFindings = true,
+  } = options;
   const goalMeta = getGoalMetadata(goal);
   const currency = settings.billing.currency;
   const todayMetrics = getMetricsOrDefault(metricsByPeriod.get("today"));
@@ -593,20 +601,22 @@ const buildReportMessage = (options: {
   const todayCost = computeCostPerResult(todayMetrics.spend, todayValue);
   const yesterdayCost = computeCostPerResult(yesterdayMetrics.spend, yesterdayValue);
   const ctrToday = computeCtr(todayMetrics);
-  const reportDate = formatReportDate(now, projectRecord.settings.timezone ?? "UTC");
+  const reportDate = formatReportDate(now, projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE);
   const topCampaignLines = formatTopCampaigns(campaigns, goal, currency);
-  const findings = buildFindings({
-    goalLabel: goalMeta.label,
-    goalPlural: goalMeta.plural,
-    currency,
-    targetCpl: settings.kpi.targetCpl ?? null,
-    todayMetrics,
-    yesterdayMetrics,
-    todayValue,
-    yesterdayValue,
-    todayCost,
-    yesterdayCost,
-  });
+  const findings = includeFindings
+    ? buildFindings({
+        goalLabel: goalMeta.label,
+        goalPlural: goalMeta.plural,
+        currency,
+        targetCpl: settings.kpi.targetCpl ?? null,
+        todayMetrics,
+        yesterdayMetrics,
+        todayValue,
+        yesterdayValue,
+        todayCost,
+        yesterdayCost,
+      })
+    : null;
 
   const lines: string[] = [];
   lines.push(`📊 Отчёт | ${reportDate}`);
@@ -634,8 +644,10 @@ const buildReportMessage = (options: {
   lines.push(`Месяц: ${formatNumber(monthValue)} ${goalMeta.plural}`);
   lines.push(`CTR сегодня: ${formatPercent(ctrToday)}`);
   lines.push(`Динамика: ${describeTrend(todayValue, yesterdayValue)}`);
-  lines.push("");
-  lines.push(`Вывод: ${findings}`);
+  if (includeFindings && findings) {
+    lines.push("");
+    lines.push(`Вывод: ${findings}`);
+  }
   if (projectRecord.portalUrl && projectRecord.portalUrl.trim().length > 0) {
     lines.push("------");
     lines.push("👇 Для просмотра всех кампаний");
@@ -726,7 +738,12 @@ const loadAutoReportTemplate = async (options: {
   };
 };
 
-const renderAutoReportMessage = (template: AutoReportTemplate, slot: string, now: Date): string =>
+const renderAutoReportMessage = (
+  template: AutoReportTemplate,
+  slot: string,
+  now: Date,
+  options?: { includeFindings?: boolean },
+): string =>
   buildReportMessage({
     project: template.project,
     projectRecord: template.projectRecord,
@@ -737,6 +754,7 @@ const renderAutoReportMessage = (template: AutoReportTemplate, slot: string, now
     goal: template.goal,
     campaigns: template.campaigns,
     topPeriod: template.topPeriod,
+    includeFindings: options?.includeFindings ?? true,
   });
 
 export const runAutoReports = async (
@@ -765,7 +783,7 @@ export const runAutoReports = async (
           slot,
           now,
           state.slots[slot] ?? null,
-          projectRecord.settings.timezone ?? "UTC",
+          projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE,
         );
         if (due && scheduledAt) {
           dueSlots.push({ slot, scheduledAt });
@@ -773,6 +791,14 @@ export const runAutoReports = async (
       }
 
       if (dueSlots.length === 0) {
+        continue;
+      }
+
+      const hasRecipients = profile.recipients.chat || profile.recipients.admin;
+      if (!hasRecipients) {
+        for (const { slot, scheduledAt } of dueSlots) {
+          await markReportSlotDispatched(kv, project.id, slot, scheduledAt.toISOString());
+        }
         continue;
       }
 
@@ -794,21 +820,41 @@ export const runAutoReports = async (
         throw error;
       }
 
-      for (const { slot } of dueSlots) {
-        const message = renderAutoReportMessage(template, `${slot} (UTC)`, now);
-        const result = await dispatchProjectMessage({
-          kv,
-          token,
-          project: template.project,
-          settings: template.settings,
-          text: message,
-          parseMode: "HTML",
-          route: profile.route,
-          replyMarkup: template.replyMarkup,
-        });
-        await markReportSlotDispatched(kv, project.id, slot, new Date().toISOString());
-
-        template.settings = result.settings;
+      const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
+      for (const { slot, scheduledAt } of dueSlots) {
+        if (profile.recipients.chat) {
+          const chatMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, now, {
+            includeFindings: false,
+          });
+          const result = await dispatchProjectMessage({
+            kv,
+            token,
+            project: template.project,
+            settings: template.settings,
+            text: chatMessage,
+            parseMode: "HTML",
+            route: "CHAT",
+            replyMarkup: template.replyMarkup,
+          });
+          template.settings = result.settings;
+        }
+        if (profile.recipients.admin) {
+          const adminMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, now, {
+            includeFindings: true,
+          });
+          const result = await dispatchProjectMessage({
+            kv,
+            token,
+            project: template.project,
+            settings: template.settings,
+            text: adminMessage,
+            parseMode: "HTML",
+            route: "ADMIN",
+            replyMarkup: template.replyMarkup,
+          });
+          template.settings = result.settings;
+        }
+        await markReportSlotDispatched(kv, project.id, slot, scheduledAt.toISOString());
       }
     } catch (error) {
       console.error("auto-report failure", { projectId: project.id, error });
@@ -828,6 +874,9 @@ export const sendAutoReportNow = async (
   const projectRecord = await requireProjectRecord(kv, projectId);
   const settings = await ensureProjectSettings(kv, projectId);
   const profile = await resolveAutoreportProfile(kv, projectId, settings);
+  if (!profile.recipients.chat && !profile.recipients.admin) {
+    return;
+  }
 
   const template = await loadAutoReportTemplate({
     kv,
@@ -836,18 +885,34 @@ export const sendAutoReportNow = async (
     mode: profile.mode,
     now,
   });
-  const timezone = projectRecord.settings.timezone ?? "UTC";
+  const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
   const slotLabel = formatManualSlotLabel(now, timezone);
-  const message = renderAutoReportMessage(template, slotLabel, now);
-  const result = await dispatchProjectMessage({
-    kv,
-    token,
-    project: template.project,
-    settings: template.settings,
-    text: message,
-    parseMode: "HTML",
-    route: profile.route,
-    replyMarkup: template.replyMarkup,
-  });
-  template.settings = result.settings;
+  if (profile.recipients.chat) {
+    const chatMessage = renderAutoReportMessage(template, slotLabel, now, { includeFindings: false });
+    const result = await dispatchProjectMessage({
+      kv,
+      token,
+      project: template.project,
+      settings: template.settings,
+      text: chatMessage,
+      parseMode: "HTML",
+      route: "CHAT",
+      replyMarkup: template.replyMarkup,
+    });
+    template.settings = result.settings;
+  }
+  if (profile.recipients.admin) {
+    const adminMessage = renderAutoReportMessage(template, slotLabel, now, { includeFindings: true });
+    const result = await dispatchProjectMessage({
+      kv,
+      token,
+      project: template.project,
+      settings: template.settings,
+      text: adminMessage,
+      parseMode: "HTML",
+      route: "ADMIN",
+      replyMarkup: template.replyMarkup,
+    });
+    template.settings = result.settings;
+  }
 };

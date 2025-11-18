@@ -74,7 +74,8 @@ test(
       enabled: true,
       time: "12:00",
       mode: "today",
-      sendTo: "admin",
+      sendToChat: false,
+      sendToAdmin: true,
     });
 
     const summaryEntry = createMetaCacheEntry("proj-auto", "summary:today", { from: "2025-01-01", to: "2025-01-01" }, {
@@ -178,6 +179,131 @@ test(
 );
 
 test(
+  "runAutoReports sends findings only to admin recipients",
+  { concurrency: false },
+  async () => {
+    const kvNamespace = new MemoryKVNamespace();
+    const kv = new KvClient(kvNamespace);
+    await putProject(kv, createProject({
+      id: "proj-auto-both",
+      name: "Auto Reports Both",
+      adsAccountId: "act_3",
+      ownerTelegramId: 12345,
+    }));
+    await putProjectRecord(kv, {
+      id: "proj-auto-both",
+      name: "Auto Reports Both",
+      ownerId: 12345,
+      adAccountId: "act_3",
+      chatId: -100500,
+      portalUrl: "https://th-reports.buyclientuz.workers.dev/p/proj-auto-both",
+      settings: { currency: "USD", timezone: "Asia/Tashkent", kpi: { mode: "auto", type: "LEAD", label: "Лиды" } },
+    });
+    await putBillingRecord(kv, "proj-auto-both", {
+      tariff: 500,
+      currency: "USD",
+      nextPaymentDate: "2025-01-31",
+      autobilling: true,
+    });
+    await putAutoreportsRecord(kv, "proj-auto-both", {
+      enabled: true,
+      time: "13:15",
+      mode: "today",
+      sendToChat: true,
+      sendToAdmin: true,
+    });
+
+    const summaryEntry = createMetaCacheEntry("proj-auto-both", "summary:today", { from: "2025-01-01", to: "2025-01-01" }, {
+      periodKey: "today",
+      metrics: {
+        spend: 40,
+        impressions: 2000,
+        clicks: 160,
+        leads: 8,
+        messages: 1,
+        purchases: 0,
+        addToCart: 0,
+        calls: 0,
+        registrations: 0,
+        engagement: 0,
+        leadsToday: 8,
+        leadsTotal: 250,
+        cpa: 5,
+        spendToday: 40,
+        cpaToday: 5,
+      },
+      source: {},
+    }, 3600);
+    await saveMetaCache(kv, summaryEntry);
+    for (const periodKey of ["yesterday", "week", "month"]) {
+      const entry = createMetaCacheEntry(
+        "proj-auto-both",
+        `summary:${periodKey}`,
+        { from: "2024-12-25", to: "2024-12-31" },
+        {
+          periodKey,
+          metrics: {
+            spend: 30,
+            impressions: 1500,
+            clicks: 120,
+            leads: 6,
+            messages: 1,
+            purchases: 0,
+            addToCart: 0,
+            calls: 0,
+            registrations: 0,
+            engagement: 0,
+            leadsToday: 6,
+            leadsTotal: 200,
+            cpa: 5,
+            spendToday: 30,
+            cpaToday: 5,
+          },
+          source: {},
+        },
+        3600,
+      );
+      await saveMetaCache(kv, entry);
+    }
+    const campaignsEntry = createMetaCacheEntry(
+      "proj-auto-both",
+      "campaigns:today",
+      { from: "2025-01-01", to: "2025-01-01" },
+      {
+        data: [
+          {
+            campaign_id: "cmp-1",
+            campaign_name: "Leads",
+            objective: "LEAD_GENERATION",
+            spend: "40",
+            impressions: "2000",
+            clicks: "160",
+            actions: [{ action_type: "lead", value: "8" }],
+          },
+        ],
+      },
+      3600,
+    );
+    await saveMetaCache(kv, campaignsEntry);
+
+    const now = new Date("2025-01-01T08:16:00.000Z");
+    const telegram = stubTelegramFetch();
+    try {
+      await runAutoReports(kv, "TEST_TOKEN", now);
+    } finally {
+      telegram.restore();
+    }
+    assert.equal(telegram.calls.length, 2);
+    const chatMessage = telegram.calls.find((call) => call.body.chat_id === -100500);
+    assert.ok(chatMessage, "expected chat delivery");
+    assert.ok(!String(chatMessage?.body.text ?? "").includes("Вывод:"));
+    const adminMessage = telegram.calls.find((call) => call.body.chat_id === 12345);
+    assert.ok(adminMessage, "expected admin delivery");
+    assert.ok(String(adminMessage?.body.text ?? "").includes("Вывод:"));
+  },
+);
+
+test(
   "runAutoReports honours project timezone offsets",
   { concurrency: false },
   async () => {
@@ -208,7 +334,8 @@ test(
       enabled: true,
       time: "09:30",
       mode: "today",
-      sendTo: "admin",
+      sendToChat: false,
+      sendToAdmin: true,
     });
 
     for (const periodKey of ["today", "yesterday", "week", "month"]) {

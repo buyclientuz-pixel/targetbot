@@ -118,9 +118,12 @@ test("autoreports parsing", () => {
     enabled: true,
     time: "10:00",
     mode: "yesterday_plus_week",
-    send_to: "both",
+    send_to_chat: true,
+    send_to_admin: false,
   });
   assert.equal(record.mode, "yesterday_plus_week");
+  assert.equal(record.sendToChat, true);
+  assert.equal(record.sendToAdmin, false);
 });
 
 test("project leads list", () => {

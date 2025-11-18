@@ -10,6 +10,7 @@ import { getProject, parseProject } from "../domain/projects";
 import { getMetaToken, parseMetaToken, upsertMetaToken, deleteMetaToken } from "../domain/meta-tokens";
 import { putFbAuthRecord, type FbAdAccount, type FbAuthRecord } from "../domain/spec/fb-auth";
 import { getBillingRecord, putBillingRecord } from "../domain/spec/billing";
+import { getAutoreportsRecord, putAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import {
   appendPaymentRecord,
   getPaymentsHistoryDocument,
@@ -584,7 +585,12 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                   <label>Режим KPI<select name="kpiMode"><option value="auto">Авто</option><option value="manual">Ручной</option></select></label>
                   <label>Тип KPI<select name="kpiType"><option value="LEAD">Лиды</option><option value="MESSAGE">Сообщения</option><option value="CLICK">Клики</option><option value="VIEW">Просмотры</option><option value="PURCHASE">Покупки</option></select></label>
                   <label>Название KPI<input name="kpiLabel" /></label>
-                  <label>Автоотчёты<select name="autoreportsSendTo"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="autoreportsEnabled" /> Включить</span></label>
+                  <label>Автоотчёты<span><input type="checkbox" name="autoreportsEnabled" /> Включить</span></label>
+                  <label>
+                    Каналы автоотчёта
+                    <span><input type="checkbox" name="autoreportsSendChat" /> В чат</span>
+                    <span><input type="checkbox" name="autoreportsSendAdmin" /> Админу</span>
+                  </label>
                   <label>Время отчёта<input type="time" name="autoreportsTime" value="10:00" /></label>
                   <button class="admin-btn" type="submit">Сохранить настройки</button>
                 </form>
@@ -667,7 +673,14 @@ interface UpdateProjectBody {
   ownerTelegramId?: number;
 }
 
-interface UpdateSettingsBody extends Record<string, unknown> {}
+interface UpdateSettingsBody extends Record<string, unknown> {
+  autoreports?: {
+    enabled?: boolean;
+    time?: string;
+    sendToChat?: boolean;
+    sendToAdmin?: boolean;
+  };
+}
 
 interface UpsertMetaTokenBody {
   accessToken?: string;
@@ -1181,6 +1194,38 @@ export const registerAdminRoutes = (router: Router): void => {
     try {
       await getProject(context.kv, projectId);
       const existing = await ensureProjectSettings(context.kv, projectId);
+      let updatedAutoreports: AutoreportsRecord | null = null;
+      if (body.autoreports) {
+        const currentAutoreports =
+          (await getAutoreportsRecord(context.kv, projectId).catch(() => null)) ??
+          ({
+            enabled: false,
+            time: "10:00",
+            mode: "yesterday_plus_week",
+            sendToChat: true,
+            sendToAdmin: false,
+          } satisfies AutoreportsRecord);
+        updatedAutoreports = {
+          ...currentAutoreports,
+          enabled:
+            typeof body.autoreports.enabled === "boolean"
+              ? body.autoreports.enabled
+              : currentAutoreports.enabled,
+          time:
+            typeof body.autoreports.time === "string" && body.autoreports.time.trim().length > 0
+              ? body.autoreports.time
+              : currentAutoreports.time,
+          sendToChat:
+            typeof body.autoreports.sendToChat === "boolean"
+              ? body.autoreports.sendToChat
+              : currentAutoreports.sendToChat,
+          sendToAdmin:
+            typeof body.autoreports.sendToAdmin === "boolean"
+              ? body.autoreports.sendToAdmin
+              : currentAutoreports.sendToAdmin,
+        } satisfies AutoreportsRecord;
+        await putAutoreportsRecord(context.kv, projectId, updatedAutoreports);
+      }
       const merged = {
         ...existing,
         ...body,
@@ -1203,6 +1248,16 @@ export const registerAdminRoutes = (router: Router): void => {
         updatedAt: new Date().toISOString(),
         projectId,
       } satisfies Record<string, unknown>;
+      if (updatedAutoreports) {
+        merged.reports = {
+          autoReportsEnabled: updatedAutoreports.enabled,
+          timeSlots:
+            updatedAutoreports.enabled && updatedAutoreports.time
+              ? [updatedAutoreports.time]
+              : [],
+          mode: updatedAutoreports.mode,
+        };
+      }
       const validated = parseProjectSettings(merged, projectId);
       await upsertProjectSettings(context.kv, validated);
       return jsonResponse({ settings: validated });

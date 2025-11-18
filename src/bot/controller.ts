@@ -194,7 +194,8 @@ const buildDefaultAutoreportsRecord = (): AutoreportsRecord => ({
   enabled: false,
   time: "10:00",
   mode: "yesterday_plus_week",
-  sendTo: "both",
+  sendToChat: true,
+  sendToAdmin: false,
 });
 
 const addProjectToUserMembership = async (ctx: BotContext, userId: number, projectId: string): Promise<void> => {
@@ -1065,10 +1066,8 @@ const renderAutoreportsPanel = async (
   userId: number,
   chatId: number,
   projectId: string,
-  view: "main" | "route" = "main",
 ): Promise<void> => {
-  const target = view === "route" ? `project:autoreports-route:${projectId}` : `project:autoreports:${projectId}`;
-  await renderPanel({ runtime, userId, chatId, panelId: target });
+  await renderPanel({ runtime, userId, chatId, panelId: `project:autoreports:${projectId}` });
 };
 
 const renderKpiPanel = async (
@@ -1357,17 +1356,22 @@ const handleAutoreportsTimeInput = async (
   await renderAutoreportsPanel(runtime, userId, chatId, projectId);
 };
 
-const handleAutoreportsRouteSet = async (
+const handleAutoreportsRecipientToggle = async (
   ctx: BotContext,
   runtime: ReturnType<typeof buildPanelRuntime>,
   userId: number,
   chatId: number,
   projectId: string,
-  route: AutoreportsRecord["sendTo"],
+  target: "chat" | "admin",
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
-  await putAutoreportsRecord(ctx.kv, projectId, { ...bundle.autoreports, sendTo: route });
-  await renderAutoreportsPanel(runtime, userId, chatId, projectId, "route");
+  const nextRecord: AutoreportsRecord = {
+    ...bundle.autoreports,
+    sendToChat: target === "chat" ? !bundle.autoreports.sendToChat : bundle.autoreports.sendToChat,
+    sendToAdmin: target === "admin" ? !bundle.autoreports.sendToAdmin : bundle.autoreports.sendToAdmin,
+  };
+  await putAutoreportsRecord(ctx.kv, projectId, nextRecord);
+  await renderAutoreportsPanel(runtime, userId, chatId, projectId);
 };
 
 const handleAutoreportsSendNow = async (
@@ -1377,6 +1381,15 @@ const handleAutoreportsSendNow = async (
   chatId: number,
   projectId: string,
 ): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  if (!bundle.autoreports.sendToChat && !bundle.autoreports.sendToAdmin) {
+    await sendTelegramMessage(ctx.token, {
+      chatId,
+      text: "Ни один канал автоотчёта не включён. Включите отправку в чат или админу.",
+    });
+    await renderAutoreportsPanel(runtime, userId, chatId, projectId);
+    return;
+  }
   try {
     await sendAutoReportNow(ctx.kv, ctx.token, projectId);
   } catch (error) {
@@ -1689,17 +1702,14 @@ const handleCallback = async (
           });
           await sendTelegramMessage(ctx.token, { chatId, text: "Введите время HH:MM" });
           break;
-        case "autoreports-route":
-          await renderAutoreportsPanel(panelRuntime, userId, chatId, parts[2]!, "route");
-          break;
-        case "autoreports-send":
-          await handleAutoreportsRouteSet(
+        case "autoreports-target":
+          await handleAutoreportsRecipientToggle(
             ctx,
             panelRuntime,
             userId,
             chatId,
             parts[2]!,
-            parts[3]! as AutoreportsRecord["sendTo"],
+            parts[3]! as "chat" | "admin",
           );
           break;
         case "kpi":

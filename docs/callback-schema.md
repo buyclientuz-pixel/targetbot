@@ -131,7 +131,7 @@
 | `auto_menu:{projectId}` | Открыть панель автоотчётов проекта. |
 | `auto_toggle:{projectId}` | Включить/выключить автоотчёты для проекта. |
 | `auto_time_toggle:{projectId}:{HH_MM}` | Переключить конкретное время отправки (формат `HH:MM`). |
-| `auto_send_target:{projectId}:{target}` | Переключить канал доставки auto-отчётов (`chat` или `admin`; для обратной совместимости поддерживаются `both`/`none`). |
+| `auto_send_target:{projectId}:{target}` | Переключить канал доставки автоотчётов (`target` = `chat` или `admin`). |
 | `auto_monday_toggle:{projectId}` | Включить/выключить режим двойного понедельничного отчёта. |
 | `auto_send_now:{projectId}` | Немедленно отправить автоотчёт по сохранённым настройкам. |
 

@@ -48,7 +48,8 @@ const seedProjectData = async (kv: InstanceType<typeof KvClient>, r2: InstanceTy
     enabled: true,
     time: "10:00",
     mode: "yesterday_plus_week",
-    sendTo: "both",
+    sendToChat: true,
+    sendToAdmin: true,
   });
   await putProjectLeadsList(r2, "proj_acceptance", {
     stats: { total: 5, today: 2 },

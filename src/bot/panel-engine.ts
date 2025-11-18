@@ -80,10 +80,6 @@ const resolvePanel = (panelId: string): ResolveResult => {
   if (panelId.startsWith("project:autoreports:")) {
     return { renderer: renderAutoreports, params: [panelId.split(":")[2]!], id: panelId };
   }
-  if (panelId.startsWith("project:autoreports-route:")) {
-    const [, , , projectId] = panelId.split(":");
-    return { renderer: renderAutoreports, params: [projectId ?? "", "route"], id: panelId };
-  }
   if (panelId.startsWith("project:kpi:")) {
     return { renderer: renderKpi, params: [panelId.split(":")[2]!], id: panelId };
   }

@@ -70,7 +70,8 @@ erDiagram
     PROJECT_SETTINGS {
         boolean auto_enabled
         string[] auto_times
-        string send_target
+        boolean send_chat
+        boolean send_admin
         boolean monday_double
         date last_sent_daily
         date last_sent_monday
@@ -134,7 +135,8 @@ project_settings:{project_id}
   "auto_report": {
     "enabled": true,
     "times": ["10:00", "15:00", "20:00"],
-    "send_target": "both",
+    "send_chat": true,
+    "send_admin": false,
     "monday_double_report": true,
     "last_sent_daily": "2025-11-13",
     "last_sent_monday": "2025-11-10"
@@ -172,7 +174,7 @@ project_settings:{project_id}
 auto_menu:{project_id}
 auto_toggle:{project_id}
 auto_time_toggle:{project_id}:{HH:MM}
-auto_send_target:{project_id}:{chat/admin/both}
+auto_send_target:{project_id}:{chat|admin}
 auto_monday_toggle:{project_id}
 auto_send_now:{project_id}
 ```
