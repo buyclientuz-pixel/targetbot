@@ -195,13 +195,32 @@ const countActionsByMatcher = (actions: unknown, matcher: ActionMatcher): number
   }, 0);
 };
 
+const maxActionValueByMatcher = (actions: unknown, matcher: ActionMatcher): number => {
+  if (!Array.isArray(actions)) {
+    return 0;
+  }
+  return actions.reduce((maxValue, action) => {
+    if (!action || typeof action !== "object") {
+      return maxValue;
+    }
+    const record = action as Record<string, unknown>;
+    const type = normaliseActionType(record.action_type);
+    if (!type || !matcher(type)) {
+      return maxValue;
+    }
+    const value = parseNumber(record.value);
+    return value > maxValue ? value : maxValue;
+  }, 0);
+};
+
 const includesAny = (value: string, keywords: string[]): boolean => {
   return keywords.some((keyword) => value.includes(keyword));
 };
 
 export const countLeadsFromActions = (actions: unknown): number => {
-  return countActionsByMatcher(actions, (type) =>
-    type === "lead" || type.includes("lead") || type.includes("submit_application"),
+  return maxActionValueByMatcher(
+    actions,
+    (type) => type === "lead" || type.includes("lead") || type.includes("submit_application"),
   );
 };
 
