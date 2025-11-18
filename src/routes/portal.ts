@@ -127,7 +127,7 @@ const normaliseLeadContact = (lead: Lead): string => {
 
 const formatDateOnly = (date: Date): string => date.toISOString().split("T")[0] ?? date.toISOString();
 
-const resolveLeadsRange = (
+const resolvePortalPeriodRange = (
   periodKey: string,
   timeZone: string | null,
   from?: string | null,
@@ -183,7 +183,7 @@ const loadPortalLeadsPayload = async (
   stats: ProjectLeadsListRecord["stats"];
   syncedAt: string | null;
 }> => {
-  const range = resolveLeadsRange(periodKey, timeZone, options?.from ?? null, options?.to ?? null);
+  const range = resolvePortalPeriodRange(periodKey, timeZone, options?.from ?? null, options?.to ?? null);
   const fromTime = range.from.getTime();
   const toTime = range.to.getTime();
   const leads = await listLeads(r2, projectId);
@@ -325,12 +325,24 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const state = {
           period: 'today',
+          range: null,
           project: null,
           summary: null,
           leads: null,
           campaigns: null,
           payments: null,
         };
+        const initialSearch = typeof window !== 'undefined' ? window.location.search || '' : '';
+        const initialParams = new URLSearchParams(initialSearch);
+        const initialPeriod = initialParams.get('period');
+        const initialFrom = initialParams.get('from');
+        const initialTo = initialParams.get('to');
+        if (initialFrom && initialTo) {
+          state.period = initialPeriod || 'custom';
+          state.range = { from: initialFrom, to: initialTo };
+        } else if (initialPeriod) {
+          state.period = initialPeriod;
+        }
         const appendToken = (url) => {
           if (!TOKEN) return url;
           const separator = url.includes('?') ? '&' : '?';
@@ -474,13 +486,36 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const fetchJson = (path) => requestJson(path);
         const postJson = (path) => requestJson(path, { method: 'POST' });
+        const rangeQuery = (hasQuery = false) => {
+          if (!state.range) return '';
+          const params = new URLSearchParams();
+          params.set('from', state.range.from);
+          params.set('to', state.range.to);
+          return (hasQuery ? '&' : '?') + params.toString();
+        };
         const portalClient = {
           project: () => fetchJson(API_BASE),
-          summary: (period) => fetchJson(API_BASE + '/summary?period=' + encodeURIComponent(period)),
-        leads: (period) => fetchJson(API_BASE + '/leads/' + encodeURIComponent(period)),
-        refreshLeads: (period) => postJson(API_BASE + '/leads/' + encodeURIComponent(period) + '/refresh'),
-          campaigns: (period) => fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period)),
+          summary: (period) =>
+            fetchJson(API_BASE + '/summary?period=' + encodeURIComponent(period) + rangeQuery(true)),
+          leads: (period) => fetchJson(API_BASE + '/leads/' + encodeURIComponent(period) + rangeQuery()),
+          refreshLeads: (period) =>
+            postJson(API_BASE + '/leads/' + encodeURIComponent(period) + '/refresh' + rangeQuery()),
+          campaigns: (period) =>
+            fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period) + rangeQuery(true)),
           payments: () => fetchJson(API_BASE + '/payments'),
+        };
+        const updateUrlState = () => {
+          if (!window?.history?.replaceState) return;
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set('period', state.period);
+          if (state.range) {
+            nextUrl.searchParams.set('from', state.range.from);
+            nextUrl.searchParams.set('to', state.range.to);
+          } else {
+            nextUrl.searchParams.delete('from');
+            nextUrl.searchParams.delete('to');
+          }
+          window.history.replaceState({}, '', nextUrl.toString());
         };
         const KPI_LABELS = {
           LEAD: 'Лиды',
@@ -797,6 +832,7 @@ export const renderPortalHtml = (projectId: string): string => {
         const loadSummary = async (period) => {
           state.period = period;
           markActivePeriod(period);
+          updateUrlState();
           const summary = await portalClient.summary(period);
           state.summary = summary;
           renderMetrics(summary);
@@ -845,6 +881,7 @@ export const renderPortalHtml = (projectId: string): string => {
           }
         };
         const refreshPeriodData = async (period) => {
+          state.range = null;
           try {
             await Promise.all([loadSummary(period), loadLeads(period), loadCampaigns(period)]);
           } catch (error) {
@@ -1496,12 +1533,18 @@ export const registerPortalRoutes = (router: Router): void => {
     }
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
     try {
       const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      const resolvedRange = resolvePortalPeriodRange(periodKey, bundle.project.settings?.timezone ?? null, from, to);
+      const effectivePeriodKey = resolvedRange.key;
       let summaryEntry: import("../domain/meta-cache").MetaCacheEntry<import("../domain/meta-summary").MetaSummaryPayload> | null =
         null;
       try {
-        const summaryResult = await loadProjectSummary(context.kv, projectId, periodKey);
+        const summaryResult = await loadProjectSummary(context.kv, projectId, effectivePeriodKey, {
+          periodRange: resolvedRange,
+        });
         summaryEntry = summaryResult.entry;
       } catch (error) {
         if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
@@ -1511,9 +1554,10 @@ export const registerPortalRoutes = (router: Router): void => {
         }
       }
       let campaignsDoc = bundle.campaigns;
-      if (!campaignsDoc || campaignsDoc.periodKey !== periodKey || campaignsDoc.campaigns.length === 0) {
+      if (!campaignsDoc || campaignsDoc.periodKey !== effectivePeriodKey || campaignsDoc.campaigns.length === 0) {
         try {
-          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, effectivePeriodKey, {
+            periodRange: resolvedRange,
             projectRecord: bundle.project,
           });
         } catch (error) {
@@ -1524,7 +1568,7 @@ export const registerPortalRoutes = (router: Router): void => {
           }
         }
       }
-      return jsonOk(buildSummaryPayload(bundle, periodKey, { summaryEntry, campaigns: campaignsDoc }));
+      return jsonOk(buildSummaryPayload(bundle, effectivePeriodKey, { summaryEntry, campaigns: campaignsDoc }));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
@@ -1596,14 +1640,19 @@ export const registerPortalRoutes = (router: Router): void => {
     }
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
     try {
       const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      const resolvedRange = resolvePortalPeriodRange(periodKey, bundle.project.settings?.timezone ?? null, from, to);
+      const effectivePeriodKey = resolvedRange.key;
       let campaignsDoc = bundle.campaigns;
       let campaignStatuses: CampaignStatus[] | null = null;
-      if (!campaignsDoc || campaignsDoc.periodKey !== periodKey || campaignsDoc.campaigns.length === 0) {
+      if (!campaignsDoc || campaignsDoc.periodKey !== effectivePeriodKey || campaignsDoc.campaigns.length === 0) {
         try {
-          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, effectivePeriodKey, {
             projectRecord: bundle.project,
+            periodRange: resolvedRange,
           });
         } catch (error) {
           if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
@@ -1623,7 +1672,7 @@ export const registerPortalRoutes = (router: Router): void => {
           throw error;
         }
       }
-      return jsonOk(buildCampaignsPayload(bundle, periodKey, campaignsDoc, campaignStatuses));
+      return jsonOk(buildCampaignsPayload(bundle, effectivePeriodKey, campaignsDoc, campaignStatuses));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);

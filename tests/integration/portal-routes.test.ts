@@ -178,6 +178,80 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.equal(campaign?.spend, 16.15);
   assert.equal(campaign?.leads, 5);
 
+  const summaryCustomFrom = "2025-11-10";
+  const summaryCustomTo = "2025-11-12";
+  const customSummaryEntry = createMetaCacheEntry(
+    projectRecord.id,
+    "summary:custom:2025-11-10:2025-11-12",
+    { from: summaryCustomFrom, to: summaryCustomTo },
+    {
+      periodKey: "custom",
+      metrics: {
+        spend: 21,
+        impressions: 1400,
+        clicks: 200,
+        leads: 9,
+        messages: 3,
+        purchases: 0,
+        addToCart: 0,
+        calls: 0,
+        registrations: 0,
+        engagement: 0,
+        leadsToday: 4,
+        leadsTotal: 180,
+        cpa: 21 / 9,
+        spendToday: 7,
+        cpaToday: 7 / 4,
+      },
+      source: { cached: true },
+    },
+    60,
+  );
+  await saveMetaCache(kv, customSummaryEntry);
+  await putMetaCampaignsDocument(r2, projectRecord.id, {
+    period: { from: summaryCustomFrom, to: summaryCustomTo },
+    summary: { spend: 21, impressions: 1400, clicks: 200, leads: 9, messages: 3 },
+    campaigns: [
+      {
+        id: "cmp-custom",
+        name: "Custom",
+        objective: "LEAD_GENERATION",
+        kpiType: "LEAD",
+        spend: 21,
+        impressions: 1400,
+        clicks: 200,
+        leads: 9,
+        messages: 3,
+      },
+    ],
+    periodKey: "custom",
+  });
+
+  const summaryCustomResponse = await router.dispatch(
+    new Request(
+      "https://example.com/api/projects/birlash/summary?period=custom&from=2025-11-10&to=2025-11-12",
+    ),
+    env,
+    execution,
+  );
+  const summaryCustomPayload = (await summaryCustomResponse.clone().json()) as typeof summaryPayload;
+  assert.ok(summaryCustomPayload.ok);
+  assert.equal(summaryCustomPayload.data.period.from, summaryCustomFrom);
+  assert.equal(summaryCustomPayload.data.period.to, summaryCustomTo);
+  assert.equal(summaryCustomPayload.data.metrics.leads, 9);
+
+  const campaignsCustomResponse = await router.dispatch(
+    new Request(
+      "https://example.com/api/projects/birlash/campaigns?period=custom&from=2025-11-10&to=2025-11-12",
+    ),
+    env,
+    execution,
+  );
+  const campaignsCustomPayload = (await campaignsCustomResponse.clone().json()) as typeof campaignsPayload;
+  assert.ok(campaignsCustomPayload.ok);
+  assert.equal(campaignsCustomPayload.data.period.from, summaryCustomFrom);
+  assert.equal(campaignsCustomPayload.data.campaigns[0]?.id, "cmp-custom");
+
   const paymentsResponse = await router.dispatch(
     new Request("https://example.com/api/projects/birlash/payments"),
     env,

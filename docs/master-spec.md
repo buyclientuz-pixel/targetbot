@@ -14,6 +14,7 @@
 
 * **Webhook Telegram**: `https://${WORKER_URL}/tg-webhook?secret=${TELEGRAM_SECRET}`.
 * **Портал проекта**: `https://${WORKER_URL}/p/{projectId}?token=...`.
+* **Портал/REST API**: любые запросы к `/api/projects/:id/summary`, `/leads/:period`, `/leads/:period/refresh`, `/campaigns` поддерживают произвольный диапазон через `period=custom&from=YYYY-MM-DD&to=YYYY-MM-DD` и обязаны отдавать ровно те же метрики, что и Ads Manager за выбранные даты.
 
 ## 1. Архитектура хранения данных
 

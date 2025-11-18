@@ -17,7 +17,7 @@ import {
   summariseMetaInsights,
 } from "./meta-api";
 import { DataValidationError } from "../errors";
-import type { MetaInsightsRawResponse } from "./meta-api";
+import type { MetaInsightsPeriod, MetaInsightsRawResponse } from "./meta-api";
 
 type SummaryInsightsEntry = MetaCacheEntry<Awaited<ReturnType<typeof fetchMetaInsights>>>;
 
@@ -181,6 +181,19 @@ const resolveFacebookUserId = (settings: ProjectSettings, provided?: string | nu
   return value;
 };
 
+const resolveCustomMetaPeriod = (periodRange: PeriodRange): MetaInsightsPeriod => ({
+  preset: "time_range",
+  from: periodRange.period.from,
+  to: periodRange.period.to,
+});
+
+const buildScopedCacheKey = (base: string, periodKey: string, periodRange: PeriodRange): string => {
+  if (periodKey === "custom") {
+    return `${base}:${periodRange.period.from}:${periodRange.period.to}`;
+  }
+  return base;
+};
+
 const ensureInsightsEntry = async (
   kv: KvClient,
   projectId: string,
@@ -189,7 +202,9 @@ const ensureInsightsEntry = async (
   project: Project,
   accessToken: string,
   timeZone?: string | null,
+  periodRange?: PeriodRange,
 ): Promise<SummaryInsightsEntry> => {
+  const resolvedRange = periodRange ?? resolvePeriodRange(periodKey, timeZone);
   const cached = await getMetaCache<Awaited<ReturnType<typeof fetchMetaInsights>>>(kv, projectId, scope);
   if (cached && isMetaCacheEntryFresh(cached)) {
     return cached;
@@ -197,10 +212,9 @@ const ensureInsightsEntry = async (
   const result = await fetchMetaInsights({
     accountId: project.adsAccountId!,
     accessToken,
-    period: resolveDatePreset(periodKey),
+    period: periodRange ? resolveCustomMetaPeriod(resolvedRange) : resolveDatePreset(periodKey),
   });
-  const range = resolvePeriodRange(periodKey, timeZone);
-  const entry = createMetaCacheEntry(projectId, scope, range.period, result, CACHE_TTL_SECONDS);
+  const entry = createMetaCacheEntry(projectId, scope, resolvedRange.period, result, CACHE_TTL_SECONDS);
   await saveMetaCache(kv, entry);
   return entry;
 };
@@ -209,7 +223,12 @@ export const loadProjectSummary = async (
   kv: KvClient,
   projectId: string,
   periodKey: string,
-  options?: { project?: Project; settings?: ProjectSettings; facebookUserId?: string | null },
+  options?: {
+    project?: Project;
+    settings?: ProjectSettings;
+    facebookUserId?: string | null;
+    periodRange?: PeriodRange;
+  },
 ): Promise<{ entry: MetaCacheEntry<MetaSummaryPayload>; project: Project; settings: ProjectSettings }> => {
   const project = options?.project ?? (await getProject(kv, projectId));
   const settings = options?.settings ?? (await ensureProjectSettings(kv, projectId));
@@ -218,7 +237,8 @@ export const loadProjectSummary = async (
     throw new DataValidationError("Project is missing adsAccountId for Meta insights");
   }
 
-  const summaryScope = `summary:${periodKey}`;
+  const periodRange = options?.periodRange ?? resolvePeriodRange(periodKey, settings.timezone);
+  const summaryScope = buildScopedCacheKey(`summary:${periodKey}`, periodKey, periodRange);
   const cachedSummary = await getMetaCache<MetaSummaryPayload>(kv, projectId, summaryScope);
   if (cachedSummary && isMetaCacheEntryFresh(cachedSummary)) {
     return { entry: cachedSummary, project, settings };
@@ -228,14 +248,16 @@ export const loadProjectSummary = async (
 
   const token = await getMetaToken(kv, facebookUserId);
 
+  const requestedInsightsScope = buildScopedCacheKey(`insights:${periodKey}`, periodKey, periodRange);
   const requestedInsights = await ensureInsightsEntry(
     kv,
     projectId,
-    `insights:${periodKey}`,
+    requestedInsightsScope,
     periodKey,
     project,
     token.accessToken,
     settings.timezone,
+    periodRange,
   );
   const lifetimeInsights = await ensureInsightsEntry(
     kv,
@@ -283,7 +305,6 @@ export const loadProjectSummary = async (
         : null,
   } satisfies MetaSummaryPayload["metrics"];
 
-  const periodRange = resolvePeriodRange(periodKey, settings.timezone);
   const summaryEntry = createMetaCacheEntry<MetaSummaryPayload>(
     projectId,
     summaryScope,
@@ -303,7 +324,12 @@ export const loadProjectCampaigns = async (
   kv: KvClient,
   projectId: string,
   periodKey: string,
-  options?: { project?: Project; settings?: ProjectSettings; facebookUserId?: string | null },
+  options?: {
+    project?: Project;
+    settings?: ProjectSettings;
+    facebookUserId?: string | null;
+    periodRange?: PeriodRange;
+  },
 ): Promise<{ entry: CampaignInsightsEntry; project: Project; settings: ProjectSettings }> => {
   const project = options?.project ?? (await getProject(kv, projectId));
   const settings = options?.settings ?? (await ensureProjectSettings(kv, projectId));
@@ -312,7 +338,8 @@ export const loadProjectCampaigns = async (
     throw new DataValidationError("Project is missing adsAccountId for Meta insights");
   }
 
-  const scope = `campaigns:${periodKey}`;
+  const periodRange = options?.periodRange ?? resolvePeriodRange(periodKey, settings.timezone);
+  const scope = buildScopedCacheKey(`campaigns:${periodKey}`, periodKey, periodRange);
   const cached = await getMetaCache<MetaInsightsRawResponse>(kv, projectId, scope);
   if (cached && isMetaCacheEntryFresh(cached)) {
     return { entry: cached, project, settings };
@@ -324,11 +351,10 @@ export const loadProjectCampaigns = async (
   const raw = await fetchMetaInsightsRaw({
     accountId: project.adsAccountId,
     accessToken: token.accessToken,
-    period: resolveDatePreset(periodKey),
+    period: periodKey === "custom" ? resolveCustomMetaPeriod(periodRange) : resolveDatePreset(periodKey),
     level: "campaign",
     fields: ["campaign_id", "campaign_name", "objective", "spend", "impressions", "clicks", "actions"].join(","),
   });
-  const periodRange = resolvePeriodRange(periodKey, settings.timezone);
   const entry = createMetaCacheEntry(projectId, scope, periodRange.period, raw, CACHE_TTL_SECONDS);
   await saveMetaCache(kv, entry);
   return { entry, project, settings };
@@ -421,6 +447,7 @@ export const syncProjectCampaignDocument = async (
     settings?: ProjectSettings;
     projectRecord?: ProjectRecord;
     facebookUserId?: string | null;
+    periodRange?: PeriodRange;
   },
 ): Promise<MetaCampaignsDocument> => {
   const { entry, project, settings } = await loadProjectCampaigns(kv, projectId, periodKey, options);
