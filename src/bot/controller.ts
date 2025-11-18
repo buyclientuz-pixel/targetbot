@@ -1523,9 +1523,6 @@ const handleTextCommand = async (
     case "Авторизация Facebook":
       await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:fb-auth" });
       return;
-    case "Meta-аккаунты":
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:meta" });
-      return;
     case "Проекты":
       await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects" });
       return;
@@ -1580,8 +1577,6 @@ const handleCallback = async (
             return "panel:settings";
           case "webhooks":
             return "panel:webhooks";
-          case "meta":
-            return "panel:meta";
           default:
             return "panel:main";
         }

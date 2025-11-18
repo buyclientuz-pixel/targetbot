@@ -153,7 +153,7 @@ test(
     );
     await saveMetaCache(kv, campaignsEntry);
 
-    const now = new Date("2025-01-01T12:02:00.000Z");
+    const now = new Date("2025-01-01T07:02:00.000Z");
     const telegram = stubTelegramFetch();
 
     try {
@@ -174,6 +174,108 @@ test(
 
     const state = await kv.getJson<{ slots?: Record<string, string | null> }>(KV_KEYS.reportState("proj-auto"));
     assert.ok(state?.slots?.["12:00"]);
+  },
+);
+
+test(
+  "runAutoReports honours project timezone offsets",
+  { concurrency: false },
+  async () => {
+    const kvNamespace = new MemoryKVNamespace();
+    const kv = new KvClient(kvNamespace);
+    await putProject(kv, createProject({
+      id: "proj-auto-ny",
+      name: "Auto Reports NY",
+      adsAccountId: "act_2",
+      ownerTelegramId: 8800,
+    }));
+    await putProjectRecord(kv, {
+      id: "proj-auto-ny",
+      name: "Auto Reports NY",
+      ownerId: 8800,
+      adAccountId: "act_2",
+      chatId: null,
+      portalUrl: "https://th-reports.buyclientuz.workers.dev/p/proj-auto-ny",
+      settings: { currency: "USD", timezone: "America/New_York", kpi: { mode: "auto", type: "LEAD", label: "Лиды" } },
+    });
+    await putBillingRecord(kv, "proj-auto-ny", {
+      tariff: 1000,
+      currency: "USD",
+      nextPaymentDate: "2025-02-01",
+      autobilling: false,
+    });
+    await putAutoreportsRecord(kv, "proj-auto-ny", {
+      enabled: true,
+      time: "09:30",
+      mode: "today",
+      sendTo: "admin",
+    });
+
+    for (const periodKey of ["today", "yesterday", "week", "month"]) {
+      const entry = createMetaCacheEntry(
+        "proj-auto-ny",
+        `summary:${periodKey}`,
+        { from: "2025-01-01", to: "2025-01-01" },
+        {
+          periodKey,
+          metrics: {
+            spend: 30,
+            impressions: 1000,
+            clicks: 200,
+            leads: 6,
+            messages: 3,
+            purchases: 0,
+            addToCart: 0,
+            calls: 0,
+            registrations: 0,
+            engagement: 0,
+            leadsToday: 6,
+            leadsTotal: 400,
+            cpa: 5,
+            spendToday: 30,
+            cpaToday: 5,
+          },
+          source: {},
+        },
+        3600,
+      );
+      await saveMetaCache(kv, entry);
+    }
+
+    const campaignsEntry = createMetaCacheEntry(
+      "proj-auto-ny",
+      "campaigns:today",
+      { from: "2025-01-01", to: "2025-01-01" },
+      {
+        data: [
+          {
+            campaign_id: "cmp-ny",
+            campaign_name: "NYC",
+            spend: "30",
+            impressions: "900",
+            clicks: "120",
+            actions: [
+              { action_type: "lead", value: "6" },
+              { action_type: "onsite_conversion.messaging_conversation_started_7d", value: "3" },
+            ],
+          },
+        ],
+      },
+      3600,
+    );
+    await saveMetaCache(kv, campaignsEntry);
+
+    const now = new Date("2025-01-01T14:31:00.000Z");
+    const telegram = stubTelegramFetch();
+
+    try {
+      await runAutoReports(kv, "TEST_TOKEN", now);
+    } finally {
+      telegram.restore();
+    }
+
+    assert.equal(telegram.calls.length, 1);
+    assert.ok(String(telegram.calls[0].body.text ?? "").includes("📊 Отчёт"));
   },
 );
 

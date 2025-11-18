@@ -156,18 +156,79 @@ const parseSlot = (slot: string): { hours: number; minutes: number } | null => {
   return { hours, minutes };
 };
 
+const resolveTimezoneContext = (
+  now: Date,
+  timezone: string,
+): { year: number; month: number; day: number; offsetMs: number } => {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+    const parts = formatter.formatToParts(now);
+    const pick = (type: Intl.DateTimeFormatPartTypes): string | null =>
+      parts.find((part) => part.type === type)?.value ?? null;
+    const year = pick("year");
+    const month = pick("month");
+    const day = pick("day");
+    const hour = pick("hour") ?? "00";
+    const minute = pick("minute") ?? "00";
+    const second = pick("second") ?? "00";
+    if (!year || !month || !day) {
+      throw new Error("missing date parts");
+    }
+    const isoLocal = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+    const timezoneDate = new Date(`${isoLocal}Z`);
+    if (Number.isNaN(timezoneDate.getTime())) {
+      throw new Error("invalid timezone date");
+    }
+    return {
+      year: Number.parseInt(year, 10),
+      month: Number.parseInt(month, 10),
+      day: Number.parseInt(day, 10),
+      offsetMs: timezoneDate.getTime() - now.getTime(),
+    };
+  } catch {
+    return {
+      year: now.getUTCFullYear(),
+      month: now.getUTCMonth() + 1,
+      day: now.getUTCDate(),
+      offsetMs: 0,
+    };
+  }
+};
+
 const isSlotDue = (
   slot: string,
   now: Date,
   lastSentAt: string | null,
+  timezone: string,
 ): { due: boolean; scheduledAt: Date | null } => {
   const parsed = parseSlot(slot);
   if (!parsed) {
     return { due: false, scheduledAt: null };
   }
 
-  const scheduled = new Date(now);
-  scheduled.setUTCHours(parsed.hours, parsed.minutes, 0, 0);
+  const tzContext = resolveTimezoneContext(now, timezone);
+  const scheduledTimestamp = Date.UTC(
+    tzContext.year,
+    tzContext.month - 1,
+    tzContext.day,
+    parsed.hours,
+    parsed.minutes,
+    0,
+    0,
+  );
+  if (Number.isNaN(scheduledTimestamp)) {
+    return { due: false, scheduledAt: null };
+  }
+  const scheduled = new Date(scheduledTimestamp - tzContext.offsetMs);
 
   const diff = now.getTime() - scheduled.getTime();
   if (diff < 0 || diff > SLOT_WINDOW_MS) {
@@ -700,7 +761,12 @@ export const runAutoReports = async (
       const state = await getReportScheduleState(kv, project.id);
       const dueSlots: Array<{ slot: string; scheduledAt: Date }> = [];
       for (const slot of profile.slots) {
-        const { due, scheduledAt } = isSlotDue(slot, now, state.slots[slot] ?? null);
+        const { due, scheduledAt } = isSlotDue(
+          slot,
+          now,
+          state.slots[slot] ?? null,
+          projectRecord.settings.timezone ?? "UTC",
+        );
         if (due && scheduledAt) {
           dueSlots.push({ slot, scheduledAt });
         }

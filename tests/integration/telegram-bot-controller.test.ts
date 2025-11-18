@@ -204,7 +204,6 @@ test("Telegram bot controller serves menu and project list", async () => {
       menuKeyboard.inline_keyboard[0]?.[0]?.url,
       "https://th-reports.buyclientuz.workers.dev/api/meta/oauth/start?tid=100",
     );
-    assert.equal(menuKeyboard.inline_keyboard[0]?.[1]?.callback_data, "cmd:meta");
 
     stub.requests.length = 0;
 
@@ -583,43 +582,6 @@ test("Telegram bot controller exports leads as CSV document", async () => {
     const docRequest = findLastSendDocument(stub.requests);
     assert.ok(docRequest, "expected sendDocument request");
     assert.equal(docRequest?.method, "POST");
-  } finally {
-    stub.restore();
-  }
-});
-
-test("cmd:meta shows stored ad accounts", async () => {
-  const kv = new KvClient(new MemoryKVNamespace());
-  const r2 = new R2Client(new MemoryR2Bucket());
-  await putFbAuthRecord(kv, {
-    userId: 100,
-    accessToken: "token",
-    expiresAt: "2026-01-01T00:00:00.000Z",
-    adAccounts: [
-      { id: "act_1", name: "BirLash", currency: "USD", status: 1 },
-      { id: "act_2", name: "Test", currency: "USD", status: 1 },
-    ],
-    facebookUserId: "fb_user_100",
-    facebookName: "Meta Owner",
-  });
-
-  const controller = createController(kv, r2);
-  const stub = installFetchStub();
-
-  try {
-    await controller.handleUpdate({
-      callback_query: {
-        id: "cb-meta",
-        from: { id: 100 },
-        message: { chat: { id: 100 } },
-        data: "cmd:meta",
-      },
-    } as unknown as TelegramUpdate);
-
-    const lastMessage = findLastSendMessage(stub.requests);
-    assert.ok(lastMessage);
-    assert.ok(String(lastMessage.body.text).includes("Доступные рекламные аккаунты"));
-    assert.ok(String(lastMessage.body.text).includes("BirLash"));
   } finally {
     stub.restore();
   }

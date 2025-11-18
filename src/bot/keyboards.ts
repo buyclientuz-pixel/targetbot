@@ -40,7 +40,7 @@ export const buildMainMenuKeyboard = (options: MainMenuKeyboardOptions): InlineK
     : { text: "Авторизация Facebook", callback_data: "cmd:auth" };
   return {
     inline_keyboard: [
-      [facebookButton, { text: "Meta-аккаунты", callback_data: "cmd:meta" }],
+      [facebookButton],
       [
         { text: "Проекты", callback_data: "cmd:projects" },
         { text: "Аналитика", callback_data: "cmd:analytics" },

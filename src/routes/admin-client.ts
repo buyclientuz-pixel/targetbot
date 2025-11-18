@@ -58,7 +58,6 @@ const adminClientFactory = () => {
     financeTotals: document.querySelector('[data-finance-totals]'),
     financeProjects: document.querySelector('[data-finance-projects]'),
     usersTable: document.querySelector('[data-users-body]'),
-    metaTable: document.querySelector('[data-meta-body]'),
     webhookInfo: document.querySelector('[data-webhook-info]'),
     webhookButton: document.querySelector('[data-webhook-reset]'),
     settingsInfo: document.querySelector('[data-settings-info]'),
@@ -592,27 +591,6 @@ const adminClientFactory = () => {
       setStatus(error.message);
     }
   };
-    const loadMetaAccounts = async () => {
-      try {
-        const data = await request('/meta/accounts');
-      if (!els.metaTable) {
-        return;
-      }
-      els.metaTable.innerHTML = '';
-      data.accounts.forEach((account) => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${account.userId}</td>
-          <td>${new Date(account.expiresAt).toLocaleString('ru-RU')}</td>
-          <td>${account.adAccounts.map((item) => `${item.name} (${item.id})`).join(', ')}</td>
-        `;
-        els.metaTable.appendChild(tr);
-      });
-    } catch (error) {
-      setStatus(error.message);
-    }
-  };
-
     const loadWebhookStatus = async () => {
       try {
         const data = await request('/webhook-status');
@@ -711,9 +689,6 @@ const adminClientFactory = () => {
         break;
       case 'users':
         await loadUsers();
-        break;
-      case 'meta':
-        await loadMetaAccounts();
         break;
       case 'webhooks':
         await loadWebhookStatus();

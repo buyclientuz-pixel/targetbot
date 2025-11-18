@@ -11,7 +11,6 @@ import { render as renderFinance } from "./panels/finance";
 import { render as renderUsers } from "./panels/users";
 import { render as renderSettings } from "./panels/settings";
 import { render as renderWebhooks } from "./panels/webhooks";
-import { render as renderMeta } from "./panels/meta";
 import { render as renderBilling } from "./panels/billing";
 import { render as renderLeads } from "./panels/leads";
 import { render as renderLeadDetail } from "./panels/lead-detail";
@@ -114,9 +113,6 @@ const resolvePanel = (panelId: string): ResolveResult => {
   }
   if (panelId === "panel:webhooks" || panelId === "cmd:webhooks") {
     return { renderer: renderWebhooks, params: [], id: "webhooks" };
-  }
-  if (panelId === "panel:meta" || panelId === "cmd:meta") {
-    return { renderer: renderMeta, params: [], id: "meta" };
   }
   return { renderer: renderMain, params: [], id: "main" };
 };

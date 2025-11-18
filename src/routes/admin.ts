@@ -28,7 +28,6 @@ import {
   buildAdminAnalyticsOverview,
   buildAdminFinanceOverview,
   listAdminUsers,
-  listAdminMetaAccounts,
   listAdminProjectLeads,
 } from "../services/admin-dashboard";
 import { getWebhookInfo, setWebhook } from "../services/telegram";
@@ -449,7 +448,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
             <button class="admin-nav__item" data-nav="analytics">Аналитика</button>
             <button class="admin-nav__item" data-nav="finance">Финансы</button>
             <button class="admin-nav__item" data-nav="users">Пользователи</button>
-            <button class="admin-nav__item" data-nav="meta">Meta / Facebook</button>
             <button class="admin-nav__item" data-nav="webhooks">Webhook</button>
             <button class="admin-nav__item" data-nav="settings">Настройки</button>
           </nav>
@@ -630,23 +628,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                   </tr>
                 </thead>
                 <tbody data-users-body></tbody>
-              </table>
-            </div>
-          </section>
-          <section class="admin-section" data-section="meta" hidden>
-            <div class="admin-panel__header">
-              <h2>Meta / Facebook</h2>
-            </div>
-            <div class="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>User ID</th>
-                    <th>Токен до</th>
-                    <th>Аккаунты</th>
-                  </tr>
-                </thead>
-                <tbody data-meta-body></tbody>
               </table>
             </div>
           </section>
@@ -1007,11 +988,6 @@ export const registerAdminRoutes = (router: Router): void => {
   registerAdminRoute(router, "GET", ["/api/admin/users", "/api/users"], async (context) => {
     const users = await listAdminUsers(context.kv);
     return jsonOk({ users });
-  });
-
-  registerAdminRoute(router, "GET", ["/api/admin/meta/accounts"], async (context) => {
-    const accounts = await listAdminMetaAccounts(context.kv);
-    return jsonOk({ accounts });
   });
 
   registerAdminRoute(router, "POST", ["/api/admin/update-facebook-token"], async (context) => {
