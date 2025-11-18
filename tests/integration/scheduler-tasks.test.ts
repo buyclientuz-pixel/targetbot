@@ -293,6 +293,204 @@ test(
 );
 
 test(
+  "runAutoReports sticks to leads for auto KPI click projects",
+  { concurrency: false },
+  async () => {
+    const kvNamespace = new MemoryKVNamespace();
+    const kv = new KvClient(kvNamespace);
+    await putProject(kv, createProject({
+      id: "proj-auto-click",
+      name: "Auto Reports Click",
+      adsAccountId: "act_click",
+      ownerTelegramId: 600100,
+    }));
+    await putProjectRecord(kv, {
+      id: "proj-auto-click",
+      name: "Auto Reports Click",
+      ownerId: 600100,
+      adAccountId: "act_click",
+      chatId: null,
+      portalUrl: "",
+      settings: { currency: "USD", timezone: "Asia/Tashkent", kpi: { mode: "auto", type: "CLICK", label: "Клики" } },
+    });
+    await putBillingRecord(kv, "proj-auto-click", {
+      tariff: 450,
+      currency: "USD",
+      nextPaymentDate: "2025-02-15",
+      autobilling: false,
+    });
+    await putAutoreportsRecord(kv, "proj-auto-click", {
+      enabled: true,
+      time: "15:00",
+      mode: "today",
+      sendToChat: false,
+      sendToAdmin: true,
+    });
+
+    const emptyConversions: MetaSummaryMetrics = {
+      spend: 30,
+      impressions: 2000,
+      clicks: 150,
+      leads: 0,
+      messages: 0,
+      purchases: 0,
+      addToCart: 0,
+      calls: 0,
+      registrations: 0,
+      engagement: 0,
+      leadsToday: 0,
+      leadsTotal: 120,
+      cpa: null,
+      spendToday: 30,
+      cpaToday: null,
+    };
+
+    for (const periodKey of ["today", "yesterday", "week", "month"]) {
+      const entry = createMetaCacheEntry(
+        "proj-auto-click",
+        `summary:${periodKey}`,
+        { from: "2025-01-01", to: "2025-01-01" },
+        { periodKey, metrics: emptyConversions, source: {} },
+        3600,
+      );
+      await saveMetaCache(kv, entry);
+    }
+
+    const campaignsEntry = createMetaCacheEntry(
+      "proj-auto-click",
+      "campaigns:today",
+      { from: "2025-01-01", to: "2025-01-01" },
+      {
+        data: [
+          {
+            campaign_id: "cmp-click",
+            campaign_name: "Traffic",
+            objective: "LINK_CLICKS",
+            spend: "30",
+            impressions: "2000",
+            clicks: "150",
+            actions: [],
+          },
+        ],
+      },
+      3600,
+    );
+    await saveMetaCache(kv, campaignsEntry);
+
+    const now = new Date("2025-01-01T10:02:00.000Z");
+    const telegram = stubTelegramFetch();
+    try {
+      await runAutoReports(kv, "TEST_TOKEN", now);
+    } finally {
+      telegram.restore();
+    }
+
+    assert.equal(telegram.calls.length, 1);
+    const messageText = String(telegram.calls[0].body.text ?? "");
+    assert.match(messageText, /Цель: Лиды/);
+  },
+);
+
+test(
+  "runAutoReports respects manual KPI mode for click projects",
+  { concurrency: false },
+  async () => {
+    const kvNamespace = new MemoryKVNamespace();
+    const kv = new KvClient(kvNamespace);
+    await putProject(kv, createProject({
+      id: "proj-manual-click",
+      name: "Manual KPI Click",
+      adsAccountId: "act_manual_click",
+      ownerTelegramId: 600200,
+    }));
+    await putProjectRecord(kv, {
+      id: "proj-manual-click",
+      name: "Manual KPI Click",
+      ownerId: 600200,
+      adAccountId: "act_manual_click",
+      chatId: null,
+      portalUrl: "",
+      settings: { currency: "USD", timezone: "Asia/Tashkent", kpi: { mode: "manual", type: "CLICK", label: "Клики" } },
+    });
+    await putBillingRecord(kv, "proj-manual-click", {
+      tariff: 300,
+      currency: "USD",
+      nextPaymentDate: "2025-02-20",
+      autobilling: false,
+    });
+    await putAutoreportsRecord(kv, "proj-manual-click", {
+      enabled: true,
+      time: "15:00",
+      mode: "today",
+      sendToChat: false,
+      sendToAdmin: true,
+    });
+
+    const emptyConversions: MetaSummaryMetrics = {
+      spend: 25,
+      impressions: 1500,
+      clicks: 120,
+      leads: 0,
+      messages: 0,
+      purchases: 0,
+      addToCart: 0,
+      calls: 0,
+      registrations: 0,
+      engagement: 0,
+      leadsToday: 0,
+      leadsTotal: 80,
+      cpa: null,
+      spendToday: 25,
+      cpaToday: null,
+    };
+
+    for (const periodKey of ["today", "yesterday", "week", "month"]) {
+      const entry = createMetaCacheEntry(
+        "proj-manual-click",
+        `summary:${periodKey}`,
+        { from: "2025-01-01", to: "2025-01-01" },
+        { periodKey, metrics: emptyConversions, source: {} },
+        3600,
+      );
+      await saveMetaCache(kv, entry);
+    }
+
+    const campaignsEntry = createMetaCacheEntry(
+      "proj-manual-click",
+      "campaigns:today",
+      { from: "2025-01-01", to: "2025-01-01" },
+      {
+        data: [
+          {
+            campaign_id: "cmp-manual-click",
+            campaign_name: "Traffic Manual",
+            objective: "LINK_CLICKS",
+            spend: "25",
+            impressions: "1500",
+            clicks: "120",
+            actions: [],
+          },
+        ],
+      },
+      3600,
+    );
+    await saveMetaCache(kv, campaignsEntry);
+
+    const now = new Date("2025-01-01T10:02:00.000Z");
+    const telegram = stubTelegramFetch();
+    try {
+      await runAutoReports(kv, "TEST_TOKEN", now);
+    } finally {
+      telegram.restore();
+    }
+
+    assert.equal(telegram.calls.length, 1);
+    const messageText = String(telegram.calls[0].body.text ?? "");
+    assert.match(messageText, /Цель: Клики/);
+  },
+);
+
+test(
   "runAutoReports sends findings only to admin recipients",
   { concurrency: false },
   async () => {

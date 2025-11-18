@@ -38,6 +38,7 @@ const GOAL_METADATA: Record<AutoGoalKey, { label: string; plural: string }> = {
 
 const GOAL_KEYS = Object.keys(GOAL_METADATA) as AutoGoalKey[];
 const PRIORITY_GOALS: AutoGoalKey[] = ["leads", "messages"];
+const DEFAULT_AUTO_GOAL: AutoGoalKey = PRIORITY_GOALS[0] ?? "leads";
 
 const KPI_GOAL_MAP: Record<KpiType, AutoGoalKey> = {
   LEAD: "leads",
@@ -256,6 +257,8 @@ const mapKpiTypeToGoal = (type?: KpiType): AutoGoalKey => {
   return KPI_GOAL_MAP[type] ?? "leads";
 };
 
+const isTrafficGoal = (goal: AutoGoalKey): boolean => goal === "traffic";
+
 const detectGoalFromObjective = (objective?: string | null): AutoGoalKey | null => {
   if (!objective) {
     return null;
@@ -341,10 +344,32 @@ const pickFirstNonZeroGoal = (totals: Map<AutoGoalKey, number>, order: AutoGoalK
   return null;
 };
 
-const determinePrimaryGoal = (rows: CampaignRow[], fallback: AutoGoalKey): AutoGoalKey => {
-  if (rows.length === 0) {
-    return fallback;
+const pickGoalFromSummary = (metrics?: MetaSummaryMetrics): AutoGoalKey | null => {
+  if (!metrics) {
+    return null;
   }
+  for (const goal of PRIORITY_GOALS) {
+    if (getSummaryMetricValue(metrics, goal) > 0) {
+      return goal;
+    }
+  }
+  return null;
+};
+
+const determinePrimaryGoal = (
+  rows: CampaignRow[],
+  summary: MetaSummaryMetrics | undefined,
+  options: { defaultGoal: AutoGoalKey; fallbackGoal: AutoGoalKey },
+): AutoGoalKey => {
+  const summaryGoal = pickGoalFromSummary(summary);
+  if (summaryGoal) {
+    return summaryGoal;
+  }
+
+  if (rows.length === 0) {
+    return options.defaultGoal ?? options.fallbackGoal;
+  }
+
   const metricTotals = sumGoalMetrics(rows);
   const preferredGoal = pickFirstNonZeroGoal(metricTotals, PRIORITY_GOALS);
   if (preferredGoal) {
@@ -353,12 +378,12 @@ const determinePrimaryGoal = (rows: CampaignRow[], fallback: AutoGoalKey): AutoG
 
   const detectedTotals = new Map<AutoGoalKey, number>();
   for (const row of rows) {
-    const detected = detectGoalFromObjective(row.objective) ?? fallback;
+    const detected = detectGoalFromObjective(row.objective) ?? options.fallbackGoal;
     const value = getRowMetricValue(row, detected);
     detectedTotals.set(detected, (detectedTotals.get(detected) ?? 0) + value);
   }
 
-  let bestGoal: AutoGoalKey = fallback;
+  let bestGoal: AutoGoalKey = options.fallbackGoal;
   let bestValue = detectedTotals.get(bestGoal) ?? 0;
   for (const goal of GOAL_KEYS) {
     const total = detectedTotals.get(goal) ?? 0;
@@ -368,12 +393,15 @@ const determinePrimaryGoal = (rows: CampaignRow[], fallback: AutoGoalKey): AutoG
     }
   }
 
-  if (bestValue > 0) {
+  if (bestValue > 0 && !isTrafficGoal(bestGoal)) {
     return bestGoal;
   }
 
-  const fallbackGoal = pickFirstNonZeroGoal(metricTotals, GOAL_KEYS);
-  return fallbackGoal ?? fallback;
+  const fallbackGoal = pickFirstNonZeroGoal(
+    metricTotals,
+    GOAL_KEYS.filter((goal) => !isTrafficGoal(goal)),
+  );
+  return fallbackGoal ?? options.defaultGoal ?? options.fallbackGoal;
 };
 
 const DEFAULT_METRICS: MetaSummaryMetrics = {
@@ -750,8 +778,15 @@ const loadAutoReportTemplate = async (options: {
   }
 
   const kpiSettings = projectRecord.settings.kpi;
-  const fallbackGoal = mapKpiTypeToGoal(kpiSettings.type);
-  const goal = kpiSettings.mode === "manual" ? fallbackGoal : determinePrimaryGoal(campaigns, fallbackGoal);
+  const manualGoal = mapKpiTypeToGoal(kpiSettings.type);
+  const topPeriodMetrics = metricsContext.metrics.get(topPeriod);
+  const goal =
+    kpiSettings.mode === "manual"
+      ? manualGoal
+      : determinePrimaryGoal(campaigns, topPeriodMetrics, {
+          defaultGoal: DEFAULT_AUTO_GOAL,
+          fallbackGoal: manualGoal,
+        });
   const replyMarkup =
     projectRecord.portalUrl && projectRecord.portalUrl.trim().length > 0
       ? { inline_keyboard: [[{ text: "Открыть портал", url: projectRecord.portalUrl }]] }
