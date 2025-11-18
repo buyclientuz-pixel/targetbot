@@ -294,7 +294,7 @@ test("full system acceptance scenario", async () => {
     const parsedLead = await getLead(r2, "proj_acceptance", "lead_acceptance");
     assert.equal(parsedLead?.projectId, "proj_acceptance");
     assert.ok(projectMessages.length >= 1);
-    assert.match(projectMessages[0]?.text ?? "", /Новый лид/);
+    assert.match(projectMessages[0]?.text ?? "", /Лид ожидает ответа/);
 
     const summaryResponse = await dispatchRequest(
       router,

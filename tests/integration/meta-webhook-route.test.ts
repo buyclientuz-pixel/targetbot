@@ -97,7 +97,7 @@ test("Meta webhook route persists leads and dispatches Telegram notifications", 
 
   assert.ok(lastMessage);
   assert.equal(lastMessage?.token, "TEST_TOKEN");
-  assert.match(lastMessage?.text ?? "", /🔔 Новый лид/);
+  assert.match(lastMessage?.text ?? "", /Лид ожидает ответа/);
   assert.equal(lastMessage?.chatId, -1003269756488);
 });
 

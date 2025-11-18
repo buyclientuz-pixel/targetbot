@@ -10,8 +10,11 @@ import { dispatchProjectMessage } from "../services/project-messaging";
 import { resolveTelegramToken } from "../config/telegram";
 import { resolveWorkerBaseUrl } from "../config/worker";
 import { mergeProjectLeadsList } from "../services/project-leads-list";
+import { requireProjectRecord } from "../domain/spec/project";
 import type { Router } from "../worker/router";
 import type { KvClient } from "../infra/kv";
+
+const DEFAULT_LEAD_NOTIFICATION_TIMEZONE = "Asia/Tashkent";
 
 const escapeHtml = (value: string): string =>
   value
@@ -49,20 +52,64 @@ const formatPhoneForMessage = (phone: string | null): string => {
   return `<a href="tel:${href}">${escapeHtml(phone)}</a>`;
 };
 
-const safeText = (value: string | null): string => {
-  if (!value) {
+const formatLeadTimestamp = (value: string, timezone: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
     return "—";
   }
-  return escapeHtml(value);
+  const datePart = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: timezone,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(date);
+  const timePart = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
+  return `${datePart}, ${timePart}`;
 };
 
-const buildLeadNotificationMessage = (lead: Lead): string => {
+const formatLeadWaitTime = (createdAt: string, now: Date): string => {
+  const created = new Date(createdAt);
+  if (Number.isNaN(created.getTime())) {
+    return "—";
+  }
+  const diffMs = Math.max(0, now.getTime() - created.getTime());
+  const totalMinutes = Math.floor(diffMs / 60000);
+  const minutesInDay = 24 * 60;
+  const days = Math.floor(totalMinutes / minutesInDay);
+  const hours = Math.floor((totalMinutes % minutesInDay) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (days > 0) {
+    parts.push(`${days} д`);
+  }
+  if (hours > 0) {
+    parts.push(`${hours} ч`);
+  }
+  if (minutes > 0 || parts.length === 0) {
+    parts.push(`${minutes} мин`);
+  }
+  return parts.join(" ");
+};
+
+const buildLeadNotificationMessage = (
+  lead: Lead,
+  project: Project,
+  timezone: string,
+  now: Date,
+): string => {
   const lines = [
-    "🔔 Новый лид (контакт)",
+    "🔔 Лид ожидает ответа",
     `Имя: ${escapeHtml(lead.name)}`,
     `Телефон: ${formatPhoneForMessage(lead.phone)}`,
-    `Кампания: ${safeText(lead.campaign)}`,
-    `Объявление: ${safeText(lead.ad)}`,
+    `Получен: ${formatLeadTimestamp(lead.createdAt, timezone)}`,
+    `В ожидании: ${formatLeadWaitTime(lead.createdAt, now)}`,
+    `Проект: ${escapeHtml(project.name)}`,
   ];
   return lines.join("\n");
 };
@@ -75,13 +122,14 @@ const dispatchLeadNotifications = async (
   project: Project,
   settings: ProjectSettings,
   lead: Lead,
+  timezone: string,
   sendMessage: ProjectMessageDispatcher,
 ): Promise<boolean> => {
   if (!token) {
     return false;
   }
 
-  const message = buildLeadNotificationMessage(lead);
+  const message = buildLeadNotificationMessage(lead, project, timezone, new Date());
   const result = await sendMessage({
     kv,
     token,
@@ -233,6 +281,17 @@ export const registerMetaRoutes = (
       }
 
       const settings = await ensureProjectSettings(context.kv, projectId);
+      let projectTimezone = context.env.DEFAULT_TZ ?? DEFAULT_LEAD_NOTIFICATION_TIMEZONE;
+      try {
+        const projectRecord = await requireProjectRecord(context.kv, projectId);
+        if (projectRecord.settings.timezone) {
+          projectTimezone = projectRecord.settings.timezone;
+        }
+      } catch (error) {
+        if (!(error instanceof EntityNotFoundError)) {
+          throw error;
+        }
+      }
 
       const stored = await saveLead(context.r2, lead);
       if (stored) {
@@ -247,6 +306,7 @@ export const registerMetaRoutes = (
           project,
           settings,
           lead,
+          projectTimezone,
           sendProjectMessage,
         );
       }
