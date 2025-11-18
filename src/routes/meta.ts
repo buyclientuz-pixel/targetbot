@@ -6,7 +6,7 @@ import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
 import { loadProjectCampaigns, loadProjectSummary } from "../services/project-insights";
 import { parseMetaWebhookPayload } from "../services/meta-webhook";
-import { dispatchProjectMessage } from "../services/project-messaging";
+import { dispatchProjectMessage, type ProjectMessageRoute } from "../services/project-messaging";
 import { resolveTelegramToken } from "../config/telegram";
 import { resolveWorkerBaseUrl } from "../config/worker";
 import { mergeProjectLeadsList } from "../services/project-leads-list";
@@ -129,6 +129,11 @@ const dispatchLeadNotifications = async (
     return false;
   }
 
+  const route = resolveLeadNotificationRoute(settings.leads);
+  if (!route) {
+    return false;
+  }
+
   const message = buildLeadNotificationMessage(lead, project, timezone, new Date());
   const result = await sendMessage({
     kv,
@@ -136,10 +141,26 @@ const dispatchLeadNotifications = async (
     project,
     settings,
     text: message,
+    route,
     parseMode: "HTML",
   });
 
   return result.delivered.chat || result.delivered.admin;
+};
+
+const resolveLeadNotificationRoute = (settings: ProjectSettings["leads"]): ProjectMessageRoute | null => {
+  const sendToChat = settings.sendToChat;
+  const sendToAdmin = settings.sendToAdmin;
+  if (sendToChat && sendToAdmin) {
+    return "BOTH";
+  }
+  if (sendToChat) {
+    return "CHAT";
+  }
+  if (sendToAdmin) {
+    return "ADMIN";
+  }
+  return null;
 };
 
 interface TokenRequestBody {

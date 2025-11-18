@@ -32,6 +32,11 @@ export interface ProjectReportSettings {
   mode: string;
 }
 
+export interface ProjectLeadNotificationSettings {
+  sendToChat: boolean;
+  sendToAdmin: boolean;
+}
+
 export interface ProjectMetaSettings {
   facebookUserId: string | null;
 }
@@ -44,6 +49,7 @@ export interface ProjectSettings {
   billing: ProjectBillingSettings;
   kpi: ProjectKpiSettings;
   reports: ProjectReportSettings;
+  leads: ProjectLeadNotificationSettings;
   meta: ProjectMetaSettings;
   createdAt: string;
   updatedAt: string;
@@ -94,6 +100,17 @@ const parseReports = (value: unknown, defaults: ProjectReportSettings): ProjectR
   };
 };
 
+const parseLeadNotifications = (
+  value: unknown,
+  defaults: ProjectLeadNotificationSettings,
+): ProjectLeadNotificationSettings => {
+  const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return {
+    sendToChat: assertBoolean(record.sendToChat ?? defaults.sendToChat, "projectSettings.leads.sendToChat"),
+    sendToAdmin: assertBoolean(record.sendToAdmin ?? defaults.sendToAdmin, "projectSettings.leads.sendToAdmin"),
+  };
+};
+
 const parseMetaSettings = (value: unknown, defaults: ProjectMetaSettings): ProjectMetaSettings => {
   const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   return {
@@ -139,6 +156,7 @@ export const parseProjectSettings = (raw: unknown, projectId: string): ProjectSe
     billing: parseBilling(record.billing, defaults.billing),
     kpi: parseKpi(record.kpi, defaults.kpi),
     reports: parseReports(record.reports, defaults.reports),
+    leads: parseLeadNotifications(record.leads, defaults.leads),
     meta: parseMetaSettings(record.meta, defaults.meta),
     createdAt,
     updatedAt,
@@ -153,6 +171,7 @@ export const serialiseProjectSettings = (settings: ProjectSettings): Record<stri
   billing: settings.billing,
   kpi: settings.kpi,
   reports: settings.reports,
+  leads: settings.leads,
   meta: settings.meta,
   createdAt: settings.createdAt,
   updatedAt: settings.updatedAt,
@@ -179,6 +198,10 @@ export const createDefaultProjectSettings = (projectId: string): ProjectSettings
       autoReportsEnabled: false,
       timeSlots: [],
       mode: "yesterday",
+    },
+    leads: {
+      sendToChat: true,
+      sendToAdmin: false,
     },
     meta: {
       facebookUserId: null,

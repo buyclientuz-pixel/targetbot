@@ -83,6 +83,7 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         billing: { tariff: 500, currency: "USD", nextPaymentDate: "2025-12-15" },
+        leads: { sendToChat: false, sendToAdmin: true },
       }),
     }),
     env,
@@ -92,6 +93,8 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   const updatedSettings = await ensureProjectSettings(kv, "birlash");
   assert.equal(updatedSettings.billing.tariff, 500);
   assert.equal(updatedSettings.billing.nextPaymentDate, "2025-12-15");
+  assert.equal(updatedSettings.leads.sendToChat, false);
+  assert.equal(updatedSettings.leads.sendToAdmin, true);
 
   const metaResponse = await router.dispatch(
     new Request("https://example.com/api/admin/meta-tokens/123", {

@@ -47,6 +47,7 @@ const adminClientFactory = () => {
     portalDeleteButton: document.querySelector('[data-portal-delete]'),
     portalOpenButton: document.querySelector('[data-portal-open]'),
     leadsTable: document.querySelector('[data-leads-body]'),
+    leadSettingsForm: document.querySelector('[data-lead-settings-form]'),
     campaignsTable: document.querySelector('[data-campaigns-body]'),
     paymentsTable: document.querySelector('[data-payments-body]'),
     paymentForm: document.querySelector('[data-payment-form]'),
@@ -310,9 +311,25 @@ const adminClientFactory = () => {
   };
 
     const fillSettingsForm = (detail) => {
-      if (!els.settingsForm || !detail) {
+      if (!els.settingsForm) {
         return;
       }
+    const enabled = Boolean(detail);
+    els.settingsForm.elements.kpiMode.disabled = !enabled;
+    els.settingsForm.elements.kpiType.disabled = !enabled;
+    els.settingsForm.elements.kpiLabel.disabled = !enabled;
+    els.settingsForm.elements.autoreportsEnabled.disabled = !enabled;
+    els.settingsForm.elements.autoreportsTime.disabled = !enabled;
+    els.settingsForm.elements.autoreportsSendChat.disabled = !enabled;
+    els.settingsForm.elements.autoreportsSendAdmin.disabled = !enabled;
+    const submitButton = els.settingsForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+      submitButton.disabled = !enabled;
+    }
+    if (!detail) {
+      els.settingsForm.reset();
+      return;
+    }
     els.settingsForm.elements.kpiMode.value = detail.project.settings.kpi.mode;
     els.settingsForm.elements.kpiType.value = detail.project.settings.kpi.type;
     els.settingsForm.elements.kpiLabel.value = detail.project.settings.kpi.label;
@@ -320,6 +337,27 @@ const adminClientFactory = () => {
     els.settingsForm.elements.autoreportsTime.value = detail.autoreports.time;
     els.settingsForm.elements.autoreportsSendChat.checked = detail.autoreports.sendToChat;
     els.settingsForm.elements.autoreportsSendAdmin.checked = detail.autoreports.sendToAdmin;
+  };
+
+    const fillLeadSettingsForm = (detail) => {
+      if (!els.leadSettingsForm) {
+        return;
+      }
+    const enabled = Boolean(detail);
+    const chatInput = els.leadSettingsForm.elements.leadSendChat;
+    const adminInput = els.leadSettingsForm.elements.leadSendAdmin;
+    if (chatInput) {
+      chatInput.disabled = !enabled;
+      chatInput.checked = Boolean(detail?.leadNotifications?.sendToChat);
+    }
+    if (adminInput) {
+      adminInput.disabled = !enabled;
+      adminInput.checked = Boolean(detail?.leadNotifications?.sendToAdmin);
+    }
+    const submitButton = els.leadSettingsForm.querySelector('button[type="submit"]');
+    if (submitButton) {
+      submitButton.disabled = !enabled;
+    }
   };
     const clearProjectDetailTables = () => {
       if (els.leadsTable) {
@@ -392,6 +430,7 @@ const adminClientFactory = () => {
       if (!detail || !els.projectDetail) {
         els.projectDetail?.setAttribute('hidden', '');
         clearProjectDetailTables();
+        fillLeadSettingsForm(null);
         return;
       }
     els.projectDetail.removeAttribute('hidden');
@@ -405,6 +444,7 @@ const adminClientFactory = () => {
     renderCampaigns(detail.campaigns);
     renderPayments(detail.billing, detail.payments.payments ?? []);
     fillSettingsForm(detail);
+    fillLeadSettingsForm(detail);
   };
 
     const loadProjects = async () => {
@@ -661,6 +701,29 @@ const adminClientFactory = () => {
     }
   };
 
+    const submitLeadSettings = async (event) => {
+      event.preventDefault();
+      if (!state.selectedProjectId) {
+        return;
+      }
+    const form = event.currentTarget;
+    const payload = {
+      leads: {
+        sendToChat: form.elements.leadSendChat.checked,
+        sendToAdmin: form.elements.leadSendAdmin.checked,
+      },
+    };
+    try {
+      await request(`/projects/${state.selectedProjectId}/settings`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+      setStatus('Настройки уведомлений обновлены');
+    } catch (error) {
+      setStatus(error.message);
+    }
+  };
+
     const resetWebhook = async () => {
       try {
         await request('/webhook-reset', { method: 'POST' });
@@ -720,6 +783,7 @@ const adminClientFactory = () => {
     els.projectCreateForm?.addEventListener('submit', submitProjectCreate);
     els.paymentForm?.addEventListener('submit', submitPayment);
     els.settingsForm?.addEventListener('submit', submitSettings);
+    els.leadSettingsForm?.addEventListener('submit', submitLeadSettings);
     els.webhookButton?.addEventListener('click', resetWebhook);
 
     if (els.settingsInfo && WORKER_URL) {

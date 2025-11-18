@@ -9,7 +9,7 @@ import { getUserSettingsRecord } from "../domain/spec/user-settings";
 import { getFbAuthRecord } from "../domain/spec/fb-auth";
 import { getProjectLeadsList } from "../domain/spec/project-leads";
 import { getPaymentsHistoryDocument } from "../domain/spec/payments-history";
-import { ensureProjectSettings } from "../domain/project-settings";
+import { ensureProjectSettings, type ProjectLeadNotificationSettings } from "../domain/project-settings";
 import { getPortalSyncState, type PortalSyncState } from "../domain/portal-sync";
 import { translateMetaObjective } from "./meta-objectives";
 
@@ -105,6 +105,7 @@ export interface AdminProjectDetail extends ProjectBundle {
     enabled: boolean;
     sync: PortalSyncState;
   };
+  leadNotifications: ProjectLeadNotificationSettings;
 }
 
 export const loadAdminProjectDetail = async (
@@ -136,6 +137,7 @@ export const loadAdminProjectDetail = async (
       enabled: settings.portalEnabled,
       sync: portalSync,
     },
+    leadNotifications: settings.leads,
   } satisfies AdminProjectDetail;
 };
 

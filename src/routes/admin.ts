@@ -523,6 +523,14 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                   </div>
                 </div>
                 <h4>Лиды</h4>
+                <form class="form-grid" data-lead-settings-form>
+                  <label>
+                    Уведомления о лидах
+                    <span><input type="checkbox" name="leadSendChat" /> В чат</span>
+                    <span><input type="checkbox" name="leadSendAdmin" /> Админу</span>
+                  </label>
+                  <button class="admin-btn" type="submit">Сохранить уведомления</button>
+                </form>
                 <div class="table-wrapper">
                   <table>
                     <thead>
@@ -677,6 +685,10 @@ interface UpdateSettingsBody extends Record<string, unknown> {
   autoreports?: {
     enabled?: boolean;
     time?: string;
+    sendToChat?: boolean;
+    sendToAdmin?: boolean;
+  };
+  leads?: {
     sendToChat?: boolean;
     sendToAdmin?: boolean;
   };
@@ -1240,6 +1252,10 @@ export const registerAdminRoutes = (router: Router): void => {
         reports: {
           ...existing.reports,
           ...(body.reports as Record<string, unknown> | undefined),
+        },
+        leads: {
+          ...existing.leads,
+          ...(body.leads as Record<string, unknown> | undefined),
         },
         meta: {
           ...existing.meta,

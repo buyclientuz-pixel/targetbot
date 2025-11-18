@@ -41,6 +41,10 @@
     "timeSlots": ["10:00"],
     "mode": "yesterday+week"
   },
+  "leads": {
+    "sendToChat": true,
+    "sendToAdmin": false
+  },
   "meta": {
     "facebookUserId": "1234567890"
   },
@@ -52,6 +56,7 @@
 * `parseProjectSettings` заполняет отсутствующие поля значениями из `createDefaultProjectSettings`.
 * `ensureProjectSettings` создаёт дефолтный JSON при первом запросе и сохраняет его в KV.
 * PUT `/api/projects/:id/settings` делает безопасный merge вложенных секций и повторно валидирует payload.
+* `leads.sendToChat` / `leads.sendToAdmin` определяют, нужно ли отправлять уведомления о новых лидах в чат-группу проекта и/или админу.
 * `meta.facebookUserId` используется порталом и Meta-прокси. Если значение не задано, API возвращает 422.
 
 ## Portal Session (KV: `portal-session:{sessionId}`)
