@@ -36,6 +36,9 @@ const GOAL_METADATA: Record<AutoGoalKey, { label: string; plural: string }> = {
   engagement: { label: "Вовлечённость", plural: "событий" },
 };
 
+const GOAL_KEYS = Object.keys(GOAL_METADATA) as AutoGoalKey[];
+const PRIORITY_GOALS: AutoGoalKey[] = ["leads", "messages"];
+
 const KPI_GOAL_MAP: Record<KpiType, AutoGoalKey> = {
   LEAD: "leads",
   MESSAGE: "messages",
@@ -315,35 +318,62 @@ const getSummaryMetricValue = (metrics: MetaSummaryMetrics | undefined, goal: Au
   }
 };
 
+const sumGoalMetrics = (rows: CampaignRow[]): Map<AutoGoalKey, number> => {
+  const totals = new Map<AutoGoalKey, number>();
+  for (const goal of GOAL_KEYS) {
+    totals.set(goal, 0);
+  }
+  for (const row of rows) {
+    for (const goal of GOAL_KEYS) {
+      const next = (totals.get(goal) ?? 0) + getRowMetricValue(row, goal);
+      totals.set(goal, next);
+    }
+  }
+  return totals;
+};
+
+const pickFirstNonZeroGoal = (totals: Map<AutoGoalKey, number>, order: AutoGoalKey[]): AutoGoalKey | null => {
+  for (const goal of order) {
+    if ((totals.get(goal) ?? 0) > 0) {
+      return goal;
+    }
+  }
+  return null;
+};
+
 const determinePrimaryGoal = (rows: CampaignRow[], fallback: AutoGoalKey): AutoGoalKey => {
   if (rows.length === 0) {
     return fallback;
   }
-  const totals = new Map<AutoGoalKey, number>();
+  const metricTotals = sumGoalMetrics(rows);
+  const preferredGoal = pickFirstNonZeroGoal(metricTotals, PRIORITY_GOALS);
+  if (preferredGoal) {
+    return preferredGoal;
+  }
+
+  const detectedTotals = new Map<AutoGoalKey, number>();
   for (const row of rows) {
     const detected = detectGoalFromObjective(row.objective) ?? fallback;
     const value = getRowMetricValue(row, detected);
-    totals.set(detected, (totals.get(detected) ?? 0) + value);
+    detectedTotals.set(detected, (detectedTotals.get(detected) ?? 0) + value);
   }
+
   let bestGoal: AutoGoalKey = fallback;
-  let bestValue = totals.get(bestGoal) ?? 0;
-  for (const goal of Object.keys(GOAL_METADATA) as AutoGoalKey[]) {
-    const total = totals.get(goal) ?? 0;
+  let bestValue = detectedTotals.get(bestGoal) ?? 0;
+  for (const goal of GOAL_KEYS) {
+    const total = detectedTotals.get(goal) ?? 0;
     if (total > bestValue) {
       bestGoal = goal;
       bestValue = total;
     }
   }
-  if (bestValue === 0) {
-    for (const goal of Object.keys(GOAL_METADATA) as AutoGoalKey[]) {
-      const total = rows.reduce((acc, row) => acc + getRowMetricValue(row, goal), 0);
-      if (total > 0) {
-        return goal;
-      }
-    }
-    return fallback;
+
+  if (bestValue > 0) {
+    return bestGoal;
   }
-  return bestGoal;
+
+  const fallbackGoal = pickFirstNonZeroGoal(metricTotals, GOAL_KEYS);
+  return fallbackGoal ?? fallback;
 };
 
 const DEFAULT_METRICS: MetaSummaryMetrics = {
@@ -719,8 +749,9 @@ const loadAutoReportTemplate = async (options: {
     }
   }
 
-  const fallbackGoal = mapKpiTypeToGoal(projectRecord.settings.kpi.type);
-  const goal = determinePrimaryGoal(campaigns, fallbackGoal);
+  const kpiSettings = projectRecord.settings.kpi;
+  const fallbackGoal = mapKpiTypeToGoal(kpiSettings.type);
+  const goal = kpiSettings.mode === "manual" ? fallbackGoal : determinePrimaryGoal(campaigns, fallbackGoal);
   const replyMarkup =
     projectRecord.portalUrl && projectRecord.portalUrl.trim().length > 0
       ? { inline_keyboard: [[{ text: "Открыть портал", url: projectRecord.portalUrl }]] }

@@ -12,6 +12,7 @@ const { putProjectLeadsList, putLeadDetailRecord } = await import(
   "../../src/domain/spec/project-leads.ts"
 );
 const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/meta-cache.ts");
+const { type MetaSummaryMetrics } = await import("../../src/domain/meta-summary.ts");
 const { KV_KEYS } = await import("../../src/config/kv.ts");
 const { runAutoReports } = await import("../../src/services/auto-reports.ts");
 const { runMaintenance } = await import("../../src/services/maintenance.ts");
@@ -140,6 +141,7 @@ test(
           {
             campaign_id: "cmp-auto",
             campaign_name: "Авто",
+            objective: "LINK_CLICKS",
             spend: "20",
             impressions: "800",
             clicks: "100",
@@ -168,6 +170,7 @@ test(
     const messageText = String(telegram.calls[0].body.text ?? "");
     assert.match(messageText, /📊 Отчёт/);
     assert.match(messageText, /Топ кампании/);
+    assert.match(messageText, /Цель: Лиды/);
     assert.deepEqual(telegram.calls[0].body.reply_markup, {
       inline_keyboard: [[{ text: "Открыть портал", url: "https://th-reports.buyclientuz.workers.dev/p/proj-auto" }]],
     });
@@ -175,6 +178,117 @@ test(
 
     const state = await kv.getJson<{ slots?: Record<string, string | null> }>(KV_KEYS.reportState("proj-auto"));
     assert.ok(state?.slots?.["12:00"]);
+  },
+);
+
+test(
+  "runAutoReports prefers messages goal when there are no leads",
+  { concurrency: false },
+  async () => {
+    const kvNamespace = new MemoryKVNamespace();
+    const kv = new KvClient(kvNamespace);
+    await putProject(
+      kv,
+      createProject({
+        id: "proj-auto-msg",
+        name: "Auto Reports Msg",
+        adsAccountId: "act_msg",
+        ownerTelegramId: 999111,
+      }),
+    );
+    await putProjectRecord(kv, {
+      id: "proj-auto-msg",
+      name: "Auto Reports Msg",
+      ownerId: 999111,
+      adAccountId: "act_msg",
+      chatId: -1009911,
+      portalUrl: "",
+      settings: { currency: "USD", timezone: "Asia/Tashkent", kpi: { mode: "auto", type: "LEAD", label: "Лиды" } },
+    });
+    await putBillingRecord(kv, "proj-auto-msg", {
+      tariff: 350,
+      currency: "USD",
+      nextPaymentDate: "2025-02-01",
+      autobilling: false,
+    });
+    await putAutoreportsRecord(kv, "proj-auto-msg", {
+      enabled: true,
+      time: "14:00",
+      mode: "today",
+      sendToChat: true,
+      sendToAdmin: false,
+    });
+
+    const summaryMetrics = {
+      spend: 15,
+      impressions: 900,
+      clicks: 80,
+      leads: 0,
+      messages: 6,
+      purchases: 0,
+      addToCart: 0,
+      calls: 0,
+      registrations: 0,
+      engagement: 0,
+      leadsToday: 0,
+      leadsTotal: 120,
+      cpa: null,
+      spendToday: 15,
+      cpaToday: null,
+    } satisfies MetaSummaryMetrics;
+
+    const summaryEntry = createMetaCacheEntry(
+      "proj-auto-msg",
+      "summary:today",
+      { from: "2025-01-01", to: "2025-01-01" },
+      { periodKey: "today", metrics: summaryMetrics, source: {} },
+      3600,
+    );
+    await saveMetaCache(kv, summaryEntry);
+    for (const periodKey of ["yesterday", "week", "month"]) {
+      const entry = createMetaCacheEntry(
+        "proj-auto-msg",
+        `summary:${periodKey}`,
+        { from: "2024-12-25", to: "2024-12-31" },
+        { periodKey, metrics: summaryMetrics, source: {} },
+        3600,
+      );
+      await saveMetaCache(kv, entry);
+    }
+
+    const campaignsEntry = createMetaCacheEntry(
+      "proj-auto-msg",
+      "campaigns:today",
+      { from: "2025-01-01", to: "2025-01-01" },
+      {
+        data: [
+          {
+            campaign_id: "cmp-msg",
+            campaign_name: "Messages",
+            objective: "LINK_CLICKS",
+            spend: "15",
+            impressions: "600",
+            clicks: "60",
+            actions: [{ action_type: "onsite_conversion.messaging_conversation_started_7d", value: "6" }],
+          },
+        ],
+      },
+      3600,
+    );
+    await saveMetaCache(kv, campaignsEntry);
+
+    const now = new Date("2025-01-01T09:01:00.000Z");
+    const telegram = stubTelegramFetch();
+
+    try {
+      await runAutoReports(kv, "TEST_TOKEN", now);
+    } finally {
+      telegram.restore();
+    }
+
+    assert.equal(telegram.calls.length, 1);
+    const messageText = String(telegram.calls[0].body.text ?? "");
+    assert.match(messageText, /Цель: Сообщения/);
   },
 );
 
