@@ -2,7 +2,6 @@
 
 const adminClientFactory = () => {
   try {
-    const STORAGE_KEY = 'targetbot.admin.key';
     const WORKER_URL = "WORKER_URL_PLACEHOLDER";
     const apiHost = WORKER_URL && WORKER_URL.length ? WORKER_URL.trim() : '';
     const hasScheme = apiHost.startsWith('http://') || apiHost.startsWith('https://');
@@ -17,33 +16,7 @@ const adminClientFactory = () => {
     const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
     const sections = Array.from(document.querySelectorAll('[data-section]'));
     const refreshButtons = Array.from(document.querySelectorAll('[data-action="refresh"]'));
-    const logoutButtons = Array.from(document.querySelectorAll('[data-action="logout"]'));
-    const resolveSearchParams = () => {
-      try {
-        if (typeof window === 'undefined' || !window.location) {
-          return null;
-        }
-        return new URLSearchParams(window.location.search ?? '');
-      } catch {
-        return null;
-      }
-    };
-
-    const searchParams = resolveSearchParams();
-    const queryAdminKey = (() => {
-      if (!searchParams) {
-        return null;
-      }
-      const value = searchParams.get('adminKey');
-      if (!value) {
-        return null;
-      }
-      const trimmed = value.trim();
-      return trimmed.length ? trimmed : null;
-    })();
-
     const state = {
-      key: queryAdminKey ?? localStorage.getItem(STORAGE_KEY),
       view: 'projects',
       projects: [],
       selectedProjectId: null,
@@ -55,10 +28,6 @@ const adminClientFactory = () => {
       sections,
       status: document.querySelector('[data-status]'),
       viewTitle: document.querySelector('[data-view-title]'),
-      loginPanel: document.querySelector('[data-login-panel]'),
-      loginForm: document.querySelector('[data-login-form]'),
-      loginInput: document.querySelector('[data-admin-key]'),
-      logoutButtons,
       refreshButtons,
     projectsBody: document.querySelector('[data-projects-body]'),
     projectDetail: document.querySelector('[data-project-detail]'),
@@ -101,28 +70,7 @@ const adminClientFactory = () => {
       }
     };
 
-    const showLogin = () => {
-      els.loginPanel?.classList.add('admin-login--visible');
-      setStatus('Введите код доступа');
-      els.loginInput?.focus();
-    };
-
-    const hideLogin = () => {
-      els.loginPanel?.classList.remove('admin-login--visible');
-    };
-
-    const handleUnauthorized = (message = 'Необходимо ввести код доступа') => {
-      localStorage.removeItem(STORAGE_KEY);
-      state.key = null;
-      setStatus(message);
-      showLogin();
-    };
-
     const request = async (path, options = {}) => {
-      if (!state.key) {
-        handleUnauthorized();
-        throw new Error('Требуется код доступа');
-      }
       const baseOrder = [primaryApiBase, ...candidates.filter((candidate) => candidate !== primaryApiBase)];
       let lastError = null;
       for (const base of baseOrder) {
@@ -131,8 +79,6 @@ const adminClientFactory = () => {
             ...options,
             headers: {
               'content-type': 'application/json',
-              'x-admin-key': state.key,
-              authorization: `Bearer ${state.key}`,
               ...(options.headers ?? {}),
             },
           });
@@ -141,10 +87,6 @@ const adminClientFactory = () => {
             payload = await response.clone().json();
           } catch {
             payload = null;
-          }
-          if (response.status === 401) {
-            handleUnauthorized();
-            throw new Error('Неверный код доступа');
           }
           if (!response.ok || !payload?.ok) {
             throw new Error(payload?.error ?? `Ошибка ${response.status}`);
@@ -810,30 +752,6 @@ const adminClientFactory = () => {
       button.addEventListener('click', () => safeSetView(state.view));
     });
 
-    els.logoutButtons.forEach((button) => {
-      button.addEventListener('click', () => {
-        localStorage.removeItem(STORAGE_KEY);
-        state.key = null;
-        handleUnauthorized('Ключ очищен');
-      });
-    });
-    els.loginForm?.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const key = els.loginInput?.value.trim();
-      if (!key) {
-        return;
-      }
-      localStorage.setItem(STORAGE_KEY, key);
-      state.key = key;
-      try {
-        await pingAdmin();
-        hideLogin();
-        safeSetView('projects');
-      } catch (error) {
-        setStatus(error.message);
-      }
-    });
-
     els.projectsBody?.addEventListener('click', handleProjectTableClick);
     els.portalActions?.addEventListener('click', handlePortalActionsClick);
     els.projectCreateForm?.addEventListener('submit', submitProjectCreate);
@@ -846,30 +764,8 @@ const adminClientFactory = () => {
     }
 
     const boot = async () => {
-      if (queryAdminKey && state.key === queryAdminKey) {
-        localStorage.setItem(STORAGE_KEY, queryAdminKey);
-        try {
-          if (searchParams && typeof window !== 'undefined' && window.history && window.location) {
-            searchParams.delete('adminKey');
-            const params = searchParams.toString();
-            const nextUrl = params.length
-              ? `${window.location.pathname}?${params}${window.location.hash ?? ''}`
-              : `${window.location.pathname}${window.location.hash ?? ''}`;
-            window.history.replaceState({}, document.title, nextUrl);
-          }
-        } catch {
-          // ignore history replacement errors
-        }
-      }
-
-      if (!state.key) {
-        showLogin();
-        return;
-      }
-
       try {
         await pingAdmin();
-        hideLogin();
         safeSetView('projects');
       } catch (error) {
         setStatus(error.message);
@@ -891,7 +787,6 @@ const adminClientFactory = () => {
     if (status) {
       status.textContent = `UI ошибка: ${(error && error.message) || 'см. консоль'}`;
     }
-    document.querySelector('[data-login-panel]')?.classList.add('admin-login--visible');
   }
 };
 

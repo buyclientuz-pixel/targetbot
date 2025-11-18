@@ -22,7 +22,6 @@ import { jsonResponse } from "../http/responses";
 import type { KvClient } from "../infra/kv";
 import type { Router } from "../worker/router";
 import type { TargetBotEnv } from "../worker/types";
-import { ensureAdminRequest } from "../services/admin-auth";
 import {
   listAdminProjectSummaries,
   loadAdminProjectDetail,
@@ -39,7 +38,7 @@ import { buildAdminClientScript } from "./admin-client";
 
 const ADMIN_CORS_HEADERS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-headers": "content-type, authorization, x-admin-key",
+  "access-control-allow-headers": "content-type, authorization",
   "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
 };
 
@@ -416,34 +415,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
         ul {
           padding-left: 18px;
         }
-        .admin-login {
-          position: fixed;
-          inset: 0;
-          background: rgba(0, 0, 0, 0.75);
-          display: none;
-          align-items: center;
-          justify-content: center;
-          z-index: 100;
-        }
-        .admin-login--visible {
-          display: flex;
-        }
-        .admin-login__form {
-          background: var(--panel);
-          padding: 32px;
-          border-radius: 20px;
-          width: min(420px, 92vw);
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-          border: 1px solid var(--border);
-        }
-        .admin-login__form input {
-          width: 100%;
-        }
-        .admin-login__form button {
-          margin-left: 0;
-        }
         @media (max-width: 960px) {
           .admin-shell {
             flex-direction: column;
@@ -482,11 +453,10 @@ const renderAdminHtml = (workerUrl: string | null): string => {
             <button class="admin-nav__item" data-nav="webhooks">Webhook</button>
             <button class="admin-nav__item" data-nav="settings">Настройки</button>
           </nav>
-          <div class="admin-sidebar__actions">
-            <button class="admin-btn admin-btn--ghost" data-action="refresh">Обновить</button>
-            <button class="admin-btn admin-btn--danger" data-action="logout">Выйти</button>
-          </div>
-        </aside>
+            <div class="admin-sidebar__actions">
+              <button class="admin-btn admin-btn--ghost" data-action="refresh">Обновить</button>
+            </div>
+          </aside>
         <main class="admin-shell__content">
           <header class="admin-header">
             <div>
@@ -703,14 +673,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
           </section>
         </main>
       </div>
-      <div class="admin-login" data-login-panel>
-        <form class="admin-login__form" data-login-form>
-          <h2>Админ-доступ</h2>
-          <p class="muted">Введите код доступа, чтобы разблокировать панель.</p>
-          <input type="password" name="adminKey" data-admin-key placeholder="••••" required />
-          <button class="admin-btn" type="submit">Войти</button>
-        </form>
-      </div>
       <script>${script}</script>
     </body>
   </html>`;
@@ -763,13 +725,7 @@ const registerAdminRoute = (
 ): void => {
   for (const pathname of paths) {
     router.on("OPTIONS", pathname, () => optionsResponse());
-    router.on(method, pathname, async (context) => {
-      const guard = ensureAdminRequest(context);
-      if (guard) {
-        return guard;
-      }
-      return handler(context);
-    });
+    router.on(method, pathname, async (context) => handler(context));
   }
 };
 

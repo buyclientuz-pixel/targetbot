@@ -5,7 +5,7 @@
 ## 0. Общие условия
 
 * **Никаких новых переменных окружения**. Использовать только уже присутствующие в `.env`/Wrangler:
-  - `DEFAULT_TZ`, `ADMIN_IDS`, `ADMIN_ID`, `ADMIN_KEY`
+  - `DEFAULT_TZ`, `ADMIN_IDS`, `ADMIN_ID`
   - `BOT_TOKEN`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_SECRET`
   - `WORKER_URL` (`th-reports.buyclientuz.workers.dev`)
   - `CLOUD_FLARE_API_TOKEN`, `CLOUD_FLARE_AC_ID`
@@ -382,7 +382,7 @@ Codex/разработчик должен дополнить таблицу ан
 Ты — senior full-stack разработчик, который продолжает и исправляет уже существующий проект Cloudflare Worker + Telegram Bot + Web Portal для отслеживания рекламы.
 
 Важные условия:
-1. В репозитории уже есть .env/секреты. НЕЛЬЗЯ добавлять новые переменные или менять формат существующих. Используй: BOT_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_SECRET, WORKER_URL, ADMIN_IDS, ADMIN_ID, ADMIN_KEY, FB_APP_ID, FB_APP_SECRET, FB_LONG_TOKEN, CLOUD_FLARE_API_TOKEN, CLOUD_FLARE_AC_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_ACCOUNT_ID, R2_ENDPOINT, DEFAULT_TZ.
+1. В репозитории уже есть .env/секреты. НЕЛЬЗЯ добавлять новые переменные или менять формат существующих. Используй: BOT_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_SECRET, WORKER_URL, ADMIN_IDS, ADMIN_ID, FB_APP_ID, FB_APP_SECRET, FB_LONG_TOKEN, CLOUD_FLARE_API_TOKEN, CLOUD_FLARE_AC_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_ACCOUNT_ID, R2_ENDPOINT, DEFAULT_TZ.
 2. Все данные хранятся в Cloudflare KV и R2. Обязательно соблюдай архитектуру ключей:
   - KV: facebook-auth:{userId} (совместимо с fb_auth:{userId}), projects_by_user:{userId}, project:{projectId}, billing:{projectId}, alerts:{projectId}, autoreports:{projectId}.
    - R2: project-leads/{projectId}/list.json, project-leads/{projectId}/{leadId}.json, meta/campaigns/{projectId}.json, payments/{projectId}/history.json.

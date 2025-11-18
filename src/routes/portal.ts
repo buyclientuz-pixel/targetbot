@@ -129,11 +129,12 @@ const formatDateOnly = (date: Date): string => date.toISOString().split("T")[0] 
 
 const resolveLeadsRange = (
   periodKey: string,
+  timeZone: string | null,
   from?: string | null,
   to?: string | null,
 ): ReturnType<typeof resolvePeriodRange> => {
   if (!from && !to) {
-    return resolvePeriodRange(periodKey);
+    return resolvePeriodRange(periodKey, timeZone);
   }
   if (!from || !to) {
     throw new DataValidationError("Параметры from и to должны быть указаны вместе");
@@ -161,6 +162,7 @@ const loadPortalLeadsPayload = async (
   r2: R2Client,
   projectId: string,
   periodKey: string,
+  timeZone: string | null,
   options?: { from?: string | null; to?: string | null },
 ): Promise<{
   period: ReturnType<typeof resolvePeriodRange>["period"];
@@ -181,7 +183,7 @@ const loadPortalLeadsPayload = async (
   stats: ProjectLeadsListRecord["stats"];
   syncedAt: string | null;
 }> => {
-  const range = resolveLeadsRange(periodKey, options?.from ?? null, options?.to ?? null);
+  const range = resolveLeadsRange(periodKey, timeZone, options?.from ?? null, options?.to ?? null);
   const fromTime = range.from.getTime();
   const toTime = range.to.getTime();
   const leads = await listLeads(r2, projectId);
@@ -258,10 +260,12 @@ const respondWithProjectLeads = async (
   options?: { refresh?: boolean; from?: string | null; to?: string | null },
 ): Promise<Response> => {
   try {
+    const projectRecord = await requireProjectRecord(context.kv, projectId);
+    const timeZone = projectRecord.settings.timezone ?? null;
     if (options?.refresh) {
-      await refreshProjectLeads(context.kv, context.r2, projectId);
+      await refreshProjectLeads(context.kv, context.r2, projectId, { projectRecord });
     }
-    const payload = await loadPortalLeadsPayload(context.r2, projectId, periodKey, {
+    const payload = await loadPortalLeadsPayload(context.r2, projectId, periodKey, timeZone, {
       from: options?.from ?? null,
       to: options?.to ?? null,
     });
