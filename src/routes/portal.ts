@@ -9,6 +9,7 @@ import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
 import { applyCors, preflight } from "../http/cors";
 import { requireProjectRecord } from "../domain/spec/project";
+import { getProjectLeadsList, type ProjectLeadsListRecord } from "../domain/spec/project-leads";
 import type { R2Client } from "../infra/r2";
 import type { Router } from "../worker/router";
 import type { RequestContext } from "../worker/context";
@@ -42,6 +43,19 @@ const badRequest = (message: string): Response => jsonError(400, message);
 const forbidden = (message: string): Response => jsonError(403, message);
 const notFound = (message: string): Response => jsonError(404, message);
 const unprocessable = (message: string): Response => jsonError(422, message);
+
+const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+
+export const shouldRefreshLeadSnapshot = (record: ProjectLeadsListRecord | null): boolean => {
+  if (!record?.syncedAt) {
+    return true;
+  }
+  const syncedAt = Date.parse(record.syncedAt);
+  if (!Number.isFinite(syncedAt)) {
+    return true;
+  }
+  return Date.now() - syncedAt > LEADS_REFRESH_WINDOW_MS;
+};
 
 const computeCpa = (spend: number, value: number): number | null => {
   if (!Number.isFinite(spend) || !Number.isFinite(value) || value <= 0) {
@@ -145,7 +159,14 @@ const respondWithProjectLeads = async (
   try {
     const projectRecord = await requireProjectRecord(context.kv, projectId);
     const timeZone = projectRecord.settings.timezone ?? null;
-    if (options?.refresh) {
+    let snapshot: ProjectLeadsListRecord | null = null;
+    try {
+      snapshot = await getProjectLeadsList(context.r2, projectId);
+    } catch (error) {
+      console.warn(`[portal] Failed to read lead snapshot for ${projectId}: ${(error as Error).message}`);
+    }
+    const needsRefresh = options?.refresh === true || shouldRefreshLeadSnapshot(snapshot);
+    if (needsRefresh) {
       await refreshProjectLeads(context.kv, context.r2, projectId, { projectRecord });
     }
     const payload = await loadProjectLeadsView(context.r2, projectId, {

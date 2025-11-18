@@ -51,6 +51,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   });
 
   const recentLeadDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const leadsSyncedAt = new Date().toISOString();
   await putProjectLeadsList(r2, projectRecord.id, {
     stats: { total: 170, today: 2 },
     leads: [
@@ -65,7 +66,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
         type: "lead",
       },
     ],
-    syncedAt: recentLeadDate,
+    syncedAt: leadsSyncedAt,
   });
   await saveLead(
     r2,
