@@ -21,7 +21,8 @@ id = "0132cf582ce247d4b806a2be748e34c6"
 
 [[kv_namespaces]]
 binding = "LEADS_KV"
-id = "00000000000000000000000000000000"
+id = "0132cf582ce247d4b806a2be748e34c6"
+preview_id = "0132cf582ce247d4b806a2be748e34c6"
 
 [[r2_buckets]]
 binding = "R2"
