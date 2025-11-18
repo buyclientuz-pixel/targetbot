@@ -97,6 +97,59 @@ npm run dev
 npm run deploy
 ```
 
+## Lead Ads Forms Sync API
+
+Этот воркер также предоставляет REST-модуль для импорта лидов из Facebook Lead Ads без Cron-задач.
+
+### Конфигурация
+
+- В `wrangler.toml` подключён namespace `LEADS_KV` (для ключей `FORM_IDS:<project_id>` и `LEAD:<project_id>:<lead_id>`).
+- Среда должна содержать `FACEBOOK_TOKEN` (long-lived access token) и `FACEBOOK_API_VERSION` (по умолчанию `v18.0`).
+- `project_id` в запросах — это идентификатор рекламного аккаунта/форм клиента, а не внутренний ID проекта.
+
+### API маршруты
+
+`GET /api/projects/:project_id/sync-leads`
+: читает `FORM_IDS:<project_id>`, выгружает лиды по каждой форме (`id`, `created_time`, `field_data`), сохраняет новые записи и возвращает `{ success: true, imported: <count> }`. Если Meta возвращает ошибку, API отдаёт её JSON/статус без модификаций.
+
+`GET /api/projects/:project_id/leads`
+: считывает все ключи `LEAD:<project_id>:*`, сортирует по `created_time` (DESC) и возвращает структуру:
+
+```json
+{
+  "project_id": "birllash2025",
+  "total": 2,
+  "leads": [
+    {
+      "lead_id": "1289371928",
+      "name": "Aziz",
+      "phone": "+998977777777",
+      "created_time": "2025-11-17T14:22:11+0000",
+      "form_id": "9988776655"
+    }
+  ]
+}
+```
+
+### KV-структура
+
+- `FORM_IDS:<project_id>` — JSON-массив строк `form_id` (пример: `["1192381723","98734562345"]`).
+- `LEAD:<project_id>:<lead_id>` — JSON объекта `{ lead_id, project_id, form_id, name, phone, created_time }`.
+
+### Добавление форм
+
+```bash
+wrangler kv:key put --binding LEADS_KV FORM_IDS:act_123 '["9988776655"]'
+```
+
+### Деплой модуля лидов
+
+```bash
+npm install
+npm run build
+wrangler publish
+```
+
 ### Веб-админ панель `/admin`
 1. Убедитесь, что в среде задан `WORKER_URL`, чтобы fallback-запросы API могли уходить на продовый домен.
 2. Откройте `https://${WORKER_URL}/admin` — панель автоматически загрузит проекты и метрики.

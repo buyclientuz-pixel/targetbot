@@ -205,14 +205,18 @@ const dispatchRequest = async (
 test("full system acceptance scenario", async () => {
   const kvNamespace = new MemoryKVNamespace();
   const r2Bucket = new MemoryR2Bucket();
+  const leadsNamespace = new MemoryKVNamespace();
   const env: import("../../src/worker/types.ts").TargetBotEnv = {
     KV: kvNamespace,
     R2: r2Bucket,
+    LEADS_KV: leadsNamespace,
     TELEGRAM_BOT_TOKEN: "test-token",
     FB_APP_ID: "fb-app",
     FB_APP_SECRET: "fb-secret",
     WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
     META_WEBHOOK_VERIFY_TOKEN: "VERIFY_TOKEN",
+    FACEBOOK_API_VERSION: "v18.0",
+    FACEBOOK_TOKEN: "test-facebook-token",
   };
 
   const projectMessages: DispatchProjectMessageOptions[] = [];

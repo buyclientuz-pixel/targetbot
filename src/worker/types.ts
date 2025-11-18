@@ -1,6 +1,7 @@
 export interface TargetBotEnv {
   KV: KVNamespace;
   R2: R2Bucket;
+  LEADS_KV: KVNamespace;
   TELEGRAM_BOT_TOKEN?: string;
   BOT_TOKEN?: string;
   TELEGRAM_SECRET?: string;
@@ -14,6 +15,8 @@ export interface TargetBotEnv {
   META_APP_SECRET?: string;
   META_REDIRECT_URI?: string;
   META_WEBHOOK_VERIFY_TOKEN?: string;
+  FACEBOOK_TOKEN?: string;
+  FACEBOOK_API_VERSION?: string;
 }
 
 export type TargetBotBindings = TargetBotEnv;

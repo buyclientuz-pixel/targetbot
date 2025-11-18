@@ -13,8 +13,11 @@ const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 const createEnv = () => ({
   KV: new MemoryKVNamespace(),
   R2: new MemoryR2Bucket(),
+  LEADS_KV: new MemoryKVNamespace(),
   WORKER_URL: "admin.test.workers.dev",
   TELEGRAM_SECRET: "test-secret",
+  FACEBOOK_API_VERSION: "v18.0",
+  FACEBOOK_TOKEN: "test-facebook-token",
 }) as import("../../src/worker/types.ts").TargetBotEnv;
 
 test("/admin serves the SPA shell", async () => {

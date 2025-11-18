@@ -18,8 +18,11 @@ test("/api/meta/oauth/start redirects to Facebook", async () => {
   const env = {
     KV: kvNamespace,
     R2: r2Bucket,
+    LEADS_KV: new MemoryKVNamespace(),
     FB_APP_ID: "123",
     WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
+    FACEBOOK_API_VERSION: "v18.0",
+    FACEBOOK_TOKEN: "test-facebook-token",
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const router = createRouter();
@@ -44,10 +47,13 @@ test("/auth/facebook/callback exchanges tokens and stores accounts", async () =>
   const env = {
     KV: kvNamespace,
     R2: r2Bucket,
+    LEADS_KV: new MemoryKVNamespace(),
     FB_APP_ID: "123",
     FB_APP_SECRET: "secret",
     WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
     TELEGRAM_BOT_TOKEN: "bot-token",
+    FACEBOOK_API_VERSION: "v18.0",
+    FACEBOOK_TOKEN: "test-facebook-token",
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const router = createRouter();
@@ -138,9 +144,12 @@ test("/auth/facebook/callback falls back to default expiry when expires_in is mi
   const env = {
     KV: kvNamespace,
     R2: r2Bucket,
+    LEADS_KV: new MemoryKVNamespace(),
     FB_APP_ID: "123",
     FB_APP_SECRET: "secret",
     WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
+    FACEBOOK_API_VERSION: "v18.0",
+    FACEBOOK_TOKEN: "test-facebook-token",
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const router = createRouter();

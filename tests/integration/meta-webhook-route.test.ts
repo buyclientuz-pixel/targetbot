@@ -23,7 +23,10 @@ test("Meta webhook route persists leads and dispatches Telegram notifications", 
   const env = {
     KV: kvNamespace,
     R2: r2Bucket,
+    LEADS_KV: new MemoryKVNamespace(),
     TELEGRAM_BOT_TOKEN: "TEST_TOKEN",
+    FACEBOOK_API_VERSION: "v18.0",
+    FACEBOOK_TOKEN: "test-facebook-token",
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const kv = new KvClient(kvNamespace);
@@ -116,7 +119,10 @@ test("Lead notifications honor chat/admin toggles", async () => {
   const env = {
     KV: kvNamespace,
     R2: r2Bucket,
+    LEADS_KV: new MemoryKVNamespace(),
     TELEGRAM_BOT_TOKEN: "TEST_TOKEN",
+    FACEBOOK_API_VERSION: "v18.0",
+    FACEBOOK_TOKEN: "test-facebook-token",
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const kv = new KvClient(kvNamespace);
@@ -218,7 +224,10 @@ test("Meta webhook GET handshake enforces verify token", async () => {
   const env = {
     KV: kvNamespace,
     R2: r2Bucket,
+    LEADS_KV: new MemoryKVNamespace(),
     META_WEBHOOK_VERIFY_TOKEN: "VERIFY_SECRET",
+    FACEBOOK_API_VERSION: "v18.0",
+    FACEBOOK_TOKEN: "test-facebook-token",
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const router = createRouter();
