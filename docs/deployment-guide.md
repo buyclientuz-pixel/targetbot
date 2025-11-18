@@ -40,6 +40,7 @@
    npx wrangler secret put TELEGRAM_BOT_TOKEN
    # если в текущем продакшене используется старое имя
    npx wrangler secret put BOT_TOKEN
+   npx wrangler secret put FACEBOOK_TOKEN
    npx wrangler secret put META_APP_ID
    npx wrangler secret put META_APP_SECRET
    npx wrangler secret put META_APP_SYSTEM_USER_TOKEN

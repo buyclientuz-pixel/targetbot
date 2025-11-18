@@ -41,6 +41,15 @@ jobs:
       - name: Tests
         run: npm test
 
+      - name: Sync Facebook token secret
+        if: ${{ secrets.FACEBOOK_TOKEN }}
+        env:
+          FACEBOOK_TOKEN: ${{ secrets.FACEBOOK_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUD_FLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUD_FLARE_AC_ID }}
+        run: |
+          printf "%s" "$FACEBOOK_TOKEN" | npx wrangler secret put FACEBOOK_TOKEN --non-interactive
+
       - name: Deploy to Cloudflare
         run: npm run deploy
         env:
