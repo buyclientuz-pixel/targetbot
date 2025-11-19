@@ -144,10 +144,14 @@ const buildPeriodRange = (
   period: { from: formatZonedDate(from, timeZone), to: formatZonedDate(to, timeZone) },
 });
 
-export const resolvePeriodRange = (periodKey: string, timeZone?: string | null): PeriodRange => {
+export const resolvePeriodRange = (
+  periodKey: string,
+  timeZone?: string | null,
+  options?: { now?: Date },
+): PeriodRange => {
   const normalised = periodKey === "max" ? "all" : periodKey;
   const tz = normaliseTimeZone(timeZone);
-  const now = new Date();
+  const now = options?.now ?? new Date();
   const today = startOfDayWithZone(now, tz);
   switch (normalised) {
     case "today": {

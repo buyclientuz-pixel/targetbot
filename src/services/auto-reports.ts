@@ -5,7 +5,14 @@ import {
   getReportScheduleState,
   markReportSlotDispatched,
 } from "../domain/report-state";
-import { loadProjectSummary, loadProjectCampaigns, mapCampaignRows, type CampaignRow } from "./project-insights";
+import {
+  loadProjectSummary,
+  loadProjectCampaigns,
+  mapCampaignRows,
+  resolvePeriodRange,
+  type CampaignRow,
+  type PeriodRange,
+} from "./project-insights";
 import type { MetaSummaryMetrics } from "../domain/meta-summary";
 import { dispatchProjectMessage } from "./project-messaging";
 import { DataValidationError } from "../errors";
@@ -15,6 +22,13 @@ import { maybeDispatchPaymentAlert } from "./payment-alerts";
 
 const DEFAULT_AUTOREPORT_TIMEZONE = "Asia/Tashkent";
 const SLOT_WINDOW_MS = 5 * 60 * 1000;
+const REPORT_DAY_OFFSET_DAYS = 1;
+
+const shiftDateByDays = (date: Date, days: number): Date => {
+  const copy = new Date(date);
+  copy.setUTCDate(copy.getUTCDate() + days);
+  return copy;
+};
 
 type AutoGoalKey =
   | "leads"
@@ -430,7 +444,7 @@ const describeTrend = (current: number, previous: number): string => {
     return "—";
   }
   if (previous <= 0 && current > 0) {
-    return "⬆️ рост (не было данных вчера)";
+    return "⬆️ рост (не было данных позавчера)";
   }
   if (previous > 0) {
     const delta = ((current - previous) / previous) * 100;
@@ -439,7 +453,7 @@ const describeTrend = (current: number, previous: number): string => {
     }
     const arrow = delta > 0 ? "⬆️" : "⬇️";
     const formatted = delta > 0 ? `+${delta.toFixed(0)}` : delta.toFixed(0);
-    return `${arrow} ${formatted}% к вчера`;
+    return `${arrow} ${formatted}% к позавчера`;
   }
   return "—";
 };
@@ -449,56 +463,56 @@ const buildFindings = (options: {
   goalPlural: string;
   currency: string;
   targetCpl: number | null;
-  todayMetrics: MetaSummaryMetrics;
-  yesterdayMetrics: MetaSummaryMetrics;
-  todayValue: number;
-  yesterdayValue: number;
-  todayCost: number | null;
-  yesterdayCost: number | null;
+  reportMetrics: MetaSummaryMetrics;
+  previousMetrics: MetaSummaryMetrics;
+  reportValue: number;
+  previousValue: number;
+  reportCost: number | null;
+  previousCost: number | null;
 }) => {
   const findings: string[] = [];
-  const todaySpend = options.todayMetrics.spend;
-  const yesterdaySpend = options.yesterdayMetrics.spend;
+  const reportSpend = options.reportMetrics.spend;
+  const previousSpend = options.previousMetrics.spend;
   if (
     options.targetCpl != null &&
-    options.todayCost != null &&
-    options.todayCost > options.targetCpl * 1.2
+    options.reportCost != null &&
+    options.reportCost > options.targetCpl * 1.2
   ) {
     findings.push(
-      `❗ Стоимость результата ${formatCurrency(options.todayCost, options.currency)} выше цели ${formatCurrency(options.targetCpl, options.currency)}.`,
+      `❗ Стоимость результата ${formatCurrency(options.reportCost, options.currency)} за вчера выше цели ${formatCurrency(options.targetCpl, options.currency)}.`,
     );
   }
-  const ctrToday = computeCtr(options.todayMetrics);
-  const ctrYesterday = computeCtr(options.yesterdayMetrics);
-  if (ctrToday != null && ctrToday < 0.5) {
-    findings.push(`⚠️ CTR ${formatPercent(ctrToday)} слишком низкий — обновите креативы.`);
+  const ctrReport = computeCtr(options.reportMetrics);
+  const ctrPrevious = computeCtr(options.previousMetrics);
+  if (ctrReport != null && ctrReport < 0.5) {
+    findings.push(`⚠️ CTR ${formatPercent(ctrReport)} вчера слишком низкий — обновите креативы.`);
   }
   if (
-    ctrToday != null &&
-    ctrYesterday != null &&
-    ctrYesterday > 0 &&
-    ctrToday < ctrYesterday * 0.7
+    ctrReport != null &&
+    ctrPrevious != null &&
+    ctrPrevious > 0 &&
+    ctrReport < ctrPrevious * 0.7
   ) {
-    const drop = ((ctrToday - ctrYesterday) / ctrYesterday) * 100;
-    findings.push(`⚠️ CTR упал на ${Math.abs(drop).toFixed(0)}% к вчера.`);
+    const drop = ((ctrReport - ctrPrevious) / ctrPrevious) * 100;
+    findings.push(`⚠️ CTR упал на ${Math.abs(drop).toFixed(0)}% к позавчера.`);
   }
-  if (options.yesterdayValue > 0) {
-    const diff = ((options.todayValue - options.yesterdayValue) / options.yesterdayValue) * 100;
+  if (options.previousValue > 0) {
+    const diff = ((options.reportValue - options.previousValue) / options.previousValue) * 100;
     if (diff <= -30) {
       findings.push(`⚠️ ${options.goalLabel} снизились на ${Math.abs(diff).toFixed(0)}%.`);
     }
-  } else if (options.todayValue === 0 && options.yesterdayValue > 0) {
-    findings.push(`⚠️ Нет ${options.goalPlural} сегодня — проверьте кампании.`);
+  } else if (options.reportValue === 0 && options.previousValue > 0) {
+    findings.push(`⚠️ Нет ${options.goalPlural} вчера — проверьте кампании.`);
   }
-  if (todaySpend > yesterdaySpend && options.todayValue <= options.yesterdayValue) {
+  if (reportSpend > previousSpend && options.reportValue <= options.previousValue) {
     findings.push("⚠️ Расход растёт без роста результатов.");
   }
   if (
-    options.todayCost != null &&
-    options.yesterdayCost != null &&
-    options.todayCost > options.yesterdayCost * 1.3
+    options.reportCost != null &&
+    options.previousCost != null &&
+    options.reportCost > options.previousCost * 1.3
   ) {
-    findings.push("⚠️ CPA вырос по сравнению со вчерашним днём.");
+    findings.push("⚠️ CPA вырос по сравнению с позавчерашним днём.");
   }
   if (findings.length === 0) {
     return "🟢 Всё стабильно, держим курс.";
@@ -619,9 +633,9 @@ const resolveAutoreportProfile = async (
 const periodLabel = (key: string): string => {
   switch (key) {
     case "today":
-      return "Сегодня";
-    case "yesterday":
       return "Вчера";
+    case "yesterday":
+      return "Позавчера";
     case "week":
       return "Неделя";
     case "month":
@@ -639,7 +653,7 @@ const buildReportMessage = (options: {
   projectRecord: ProjectRecord;
   settings: ProjectSettings;
   slot: string;
-  now: Date;
+  reportDate: Date;
   metricsByPeriod: Map<string, MetaSummaryMetrics>;
   goal: AutoGoalKey;
   campaigns: CampaignRow[];
@@ -651,7 +665,7 @@ const buildReportMessage = (options: {
     projectRecord,
     settings,
     slot,
-    now,
+    reportDate,
     metricsByPeriod,
     goal,
     campaigns,
@@ -660,18 +674,18 @@ const buildReportMessage = (options: {
   } = options;
   const goalMeta = getGoalMetadata(goal);
   const currency = settings.billing.currency;
-  const todayMetrics = getMetricsOrDefault(metricsByPeriod.get("today"));
-  const yesterdayMetrics = getMetricsOrDefault(metricsByPeriod.get("yesterday"));
+  const reportMetrics = getMetricsOrDefault(metricsByPeriod.get("today"));
+  const previousMetrics = getMetricsOrDefault(metricsByPeriod.get("yesterday"));
   const weekMetrics = getMetricsOrDefault(metricsByPeriod.get("week"));
   const monthMetrics = getMetricsOrDefault(metricsByPeriod.get("month"));
-  const todayValue = getSummaryMetricValue(todayMetrics, goal);
-  const yesterdayValue = getSummaryMetricValue(yesterdayMetrics, goal);
+  const reportValue = getSummaryMetricValue(reportMetrics, goal);
+  const previousValue = getSummaryMetricValue(previousMetrics, goal);
   const weekValue = getSummaryMetricValue(weekMetrics, goal);
   const monthValue = getSummaryMetricValue(monthMetrics, goal);
-  const todayCost = computeCostPerResult(todayMetrics.spend, todayValue);
-  const yesterdayCost = computeCostPerResult(yesterdayMetrics.spend, yesterdayValue);
-  const ctrToday = computeCtr(todayMetrics);
-  const reportDate = formatReportDate(now, projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE);
+  const reportCost = computeCostPerResult(reportMetrics.spend, reportValue);
+  const previousCost = computeCostPerResult(previousMetrics.spend, previousValue);
+  const ctrReport = computeCtr(reportMetrics);
+  const reportDateLabel = formatReportDate(reportDate, projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE);
   const topCampaignLines = formatTopCampaigns(campaigns, goal, currency);
   const findings = includeFindings
     ? buildFindings({
@@ -679,17 +693,17 @@ const buildReportMessage = (options: {
         goalPlural: goalMeta.plural,
         currency,
         targetCpl: settings.kpi.targetCpl ?? null,
-        todayMetrics,
-        yesterdayMetrics,
-        todayValue,
-        yesterdayValue,
-        todayCost,
-        yesterdayCost,
+        reportMetrics,
+        previousMetrics,
+        reportValue,
+        previousValue,
+        reportCost,
+        previousCost,
       })
     : null;
 
   const lines: string[] = [];
-  lines.push(`📊 Отчёт | ${reportDate}`);
+  lines.push(`📊 Отчёт | ${reportDateLabel}`);
   lines.push(`Проект: ${escapeHtml(project.name)}`);
   lines.push(`Цель: ${goalMeta.label}`);
   lines.push(`Слот: ${slot}`);
@@ -699,21 +713,21 @@ const buildReportMessage = (options: {
   lines.push(...topCampaignLines);
   lines.push("──────────");
   lines.push(
-    `Сегодня: ${formatNumber(todayValue)} ${goalMeta.plural} · расход ${formatCurrency(
-      todayMetrics.spend,
+    `Вчера: ${formatNumber(reportValue)} ${goalMeta.plural} · расход ${formatCurrency(
+      reportMetrics.spend,
       currency,
-    )} · цена ${formatOptionalCurrency(todayCost, currency)}`,
+    )} · цена ${formatOptionalCurrency(reportCost, currency)}`,
   );
   lines.push(
-    `Вчера: ${formatNumber(yesterdayValue)} ${goalMeta.plural} · цена ${formatOptionalCurrency(
-      yesterdayCost,
+    `Позавчера: ${formatNumber(previousValue)} ${goalMeta.plural} · цена ${formatOptionalCurrency(
+      previousCost,
       currency,
     )}`,
   );
   lines.push(`Неделя: ${formatNumber(weekValue)} ${goalMeta.plural}`);
   lines.push(`Месяц: ${formatNumber(monthValue)} ${goalMeta.plural}`);
-  lines.push(`CTR сегодня: ${formatPercent(ctrToday)}`);
-  lines.push(`Динамика: ${describeTrend(todayValue, yesterdayValue)}`);
+  lines.push(`CTR вчера: ${formatPercent(ctrReport)}`);
+  lines.push(`Динамика: ${describeTrend(reportValue, previousValue)}`);
   if (includeFindings && findings) {
     lines.push("");
     lines.push(`Вывод: ${findings}`);
@@ -730,14 +744,17 @@ const loadMetricsForPeriods = async (
   projectId: string,
   periods: string[],
   initial?: { project: Project; settings: ProjectSettings },
+  options?: { periodRanges?: Map<string, PeriodRange> },
 ): Promise<{ project: Project; settings: ProjectSettings; metrics: Map<string, MetaSummaryMetrics> }> => {
   const metrics = new Map<string, MetaSummaryMetrics>();
   let context = initial;
 
   for (const period of periods) {
+    const periodRange = options?.periodRanges?.get(period);
     const result = await loadProjectSummary(kv, projectId, period, {
       project: context?.project,
       settings: context?.settings,
+      periodRange,
     });
     context = { project: result.project, settings: result.settings };
     metrics.set(period, result.entry.payload.metrics);
@@ -758,6 +775,7 @@ interface AutoReportTemplate {
   goal: AutoGoalKey;
   campaigns: CampaignRow[];
   topPeriod: string;
+  reportDate: Date;
   replyMarkup?: { inline_keyboard: Array<Array<{ text: string; url: string }>> };
 }
 
@@ -773,7 +791,15 @@ const loadAutoReportTemplate = async (options: {
   const { kv, projectId, projectRecord, mode, now, project, settings } = options;
   const periodKeys = collectPeriodKeys(mode, now);
   const initialContext = project && settings ? { project, settings } : undefined;
-  const metricsContext = await loadMetricsForPeriods(kv, projectId, periodKeys, initialContext);
+  const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
+  const reportDate = shiftDateByDays(now, -REPORT_DAY_OFFSET_DAYS);
+  const periodRanges = new Map<string, PeriodRange>();
+  for (const period of periodKeys) {
+    periodRanges.set(period, resolvePeriodRange(period, timezone, { now: reportDate }));
+  }
+  const metricsContext = await loadMetricsForPeriods(kv, projectId, periodKeys, initialContext, {
+    periodRanges,
+  });
   const topPeriod = resolveTopPeriod(mode);
 
   let campaigns: CampaignRow[] = [];
@@ -781,6 +807,7 @@ const loadAutoReportTemplate = async (options: {
     const campaignsResult = await loadProjectCampaigns(kv, projectId, topPeriod, {
       project: metricsContext.project,
       settings: metricsContext.settings,
+      periodRange: periodRanges.get(topPeriod),
     });
     campaigns = mapCampaignRows(campaignsResult.entry.payload);
   } catch (error) {
@@ -812,6 +839,7 @@ const loadAutoReportTemplate = async (options: {
     goal,
     campaigns,
     topPeriod,
+    reportDate,
     replyMarkup,
   };
 };
@@ -819,7 +847,6 @@ const loadAutoReportTemplate = async (options: {
 const renderAutoReportMessage = (
   template: AutoReportTemplate,
   slot: string,
-  now: Date,
   options?: { includeFindings?: boolean },
 ): string =>
   buildReportMessage({
@@ -827,7 +854,7 @@ const renderAutoReportMessage = (
     projectRecord: template.projectRecord,
     settings: template.settings,
     slot,
-    now,
+    reportDate: template.reportDate,
     metricsByPeriod: template.metricsByPeriod,
     goal: template.goal,
     campaigns: template.campaigns,
@@ -909,7 +936,7 @@ export const runAutoReports = async (
       const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
       for (const { slot, scheduledAt } of dueSlots) {
         if (profile.recipients.chat) {
-          const chatMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, now, {
+          const chatMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, {
             includeFindings: false,
           });
           const result = await dispatchProjectMessage({
@@ -925,7 +952,7 @@ export const runAutoReports = async (
           template.settings = result.settings;
         }
         if (profile.recipients.admin) {
-          const adminMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, now, {
+          const adminMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, {
             includeFindings: true,
           });
           const result = await dispatchProjectMessage({
@@ -974,7 +1001,7 @@ export const sendAutoReportNow = async (
   const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
   const slotLabel = formatManualSlotLabel(now, timezone);
   if (profile.recipients.chat) {
-    const chatMessage = renderAutoReportMessage(template, slotLabel, now, { includeFindings: false });
+    const chatMessage = renderAutoReportMessage(template, slotLabel, { includeFindings: false });
     const result = await dispatchProjectMessage({
       kv,
       token,
@@ -988,7 +1015,7 @@ export const sendAutoReportNow = async (
     template.settings = result.settings;
   }
   if (profile.recipients.admin) {
-    const adminMessage = renderAutoReportMessage(template, slotLabel, now, { includeFindings: true });
+    const adminMessage = renderAutoReportMessage(template, slotLabel, { includeFindings: true });
     const result = await dispatchProjectMessage({
       kv,
       token,
