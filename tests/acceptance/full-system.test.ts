@@ -21,6 +21,7 @@ const { putPaymentsHistoryDocument } = await import("../../src/domain/spec/payme
 const { getFbAuthRecord } = await import("../../src/domain/spec/fb-auth.ts");
 const { R2_KEYS } = await import("../../src/config/r2.ts");
 const { createLead, saveLead, getLead } = await import("../../src/domain/leads.ts");
+const { createDefaultProjectSettings } = await import("../../src/domain/project-settings.ts");
 import type { DispatchProjectMessageOptions } from "../../src/services/project-messaging.ts";
 
 const seedProjectData = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<typeof R2Client>) => {
@@ -86,6 +87,7 @@ const seedProjectData = async (kv: InstanceType<typeof KvClient>, r2: InstanceTy
     }),
   );
   await putMetaCampaignsDocument(r2, "proj_acceptance", {
+    periodKey: "custom",
     period: { from: "2025-11-15", to: "2025-11-15" },
     summary: { spend: 25, impressions: 2500, clicks: 180, leads: 7, messages: 3 },
     campaigns: [
@@ -231,7 +233,7 @@ test("full system acceptance scenario", async () => {
   registerMetaRoutes(router, {
     dispatchProjectMessage: async (options) => {
       projectMessages.push(options);
-      return { delivered: { chat: true, admin: false } };
+      return { delivered: { chat: true, admin: false }, settings: createDefaultProjectSettings(options.project.id) };
     },
   });
   registerProjectRoutes(router);

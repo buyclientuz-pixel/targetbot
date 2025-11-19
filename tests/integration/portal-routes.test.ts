@@ -145,6 +145,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
       leads: Array<{ id: string; status: string; contact: string }>;
       stats: { total: number; today: number };
       periodStats: { total: number; today: number };
+      periodKey: string | null;
     };
   };
   assert.ok(leadsPayload.ok);
@@ -180,7 +181,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.equal(campaignsResponse.status, 200);
   const campaignsPayload = (await campaignsResponse.clone().json()) as {
     ok: boolean;
-    data: { campaigns: Array<{ id: string; spend: number; leads: number }> };
+    data: { campaigns: Array<{ id: string; spend: number; leads: number }>; period?: { from: string; to: string } };
   };
   assert.ok(campaignsPayload.ok);
   assert.equal(campaignsPayload.data.campaigns.length, 1);

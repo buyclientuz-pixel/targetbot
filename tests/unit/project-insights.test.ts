@@ -13,7 +13,9 @@ const { loadProjectCampaigns, resolvePeriodRange } = await import(
   "../../src/services/project-insights.ts"
 );
 
-const createProjectWithSettings = async (kv: KvClient, projectId: string) => {
+type KvClientInstance = InstanceType<typeof KvClient>;
+
+const createProjectWithSettings = async (kv: KvClientInstance, projectId: string) => {
   const project = createProject({ id: projectId, name: projectId, adsAccountId: "act_123", ownerTelegramId: 1 });
   await putProject(kv, project);
   const settings = createDefaultProjectSettings(projectId);

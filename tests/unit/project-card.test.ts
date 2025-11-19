@@ -65,6 +65,7 @@ test("buildProjectCardMessage renders project snapshot", () => {
           messages: 0,
         },
       ],
+      periodKey: "today",
     },
     payments: { payments: [] },
   };

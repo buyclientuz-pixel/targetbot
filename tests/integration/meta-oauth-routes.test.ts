@@ -88,7 +88,12 @@ test("/auth/facebook/callback exchanges tokens and stores accounts", async () =>
   ];
   let call = 0;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = typeof input === "string" ? new URL(input) : new URL(input.url ?? String(input));
+    const url =
+      typeof input === "string"
+        ? new URL(input)
+        : input instanceof URL
+          ? input
+          : new URL(input.url);
     if (url.host.includes("api.telegram.org")) {
       return responses[4]!;
     }
@@ -180,7 +185,12 @@ test("/auth/facebook/callback falls back to default expiry when expires_in is mi
   ];
   let call = 0;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = typeof input === "string" ? new URL(input) : new URL(input.url ?? String(input));
+    const url =
+      typeof input === "string"
+        ? new URL(input)
+        : input instanceof URL
+          ? input
+          : new URL(input.url);
     if (url.pathname.includes("oauth/access_token")) {
       return responses[call++]!;
     }

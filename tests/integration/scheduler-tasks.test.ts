@@ -839,7 +839,13 @@ test(
       project.id,
       createAutoreportRecord({
         enabled: false,
-        paymentAlerts: { enabled: true, sendToChat: true, sendToAdmin: true },
+        paymentAlerts: {
+          enabled: true,
+          sendToChat: true,
+          sendToAdmin: true,
+          lastAccountStatus: null,
+          lastAlertAt: null,
+        },
       }),
     );
 

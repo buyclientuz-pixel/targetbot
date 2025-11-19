@@ -207,6 +207,7 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     }),
   );
   await putMetaCampaignsDocument(r2, "proj_a", {
+    periodKey: "today",
     period: { from: "2025-01-01", to: "2025-01-01" },
     summary: { spend: 120, impressions: 1000, clicks: 100, leads: 5, messages: 0 },
     campaigns: [
@@ -264,7 +265,7 @@ const createScopedCampaignEntry = (
   periodKey: string,
   timezone: string,
   reportDate: Date,
-  payload: import("../../src/domain/meta-cache.ts").MetaInsightsRawResponse,
+  payload: import("../../src/services/meta-api.ts").MetaInsightsRawResponse,
   ttlSeconds = 3600,
 ) => {
   const { scope, period } = scopedCache("campaigns", periodKey, timezone, reportDate);
@@ -1104,19 +1105,22 @@ test("Telegram bot controller serves analytics, users, finance and webhook secti
     await controller.handleUpdate({
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Аналитика" },
     } as unknown as TelegramUpdate);
-    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Сводная аналитика"));
+    const analyticsText = String(findLastSendMessage(stub.requests)?.body.text ?? "");
+    assert.ok(analyticsText.includes("Сводная аналитика"));
 
     stub.requests.length = 0;
     await controller.handleUpdate({
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Пользователи" },
     } as unknown as TelegramUpdate);
-    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Пользователи и доступы"));
+    const usersText = String(findLastSendMessage(stub.requests)?.body.text ?? "");
+    assert.ok(usersText.includes("Пользователи и доступы"));
 
     stub.requests.length = 0;
     await controller.handleUpdate({
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Финансы" },
     } as unknown as TelegramUpdate);
-    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Финансы (все проекты)"));
+    const financeText = String(findLastSendMessage(stub.requests)?.body.text ?? "");
+    assert.ok(financeText.includes("Финансы (все проекты)"));
 
     stub.requests.length = 0;
     await controller.handleUpdate({
@@ -1124,7 +1128,8 @@ test("Telegram bot controller serves analytics, users, finance and webhook secti
     } as unknown as TelegramUpdate);
     const webhookRequest = stub.requests.find((entry) => entry.url.includes("getWebhookInfo"));
     assert.ok(webhookRequest);
-    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Telegram Webhook"));
+    const webhookText = String(findLastSendMessage(stub.requests)?.body.text ?? "");
+    assert.ok(webhookText.includes("Telegram Webhook"));
   } finally {
     stub.restore();
   }

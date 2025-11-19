@@ -1,8 +1,9 @@
 class SimpleURLPattern {
   private readonly segments: string[];
 
-  constructor(init: { pathname: string }) {
-    this.segments = init.pathname.split("/").filter(Boolean);
+  constructor(init?: string | URLPatternInit, baseURL?: string) {
+    const pathname = typeof init === "string" ? new URL(init, baseURL).pathname : init?.pathname ?? "";
+    this.segments = pathname.split("/").filter(Boolean);
   }
 
   exec(input: string | URL) {
@@ -30,7 +31,7 @@ class SimpleURLPattern {
 }
 
 if (!("URLPattern" in globalThis)) {
-  (globalThis as unknown as { URLPattern: typeof SimpleURLPattern }).URLPattern = SimpleURLPattern as unknown as typeof URLPattern;
+  (globalThis as Record<string, unknown>).URLPattern = SimpleURLPattern as unknown;
 }
 
 export {}; 

@@ -37,7 +37,8 @@ test("fb auth record matches schema", () => {
   assert.equal(serialised.userId, 7623982602);
   assert.equal(serialised.access_token, "EAAG");
   assert.equal(serialised.longToken, "EAAG");
-  assert.equal(serialised.accounts?.length, 2);
+  const serialisedAccounts = (serialised as { accounts?: unknown[] }).accounts;
+  assert.equal(serialisedAccounts?.length, 2);
   assert.equal(serialised.facebook_user_id, "fb_7623982602");
   assert.equal(serialised.facebook_name, "Meta User");
 
@@ -173,6 +174,7 @@ test("meta campaigns document", () => {
         messages: 0,
       },
     ],
+    periodKey: "today",
   };
   const parsed = parseMetaCampaignsDocument(sample);
   assert.equal(parsed.campaigns[0].kpiType, "LEAD");
