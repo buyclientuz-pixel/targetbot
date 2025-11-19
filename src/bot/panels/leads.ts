@@ -1,15 +1,15 @@
 import { ensureProjectSettings } from "../../domain/project-settings";
+import type { ProjectLeadsListRecord } from "../../domain/spec/project-leads";
 import { loadProjectBundle } from "../data";
 import type { InlineKeyboardMarkup } from "../types";
 import type { PanelRenderer } from "./types";
-import type { ProjectLeadsListRecord } from "../../domain/spec/project-leads";
 import { buildLeadsMessage } from "../messages";
 import { buildLeadsKeyboard } from "../keyboards";
 import { refreshProjectLeads } from "../../services/project-leads-sync";
 import { loadProjectLeadsView } from "../../services/project-leads-view";
+import { parseLeadsPanelState, toLeadsPanelContext } from "../leads-panel-state";
 
 const fallbackKeyboard: InlineKeyboardMarkup = { inline_keyboard: [[{ text: "⬅️ Назад", callback_data: "panel:projects" }]] };
-const DEFAULT_STATUS: ProjectLeadsListRecord["leads"][number]["status"] = "new";
 const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
 
 const needsLeadRefresh = (record: ProjectLeadsListRecord): boolean => {
@@ -27,11 +27,8 @@ const needsLeadRefresh = (record: ProjectLeadsListRecord): boolean => {
 };
 
 export const render: PanelRenderer = async ({ runtime, params }) => {
-  const status = (params[0] as ProjectLeadsListRecord["leads"][number]["status"]) ?? DEFAULT_STATUS;
-  const projectId = params[1];
-  const periodKey = params[2] ?? "today";
-  const from = params[3] && params[3].length > 0 ? params[3] : null;
-  const to = params[4] && params[4].length > 0 ? params[4] : null;
+  const state = parseLeadsPanelState(params, 0);
+  const projectId = state.projectId;
   if (!projectId) {
     return { text: "Проект не найден.", keyboard: fallbackKeyboard };
   }
@@ -47,13 +44,22 @@ export const render: PanelRenderer = async ({ runtime, params }) => {
   const settings = await ensureProjectSettings(runtime.kv, projectId);
   const timeZone = bundle.project.settings?.timezone ?? runtime.defaultTimezone ?? null;
   const view = await loadProjectLeadsView(runtime.r2, projectId, {
-    periodKey,
+    periodKey: state.periodKey,
     timeZone,
-    from,
-    to,
+    from: state.from,
+    to: state.to,
   });
+  let panelContext = toLeadsPanelContext(state);
+  if (panelContext.mode === "form") {
+    const targetFormId = panelContext.formId ?? null;
+    const leadsForForm = view.leads.filter((lead) => (lead.formId ?? null) === targetFormId);
+    const maxPage = Math.max(Math.ceil(leadsForForm.length / 5) - 1, 0);
+    if (panelContext.page > maxPage) {
+      panelContext = { ...panelContext, page: maxPage };
+    }
+  }
   return {
-    text: buildLeadsMessage(bundle.project, view, status, settings.leads),
-    keyboard: buildLeadsKeyboard(projectId, view, status, settings.leads),
+    text: buildLeadsMessage(bundle.project, view, panelContext, settings.leads),
+    keyboard: buildLeadsKeyboard(projectId, view, panelContext, settings.leads),
   };
 };

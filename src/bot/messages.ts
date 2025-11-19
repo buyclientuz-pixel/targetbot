@@ -10,9 +10,9 @@ import type { FreeChatRecord } from "../domain/project-chats";
 import type { ProjectLeadNotificationSettings } from "../domain/project-settings";
 
 import type { AnalyticsOverview, FinanceOverview, ProjectBundle } from "./data";
-import { leadStatusLabel } from "./data";
 import { translateMetaObjective } from "../services/meta-objectives";
-import type { ProjectLeadsViewPayload } from "../services/project-leads-view";
+import type { LeadViewEntry, ProjectLeadsViewPayload } from "../services/project-leads-view";
+import type { LeadsPanelContext } from "./leads-panel-state";
 
 const escapeHtml = (value: string): string =>
   value
@@ -301,51 +301,86 @@ const formatLeadDuration = (createdAt: string): string => {
   return `${hours} ч ${minutes} мин`;
 };
 
-const formatLeadEntry = (lead: ProjectLeadsListRecord["leads"][number]): string => {
-  const lines: string[] = [];
-  lines.push("🔔 Лид ожидает ответа");
-  lines.push(`Имя: <b>${escapeHtml(lead.name)}</b>`);
-  lines.push(`Контакт: ${escapeHtml(lead.phone)}`);
-  lines.push(`Получен: ${formatDateTime(lead.createdAt)}`);
-  lines.push(`Реклама: ${escapeHtml(lead.campaignName)}`);
-  if (lead.status === "new") {
-    lines.push(`В очереди уже ${formatLeadDuration(lead.createdAt)}`);
-  } else {
-    lines.push(`Статус: ${lead.status}`);
-  }
-  return lines.join("\n");
+const formatLeadSnippet = (lead: LeadViewEntry): string => {
+  const contact = lead.phone && lead.phone.trim().length > 0 ? lead.phone : "—";
+  return `• <b>${escapeHtml(lead.name)}</b> — ${escapeHtml(contact)}`;
 };
+
+const describeFormName = (
+  view: ProjectLeadsViewPayload,
+  formId: string | null,
+): string => {
+  const summary = view.forms.find((form) => (form.formId ?? null) === (formId ?? null));
+  if (summary) {
+    return summary.name;
+  }
+  if (formId && formId.length > 0) {
+    return `Форма ${formId}`;
+  }
+  return "Без формы";
+};
+
+const findFormSummary = (view: ProjectLeadsViewPayload, formId: string | null) =>
+  view.forms.find((form) => (form.formId ?? null) === (formId ?? null)) ?? null;
 
 export const buildLeadsMessage = (
   project: ProjectRecord,
   view: ProjectLeadsViewPayload,
-  status: ProjectLeadsListRecord["leads"][number]["status"],
+  context: LeadsPanelContext,
   leadSettings: ProjectLeadNotificationSettings,
 ): string => {
-  const filtered = view.leads.filter((lead) => lead.status === status).slice(0, 5);
   const lines: string[] = [];
   lines.push(`Лиды проекта <b>${escapeHtml(project.name)}</b>`);
   lines.push(`Период: ${view.period.from} — ${view.period.to}`);
-  lines.push(`Всего за период: <b>${view.periodStats.total}</b> | Сегодня: <b>${view.periodStats.today}</b>`);
-  if (view.periodKey !== "all" || view.stats.total !== view.periodStats.total) {
-    lines.push(`За всё время: <b>${view.stats.total}</b> | Сегодня: <b>${view.stats.today}</b>`);
+  lines.push(`За период: <b>${view.periodStats.total}</b> (сегодня: <b>${view.periodStats.today}</b>)`);
+  if (view.stats.total !== view.periodStats.total || view.stats.today !== view.periodStats.today) {
+    lines.push(`Всего в базе: <b>${view.stats.total}</b> (сегодня: <b>${view.stats.today}</b>)`);
   }
-  const statusLabel = leadStatusLabel(status);
-  const statusCount = view.countsByStatus[status] ?? 0;
-  lines.push(`${statusLabel}: <b>${statusCount}</b>`);
   lines.push("");
   lines.push(`🔔 Уведомления: ${describeLeadNotificationTargets(leadSettings)}`);
   lines.push("");
-  if (filtered.length === 0) {
-    lines.push("В этом статусе заявок нет.");
+
+  if (context.mode === "form") {
+    const targetFormId = context.formId ?? null;
+    const formSummary = findFormSummary(view, targetFormId);
+    const leadsForForm = view.leads.filter((lead) => (lead.formId ?? null) === targetFormId);
+    const maxPage = Math.max(Math.ceil(leadsForForm.length / 5) - 1, 0);
+    const safePage = Math.min(context.page, maxPage);
+    const startIndex = safePage * 5;
+    const pageLeads = leadsForForm.slice(startIndex, startIndex + 5);
+    const formName = describeFormName(view, targetFormId);
+    lines.push(`Форма: <b>${escapeHtml(formName)}</b>`);
+    lines.push(
+      `За период: <b>${formSummary?.periodTotal ?? leadsForForm.length}</b> (всего: <b>${
+        formSummary?.total ?? leadsForForm.length
+      }</b>)`,
+    );
+    lines.push("");
+    if (leadsForForm.length === 0) {
+      lines.push("В этой форме нет лидов за выбранный период.");
+    } else {
+      lines.push(`Страница ${safePage + 1} из ${Math.max(maxPage + 1, 1)}.`);
+      lines.push("Последние контакты:");
+      pageLeads.forEach((lead, index) => {
+        const ordinal = startIndex + index + 1;
+        lines.push(`${ordinal}. ${formatLeadSnippet(lead)}`);
+        lines.push(`   ${formatDateTime(lead.createdAt)}`);
+      });
+    }
   } else {
-    filtered.forEach((lead, index) => {
-      if (index > 0) {
-        lines.push("");
-      }
-      lines.push(formatLeadEntry(lead));
-    });
+    if (view.forms.length === 0) {
+      lines.push("Лиды ещё не загружены. Нажмите обновление портала и попробуйте снова.");
+    } else {
+      lines.push("Формы и лиды за выбранный период:");
+      view.forms.forEach((form, index) => {
+        const totalHint = form.total !== form.periodTotal ? ` (всего: ${form.total})` : "";
+        lines.push(`${index + 1}. <b>${escapeHtml(form.name)}</b> — ${form.periodTotal}${totalHint}`);
+      });
+      lines.push("");
+      lines.push("Нажмите на форму, чтобы открыть список лидов.");
+    }
   }
+
   return lines.join("\n");
 };
 

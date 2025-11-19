@@ -14,7 +14,6 @@ import {
   buildDeleteConfirmKeyboard,
   buildExportKeyboard,
   buildLeadDetailKeyboard,
-  buildLeadsKeyboard,
   buildMainMenuKeyboard,
   buildProjectActionsKeyboard,
 } from "./keyboards";
@@ -91,6 +90,7 @@ import { loadProjectLeadsView } from "../services/project-leads-view";
 import { syncProjectMetaAccount, syncUserProjectsMetaAccount } from "../services/project-meta";
 import { upsertMetaTokenRecord } from "../domain/meta-tokens";
 import { normaliseBaseUrl } from "../utils/url";
+import { buildLeadsPanelId, parseLeadsPanelState, toLeadsPanelContext, type LeadsPanelContext } from "./leads-panel-state";
 
 interface BotContext {
   kv: KvClient;
@@ -128,7 +128,6 @@ interface CreateTelegramBotControllerOptions {
 
 const DEFAULT_WORKER_DOMAIN = "th-reports.buyclientuz.workers.dev";
 const FACEBOOK_AUTH_GUIDE_FALLBACK = "https://developers.facebook.com/tools/explorer/";
-const DEFAULT_LEAD_STATUS: ProjectLeadsListRecord["leads"][number]["status"] = "new";
 
 const escapeHtml = (value: string): string =>
   value
@@ -701,11 +700,8 @@ const handleLeadNotificationToggle = async (
   userId: number,
   chatId: number,
   projectId: string,
-  status: ProjectLeadsListRecord["leads"][number]["status"],
   target: "chat" | "admin",
-  periodKey?: string | null,
-  from?: string | null,
-  to?: string | null,
+  context: LeadsPanelContext,
 ): Promise<void> => {
   const settings = await ensureProjectSettings(ctx.kv, projectId);
   const nextSettings = {
@@ -722,7 +718,7 @@ const handleLeadNotificationToggle = async (
     runtime,
     userId,
     chatId,
-    panelId: buildLeadsPanelId(status, projectId, { periodKey, from, to }),
+    panelId: buildLeadsPanelId(projectId, context),
   });
 };
 
@@ -732,7 +728,7 @@ const handleLeadsRangeInput = async (
   userId: number,
   chatId: number,
   projectId: string,
-  status: ProjectLeadsListRecord["leads"][number]["status"],
+  context: LeadsPanelContext,
   input: string,
 ): Promise<void> => {
   const { from, to } = parseDateRangeInput(input);
@@ -740,7 +736,7 @@ const handleLeadsRangeInput = async (
     runtime,
     userId,
     chatId,
-    panelId: buildLeadsPanelId(status, projectId, { periodKey: "custom", from, to }),
+    panelId: buildLeadsPanelId(projectId, { ...context, periodKey: "custom", from, to, page: 0 }),
   });
 };
 
@@ -964,20 +960,6 @@ const EXPORT_LABELS: Record<"leads" | "campaigns" | "payments", string> = {
 const buildExportFilename = (projectId: string, type: string): string => {
   const safeTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
   return `${projectId}-${type}-${safeTimestamp}.csv`;
-};
-
-const buildLeadsPanelId = (
-  status: ProjectLeadsListRecord["leads"][number]["status"],
-  projectId: string,
-  options?: { periodKey?: string | null; from?: string | null; to?: string | null },
-): string => {
-  const periodKey = options?.periodKey && options.periodKey.trim().length > 0 ? options.periodKey : "today";
-  if (periodKey === "custom") {
-    const from = options?.from && options.from.length > 0 ? options.from : "";
-    const to = options?.to && options.to.length > 0 ? options.to : "";
-    return `project:leads:${status}:${projectId}:custom:${from}:${to}`;
-  }
-  return `project:leads:${status}:${projectId}:${periodKey}`;
 };
 
 const parseDateRangeInput = (input: string): { from: string; to: string } => {
@@ -1701,56 +1683,34 @@ const handleCallback = async (
           await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:billing:${parts[2]!}` });
           break;
         case "leads": {
-          const status = (parts[2] as ProjectLeadsListRecord["leads"][number]["status"]) ?? DEFAULT_LEAD_STATUS;
-          const projectId = parts[3];
-          if (!projectId) {
-            await sendTelegramMessage(ctx.token, { chatId, text: "Проект не найден" });
-            break;
-          }
-          const periodKey = parts[4] ?? "today";
-          const from = parts[5] ?? null;
-          const to = parts[6] ?? null;
-          await renderPanel({
-            runtime: panelRuntime,
-            userId,
-            chatId,
-            panelId: buildLeadsPanelId(status, projectId, { periodKey, from, to }),
-          });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: data });
           break;
         }
         case "leads-target": {
-          const status = (parts[2] as ProjectLeadsListRecord["leads"][number]["status"]) ?? DEFAULT_LEAD_STATUS;
-          const projectId = parts[3];
-          const target = parts[4] as "chat" | "admin";
-          if (!projectId || !target) {
+          const target = parts[2] as "chat" | "admin";
+          const state = parseLeadsPanelState(parts, 3);
+          if (!state.projectId || !target) {
             break;
           }
-          const periodKey = parts[5] ?? null;
-          const from = parts[6] ?? null;
-          const to = parts[7] ?? null;
           await handleLeadNotificationToggle(
             ctx,
             panelRuntime,
             userId,
             chatId,
-            projectId,
-            status,
+            state.projectId,
             target,
-            periodKey,
-            from,
-            to,
+            toLeadsPanelContext(state),
           );
           break;
         }
         case "leads-range": {
-          const status = (parts[2] as ProjectLeadsListRecord["leads"][number]["status"]) ?? DEFAULT_LEAD_STATUS;
-          const projectId = parts[3];
-          if (!projectId) {
+          const state = parseLeadsPanelState(parts, 2);
+          if (!state.projectId) {
             break;
           }
           await saveBotSession(ctx.kv, {
             userId,
-            state: { type: "leads:set-range", projectId, status },
+            state: { type: "leads:set-range", projectId: state.projectId, context: toLeadsPanelContext(state) },
             updatedAt: new Date().toISOString(),
           });
           await sendTelegramMessage(ctx.token, {
@@ -2145,7 +2105,7 @@ const handleSessionInput = async (
         userId,
         chatId,
         sessionState.state.projectId,
-        (sessionState.state.status as ProjectLeadsListRecord["leads"][number]["status"]) ?? "new",
+        sessionState.state.context,
         trimmed,
       );
       await clearBotSession(ctx.kv, userId);

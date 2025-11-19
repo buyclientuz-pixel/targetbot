@@ -52,7 +52,27 @@ export interface LeadViewEntry {
   campaignId: string | null;
   status: ProjectLeadsListRecord["leads"][number]["status"];
   type: string | null;
+  formId: string | null;
+  formName: string | null;
 }
+
+export interface LeadFormSummary {
+  formId: string | null;
+  name: string;
+  total: number;
+  periodTotal: number;
+}
+
+const extractLeadFormName = (lead: Lead): string | null => {
+  if (lead.metaRaw && typeof lead.metaRaw === "object") {
+    const record = lead.metaRaw as Record<string, unknown>;
+    const value = record.form_name ?? record["form_name"];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+};
 
 const mapLeadToViewEntry = (lead: Lead): LeadViewEntry => {
   const contact = normaliseLeadContact(lead);
@@ -69,6 +89,8 @@ const mapLeadToViewEntry = (lead: Lead): LeadViewEntry => {
     campaignId: lead.campaignId ?? null,
     status: mapLeadStatus(lead.status),
     type: isMessage ? "message" : "lead",
+    formId: lead.formId ?? null,
+    formName: extractLeadFormName(lead),
   };
 };
 
@@ -84,7 +106,22 @@ const mapSummaryLeadToViewEntry = (lead: ProjectLeadsListRecord["leads"][number]
   campaignId: null,
   status: lead.status,
   type: lead.type ?? null,
+  formId: null,
+  formName: null,
 });
+
+const deriveFormLabel = (lead: LeadViewEntry): string => {
+  if (lead.formName && lead.formName.trim().length > 0) {
+    return lead.formName.trim();
+  }
+  if (lead.formId && lead.formId.trim().length > 0) {
+    return `Форма ${lead.formId}`;
+  }
+  if (lead.campaignName && lead.campaignName.trim().length > 0) {
+    return lead.campaignName.trim();
+  }
+  return "Без формы";
+};
 
 const sortLeadsDesc = (a: LeadViewEntry, b: LeadViewEntry): number => {
   if (a.createdAt === b.createdAt) {
@@ -117,6 +154,7 @@ export interface ProjectLeadsViewPayload {
   periodStats: ProjectLeadsListRecord["stats"];
   countsByStatus: Record<ProjectLeadsListRecord["leads"][number]["status"], number>;
   syncedAt: string | null;
+  forms: LeadFormSummary[];
 }
 
 export interface LoadProjectLeadsViewOptions {
@@ -150,6 +188,50 @@ export const loadProjectLeadsView = async (
       return Number.isFinite(created) && created >= fromTime && created <= toTime;
     })
     .sort(sortLeadsDesc);
+
+  const formTotals = new Map<string, LeadFormSummary>();
+  const registerTotal = (lead: LeadViewEntry) => {
+    const key = lead.formId ?? "__none__";
+    const existing = formTotals.get(key);
+    if (existing) {
+      existing.total += 1;
+      if (existing.name === "Без формы") {
+        existing.name = deriveFormLabel(lead);
+      }
+      return;
+    }
+    formTotals.set(key, {
+      formId: lead.formId,
+      name: deriveFormLabel(lead),
+      total: 1,
+      periodTotal: 0,
+    });
+  };
+  const registerPeriod = (lead: LeadViewEntry) => {
+    const key = lead.formId ?? "__none__";
+    const existing = formTotals.get(key);
+    if (existing) {
+      existing.periodTotal += 1;
+      return;
+    }
+    formTotals.set(key, {
+      formId: lead.formId,
+      name: deriveFormLabel(lead),
+      total: 0,
+      periodTotal: 1,
+    });
+  };
+  baseLeads.forEach(registerTotal);
+  filtered.forEach(registerPeriod);
+  const forms = Array.from(formTotals.values()).sort((a, b) => {
+    if (b.periodTotal !== a.periodTotal) {
+      return b.periodTotal - a.periodTotal;
+    }
+    if (b.total !== a.total) {
+      return b.total - a.total;
+    }
+    return a.name.localeCompare(b.name, "ru", { sensitivity: "base" });
+  });
   const counts = PROJECT_LEAD_STATUSES.reduce(
     (acc, status) => ({ ...acc, [status]: 0 }),
     {} as Record<ProjectLeadsListRecord["leads"][number]["status"], number>,
@@ -171,5 +253,6 @@ export const loadProjectLeadsView = async (
     periodStats: { total: filtered.length, today: countTodayLeads(filtered, options.timeZone ?? null) },
     countsByStatus: counts,
     syncedAt: useLiveLeads ? options.liveSyncedAt ?? new Date().toISOString() : summaryRecord?.syncedAt ?? null,
+    forms,
   } satisfies ProjectLeadsViewPayload;
 };

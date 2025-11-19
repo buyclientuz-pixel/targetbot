@@ -1,5 +1,6 @@
 import { getBotSession, saveBotSession } from "../domain/bot-sessions";
 import { editTelegramMessage, sendTelegramMessage, TelegramError } from "../services/telegram";
+import { parseLeadsPanelState, serialiseLeadsPanelParams } from "./leads-panel-state";
 import type { TelegramMessage } from "./types";
 import type { PanelRuntime } from "./panels/types";
 import { render as renderMain } from "./panels/main";
@@ -52,10 +53,11 @@ const resolvePanel = (panelId: string): ResolveResult => {
     return { renderer: renderBilling, params: [panelId.split(":")[2]!], id: panelId };
   }
   if (panelId.startsWith("project:leads:")) {
-    const [, , status, projectId, periodKey, from, to] = panelId.split(":");
+    const parts = panelId.split(":");
+    const state = parseLeadsPanelState(parts, 2);
     return {
       renderer: renderLeads,
-      params: [status ?? "new", projectId ?? "", periodKey ?? "today", from ?? "", to ?? ""],
+      params: serialiseLeadsPanelParams(state),
       id: panelId,
     };
   }
@@ -193,3 +195,4 @@ export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRe
     });
   }
 };
+import { parseLeadsPanelState, serialiseLeadsPanelParams } from "./leads-panel-state";

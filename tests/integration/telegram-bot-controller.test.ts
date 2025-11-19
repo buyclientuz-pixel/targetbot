@@ -15,6 +15,7 @@ const { putFreeChatRecord, getFreeChatRecord, getOccupiedChatRecord, putOccupied
 const { putProjectsByUser, getProjectsByUser } = await import("../../src/domain/spec/projects-by-user.ts");
 const { putProjectRecord, requireProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { putProject, createProject } = await import("../../src/domain/projects.ts");
+const { createLead, saveLead } = await import("../../src/domain/leads.ts");
 const { putBillingRecord, getBillingRecord } = await import("../../src/domain/spec/billing.ts");
 const { putAutoreportsRecord, getAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
 const { putProjectLeadsList } = await import("../../src/domain/spec/project-leads.ts");
@@ -25,6 +26,7 @@ const { getUserSettingsRecord } = await import("../../src/domain/spec/user-setti
 const { ensureProjectSettings } = await import("../../src/domain/project-settings.ts");
 const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/meta-cache.ts");
 const { type MetaSummaryMetrics } = await import("../../src/domain/meta-summary.ts");
+const { buildLeadsPanelId, buildLeadsPayloadSegment } = await import("../../src/bot/leads-panel-state.ts");
 
 interface FetchRecord {
   url: string;
@@ -157,6 +159,45 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     ],
     syncedAt: new Date().toISOString(),
   });
+  await saveLead(
+    r2,
+    createLead({
+      id: "lead_1",
+      projectId: "proj_a",
+      name: "User",
+      phone: "+99890",
+      campaign: "Test",
+      createdAt: thirtyMinutesAgo,
+      formId: "form_a",
+      metaRaw: { form_name: "Форма BirLash" },
+    }),
+  );
+  await saveLead(
+    r2,
+    createLead({
+      id: "lead_2",
+      projectId: "proj_a",
+      name: "Processing",
+      phone: "сообщение",
+      campaign: "Test",
+      createdAt: threeDaysAgo,
+      formId: "form_b",
+      metaRaw: { form_name: "Форма Flex" },
+    }),
+  );
+  await saveLead(
+    r2,
+    createLead({
+      id: "lead_3",
+      projectId: "proj_a",
+      name: "Closed",
+      phone: "+99899",
+      campaign: "Archive",
+      createdAt: twentyDaysAgo,
+      formId: null,
+      metaRaw: { form_name: null },
+    }),
+  );
   await putMetaCampaignsDocument(r2, "proj_a", {
     period: { from: "2025-01-01", to: "2025-01-01" },
     summary: { spend: 120, impressions: 1000, clicks: 100, leads: 5, messages: 0 },
@@ -632,7 +673,7 @@ test("lead notifications can be toggled from the leads panel", async () => {
         id: "cb-show-leads",
         from: { id: 100 },
         message: { chat: { id: 100 }, message_id: 77 },
-        data: "project:leads:new:proj_a",
+        data: buildLeadsPanelId("proj_a"),
       },
     } as unknown as TelegramUpdate);
 
@@ -640,7 +681,8 @@ test("lead notifications can be toggled from the leads panel", async () => {
     assert.ok(leadsMessage, "expected leads panel render");
     const leadsText = String(leadsMessage?.body?.text ?? "");
     assert.match(leadsText, /Период:/);
-    assert.match(leadsText, /Всего за период:/);
+    assert.match(leadsText, /За период:/);
+    assert.match(leadsText, /Формы и лиды/);
     assert.match(leadsText, /Уведомления:/);
     const leadsKeyboard = leadsMessage?.body?.reply_markup as {
       inline_keyboard: { text: string; callback_data?: string }[][];
@@ -657,7 +699,7 @@ test("lead notifications can be toggled from the leads panel", async () => {
         id: "cb-toggle",
         from: { id: 100 },
         message: { chat: { id: 100 }, message_id: 78 },
-        data: "project:leads-target:new:proj_a:chat:today",
+        data: `project:leads-target:chat:${buildLeadsPayloadSegment("proj_a")}`,
       },
     } as unknown as TelegramUpdate);
 
@@ -692,7 +734,7 @@ test("leads panel period buttons expand the dataset", async () => {
         id: "cb-show-leads",
         from: { id: 100 },
         message: { chat: { id: 100 }, message_id: 77 },
-        data: "project:leads:new:proj_a",
+        data: buildLeadsPanelId("proj_a"),
       },
     } as unknown as TelegramUpdate);
 
@@ -703,14 +745,71 @@ test("leads panel period buttons expand the dataset", async () => {
         id: "cb-period-week",
         from: { id: 100 },
         message: { chat: { id: 100 }, message_id: 78 },
-        data: "project:leads:new:proj_a:week",
+        data: buildLeadsPanelId("proj_a", { periodKey: "week" }),
       },
     } as unknown as TelegramUpdate);
 
     const weekMessage = findLastSendMessage(stub.requests);
     assert.ok(weekMessage, "expected leads panel rerender for week period");
     const text = String(weekMessage?.body?.text ?? "");
-    assert.match(text, /Всего за период: <b>2<\/b>/);
+    assert.match(text, /За период: <b>2<\/b>/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test("leads panel lists forms and opens form detail", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  await seedProject(kv, r2);
+  await ensureProjectSettings(kv, "proj_a");
+
+  const controller = createController(kv, r2);
+  const stub = installFetchStub();
+
+  try {
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-leads",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 81 },
+        data: buildLeadsPanelId("proj_a"),
+      },
+    } as unknown as TelegramUpdate);
+
+    const leadsMessage = findLastSendMessage(stub.requests);
+    assert.ok(leadsMessage, "expected leads panel render");
+    const keyboard = leadsMessage?.body?.reply_markup as {
+      inline_keyboard: { text: string; callback_data?: string }[][];
+    };
+    const formButton = keyboard?.inline_keyboard
+      ?.flat()
+      .find((button) => button.callback_data?.includes(":form:"));
+    assert.ok(formButton, "expected form button in keyboard");
+
+    stub.requests.length = 0;
+
+    await controller.handleUpdate({
+      callback_query: {
+        id: "cb-form",
+        from: { id: 100 },
+        message: { chat: { id: 100 }, message_id: 82 },
+        data: formButton?.callback_data!,
+      },
+    } as unknown as TelegramUpdate);
+
+    const detailMessage = findLastSendMessage(stub.requests);
+    assert.ok(detailMessage, "expected form detail render");
+    const detailText = String(detailMessage?.body?.text ?? "");
+    assert.match(detailText, /Форма:/);
+    assert.match(detailText, /Последние контакты/);
+    const detailKeyboard = detailMessage?.body?.reply_markup as {
+      inline_keyboard: { text: string; callback_data?: string }[][];
+    };
+    const backToForms = detailKeyboard?.inline_keyboard
+      ?.flat()
+      .find((button) => button.text?.includes("К формам"));
+    assert.ok(backToForms, "expected back to forms button");
   } finally {
     stub.restore();
   }
@@ -731,7 +830,7 @@ test("custom lead ranges can be entered manually", async () => {
         id: "cb-range",
         from: { id: 100 },
         message: { chat: { id: 100 }, message_id: 80 },
-        data: "project:leads-range:new:proj_a",
+        data: `project:leads-range:${buildLeadsPayloadSegment("proj_a")}`,
       },
     } as unknown as TelegramUpdate);
 
@@ -749,7 +848,7 @@ test("custom lead ranges can be entered manually", async () => {
     assert.ok(customMessage, "expected custom range render");
     const text = String(customMessage?.body?.text ?? "");
     assert.match(text, new RegExp(`Период: ${monthLeadDate}`));
-    assert.match(text, /Всего за период: <b>1<\/b>/);
+    assert.match(text, /За период: <b>1<\/b>/);
   } finally {
     stub.restore();
   }
