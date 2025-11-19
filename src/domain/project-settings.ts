@@ -45,6 +45,8 @@ export interface ProjectSettings {
   projectId: string;
   chatId: number | null;
   topicId: number | null;
+  currency: string;
+  timezone: string;
   portalEnabled: boolean;
   billing: ProjectBillingSettings;
   kpi: ProjectKpiSettings;
@@ -149,6 +151,8 @@ export const parseProjectSettings = (raw: unknown, projectId: string): ProjectSe
     projectId: assertString(record.projectId ?? projectId, "projectSettings.projectId"),
     chatId: assertOptionalNumber(record.chatId ?? defaults.chatId, "projectSettings.chatId"),
     topicId: assertOptionalNumber(record.topicId ?? defaults.topicId, "projectSettings.topicId"),
+    currency: assertString(record.currency ?? defaults.currency, "projectSettings.currency"),
+    timezone: assertString(record.timezone ?? defaults.timezone, "projectSettings.timezone"),
     portalEnabled: assertBoolean(
       record.portalEnabled ?? defaults.portalEnabled,
       "projectSettings.portalEnabled",
@@ -167,6 +171,8 @@ export const serialiseProjectSettings = (settings: ProjectSettings): Record<stri
   projectId: settings.projectId,
   chatId: settings.chatId,
   topicId: settings.topicId,
+  currency: settings.currency,
+  timezone: settings.timezone,
   portalEnabled: settings.portalEnabled,
   billing: settings.billing,
   kpi: settings.kpi,
@@ -183,6 +189,8 @@ export const createDefaultProjectSettings = (projectId: string): ProjectSettings
     projectId,
     chatId: null,
     topicId: null,
+    currency: "USD",
+    timezone: "UTC",
     portalEnabled: true,
     billing: {
       tariff: 0,
@@ -238,12 +246,14 @@ const hydrateFromSpec = async (kv: KvClient, settings: ProjectSettings): Promise
 
   let hydrated: ProjectSettings = { ...settings };
 
-  if (projectRecord) {
-    hydrated = {
-      ...hydrated,
-      chatId: projectRecord.chatId ?? hydrated.chatId,
-    };
-  }
+    if (projectRecord) {
+      hydrated = {
+        ...hydrated,
+        chatId: projectRecord.chatId ?? hydrated.chatId,
+        currency: projectRecord.settings.currency ?? hydrated.currency,
+        timezone: projectRecord.settings.timezone ?? hydrated.timezone,
+      };
+    }
 
   if (billingRecord) {
     hydrated = {

@@ -5,11 +5,12 @@
     "moduleResolution": "Bundler",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
     "strict": false,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["./types/cloudflare"]
+    "types": ["./types/cloudflare", "./types/node-stubs"]
   },
-  "include": ["types/**/*.d.ts", "src/**/*.ts", "tests/**/*.ts"],
+  "include": ["types/**/*.d.ts", "src/**/*.ts"],
   "exclude": ["node_modules"]
 }

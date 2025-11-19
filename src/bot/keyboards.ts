@@ -3,6 +3,7 @@ import type { ProjectLeadNotificationSettings } from "../domain/project-settings
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FreeChatRecord } from "../domain/project-chats";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
+import type { ProjectLeadsListRecord } from "../domain/spec/project-leads";
 import type { ProjectLeadsViewPayload } from "../services/project-leads-view";
 import { buildLeadsPanelId, buildLeadsPayloadSegment, type LeadsPanelContext } from "./leads-panel-state";
 

@@ -87,7 +87,7 @@ const extractZonedParts = (date: Date, timeZone: string): Record<string, number>
   const formatter = zonedPartsFormatter(timeZone);
   const parts = formatter.formatToParts(date);
   const map = new Map(parts.map((part) => [part.type, part.value] as const));
-  const numeric = (type: string): number => Number.parseInt(map.get(type) ?? "0", 10);
+  const numeric = (type: Intl.DateTimeFormatPartTypes): number => Number.parseInt(map.get(type) ?? "0", 10);
   return {
     year: numeric("year"),
     month: numeric("month"),

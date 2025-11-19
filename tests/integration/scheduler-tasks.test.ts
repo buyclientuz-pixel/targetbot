@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MemoryKVNamespace, MemoryR2Bucket } from "../utils/mocks.ts";
+import type { AutoreportsRecord } from "../../src/domain/spec/autoreports.ts";
 import type { MetaSummaryMetrics, MetaSummaryPayload } from "../../src/domain/meta-summary.ts";
 
 const { KvClient } = await import("../../src/infra/kv.ts");
@@ -48,15 +49,8 @@ const stubTelegramFetch = (): { calls: TelegramCall[]; restore: () => void } => 
 };
 
 const createAutoreportRecord = (
-  overrides: Partial<{
-    enabled: boolean;
-    time: string;
-    mode: string;
-    sendToChat: boolean;
-    sendToAdmin: boolean;
-    paymentAlerts: Record<string, unknown>;
-  }> = {},
-) => {
+  overrides: Partial<AutoreportsRecord> = {},
+): AutoreportsRecord => {
   const { paymentAlerts, ...rest } = overrides;
   return {
     enabled: false,
@@ -109,7 +103,7 @@ const createScopedCampaignEntry = (
   periodKey: string,
   timezone: string,
   reportDate: Date,
-  payload: import("../../src/domain/meta-cache.ts").MetaInsightsRawResponse,
+  payload: import("../../src/services/meta-api.ts").MetaInsightsRawResponse,
   ttlSeconds = 3600,
 ) => {
   const { scope, period } = scopedCache("campaigns", periodKey, timezone, reportDate);

@@ -23,10 +23,14 @@ class SimpleURLPattern {
     }
     return { pathname: { input: target.pathname, groups } };
   }
+
+  test(input: string | URL): boolean {
+    return this.exec(input) !== null;
+  }
 }
 
 if (!("URLPattern" in globalThis)) {
-  (globalThis as unknown as { URLPattern: typeof SimpleURLPattern }).URLPattern = SimpleURLPattern as typeof URLPattern;
+  (globalThis as unknown as { URLPattern: typeof SimpleURLPattern }).URLPattern = SimpleURLPattern as unknown as typeof URLPattern;
 }
 
 export {}; 
