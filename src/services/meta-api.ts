@@ -249,13 +249,31 @@ export const countLeadsFromActions = (actions: unknown): number => {
   return maxActionValueByMatcher(actions, (type) => type.includes("lead") || type.includes("submit_application"));
 };
 
-const isMessageAction = (type: string): boolean => {
+const MESSAGE_ACTION_PRIORITY: ActionMatcher[] = [
+  createExactMatcher("messaging_conversation_started"),
+  createExactMatcher("onsite_conversion.messaging_conversation_started_7d"),
+  createExactMatcher("messaging_conversation_started_7d"),
+  createExactMatcher("onsite_conversion.messaging_first_reply"),
+  createExactMatcher("messaging_first_reply"),
+  createPrefixMatcher("onsite_conversion.messaging_conversation_started"),
+  createPrefixMatcher("messaging_conversation_started"),
+  createPrefixMatcher("onsite_conversion.messaging_first_reply"),
+  createPrefixMatcher("messaging_first_reply"),
+];
+
+const isGenericMessageAction = (type: string): boolean => {
   const lower = type.toLowerCase();
   return lower.includes("message") || lower.includes("messaging");
 };
 
 export const countMessagesFromActions = (actions: unknown): number => {
-  return countActionsByMatcher(actions, (type) => isMessageAction(type));
+  for (const matcher of MESSAGE_ACTION_PRIORITY) {
+    const value = maxActionValueByMatcher(actions, matcher);
+    if (value > 0) {
+      return value;
+    }
+  }
+  return maxActionValueByMatcher(actions, (type) => isGenericMessageAction(type));
 };
 
 export const countPurchasesFromActions = (actions: unknown): number => {

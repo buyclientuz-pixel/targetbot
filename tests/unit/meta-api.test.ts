@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { resolveDatePreset, fetchMetaLeads, summariseMetaInsights } = await import(
+const { resolveDatePreset, fetchMetaLeads, summariseMetaInsights, countMessagesFromActions } = await import(
   "../../src/services/meta-api.ts",
 );
 
@@ -178,6 +178,23 @@ test("fetchMetaLeads returns empty list when both leadgen sources have no forms"
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("countMessagesFromActions prioritises messaging conversation started metrics", () => {
+  const actions = [
+    { action_type: "messaging_first_reply", value: "4" },
+    { action_type: "messaging_conversation_started", value: "9" },
+    { action_type: "onsite_conversion.messaging_conversation_started_7d", value: "7" },
+  ];
+  assert.equal(countMessagesFromActions(actions), 9);
+});
+
+test("countMessagesFromActions falls back to generic message counters", () => {
+  const actions = [
+    { action_type: "other", value: "2" },
+    { action_type: "outbound_message", value: "5" },
+  ];
+  assert.equal(countMessagesFromActions(actions), 5);
 });
 
 test("fetchMetaLeads falls back to lead campaigns when forms are unavailable", async () => {
