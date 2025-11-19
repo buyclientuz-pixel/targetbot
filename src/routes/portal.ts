@@ -76,17 +76,19 @@ const buildSummaryPayload = (
 ) => {
   const campaignsDoc = options?.campaigns ?? bundle.campaigns;
   const summaryMetrics = options?.summaryEntry?.payload.metrics;
+  const campaignSummary = campaignsDoc.summary ?? { spend: 0, impressions: 0, clicks: 0, leads: 0, messages: 0 };
   const summary = summaryMetrics
     ? {
         spend: summaryMetrics.spend,
         impressions: summaryMetrics.impressions,
         clicks: summaryMetrics.clicks,
         leads: summaryMetrics.leads,
-        messages: summaryMetrics.messages ?? campaignsDoc.summary.messages,
+        messages: summaryMetrics.messages ?? campaignSummary.messages,
       }
-    : campaignsDoc.summary;
-  const spend = summary.spend ?? 0;
-  const leads = summary.leads ?? 0;
+    : campaignSummary;
+  const spend = summary.spend ?? campaignSummary.spend ?? 0;
+  const leads = campaignSummary.leads ?? summary.leads ?? 0;
+  const messages = campaignSummary.messages ?? summary.messages ?? 0;
   const leadsToday = bundle.leads.stats.today ?? 0;
   return {
     project: {
@@ -98,10 +100,10 @@ const buildSummaryPayload = (
     periodKey: options?.summaryEntry?.payload.periodKey ?? campaignsDoc.periodKey ?? requestedPeriod,
     metrics: {
       spend,
-      impressions: summary.impressions ?? 0,
-      clicks: summary.clicks ?? 0,
+      impressions: summary.impressions ?? campaignSummary.impressions ?? 0,
+      clicks: summary.clicks ?? campaignSummary.clicks ?? 0,
       leads,
-      messages: summary.messages ?? 0,
+      messages,
       cpa: computeCpa(spend, leads),
       leadsTotal: bundle.leads.stats.total ?? 0,
       leadsToday,
@@ -185,7 +187,16 @@ const respondWithProjectLeads = async (
     }
     const needsRefresh = options?.refresh === true || shouldRefreshLeadSnapshot(snapshot);
     if (needsRefresh) {
-      await refreshProjectLeads(context.kv, context.r2, projectId, { projectRecord });
+      try {
+        await refreshProjectLeads(context.kv, context.r2, projectId, {
+          projectRecord,
+          accessTokenOverride: leadAccessToken,
+        });
+      } catch (error) {
+        console.warn(
+          `[portal] Failed to refresh stored leads for ${projectId}: ${(error as Error).message}`,
+        );
+      }
     }
     const payload = await loadProjectLeadsView(context.r2, projectId, {
       periodKey,
@@ -216,6 +227,15 @@ export const renderPortalHtml = (projectId: string): string => {
         const TOKEN = new URLSearchParams(window.location.search).get('token');
         const REQUEST_TIMEOUT = 12000;
         const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+        const DISABLE_LEADS_UI = true;
+        const DISABLE_EXPORT_SECTION = true;
+        const hideElement = (selector) => {
+          const element = document.querySelector(selector);
+          if (element && element.style) {
+            element.style.display = 'none';
+          }
+          return element;
+        };
         const elements = {
           preloader: document.querySelector('[data-preloader]'),
           error: document.querySelector('[data-error]'),
@@ -259,7 +279,32 @@ export const renderPortalHtml = (projectId: string): string => {
           leads: null,
           campaigns: null,
           payments: null,
+          disableLeads: false,
+          disableExport: false,
         };
+        if (DISABLE_LEADS_UI) {
+          state.disableLeads = true;
+          hideElement('[data-section="leads"]');
+          hideElement('[data-metric="leads"]');
+          hideElement('[data-metric="leads-today"]');
+          hideElement('[data-export-leads]');
+          elements.leadsBody = null;
+          elements.leadsEmpty = null;
+          elements.leadsSkeleton = null;
+          elements.leadsPeriod = null;
+          elements.leadsPeriodStats = null;
+          elements.leadsTotalStats = null;
+          elements.retryLeads = null;
+          elements.exportLeads = null;
+        }
+        if (DISABLE_EXPORT_SECTION) {
+          state.disableExport = true;
+          hideElement('[data-section="export"]');
+          hideElement('[data-export-campaigns]');
+          hideElement('[data-export-summary]');
+          elements.exportCampaigns = null;
+          elements.exportSummary = null;
+        }
         const initialSearch = typeof window !== 'undefined' ? window.location.search || '' : '';
         const initialParams = new URLSearchParams(initialSearch);
         const initialPeriod = initialParams.get('period');
@@ -454,14 +499,16 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const PAYMENT_STATUS_LABELS = {
           paid: 'Оплачено',
-          planned: 'Просрочено',
+          planned: 'Запланировано',
+          pending: 'Запланировано',
           overdue: 'Просрочено',
           cancelled: 'Отказ',
           declined: 'Отказ',
         };
         const PAYMENT_STATUS_STATES = {
           paid: 'success',
-          planned: 'warning',
+          planned: 'muted',
+          pending: 'muted',
           overdue: 'warning',
           cancelled: 'danger',
           declined: 'danger',
@@ -700,8 +747,13 @@ export const renderPortalHtml = (projectId: string): string => {
           }
         };
         const updateExportButtons = () => {
-          if (elements.exportLeads) {
+          if (state.disableExport) {
+            return;
+          }
+          if (!state.disableLeads && elements.exportLeads) {
             elements.exportLeads.disabled = !state.leads || !state.leads.leads?.length;
+          } else if (elements.exportLeads) {
+            elements.exportLeads.disabled = true;
           }
           if (elements.exportCampaigns) {
             elements.exportCampaigns.disabled = !state.campaigns || !state.campaigns.campaigns?.length;
@@ -735,7 +787,7 @@ export const renderPortalHtml = (projectId: string): string => {
           setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         };
         const exportLeads = () => {
-          if (!state.leads?.leads?.length) return;
+          if (state.disableLeads || !state.leads?.leads?.length) return;
           const header = toCsvRow(['ID', 'Имя', 'Контакт', 'Кампания', 'Статус', 'Дата']);
           const rows = state.leads.leads.map((lead) => {
             const contact = (lead.contact || lead.phone || '').trim() || 'сообщение';
@@ -744,7 +796,7 @@ export const renderPortalHtml = (projectId: string): string => {
           downloadFile('leads-' + state.period + '.csv', [header, ...rows].join('\n'), 'text/csv');
         };
         const exportCampaigns = () => {
-          if (!state.campaigns?.campaigns?.length) return;
+          if (state.disableExport || !state.campaigns?.campaigns?.length) return;
           const header = toCsvRow(['ID', 'Название', 'Цель', 'Расход', 'Показы', 'Клики', 'KPI', 'CPA']);
           const rows = state.campaigns.campaigns.map((campaign) => {
             const kpiValue = campaignKpiValue(campaign, campaign.kpiType);
@@ -763,7 +815,7 @@ export const renderPortalHtml = (projectId: string): string => {
           downloadFile('campaigns-' + state.period + '.csv', [header, ...rows].join('\n'), 'text/csv');
         };
         const exportSummary = () => {
-          if (!state.summary) return;
+          if (state.disableExport || !state.summary) return;
           downloadFile('summary-' + state.period + '.json', JSON.stringify(state.summary, null, 2), 'application/json');
         };
         const loadProject = async () => {
@@ -781,6 +833,9 @@ export const renderPortalHtml = (projectId: string): string => {
           updateExportButtons();
         };
         const loadLeads = async (period, options = {}) => {
+          if (state.disableLeads) {
+            return;
+          }
           const { refresh = false, skipAuto = false } = options;
           setSectionLoading('leads', true);
           try {
@@ -825,7 +880,11 @@ export const renderPortalHtml = (projectId: string): string => {
         const refreshPeriodData = async (period) => {
           state.range = null;
           try {
-            await Promise.all([loadSummary(period), loadLeads(period), loadCampaigns(period)]);
+            const loaders = [loadSummary(period), loadCampaigns(period)];
+            if (!state.disableLeads) {
+              loaders.push(loadLeads(period));
+            }
+            await Promise.all(loaders);
           } catch (error) {
             showError(error?.message || 'Не удалось загрузить данные.');
           }
@@ -838,7 +897,9 @@ export const renderPortalHtml = (projectId: string): string => {
             await Promise.all([loadProject(), loadSummary(state.period)]);
             toggleContent(true);
             showPreloader(false);
-            loadLeads(state.period);
+            if (!state.disableLeads) {
+              loadLeads(state.period);
+            }
             loadCampaigns(state.period);
             loadPayments();
           } catch (error) {
@@ -849,7 +910,9 @@ export const renderPortalHtml = (projectId: string): string => {
         elements.retryButtons?.forEach?.((button) => {
           button.addEventListener('click', () => bootstrap());
         });
-        elements.retryLeads?.addEventListener('click', () => loadLeads(state.period, { refresh: true }));
+        if (!state.disableLeads) {
+          elements.retryLeads?.addEventListener('click', () => loadLeads(state.period, { refresh: true }));
+        }
         elements.retryCampaigns?.addEventListener('click', () => loadCampaigns(state.period));
         elements.retryPayments?.addEventListener('click', () => loadPayments());
         elements.periodButtons?.forEach?.((button) => {
@@ -860,9 +923,13 @@ export const renderPortalHtml = (projectId: string): string => {
             }
           });
         });
-        elements.exportLeads?.addEventListener('click', exportLeads);
-        elements.exportCampaigns?.addEventListener('click', exportCampaigns);
-        elements.exportSummary?.addEventListener('click', exportSummary);
+        if (!state.disableExport) {
+          if (!state.disableLeads) {
+            elements.exportLeads?.addEventListener('click', exportLeads);
+          }
+          elements.exportCampaigns?.addEventListener('click', exportCampaigns);
+          elements.exportSummary?.addEventListener('click', exportSummary);
+        }
         bootstrap();
         window.PortalApp = { reload: bootstrap };
       })();
@@ -1219,6 +1286,12 @@ export const renderPortalHtml = (projectId: string): string => {
       .portal-table-wrapper {
         margin-top: 16px;
         overflow-x: auto;
+      }
+      .portal-section[data-section="leads"],
+      .portal-section[data-section="export"],
+      .portal-metric[data-metric="leads"],
+      .portal-metric[data-metric="leads-today"] {
+        display: none;
       }
       @media (max-width: 768px) {
         .portal__content {

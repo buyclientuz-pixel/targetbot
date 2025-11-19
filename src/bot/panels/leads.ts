@@ -38,7 +38,9 @@ export const render: PanelRenderer = async ({ runtime, params }) => {
   let bundle = await loadProjectBundle(runtime.kv, runtime.r2, projectId);
   if (bundle.project.adAccountId && needsLeadRefresh(bundle.leads)) {
     try {
-      await refreshProjectLeads(runtime.kv, runtime.r2, projectId);
+      await refreshProjectLeads(runtime.kv, runtime.r2, projectId, {
+        accessTokenOverride: runtime.facebookLongToken ?? runtime.facebookToken ?? null,
+      });
       bundle = await loadProjectBundle(runtime.kv, runtime.r2, projectId);
     } catch (error) {
       console.warn(`[bot:leads] Failed to refresh leads for ${projectId}: ${(error as Error).message}`);

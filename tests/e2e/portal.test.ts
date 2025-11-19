@@ -395,50 +395,6 @@ test("portal hides preloader and renders sections when data loads", async () => 
       },
     ],
     [
-      "/api/projects/birlash/leads/today",
-      {
-        projectId: "birlash",
-        periodKey: "today",
-        period: { from: "2025-11-15T00:00:00.000Z", to: "2025-11-15T23:59:59.000Z" },
-        stats: { total: 168, today: 2 },
-        syncedAt: "2025-11-15T12:00:00.000Z",
-        leads: [
-          {
-            id: "lead-1",
-            name: "Sharofat Ona",
-            contact: "+998902867999",
-            phone: "+998902867999",
-            campaignName: "Лиды - тест",
-            createdAt: "2025-11-15T10:00:00.000Z",
-            status: "new",
-            type: "lead",
-          },
-        ],
-      },
-    ],
-    [
-      "/api/projects/birlash/leads/today/refresh",
-      {
-        projectId: "birlash",
-        periodKey: "today",
-        period: { from: "2025-11-15T00:00:00.000Z", to: "2025-11-15T23:59:59.000Z" },
-        stats: { total: 168, today: 2 },
-        syncedAt: new Date().toISOString(),
-        leads: [
-          {
-            id: "lead-1",
-            name: "Sharofat Ona",
-            contact: "+998902867999",
-            phone: "+998902867999",
-            campaignName: "Лиды - тест",
-            createdAt: "2025-11-15T10:00:00.000Z",
-            status: "new",
-            type: "lead",
-          },
-        ],
-      },
-    ],
-    [
       "/api/projects/birlash/campaigns?period=today",
       {
         period: { from: "2025-11-15", to: "2025-11-15" },
@@ -501,9 +457,14 @@ test("portal hides preloader and renders sections when data loads", async () => 
 
   assert.ok(fetchCalls.includes("/api/projects/birlash"));
   assert.ok(fetchCalls.includes("/api/projects/birlash/summary?period=today"));
+  assert.ok(!fetchCalls.some((call) => call.includes("/leads")));
   assert.ok(elements.preloader.classList.contains("portal__preloader--hidden"));
   assert.ok(elements.content.classList.contains("portal__content--visible"));
-  assert.notEqual(elements.leadsBody.innerHTML, "");
+  const doc = context.document as FakeDocument;
+  const leadsSection = doc.querySelector('[data-section="leads"]');
+  assert.equal(leadsSection?.style.display, 'none');
+  const exportSection = doc.querySelector('[data-section="export"]');
+  assert.equal(exportSection?.style.display, 'none');
   assert.ok(elements.error.classList.contains("portal__error--hidden"));
   assert.ok(elements.paymentsSubtitle.textContent.includes("Тариф"));
 });
@@ -550,28 +511,6 @@ test("portal appends custom range parameters to API requests", async () => {
       },
     ],
     [
-      "/api/projects/birlash/leads/custom?from=2025-11-10&to=2025-11-12",
-      {
-        projectId: "birlash",
-        periodKey: "custom",
-        period: { from: "2025-11-10T00:00:00.000Z", to: "2025-11-12T23:59:59.000Z" },
-        stats: { total: 180, today: 4 },
-        syncedAt: "2025-11-12T12:00:00.000Z",
-        leads: [],
-      },
-    ],
-    [
-      "/api/projects/birlash/leads/custom/refresh?from=2025-11-10&to=2025-11-12",
-      {
-        projectId: "birlash",
-        periodKey: "custom",
-        period: { from: "2025-11-10T00:00:00.000Z", to: "2025-11-12T23:59:59.000Z" },
-        stats: { total: 180, today: 4 },
-        syncedAt: new Date().toISOString(),
-        leads: [],
-      },
-    ],
-    [
       "/api/projects/birlash/campaigns?period=custom&from=2025-11-10&to=2025-11-12",
       {
         period: { from: "2025-11-10", to: "2025-11-12" },
@@ -613,11 +552,9 @@ test("portal appends custom range parameters to API requests", async () => {
     fetchCalls.includes("/api/projects/birlash/summary?period=custom&from=2025-11-10&to=2025-11-12"),
   );
   assert.ok(
-    fetchCalls.includes("/api/projects/birlash/leads/custom?from=2025-11-10&to=2025-11-12"),
-  );
-  assert.ok(
     fetchCalls.includes("/api/projects/birlash/campaigns?period=custom&from=2025-11-10&to=2025-11-12"),
   );
+  assert.ok(!fetchCalls.some((call) => call.includes('/leads')));
   const updatedSearch = (context.location as { search: string }).search;
   assert.ok(updatedSearch.includes("period=custom"));
 });
