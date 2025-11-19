@@ -363,11 +363,11 @@ export const buildLeadsMessage = (
       }</b>)`,
     );
     lines.push("");
+    lines.push("Последние контакты:");
     if (leadsForForm.length === 0) {
       lines.push("В этой форме нет лидов за выбранный период.");
     } else {
       lines.push(`Страница ${safePage + 1} из ${Math.max(maxPage + 1, 1)}.`);
-      lines.push("Последние контакты:");
       pageLeads.forEach((lead, index) => {
         const ordinal = startIndex + index + 1;
         lines.push(`${ordinal}. ${formatLeadSnippet(lead)}`);
