@@ -216,7 +216,7 @@ test("full system acceptance scenario", async () => {
     WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
     META_WEBHOOK_VERIFY_TOKEN: "VERIFY_TOKEN",
     FACEBOOK_API_VERSION: "v18.0",
-    FACEBOOK_TOKEN: "test-facebook-token",
+    FB_LONG_TOKEN: "test-facebook-token",
   };
 
   const projectMessages: DispatchProjectMessageOptions[] = [];

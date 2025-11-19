@@ -17,7 +17,7 @@ const createEnv = () => ({
   WORKER_URL: "admin.test.workers.dev",
   TELEGRAM_SECRET: "test-secret",
   FACEBOOK_API_VERSION: "v18.0",
-  FACEBOOK_TOKEN: "test-facebook-token",
+  FB_LONG_TOKEN: "test-facebook-token",
 }) as import("../../src/worker/types.ts").TargetBotEnv;
 
 test("/admin serves the SPA shell", async () => {

@@ -104,8 +104,8 @@ npm run deploy
 ### Конфигурация
 
 - В `wrangler.toml` подключён namespace `LEADS_KV` (для ключей `FORM_IDS:<project_id>` и `LEAD:<project_id>:<lead_id>`).
-- Среда должна содержать `FACEBOOK_TOKEN` (long-lived access token) и `FACEBOOK_API_VERSION` (по умолчанию `v18.0`). Токен нужно
-  задавать через секрет Cloudflare (`printf "<token>" | npx wrangler secret put FACEBOOK_TOKEN --non-interactive`) либо в
+- Среда должна содержать `FB_LONG_TOKEN` (long-lived access token) и `FACEBOOK_API_VERSION` (по умолчанию `v18.0`). Токен нужно
+  задавать через секрет Cloudflare (`printf "<token>" | npx wrangler secret put FB_LONG_TOKEN --non-interactive`) либо в
   локальных файлах `.dev.vars` / `.env`, чтобы dev-сервер и прод одновременно видели одинаковое значение.
 - `project_id` в запросах — это идентификатор рекламного аккаунта/форм клиента, а не внутренний ID проекта.
 

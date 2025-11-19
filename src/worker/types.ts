@@ -11,11 +11,11 @@ export interface TargetBotEnv {
   ADMIN_IDS?: string;
   FB_APP_ID?: string;
   FB_APP_SECRET?: string;
+  FB_LONG_TOKEN?: string;
   META_APP_ID?: string;
   META_APP_SECRET?: string;
   META_REDIRECT_URI?: string;
   META_WEBHOOK_VERIFY_TOKEN?: string;
-  FACEBOOK_TOKEN?: string;
   FACEBOOK_API_VERSION?: string;
 }
 
