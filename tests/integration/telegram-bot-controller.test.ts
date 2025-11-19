@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { MemoryKVNamespace, MemoryR2Bucket } from "../utils/mocks.ts";
 import type { TelegramUpdate } from "../../src/bot/types.ts";
+import type { MetaSummaryMetrics, MetaSummaryPayload } from "../../src/domain/meta-summary.ts";
 
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
@@ -25,8 +26,8 @@ const { getFbAuthRecord, putFbAuthRecord } = await import("../../src/domain/spec
 const { getUserSettingsRecord } = await import("../../src/domain/spec/user-settings.ts");
 const { ensureProjectSettings } = await import("../../src/domain/project-settings.ts");
 const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/meta-cache.ts");
-const { type MetaSummaryMetrics } = await import("../../src/domain/meta-summary.ts");
 const { buildLeadsPanelId, buildLeadsPayloadSegment } = await import("../../src/bot/leads-panel-state.ts");
+const { resolvePeriodRange } = await import("../../src/services/project-insights.ts");
 
 interface FetchRecord {
   url: string;
@@ -229,6 +230,47 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     monthLeadDate: twentyDaysAgo.slice(0, 10),
   } as const;
 };
+
+const shiftDateByDays = (date: Date, days: number): Date => {
+  const copy = new Date(date);
+  copy.setUTCDate(copy.getUTCDate() + days);
+  return copy;
+};
+
+const scopedCache = (
+  prefix: "summary" | "campaigns",
+  periodKey: string,
+  timezone: string,
+  reportDate: Date,
+) => {
+  const range = resolvePeriodRange(periodKey, timezone, { now: reportDate });
+  return { scope: `${prefix}:${periodKey}:${range.period.from}:${range.period.to}`, period: range.period };
+};
+
+const createScopedSummaryEntry = (
+  projectId: string,
+  periodKey: string,
+  timezone: string,
+  reportDate: Date,
+  payload: MetaSummaryPayload,
+  ttlSeconds = 3600,
+) => {
+  const { scope, period } = scopedCache("summary", periodKey, timezone, reportDate);
+  return createMetaCacheEntry(projectId, scope, period, payload, ttlSeconds);
+};
+
+const createScopedCampaignEntry = (
+  projectId: string,
+  periodKey: string,
+  timezone: string,
+  reportDate: Date,
+  payload: import("../../src/domain/meta-cache.ts").MetaInsightsRawResponse,
+  ttlSeconds = 3600,
+) => {
+  const { scope, period } = scopedCache("campaigns", periodKey, timezone, reportDate);
+  return createMetaCacheEntry(projectId, scope, period, payload, ttlSeconds);
+};
+
 
 test("Telegram bot controller serves menu and project list", async () => {
   const kv = new KvClient(new MemoryKVNamespace());
@@ -1186,20 +1228,17 @@ test("auto_send_now dispatches manual auto-report", async () => {
     cpaToday: 3.75,
   } satisfies MetaSummaryMetrics;
 
-  const summaryPeriods = [
-    { key: "today", from: "2025-01-01", to: "2025-01-01" },
-    { key: "yesterday", from: "2024-12-31", to: "2024-12-31" },
-    { key: "week", from: "2024-12-26", to: "2025-01-01" },
-    { key: "month", from: "2024-12-03", to: "2025-01-01" },
-  ];
-  for (const period of summaryPeriods) {
+  const timezone = "Asia/Tashkent";
+  const reportDate = shiftDateByDays(new Date(), -1);
+  for (const periodKey of ["today", "yesterday", "week", "month"]) {
     await saveMetaCache(
       kv,
-      createMetaCacheEntry(
+      createScopedSummaryEntry(
         "proj_a",
-        `summary:${period.key}`,
-        { from: period.from, to: period.to },
-        { periodKey: period.key, metrics: summaryMetrics, source: {} },
+        periodKey,
+        timezone,
+        reportDate,
+        { periodKey, metrics: summaryMetrics, source: {} } as MetaSummaryPayload,
         3600,
       ),
     );
@@ -1207,10 +1246,11 @@ test("auto_send_now dispatches manual auto-report", async () => {
 
   await saveMetaCache(
     kv,
-    createMetaCacheEntry(
+    createScopedCampaignEntry(
       "proj_a",
-      "campaigns:today",
-      { from: "2025-01-01", to: "2025-01-01" },
+      "today",
+      timezone,
+      reportDate,
       {
         data: [
           {

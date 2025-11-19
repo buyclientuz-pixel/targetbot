@@ -755,6 +755,7 @@ const loadMetricsForPeriods = async (
       project: context?.project,
       settings: context?.settings,
       periodRange,
+      forceCacheScope: Boolean(periodRange),
     });
     context = { project: result.project, settings: result.settings };
     metrics.set(period, result.entry.payload.metrics);
@@ -808,6 +809,7 @@ const loadAutoReportTemplate = async (options: {
       project: metricsContext.project,
       settings: metricsContext.settings,
       periodRange: periodRanges.get(topPeriod),
+      forceCacheScope: Boolean(periodRanges.get(topPeriod)),
     });
     campaigns = mapCampaignRows(campaignsResult.entry.payload);
   } catch (error) {

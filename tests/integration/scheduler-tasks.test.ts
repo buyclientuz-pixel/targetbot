@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MemoryKVNamespace, MemoryR2Bucket } from "../utils/mocks.ts";
+import type { MetaSummaryMetrics, MetaSummaryPayload } from "../../src/domain/meta-summary.ts";
 
 const { KvClient } = await import("../../src/infra/kv.ts");
 const { R2Client } = await import("../../src/infra/r2.ts");
@@ -12,13 +13,13 @@ const { putProjectLeadsList, putLeadDetailRecord } = await import(
   "../../src/domain/spec/project-leads.ts"
 );
 const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/meta-cache.ts");
-const { type MetaSummaryMetrics } = await import("../../src/domain/meta-summary.ts");
 const { KV_KEYS } = await import("../../src/config/kv.ts");
 const { runAutoReports } = await import("../../src/services/auto-reports.ts");
 const { runMaintenance } = await import("../../src/services/maintenance.ts");
 const { R2_KEYS } = await import("../../src/config/r2.ts");
 const { ensureProjectSettings, upsertProjectSettings } = await import("../../src/domain/project-settings.ts");
 const { createMetaToken, upsertMetaToken } = await import("../../src/domain/meta-tokens.ts");
+const { resolvePeriodRange } = await import("../../src/services/project-insights.ts");
 
 interface TelegramCall {
   url: string;
@@ -75,6 +76,46 @@ const createAutoreportRecord = (
   };
 };
 
+const shiftDateByDays = (date: Date, days: number): Date => {
+  const copy = new Date(date);
+  copy.setUTCDate(copy.getUTCDate() + days);
+  return copy;
+};
+
+const scopedCache = (
+  prefix: "summary" | "campaigns",
+  periodKey: string,
+  timezone: string,
+  reportDate: Date,
+) => {
+  const range = resolvePeriodRange(periodKey, timezone, { now: reportDate });
+  return { scope: `${prefix}:${periodKey}:${range.period.from}:${range.period.to}`, period: range.period };
+};
+
+const createScopedSummaryEntry = (
+  projectId: string,
+  periodKey: string,
+  timezone: string,
+  reportDate: Date,
+  payload: MetaSummaryPayload,
+  ttlSeconds = 3600,
+) => {
+  const { scope, period } = scopedCache("summary", periodKey, timezone, reportDate);
+  return createMetaCacheEntry(projectId, scope, period, payload, ttlSeconds);
+};
+
+const createScopedCampaignEntry = (
+  projectId: string,
+  periodKey: string,
+  timezone: string,
+  reportDate: Date,
+  payload: import("../../src/domain/meta-cache.ts").MetaInsightsRawResponse,
+  ttlSeconds = 3600,
+) => {
+  const { scope, period } = scopedCache("campaigns", periodKey, timezone, reportDate);
+  return createMetaCacheEntry(projectId, scope, period, payload, ttlSeconds);
+};
+
 test(
   "runAutoReports dispatches due slot and records schedule state",
   { concurrency: false },
@@ -108,33 +149,44 @@ test(
       createAutoreportRecord({ enabled: true, time: "12:00", mode: "today", sendToChat: false, sendToAdmin: true }),
     );
 
-    const summaryEntry = createMetaCacheEntry("proj-auto", "summary:today", { from: "2025-01-01", to: "2025-01-01" }, {
-      periodKey: "today",
-      metrics: {
-        spend: 20,
-        impressions: 1500,
-        clicks: 120,
-        leads: 4,
-        messages: 2,
-        purchases: 1,
-        addToCart: 0,
-        calls: 0,
-        registrations: 0,
-        engagement: 0,
-        leadsToday: 4,
-        leadsTotal: 200,
-        cpa: 5,
-        spendToday: 20,
-        cpaToday: 5,
+    const now = new Date("2025-01-01T07:02:00.000Z");
+    const reportDate = shiftDateByDays(now, -1);
+    const timezone = "Asia/Tashkent";
+    const summaryEntry = createScopedSummaryEntry(
+      "proj-auto",
+      "today",
+      timezone,
+      reportDate,
+      {
+        periodKey: "today",
+        metrics: {
+          spend: 20,
+          impressions: 1500,
+          clicks: 120,
+          leads: 4,
+          messages: 2,
+          purchases: 1,
+          addToCart: 0,
+          calls: 0,
+          registrations: 0,
+          engagement: 0,
+          leadsToday: 4,
+          leadsTotal: 200,
+          cpa: 5,
+          spendToday: 20,
+          cpaToday: 5,
+        },
+        source: {},
       },
-      source: {},
-    }, 3600);
+      3600,
+    );
     await saveMetaCache(kv, summaryEntry);
     for (const periodKey of ["yesterday", "week", "month"]) {
-      const entry = createMetaCacheEntry(
+      const entry = createScopedSummaryEntry(
         "proj-auto",
-        `summary:${periodKey}`,
-        { from: "2024-12-25", to: "2024-12-31" },
+        periodKey,
+        timezone,
+        reportDate,
         {
           periodKey,
           metrics: {
@@ -161,10 +213,11 @@ test(
       await saveMetaCache(kv, entry);
     }
 
-    const campaignsEntry = createMetaCacheEntry(
+    const campaignsEntry = createScopedCampaignEntry(
       "proj-auto",
-      "campaigns:today",
-      { from: "2025-01-01", to: "2025-01-01" },
+      "today",
+      timezone,
+      reportDate,
       {
         data: [
           {
@@ -184,8 +237,6 @@ test(
       3600,
     );
     await saveMetaCache(kv, campaignsEntry);
-
-    const now = new Date("2025-01-01T07:02:00.000Z");
     const telegram = stubTelegramFetch();
 
     try {
@@ -264,29 +315,35 @@ test(
       cpaToday: null,
     } satisfies MetaSummaryMetrics;
 
-    const summaryEntry = createMetaCacheEntry(
+    const now = new Date("2025-01-01T09:01:00.000Z");
+    const reportDate = shiftDateByDays(now, -1);
+    const timezone = "Asia/Tashkent";
+    const summaryEntry = createScopedSummaryEntry(
       "proj-auto-msg",
-      "summary:today",
-      { from: "2025-01-01", to: "2025-01-01" },
-      { periodKey: "today", metrics: summaryMetrics, source: {} },
+      "today",
+      timezone,
+      reportDate,
+      { periodKey: "today", metrics: summaryMetrics as MetaSummaryPayload["metrics"], source: {} },
       3600,
     );
     await saveMetaCache(kv, summaryEntry);
     for (const periodKey of ["yesterday", "week", "month"]) {
-      const entry = createMetaCacheEntry(
+      const entry = createScopedSummaryEntry(
         "proj-auto-msg",
-        `summary:${periodKey}`,
-        { from: "2024-12-25", to: "2024-12-31" },
-        { periodKey, metrics: summaryMetrics, source: {} },
+        periodKey,
+        timezone,
+        reportDate,
+        { periodKey, metrics: summaryMetrics as MetaSummaryPayload["metrics"], source: {} },
         3600,
       );
       await saveMetaCache(kv, entry);
     }
 
-    const campaignsEntry = createMetaCacheEntry(
+    const campaignsEntry = createScopedCampaignEntry(
       "proj-auto-msg",
-      "campaigns:today",
-      { from: "2025-01-01", to: "2025-01-01" },
+      "today",
+      timezone,
+      reportDate,
       {
         data: [
           {
@@ -303,8 +360,6 @@ test(
       3600,
     );
     await saveMetaCache(kv, campaignsEntry);
-
-    const now = new Date("2025-01-01T09:01:00.000Z");
     const telegram = stubTelegramFetch();
 
     try {
@@ -370,21 +425,26 @@ test(
       cpaToday: null,
     };
 
+    const now = new Date("2025-01-01T10:02:00.000Z");
+    const reportDate = shiftDateByDays(now, -1);
+    const timezone = "Asia/Tashkent";
     for (const periodKey of ["today", "yesterday", "week", "month"]) {
-      const entry = createMetaCacheEntry(
+      const entry = createScopedSummaryEntry(
         "proj-auto-click",
-        `summary:${periodKey}`,
-        { from: "2025-01-01", to: "2025-01-01" },
-        { periodKey, metrics: emptyConversions, source: {} },
+        periodKey,
+        timezone,
+        reportDate,
+        { periodKey, metrics: emptyConversions as MetaSummaryPayload["metrics"], source: {} },
         3600,
       );
       await saveMetaCache(kv, entry);
     }
 
-    const campaignsEntry = createMetaCacheEntry(
+    const campaignsEntry = createScopedCampaignEntry(
       "proj-auto-click",
-      "campaigns:today",
-      { from: "2025-01-01", to: "2025-01-01" },
+      "today",
+      timezone,
+      reportDate,
       {
         data: [
           {
@@ -401,8 +461,6 @@ test(
       3600,
     );
     await saveMetaCache(kv, campaignsEntry);
-
-    const now = new Date("2025-01-01T10:02:00.000Z");
     const telegram = stubTelegramFetch();
     try {
       await runAutoReports(kv, "TEST_TOKEN", now);
@@ -467,21 +525,26 @@ test(
       cpaToday: null,
     };
 
+    const now = new Date("2025-01-01T10:02:00.000Z");
+    const reportDate = shiftDateByDays(now, -1);
+    const timezone = "Asia/Tashkent";
     for (const periodKey of ["today", "yesterday", "week", "month"]) {
-      const entry = createMetaCacheEntry(
+      const entry = createScopedSummaryEntry(
         "proj-manual-click",
-        `summary:${periodKey}`,
-        { from: "2025-01-01", to: "2025-01-01" },
-        { periodKey, metrics: emptyConversions, source: {} },
+        periodKey,
+        timezone,
+        reportDate,
+        { periodKey, metrics: emptyConversions as MetaSummaryPayload["metrics"], source: {} },
         3600,
       );
       await saveMetaCache(kv, entry);
     }
 
-    const campaignsEntry = createMetaCacheEntry(
+    const campaignsEntry = createScopedCampaignEntry(
       "proj-manual-click",
-      "campaigns:today",
-      { from: "2025-01-01", to: "2025-01-01" },
+      "today",
+      timezone,
+      reportDate,
       {
         data: [
           {
@@ -498,8 +561,6 @@ test(
       3600,
     );
     await saveMetaCache(kv, campaignsEntry);
-
-    const now = new Date("2025-01-01T10:02:00.000Z");
     const telegram = stubTelegramFetch();
     try {
       await runAutoReports(kv, "TEST_TOKEN", now);
@@ -546,33 +607,44 @@ test(
       createAutoreportRecord({ enabled: true, time: "13:15", mode: "today", sendToChat: true, sendToAdmin: true }),
     );
 
-    const summaryEntry = createMetaCacheEntry("proj-auto-both", "summary:today", { from: "2025-01-01", to: "2025-01-01" }, {
-      periodKey: "today",
-      metrics: {
-        spend: 40,
-        impressions: 2000,
-        clicks: 160,
-        leads: 8,
-        messages: 1,
-        purchases: 0,
-        addToCart: 0,
-        calls: 0,
-        registrations: 0,
-        engagement: 0,
-        leadsToday: 8,
-        leadsTotal: 250,
-        cpa: 5,
-        spendToday: 40,
-        cpaToday: 5,
+    const now = new Date("2025-01-01T08:16:00.000Z");
+    const reportDate = shiftDateByDays(now, -1);
+    const timezone = "Asia/Tashkent";
+    const summaryEntry = createScopedSummaryEntry(
+      "proj-auto-both",
+      "today",
+      timezone,
+      reportDate,
+      {
+        periodKey: "today",
+        metrics: {
+          spend: 40,
+          impressions: 2000,
+          clicks: 160,
+          leads: 8,
+          messages: 1,
+          purchases: 0,
+          addToCart: 0,
+          calls: 0,
+          registrations: 0,
+          engagement: 0,
+          leadsToday: 8,
+          leadsTotal: 250,
+          cpa: 5,
+          spendToday: 40,
+          cpaToday: 5,
+        },
+        source: {},
       },
-      source: {},
-    }, 3600);
+      3600,
+    );
     await saveMetaCache(kv, summaryEntry);
     for (const periodKey of ["yesterday", "week", "month"]) {
-      const entry = createMetaCacheEntry(
+      const entry = createScopedSummaryEntry(
         "proj-auto-both",
-        `summary:${periodKey}`,
-        { from: "2024-12-25", to: "2024-12-31" },
+        periodKey,
+        timezone,
+        reportDate,
         {
           periodKey,
           metrics: {
@@ -598,10 +670,11 @@ test(
       );
       await saveMetaCache(kv, entry);
     }
-    const campaignsEntry = createMetaCacheEntry(
+    const campaignsEntry = createScopedCampaignEntry(
       "proj-auto-both",
-      "campaigns:today",
-      { from: "2025-01-01", to: "2025-01-01" },
+      "today",
+      timezone,
+      reportDate,
       {
         data: [
           {
@@ -619,7 +692,6 @@ test(
     );
     await saveMetaCache(kv, campaignsEntry);
 
-    const now = new Date("2025-01-01T08:16:00.000Z");
     const telegram = stubTelegramFetch();
     try {
       await runAutoReports(kv, "TEST_TOKEN", now);
@@ -669,11 +741,15 @@ test(
       createAutoreportRecord({ enabled: true, time: "09:30", mode: "today", sendToChat: false, sendToAdmin: true }),
     );
 
+    const now = new Date("2025-01-01T14:31:00.000Z");
+    const reportDate = shiftDateByDays(now, -1);
+    const timezone = "America/New_York";
     for (const periodKey of ["today", "yesterday", "week", "month"]) {
-      const entry = createMetaCacheEntry(
+      const entry = createScopedSummaryEntry(
         "proj-auto-ny",
-        `summary:${periodKey}`,
-        { from: "2025-01-01", to: "2025-01-01" },
+        periodKey,
+        timezone,
+        reportDate,
         {
           periodKey,
           metrics: {
@@ -700,10 +776,11 @@ test(
       await saveMetaCache(kv, entry);
     }
 
-    const campaignsEntry = createMetaCacheEntry(
+    const campaignsEntry = createScopedCampaignEntry(
       "proj-auto-ny",
-      "campaigns:today",
-      { from: "2025-01-01", to: "2025-01-01" },
+      "today",
+      timezone,
+      reportDate,
       {
         data: [
           {
@@ -722,8 +799,6 @@ test(
       3600,
     );
     await saveMetaCache(kv, campaignsEntry);
-
-    const now = new Date("2025-01-01T14:31:00.000Z");
     const telegram = stubTelegramFetch();
 
     try {

@@ -200,8 +200,13 @@ const resolveCustomMetaPeriod = (periodRange: PeriodRange): MetaInsightsPeriod =
   to: periodRange.period.to,
 });
 
-const buildScopedCacheKey = (base: string, periodKey: string, periodRange: PeriodRange): string => {
-  if (periodKey === "custom") {
+const buildScopedCacheKey = (
+  base: string,
+  periodKey: string,
+  periodRange: PeriodRange,
+  options?: { forceScoped?: boolean },
+): string => {
+  if (options?.forceScoped || periodKey === "custom") {
     return `${base}:${periodRange.period.from}:${periodRange.period.to}`;
   }
   return base;
@@ -241,6 +246,7 @@ export const loadProjectSummary = async (
     settings?: ProjectSettings;
     facebookUserId?: string | null;
     periodRange?: PeriodRange;
+    forceCacheScope?: boolean;
   },
 ): Promise<{ entry: MetaCacheEntry<MetaSummaryPayload>; project: Project; settings: ProjectSettings }> => {
   const project = options?.project ?? (await getProject(kv, projectId));
@@ -251,7 +257,8 @@ export const loadProjectSummary = async (
   }
 
   const periodRange = options?.periodRange ?? resolvePeriodRange(periodKey, settings.timezone);
-  const summaryScope = buildScopedCacheKey(`summary:${periodKey}`, periodKey, periodRange);
+  const shouldScope = Boolean(options?.forceCacheScope || periodRange.key === "custom");
+  const summaryScope = buildScopedCacheKey(`summary:${periodKey}`, periodKey, periodRange, { forceScoped: shouldScope });
   const cachedSummary = await getMetaCache<MetaSummaryPayload>(kv, projectId, summaryScope);
   if (cachedSummary && isMetaCacheEntryFresh(cachedSummary)) {
     return { entry: cachedSummary, project, settings };
@@ -261,7 +268,9 @@ export const loadProjectSummary = async (
 
   const token = await getMetaToken(kv, facebookUserId);
 
-  const requestedInsightsScope = buildScopedCacheKey(`insights:${periodKey}`, periodKey, periodRange);
+  const requestedInsightsScope = buildScopedCacheKey(`insights:${periodKey}`, periodKey, periodRange, {
+    forceScoped: shouldScope,
+  });
   const requestedInsights = await ensureInsightsEntry(
     kv,
     projectId,
@@ -342,6 +351,7 @@ export const loadProjectCampaigns = async (
     settings?: ProjectSettings;
     facebookUserId?: string | null;
     periodRange?: PeriodRange;
+    forceCacheScope?: boolean;
   },
 ): Promise<{ entry: CampaignInsightsEntry; project: Project; settings: ProjectSettings }> => {
   const project = options?.project ?? (await getProject(kv, projectId));
@@ -352,7 +362,9 @@ export const loadProjectCampaigns = async (
   }
 
   const periodRange = options?.periodRange ?? resolvePeriodRange(periodKey, settings.timezone);
-  const scope = buildScopedCacheKey(`campaigns:${periodKey}`, periodKey, periodRange);
+  const scope = buildScopedCacheKey(`campaigns:${periodKey}`, periodKey, periodRange, {
+    forceScoped: Boolean(options?.forceCacheScope || periodRange.key === "custom"),
+  });
   const cached = await getMetaCache<MetaInsightsRawResponse>(kv, projectId, scope);
   if (cached && isMetaCacheEntryFresh(cached)) {
     return { entry: cached, project, settings };
