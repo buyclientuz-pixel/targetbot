@@ -555,6 +555,71 @@ test("fetchMetaLeads falls back to ad creative forms when pages don't expose lea
   }
 });
 
+test("fetchMetaLeads enriches account forms with page tokens before fetching leads", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    requests.push(url);
+    if (url.pathname.includes("/act_page_token/leads") && !url.pathname.includes("/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_page_token/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-page-token" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/act_page_token/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "pg-pt", access_token: "page-token" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/pg-pt/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-page-token" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/form-page-token/leads")) {
+      const token = url.searchParams.get("access_token");
+      if (token !== "page-token") {
+        return new Response(JSON.stringify({ error: { message: "wrong token" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-page", created_time: "2025-11-20T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_page_token", accessToken: "acct-token" });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/pg-pt/leadgen_forms")));
+    const leadRequest = requests.find((request) => request.pathname.includes("/form-page-token/leads"));
+    assert.ok(leadRequest);
+    assert.equal(leadRequest?.searchParams.get("access_token"), "page-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetchMetaLeads tolerates rate limit errors from ad creative fallback", async () => {
   const originalFetch = globalThis.fetch;
   const originalSetTimeout = globalThis.setTimeout;

@@ -1029,6 +1029,38 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   let adsFallbackAttempted = false;
   let forms: LeadGenFormDescriptor[] = shouldUseCachedFormsOnly ? cachedForms : [];
   let formsFromApi = false;
+  const enrichFormsWithPageTokens = async () => {
+    if (forms.length === 0) {
+      return;
+    }
+    const needsEnrichment = forms.some(
+      (form) => !form.accessToken || form.accessToken === options.accessToken,
+    );
+    if (!needsEnrichment) {
+      return;
+    }
+    try {
+      const pageForms = await fetchLeadGenFormsViaPages(accountId, options.accessToken);
+      if (pageForms.length === 0) {
+        return;
+      }
+      const merged = new Map<string, LeadGenFormDescriptor>();
+      for (const form of forms) {
+        merged.set(form.id, form);
+      }
+      for (const form of pageForms) {
+        const existing = merged.get(form.id);
+        if (!existing || !existing.accessToken || existing.accessToken === options.accessToken) {
+          merged.set(form.id, form);
+        }
+      }
+      forms = Array.from(merged.values());
+    } catch (error) {
+      console.warn(
+        `[meta] Failed to enrich leadgen forms with page tokens for account ${accountId}: ${(error as Error).message}`,
+      );
+    }
+  };
   let campaignFallbackError: Error | null = null;
   let campaignFallbackAttempted = false;
   const tryCampaignFallback = async (): Promise<MetaLeadRecord[]> => {
@@ -1118,6 +1150,7 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     }
     return [];
   }
+  await enrichFormsWithPageTokens();
   if (formsFromApi && forms.length > 0 && options.onFormsEnumerated) {
     await options.onFormsEnumerated(forms);
   }
