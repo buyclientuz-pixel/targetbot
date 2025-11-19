@@ -39,6 +39,8 @@ const createWebhookHandler = (): RouteHandler => {
       telegramSecret: context.env.TELEGRAM_SECRET ?? "",
       defaultTimezone: context.env.DEFAULT_TZ ?? "Asia/Tashkent",
       adminIds: parseAdminIds(context.env.ADMIN_IDS),
+      facebookLongToken: context.env.FB_LONG_TOKEN ?? null,
+      facebookToken: context.env.FACEBOOK_TOKEN ?? null,
     });
 
     try {

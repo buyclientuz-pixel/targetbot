@@ -1,5 +1,6 @@
 import { ensureProjectSettings } from "../../domain/project-settings";
 import type { ProjectLeadsListRecord } from "../../domain/spec/project-leads";
+import type { Lead } from "../../domain/leads";
 import { loadProjectBundle } from "../data";
 import type { InlineKeyboardMarkup } from "../types";
 import type { PanelRenderer } from "./types";
@@ -8,6 +9,8 @@ import { buildLeadsKeyboard } from "../keyboards";
 import { refreshProjectLeads } from "../../services/project-leads-sync";
 import { loadProjectLeadsView } from "../../services/project-leads-view";
 import { parseLeadsPanelState, toLeadsPanelContext } from "../leads-panel-state";
+import { fetchLiveProjectLeads } from "../../services/project-live-leads";
+import { resolvePortalPeriodRange } from "../../services/period-range";
 
 const fallbackKeyboard: InlineKeyboardMarkup = { inline_keyboard: [[{ text: "⬅️ Назад", callback_data: "panel:projects" }]] };
 const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
@@ -43,11 +46,23 @@ export const render: PanelRenderer = async ({ runtime, params }) => {
   }
   const settings = await ensureProjectSettings(runtime.kv, projectId);
   const timeZone = bundle.project.settings?.timezone ?? runtime.defaultTimezone ?? null;
+  const resolvedRange = resolvePortalPeriodRange(state.periodKey, timeZone, state.from, state.to);
+  let liveLeads: Lead[] | null = null;
+  try {
+    liveLeads = await fetchLiveProjectLeads(runtime.kv, projectId, {
+      since: resolvedRange.from,
+      accessTokenOverride: runtime.facebookLongToken ?? runtime.facebookToken ?? null,
+    });
+  } catch (error) {
+    console.warn(`[bot:leads] Failed to load live leads for ${projectId}: ${(error as Error).message}`);
+  }
   const view = await loadProjectLeadsView(runtime.r2, projectId, {
     periodKey: state.periodKey,
     timeZone,
     from: state.from,
     to: state.to,
+    liveLeads: liveLeads && liveLeads.length > 0 ? liveLeads : undefined,
+    liveSyncedAt: liveLeads && liveLeads.length > 0 ? new Date().toISOString() : undefined,
   });
   let panelContext = toLeadsPanelContext(state);
   if (panelContext.mode === "form") {

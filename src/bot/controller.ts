@@ -103,6 +103,8 @@ interface BotContext {
   adminIds: number[];
   buildMenuKeyboard: (userId: number) => ReturnType<typeof buildMainMenuKeyboard>;
   getFacebookOAuthUrl: (userId: number) => string | null;
+  facebookLongToken?: string | null;
+  facebookToken?: string | null;
 }
 
 const buildPanelRuntime = (ctx: BotContext) => ({
@@ -114,6 +116,8 @@ const buildPanelRuntime = (ctx: BotContext) => ({
   telegramToken: ctx.token,
   telegramSecret: ctx.telegramSecret,
   adminIds: ctx.adminIds,
+  facebookLongToken: ctx.facebookLongToken,
+  facebookToken: ctx.facebookToken,
 });
 
 interface CreateTelegramBotControllerOptions {
@@ -124,6 +128,8 @@ interface CreateTelegramBotControllerOptions {
   telegramSecret: string;
   defaultTimezone: string;
   adminIds: number[];
+  facebookLongToken?: string | null;
+  facebookToken?: string | null;
 }
 
 const DEFAULT_WORKER_DOMAIN = "th-reports.buyclientuz.workers.dev";
