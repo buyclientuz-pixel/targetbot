@@ -20,7 +20,7 @@ const createEnv = () => ({
   R2: new MemoryR2Bucket(),
   LEADS_KV: new MemoryKVNamespace(),
   FACEBOOK_API_VERSION: "v18.0",
-  FACEBOOK_TOKEN: "test-facebook-token",
+  FB_LONG_TOKEN: "test-facebook-token",
 }) as import("../../src/worker/types.ts").TargetBotEnv;
 
 test("portal routes serve HTML shell plus summary, leads, campaigns, and payments", async () => {

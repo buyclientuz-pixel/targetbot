@@ -22,7 +22,7 @@ test("/api/meta/oauth/start redirects to Facebook", async () => {
     FB_APP_ID: "123",
     WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
     FACEBOOK_API_VERSION: "v18.0",
-    FACEBOOK_TOKEN: "test-facebook-token",
+    FB_LONG_TOKEN: "test-facebook-token",
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const router = createRouter();
@@ -53,7 +53,7 @@ test("/auth/facebook/callback exchanges tokens and stores accounts", async () =>
     WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
     TELEGRAM_BOT_TOKEN: "bot-token",
     FACEBOOK_API_VERSION: "v18.0",
-    FACEBOOK_TOKEN: "test-facebook-token",
+    FB_LONG_TOKEN: "test-facebook-token",
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const router = createRouter();
@@ -149,7 +149,7 @@ test("/auth/facebook/callback falls back to default expiry when expires_in is mi
     FB_APP_SECRET: "secret",
     WORKER_URL: "https://th-reports.buyclientuz.workers.dev",
     FACEBOOK_API_VERSION: "v18.0",
-    FACEBOOK_TOKEN: "test-facebook-token",
+    FB_LONG_TOKEN: "test-facebook-token",
   } satisfies import("../../src/worker/types.ts").TargetBotEnv;
 
   const router = createRouter();

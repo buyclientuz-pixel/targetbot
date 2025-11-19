@@ -71,11 +71,11 @@ export const fetchLeadsForForm = async (
   formId: string,
   env: TargetBotEnv,
 ): Promise<MetaLeadRecord[]> => {
-  const token = env.FACEBOOK_TOKEN;
+  const token = env.FB_LONG_TOKEN;
   const apiVersion = env.FACEBOOK_API_VERSION ?? "v18.0";
   if (!token) {
-    throw new MetaApiError("FACEBOOK_TOKEN is not configured", 500, {
-      error: "FACEBOOK_TOKEN is not configured",
+    throw new MetaApiError("FB_LONG_TOKEN is not configured", 500, {
+      error: "FB_LONG_TOKEN is not configured",
     });
   }
   const url = new URL(`https://graph.facebook.com/${apiVersion}/${encodeURIComponent(formId)}/leads`);
