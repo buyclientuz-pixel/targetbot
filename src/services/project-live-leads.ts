@@ -14,6 +14,7 @@ import { buildLeadFromMeta } from "./project-leads-sync";
 
 export interface FetchLiveProjectLeadsOptions {
   since?: Date | null;
+  accessTokenOverride?: string | null;
 }
 
 const requireFacebookUserId = (settings: Awaited<ReturnType<typeof ensureProjectSettings>>): string => {
@@ -69,6 +70,21 @@ const persistFormsCache = async (
   }
 };
 
+const resolveLeadAccessToken = async (
+  kv: KvClient,
+  projectId: string,
+  overrideToken?: string | null,
+): Promise<{ token: string }> => {
+  const trimmed = overrideToken?.trim();
+  if (trimmed) {
+    return { token: trimmed };
+  }
+  const settings = await ensureProjectSettings(kv, projectId);
+  const facebookUserId = requireFacebookUserId(settings);
+  const token = await getMetaToken(kv, facebookUserId);
+  return { token: token.accessToken };
+};
+
 export const fetchLiveProjectLeads = async (
   kv: KvClient,
   projectId: string,
@@ -78,13 +94,11 @@ export const fetchLiveProjectLeads = async (
   if (!projectRecord.adAccountId) {
     throw new DataValidationError("У проекта нет подключённого рекламного аккаунта Meta");
   }
-  const settings = await ensureProjectSettings(kv, projectId);
-  const facebookUserId = requireFacebookUserId(settings);
-  const token = await getMetaToken(kv, facebookUserId);
+  const { token } = await resolveLeadAccessToken(kv, projectId, options.accessTokenOverride);
   const { cachedForms, useCachedOnly } = await loadCachedForms(kv, projectId, projectRecord.adAccountId);
   const leadFetchOptions = {
     accountId: projectRecord.adAccountId,
-    accessToken: token.accessToken,
+    accessToken: token,
     since: options.since ?? undefined,
     cachedForms,
     useCachedFormsOnly: useCachedOnly,

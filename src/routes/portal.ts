@@ -167,9 +167,13 @@ const respondWithProjectLeads = async (
       options?.from ?? null,
       options?.to ?? null,
     );
+    const leadAccessToken = context.env.FB_LONG_TOKEN ?? context.env.FACEBOOK_TOKEN ?? null;
     let liveLeads: Lead[] | null = null;
     try {
-      liveLeads = await fetchLiveProjectLeads(context.kv, projectId, { since: resolvedRange.from });
+      liveLeads = await fetchLiveProjectLeads(context.kv, projectId, {
+        since: resolvedRange.from,
+        accessTokenOverride: leadAccessToken,
+      });
     } catch (error) {
       console.warn(`[portal] Failed to fetch live leads for ${projectId}: ${(error as Error).message}`);
     }
