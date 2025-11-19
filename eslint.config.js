@@ -1,5 +1,4 @@
 import prettierPlugin from "eslint-plugin-prettier";
-import tseslint from "typescript-eslint";
 
 const commonRules = {
   "prettier/prettier": "error",
@@ -9,30 +8,14 @@ const commonRules = {
   semi: ["error", "always"],
 };
 
-const commonIgnores = ["dist/**", ".wrangler/**", "node_modules/**"];
+const commonIgnores = ["dist/**", ".wrangler/**", "node_modules/**", "**/*.{ts,tsx}"];
 
 export default [
-  ...tseslint.config({
-    files: ["**/*.{ts,tsx}"],
-    ignores: commonIgnores,
-    extends: [...tseslint.configs.recommended],
-    languageOptions: {
-      parserOptions: {
-        ecmaVersion: "latest",
-        sourceType: "module",
-      },
-    },
-    linterOptions: {
-      reportUnusedDisableDirectives: true,
-    },
-    plugins: {
-      prettier: prettierPlugin,
-    },
-    rules: commonRules,
-  }),
   {
-    files: ["**/*.js"],
     ignores: commonIgnores,
+  },
+  {
+    files: ["**/*.{js,mjs}", "scripts/**/*.{js,mjs}"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",
