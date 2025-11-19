@@ -87,7 +87,7 @@ const extractFieldValue = (record: MetaLeadRecord, keys: string[]): string | nul
   return null;
 };
 
-const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead | null => {
+export const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead | null => {
   const name =
     extractFieldValue(record, ["full_name", "name", "first_name"]) ??
     extractFieldValue(record, ["last_name"]) ??

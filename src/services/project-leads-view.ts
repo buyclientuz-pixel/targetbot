@@ -124,6 +124,8 @@ export interface LoadProjectLeadsViewOptions {
   timeZone: string | null;
   from?: string | null;
   to?: string | null;
+  liveLeads?: Lead[] | null;
+  liveSyncedAt?: string | null;
 }
 
 export const loadProjectLeadsView = async (
@@ -135,9 +137,11 @@ export const loadProjectLeadsView = async (
   const fromTime = range.from.getTime();
   const toTime = range.to.getTime();
   const summaryRecord = (await getProjectLeadsList(r2, projectId)) ?? null;
-  const storedLeads = await listLeads(r2, projectId);
-  const baseLeads =
-    storedLeads.length > 0
+  const useLiveLeads = Array.isArray(options.liveLeads) && options.liveLeads.length > 0;
+  const storedLeads = useLiveLeads ? [] : await listLeads(r2, projectId);
+  const baseLeads = useLiveLeads
+    ? options.liveLeads!.map(mapLeadToViewEntry)
+    : storedLeads.length > 0
       ? storedLeads.map(mapLeadToViewEntry)
       : (summaryRecord?.leads ?? []).map(mapSummaryLeadToViewEntry);
   const filtered = baseLeads
@@ -153,10 +157,12 @@ export const loadProjectLeadsView = async (
   for (const lead of filtered) {
     counts[lead.status] = (counts[lead.status] ?? 0) + 1;
   }
-  const overallStats = summaryRecord?.stats ?? {
-    total: baseLeads.length,
-    today: countTodayLeads(baseLeads, options.timeZone ?? null),
-  };
+  const overallStats = useLiveLeads
+    ? { total: baseLeads.length, today: countTodayLeads(baseLeads, options.timeZone ?? null) }
+    : summaryRecord?.stats ?? {
+        total: baseLeads.length,
+        today: countTodayLeads(baseLeads, options.timeZone ?? null),
+      };
   return {
     period: range.period,
     periodKey: range.key,
@@ -164,6 +170,6 @@ export const loadProjectLeadsView = async (
     stats: overallStats,
     periodStats: { total: filtered.length, today: countTodayLeads(filtered, options.timeZone ?? null) },
     countsByStatus: counts,
-    syncedAt: summaryRecord?.syncedAt ?? null,
+    syncedAt: useLiveLeads ? options.liveSyncedAt ?? new Date().toISOString() : summaryRecord?.syncedAt ?? null,
   } satisfies ProjectLeadsViewPayload;
 };

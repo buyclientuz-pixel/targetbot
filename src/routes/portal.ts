@@ -17,6 +17,8 @@ import { translateMetaObjective } from "../services/meta-objectives";
 import { refreshProjectLeads } from "../services/project-leads-sync";
 import { resolvePortalPeriodRange } from "../services/period-range";
 import { loadProjectLeadsView } from "../services/project-leads-view";
+import { fetchLiveProjectLeads } from "../services/project-live-leads";
+import type { Lead } from "../domain/leads";
 
 const htmlResponse = (body: string): Response =>
   new Response(body, {
@@ -159,6 +161,18 @@ const respondWithProjectLeads = async (
   try {
     const projectRecord = await requireProjectRecord(context.kv, projectId);
     const timeZone = projectRecord.settings.timezone ?? null;
+    const resolvedRange = resolvePortalPeriodRange(
+      periodKey,
+      timeZone,
+      options?.from ?? null,
+      options?.to ?? null,
+    );
+    let liveLeads: Lead[] | null = null;
+    try {
+      liveLeads = await fetchLiveProjectLeads(context.kv, projectId, { since: resolvedRange.from });
+    } catch (error) {
+      console.warn(`[portal] Failed to fetch live leads for ${projectId}: ${(error as Error).message}`);
+    }
     let snapshot: ProjectLeadsListRecord | null = null;
     try {
       snapshot = await getProjectLeadsList(context.r2, projectId);
@@ -174,6 +188,8 @@ const respondWithProjectLeads = async (
       timeZone,
       from: options?.from ?? null,
       to: options?.to ?? null,
+      liveLeads,
+      liveSyncedAt: liveLeads ? new Date().toISOString() : null,
     });
     return jsonOk({ projectId, ...payload });
   } catch (error) {
