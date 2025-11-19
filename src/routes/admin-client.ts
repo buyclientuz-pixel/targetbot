@@ -21,6 +21,7 @@ const adminClientFactory = () => {
       projects: [],
       selectedProjectId: null,
       selectedProject: null,
+      editingPaymentId: null,
     };
     const els = {
       app: document.querySelector('[data-app]'),
@@ -51,6 +52,11 @@ const adminClientFactory = () => {
     campaignsTable: document.querySelector('[data-campaigns-body]'),
     paymentsTable: document.querySelector('[data-payments-body]'),
     paymentForm: document.querySelector('[data-payment-form]'),
+    paymentIdInput: document.querySelector('[data-payment-id-input]'),
+    paymentSubmitButton: document.querySelector('[data-payment-submit]'),
+    paymentCancelButton: document.querySelector('[data-payment-cancel]'),
+    paymentQuickForm: document.querySelector('[data-payment-quick-form]'),
+    paymentQuickInput: document.querySelector('[data-payment-quick-input]'),
     projectCreateForm: document.querySelector('[data-project-create]'),
     settingsForm: document.querySelector('[data-settings-form]'),
     analyticsTotals: document.querySelector('[data-analytics-totals]'),
@@ -114,6 +120,102 @@ const adminClientFactory = () => {
         return '—';
       }
       return date.toLocaleString('ru-RU');
+    };
+
+    const getProjectPayments = () => state.selectedProject?.payments?.payments ?? [];
+
+    const findPaymentById = (paymentId) => getProjectPayments().find((payment) => payment.id === paymentId);
+
+    const PAYMENT_STATUS_LABELS = {
+      paid: 'Оплачено',
+      planned: 'Запланировано',
+      overdue: 'Просрочено',
+      cancelled: 'Отменено',
+    };
+
+    const resetPaymentForm = () => {
+      if (els.paymentForm) {
+        els.paymentForm.reset();
+      }
+      state.editingPaymentId = null;
+      if (els.paymentIdInput) {
+        els.paymentIdInput.value = '';
+      }
+      if (els.paymentSubmitButton) {
+        els.paymentSubmitButton.textContent = 'Добавить платёж';
+      }
+      if (els.paymentCancelButton) {
+        els.paymentCancelButton.setAttribute('hidden', '');
+      }
+    };
+
+    const startPaymentEdit = (payment) => {
+      if (!payment || !els.paymentForm) {
+        return;
+      }
+      state.editingPaymentId = payment.id;
+      if (els.paymentIdInput) {
+        els.paymentIdInput.value = payment.id;
+      }
+      const form = els.paymentForm;
+      form.elements.amount.value = payment.amount ?? '';
+      form.elements.currency.value = payment.currency ?? 'USD';
+      form.elements.periodFrom.value = toDateInputValue(payment.periodFrom);
+      form.elements.periodTo.value = toDateInputValue(payment.periodTo);
+      form.elements.paidAt.value = toDateTimeInputValue(payment.paidAt);
+      form.elements.status.value = payment.status ?? 'planned';
+      form.elements.comment.value = payment.comment ?? '';
+      if (els.paymentSubmitButton) {
+        els.paymentSubmitButton.textContent = 'Сохранить платёж';
+      }
+      if (els.paymentCancelButton) {
+        els.paymentCancelButton.removeAttribute('hidden');
+      }
+      if (typeof form.scrollIntoView === 'function') {
+        form.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    };
+
+    const promptDeletePayment = async (payment) => {
+      if (!payment || !state.selectedProjectId) {
+        return;
+      }
+      const defaultDate = formatPromptDate(payment.periodTo);
+      const confirmDate = window.prompt(
+        'Введите дату платежа (DD.MM.YYYY или YYYY-MM-DD) для подтверждения удаления',
+        defaultDate,
+      );
+      if (!confirmDate) {
+        return;
+      }
+      try {
+        await request(`/projects/${state.selectedProjectId}/payments/${payment.id}`, {
+          method: 'DELETE',
+          body: JSON.stringify({ confirmDate }),
+        });
+        await selectProject(state.selectedProjectId);
+        setStatus('Платёж удалён');
+      } catch (error) {
+        setStatus(error.message);
+      }
+    };
+
+    const handlePaymentsTableClick = (event) => {
+      const editButton = event.target.closest('[data-payment-edit]');
+      if (editButton) {
+        const payment = findPaymentById(editButton.dataset.paymentEdit);
+        if (payment) {
+          startPaymentEdit(payment);
+        }
+        return;
+      }
+      const deleteButton = event.target.closest('[data-payment-delete]');
+      if (deleteButton) {
+        const payment = findPaymentById(deleteButton.dataset.paymentDelete);
+        if (payment) {
+          void promptDeletePayment(payment);
+        }
+      }
     };
 
     const updatePortalPanel = (detail) => {
@@ -216,6 +318,69 @@ const adminClientFactory = () => {
     }
   };
 
+    const formatDateOnly = (value) => {
+      if (!value) {
+        return '—';
+      }
+      const normalized = value.includes('T') ? value : `${value}T00:00:00Z`;
+      const date = new Date(normalized);
+      if (Number.isNaN(date.getTime())) {
+        return value;
+      }
+      return date.toLocaleDateString('ru-RU');
+    };
+
+    const formatDateRange = (from, to) => {
+      if (from && to && from !== to) {
+        return `${formatDateOnly(from)} → ${formatDateOnly(to)}`;
+      }
+      return formatDateOnly(to || from);
+    };
+
+    const formatDateTime = (value) => {
+      if (!value) {
+        return '—';
+      }
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return value;
+      }
+      return date.toLocaleString('ru-RU');
+    };
+
+    const formatPromptDate = (value) => {
+      if (!value) {
+        return '';
+      }
+      const iso = value.includes('T') ? value.split('T')[0] : value;
+      const parts = iso.split('-');
+      if (parts.length !== 3) {
+        return value;
+      }
+      return `${parts[2]}.${parts[1]}.${parts[0]}`;
+    };
+
+    const toDateInputValue = (value) => {
+      if (!value) {
+        return '';
+      }
+      const iso = value.includes('T') ? value.split('T')[0] : value;
+      return iso;
+    };
+
+    const toDateTimeInputValue = (value) => {
+      if (!value) {
+        return '';
+      }
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) {
+        return '';
+      }
+      const offset = date.getTimezoneOffset();
+      const local = new Date(date.getTime() - offset * 60000);
+      return local.toISOString().slice(0, 16);
+    };
+
     const renderProjects = (projects) => {
       state.projects = projects;
       if (!els.projectsBody) {
@@ -295,12 +460,19 @@ const adminClientFactory = () => {
     els.paymentsTable.innerHTML = '';
     payments.forEach((payment) => {
       const tr = document.createElement('tr');
+      tr.dataset.paymentRow = payment.id;
       tr.innerHTML = `
-        <td>${payment.periodFrom} → ${payment.periodTo}</td>
+        <td>${formatDateRange(payment.periodFrom, payment.periodTo)}</td>
         <td>${formatCurrency(payment.amount, payment.currency)}</td>
-        <td>${payment.status}</td>
-        <td>${payment.paidAt ? new Date(payment.paidAt).toLocaleString('ru-RU') : '—'}</td>
+        <td>${PAYMENT_STATUS_LABELS[payment.status] ?? payment.status ?? '—'}</td>
+        <td>${formatDateTime(payment.paidAt)}</td>
         <td>${payment.comment ?? '—'}</td>
+        <td>
+          <div class="table-actions">
+            <button type="button" class="admin-btn admin-btn--ghost" data-payment-edit="${payment.id}">Изменить</button>
+            <button type="button" class="admin-btn admin-btn--danger" data-payment-delete="${payment.id}">Удалить</button>
+          </div>
+        </td>
       `;
       els.paymentsTable?.appendChild(tr);
     });
@@ -369,6 +541,7 @@ const adminClientFactory = () => {
     if (els.paymentsTable) {
       els.paymentsTable.innerHTML = '';
     }
+    resetPaymentForm();
     updatePortalPanel(null);
   };
     const portalActionPaths = {
@@ -434,6 +607,7 @@ const adminClientFactory = () => {
         return;
       }
     els.projectDetail.removeAttribute('hidden');
+    resetPaymentForm();
     updatePortalPanel(detail);
     els.projectDetailTitle.textContent = detail.project.name;
     const stats = detail.campaigns.summary;
@@ -658,18 +832,51 @@ const adminClientFactory = () => {
       status: form.elements.status.value,
       comment: form.elements.comment.value || null,
     };
+    const targetPaymentId = state.editingPaymentId || form.elements.paymentId?.value || '';
     try {
-      await request(`/projects/${state.selectedProjectId}/payments/add`, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      });
+      if (targetPaymentId) {
+        await request(`/projects/${state.selectedProjectId}/payments/${targetPaymentId}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        setStatus('Платёж обновлён');
+      } else {
+        await request(`/projects/${state.selectedProjectId}/payments/add`, {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        setStatus('Платёж сохранён');
+      }
       await selectProject(state.selectedProjectId);
-      form.reset();
-      setStatus('Платёж сохранён');
+      resetPaymentForm();
     } catch (error) {
       setStatus(error.message);
     }
   };
+
+    const submitQuickPayments = async (event) => {
+      event.preventDefault();
+      if (!state.selectedProjectId) {
+        return;
+      }
+      const form = event.currentTarget;
+      const entries = form.elements.entries.value;
+      if (!entries.trim()) {
+        setStatus('Добавьте хотя бы одну строку');
+        return;
+      }
+      try {
+        await request(`/projects/${state.selectedProjectId}/payments/manual`, {
+          method: 'POST',
+          body: JSON.stringify({ entries }),
+        });
+        await selectProject(state.selectedProjectId);
+        form.reset();
+        setStatus('Оплаты обновлены');
+      } catch (error) {
+        setStatus(error.message);
+      }
+    };
 
     const submitSettings = async (event) => {
       event.preventDefault();
@@ -782,6 +989,11 @@ const adminClientFactory = () => {
     els.portalActions?.addEventListener('click', handlePortalActionsClick);
     els.projectCreateForm?.addEventListener('submit', submitProjectCreate);
     els.paymentForm?.addEventListener('submit', submitPayment);
+    els.paymentsTable?.addEventListener('click', handlePaymentsTableClick);
+    els.paymentCancelButton?.addEventListener('click', () => {
+      resetPaymentForm();
+    });
+    els.paymentQuickForm?.addEventListener('submit', submitQuickPayments);
     els.settingsForm?.addEventListener('submit', submitSettings);
     els.leadSettingsForm?.addEventListener('submit', submitLeadSettings);
     els.webhookButton?.addEventListener('click', resetWebhook);

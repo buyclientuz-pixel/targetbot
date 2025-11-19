@@ -1,4 +1,5 @@
 import { parseManualBillingInput } from "./amounts";
+import { normalisePaymentStatusLabel } from "../domain/payment-status";
 import {
   loadAnalyticsOverview,
   loadFinanceOverview,
@@ -580,13 +581,19 @@ const createPaymentRecord = (
   periodFrom: string,
   periodTo: string,
   status: PaymentRecord["status"],
+  paidAtOverride?: string | null,
 ): PaymentRecord => ({
   id: `pay_${Date.now()}`,
   amount: billing.amount,
   currency: billing.currency,
   periodFrom,
   periodTo,
-  paidAt: status === "paid" ? new Date().toISOString() : null,
+  paidAt:
+    paidAtOverride !== undefined
+      ? paidAtOverride
+      : status === "paid"
+        ? new Date().toISOString()
+        : null,
   status,
   comment: null,
 });
@@ -687,15 +694,17 @@ const handleBillingManualInput = async (
   projectId: string,
   input: string,
 ): Promise<void> => {
-  const { amount, date } = parseManualBillingInput(input);
+  const { amount, date, status: rawStatus } = parseManualBillingInput(input);
   const parsedDate = parseDateInput(date);
+  const resolvedStatus = normalisePaymentStatusLabel(rawStatus);
+  const paidAt = resolvedStatus === "paid" ? `${parsedDate}T00:00:00Z` : null;
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   const updated = { ...bundle.billing, tariff: amount, nextPaymentDate: parsedDate };
   await putBillingRecord(ctx.kv, projectId, updated);
   await appendPaymentRecord(
     ctx.r2,
     projectId,
-    createPaymentRecord({ amount, currency: bundle.billing.currency }, parsedDate, parsedDate, "paid"),
+    createPaymentRecord({ amount, currency: bundle.billing.currency }, parsedDate, parsedDate, resolvedStatus, paidAt),
   );
   await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Оплата обновлена: ${parsedDate}`);
 };

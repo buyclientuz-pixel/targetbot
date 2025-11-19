@@ -191,3 +191,101 @@ test("admin portal routes manage lifecycle", async () => {
 
   await execution.flush();
 });
+
+test("admin payment routes allow editing, deletion, and manual import", async () => {
+  const env = createEnv();
+  const router = createRouter();
+  registerAdminRoutes(router);
+  const execution = new TestExecutionContext();
+
+  const projectId = "billing_case";
+  await router.dispatch(
+    new Request("https://example.com/api/admin/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: projectId,
+        name: "Billing Case",
+        adsAccountId: "act_case",
+        ownerTelegramId: 777,
+      }),
+    }),
+    env,
+    execution,
+  );
+
+  const addResponse = await router.dispatch(
+    new Request(`https://example.com/api/admin/projects/${projectId}/payments/add`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        amount: 500,
+        currency: "USD",
+        periodFrom: "2025-11-01",
+        periodTo: "2025-11-30",
+        status: "planned",
+      }),
+    }),
+    env,
+    execution,
+  );
+  assert.equal(addResponse.status, 200);
+  const addBody = await readData<{ payments: { payments: Array<{ id: string }> } }>(addResponse);
+  assert.ok(addBody.payments.payments.length === 1);
+  const paymentId = addBody.payments.payments[0]!.id;
+
+  const updateResponse = await router.dispatch(
+    new Request(`https://example.com/api/admin/projects/${projectId}/payments/${paymentId}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        amount: 550,
+        currency: "USD",
+        periodFrom: "2025-12-01",
+        periodTo: "2025-12-15",
+        status: "overdue",
+      }),
+    }),
+    env,
+    execution,
+  );
+  assert.equal(updateResponse.status, 200);
+  const updatedDoc = await readData<{ payments: { payments: Array<{ amount: number; status: string; periodTo: string }> } }>(
+    updateResponse,
+  );
+  assert.equal(updatedDoc.payments.payments[0]!.amount, 550);
+  assert.equal(updatedDoc.payments.payments[0]!.status, "overdue");
+
+  const deleteResponse = await router.dispatch(
+    new Request(`https://example.com/api/admin/projects/${projectId}/payments/${paymentId}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmDate: "2025-12-15" }),
+    }),
+    env,
+    execution,
+  );
+  assert.equal(deleteResponse.status, 200);
+  const afterDelete = await readData<{ payments: { payments: unknown[] } }>(deleteResponse);
+  assert.equal(afterDelete.payments.payments.length, 0);
+
+  const manualResponse = await router.dispatch(
+    new Request(`https://example.com/api/admin/projects/${projectId}/payments/manual`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        entries: "600 01.01.2026 Просрочено\n550 2025-10-01 Оплачено",
+      }),
+    }),
+    env,
+    execution,
+  );
+  assert.equal(manualResponse.status, 200);
+  const manualDoc = await readData<{ payments: { payments: Array<{ status: string; periodTo: string }> } }>(manualResponse);
+  assert.equal(manualDoc.payments.payments.length, 2);
+  assert.equal(manualDoc.payments.payments[0]!.status, "overdue");
+  assert.equal(manualDoc.payments.payments[1]!.status, "paid");
+  assert.equal(manualDoc.payments.payments[0]!.periodTo, "2026-01-01");
+
+  await execution.flush();
+});

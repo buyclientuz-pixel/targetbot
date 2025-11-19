@@ -9,13 +9,16 @@ import {
 import { getProject, parseProject } from "../domain/projects";
 import { getMetaToken, parseMetaToken, upsertMetaToken, deleteMetaToken } from "../domain/meta-tokens";
 import { putFbAuthRecord, type FbAdAccount, type FbAuthRecord } from "../domain/spec/fb-auth";
-import { getBillingRecord, putBillingRecord } from "../domain/spec/billing";
+import { getBillingRecord, putBillingRecord, type BillingRecord } from "../domain/spec/billing";
 import { getAutoreportsRecord, putAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import {
   appendPaymentRecord,
   getPaymentsHistoryDocument,
+  putPaymentsHistoryDocument,
+  replacePaymentRecord,
   type PaymentRecord,
 } from "../domain/spec/payments-history";
+import { normalisePaymentStatusLabel } from "../domain/payment-status";
 import { requireProjectRecord, putProjectRecord } from "../domain/spec/project";
 import { getPortalSyncState, deletePortalSyncState, type PortalSyncState } from "../domain/portal-sync";
 import { DataValidationError, EntityConflictError, EntityNotFoundError } from "../errors";
@@ -573,20 +576,38 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                         <th>Статус</th>
                         <th>Оплачено</th>
                         <th>Комментарий</th>
+                        <th>Действия</th>
                       </tr>
                     </thead>
                     <tbody data-payments-body></tbody>
                   </table>
                 </div>
                 <form class="form-grid" data-payment-form>
+                  <input type="hidden" name="paymentId" data-payment-id-input />
                   <label>Сумма<input name="amount" type="number" min="0" step="0.01" required /></label>
                   <label>Валюта<input name="currency" value="USD" required /></label>
                   <label>Период с<input name="periodFrom" type="date" required /></label>
                   <label>Период до<input name="periodTo" type="date" required /></label>
                   <label>Дата оплаты<input name="paidAt" type="datetime-local" /></label>
-                  <label>Статус<select name="status"><option value="planned">Запланирован</option><option value="paid">Оплачен</option><option value="cancelled">Отменён</option></select></label>
+                  <label>Статус<select name="status"><option value="planned">Запланирован</option><option value="paid">Оплачен</option><option value="overdue">Просрочен</option><option value="cancelled">Отменён</option></select></label>
                   <label class="grid-full">Комментарий<textarea name="comment" rows="2"></textarea></label>
-                  <button class="admin-btn" type="submit">Добавить платёж</button>
+                  <div class="form-grid__actions">
+                    <button class="admin-btn" type="submit" data-payment-submit>Сохранить платёж</button>
+                    <button class="admin-btn admin-btn--ghost" type="button" data-payment-cancel hidden>Отменить</button>
+                  </div>
+                </form>
+                <form class="form-grid" data-payment-quick-form>
+                  <label class="grid-full">
+                    Быстрый ввод оплат
+                    <textarea
+                      name="entries"
+                      rows="3"
+                      placeholder="500 18.11.2025 Просрочено\n500 19.11.2025 Оплачено"
+                      data-payment-quick-input
+                    ></textarea>
+                    <span class="form-hint">Каждая строка: сумма, дата (DD.MM.YYYY или YYYY-MM-DD) и статус.</span>
+                  </label>
+                  <button class="admin-btn" type="submit">Применить строки</button>
                 </form>
                 <hr />
                 <form class="form-grid" data-settings-form>
@@ -710,6 +731,11 @@ interface CreatePaymentBody {
   comment?: string | null;
 }
 
+interface ManualPaymentsBody {
+  entries?: string;
+  currency?: string | null;
+}
+
 interface UpdateFbAuthBody {
   userId?: number;
   accessToken?: string;
@@ -731,7 +757,11 @@ const registerAdminRoute = (
   }
 };
 
-const parsePaymentPayload = (body: CreatePaymentBody, projectId: string): PaymentRecord => {
+const parsePaymentPayload = (
+  body: CreatePaymentBody,
+  projectId: string,
+  options?: { id?: string },
+): PaymentRecord => {
   if (typeof body.amount !== "number" || body.amount <= 0) {
     throw new DataValidationError("amount must be a positive number");
   }
@@ -741,12 +771,9 @@ const parsePaymentPayload = (body: CreatePaymentBody, projectId: string): Paymen
   if (!body.periodFrom || !body.periodTo) {
     throw new DataValidationError("periodFrom and periodTo are required");
   }
-  const status = body.status ?? "planned";
-  if (!["planned", "paid", "cancelled"].includes(status)) {
-    throw new DataValidationError("status must be planned, paid or cancelled");
-  }
+  const status = normalisePaymentStatusLabel(body.status ?? "planned");
   return {
-    id: `pay_${projectId}_${Date.now()}`,
+    id: options?.id ?? `pay_${projectId}_${Date.now()}`,
     amount: body.amount,
     currency: body.currency,
     periodFrom: body.periodFrom,
@@ -755,6 +782,97 @@ const parsePaymentPayload = (body: CreatePaymentBody, projectId: string): Paymen
     status,
     comment: body.comment ?? null,
   } satisfies PaymentRecord;
+};
+
+const FLEXIBLE_DATE_PATTERN = /(\d{4}-\d{2}-\d{2}|\d{2}[.]\d{2}[.]\d{4})/;
+
+const parseFlexibleDateInput = (value: string, label = "date"): string => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    throw new DataValidationError(`${label} is required`);
+  }
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [_, year, month, day] = isoMatch;
+    const parsed = Date.parse(`${year}-${month}-${day}T00:00:00Z`);
+    if (Number.isNaN(parsed)) {
+      throw new DataValidationError(`${label} has invalid date`);
+    }
+    return `${year}-${month}-${day}`;
+  }
+  const dottedMatch = trimmed.match(/^(\d{2})[.](\d{2})[.](\d{4})$/);
+  if (dottedMatch) {
+    const [_, day, month, year] = dottedMatch;
+    const parsed = Date.parse(`${year}-${month}-${day}T00:00:00Z`);
+    if (Number.isNaN(parsed)) {
+      throw new DataValidationError(`${label} has invalid date`);
+    }
+    return `${year}-${month}-${day}`;
+  }
+  throw new DataValidationError(`${label} must use YYYY-MM-DD or DD.MM.YYYY`);
+};
+
+const formatPromptDate = (isoDate: string | null | undefined): string => {
+  if (!isoDate) {
+    return "";
+  }
+  const [year, month, day] = isoDate.split("-");
+  if (!year || !month || !day) {
+    return isoDate;
+  }
+  return `${day}.${month}.${year}`;
+};
+
+const parseManualPaymentLine = (line: string, index: number): { amount: number; date: string; status: PaymentRecord["status"] } => {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    throw new DataValidationError(`Строка ${index + 1} пуста`);
+  }
+  const amountMatch = trimmed.match(/([0-9]+(?:[.,][0-9]+)?)/);
+  if (!amountMatch) {
+    throw new DataValidationError(`Строка ${index + 1}: не удалось распознать сумму`);
+  }
+  const amount = Number.parseFloat(amountMatch[1].replace(",", "."));
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new DataValidationError(`Строка ${index + 1}: сумма должна быть больше нуля`);
+  }
+  const tail = trimmed.slice(amountMatch.index! + amountMatch[0].length).trim();
+  if (!tail) {
+    throw new DataValidationError(`Строка ${index + 1}: укажите дату`);
+  }
+  const dateMatch = tail.match(FLEXIBLE_DATE_PATTERN);
+  if (!dateMatch) {
+    throw new DataValidationError(`Строка ${index + 1}: используйте дату в формате DD.MM.YYYY или YYYY-MM-DD`);
+  }
+  const isoDate = parseFlexibleDateInput(dateMatch[0], `Строка ${index + 1}: дата`);
+  const statusRaw = tail.slice(dateMatch.index! + dateMatch[0].length).trim();
+  const status = normalisePaymentStatusLabel(statusRaw || undefined);
+  return { amount, date: isoDate, status };
+};
+
+const paymentMatchesConfirmDate = (payment: PaymentRecord, isoDate: string): boolean => {
+  const paidAtDate = payment.paidAt ? payment.paidAt.split("T")[0] ?? payment.paidAt : null;
+  return payment.periodTo === isoDate || payment.periodFrom === isoDate || paidAtDate === isoDate;
+};
+
+const updateNextPaymentDate = async (
+  kv: KvClient,
+  projectId: string,
+  date: string | null | undefined,
+  status?: PaymentRecord["status"],
+): Promise<void> => {
+  if (!date || status === "paid" || status === "cancelled") {
+    return;
+  }
+  const existing =
+    (await getBillingRecord(kv, projectId)) ??
+    ({
+      tariff: 0,
+      currency: DEFAULT_PROJECT_CURRENCY,
+      nextPaymentDate: date,
+      autobilling: false,
+    } satisfies BillingRecord);
+  await putBillingRecord(kv, projectId, { ...existing, nextPaymentDate: date });
 };
 
 const clearMetaCache = async (
@@ -838,17 +956,145 @@ export const registerAdminRoutes = (router: Router): void => {
     try {
       const record = parsePaymentPayload(body, projectId);
       const payments = await appendPaymentRecord(context.r2, projectId, record);
-      if (body.periodTo) {
-        const billing = (await getBillingRecord(context.kv, projectId)) ?? {
-          tariff: body.amount ?? 0,
-          currency: body.currency ?? "USD",
-          nextPaymentDate: body.periodTo,
-          autobilling: false,
-        };
-        billing.nextPaymentDate = body.periodTo;
-        await putBillingRecord(context.kv, projectId, billing);
-      }
+      await updateNextPaymentDate(context.kv, projectId, record.periodTo, record.status);
       return jsonOk({ payments });
+    } catch (error) {
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+
+  registerAdminRoute(router, "PUT", ["/api/admin/projects/:projectId/payments/:paymentId"], async (context) => {
+    const projectId = context.state.params.projectId;
+    const paymentId = context.state.params.paymentId;
+    if (!projectId || !paymentId) {
+      return badRequest("Project ID and payment ID are required");
+    }
+    let body: CreatePaymentBody;
+    try {
+      body = await context.json<CreatePaymentBody>();
+    } catch {
+      return badRequest("Invalid JSON body");
+    }
+    try {
+      const record = parsePaymentPayload(body, projectId, { id: paymentId });
+      const payments = await replacePaymentRecord(context.r2, projectId, record);
+      await updateNextPaymentDate(context.kv, projectId, record.periodTo, record.status);
+      return jsonOk({ payments });
+    } catch (error) {
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+
+  registerAdminRoute(router, "DELETE", ["/api/admin/projects/:projectId/payments/:paymentId"], async (context) => {
+    const projectId = context.state.params.projectId;
+    const paymentId = context.state.params.paymentId;
+    if (!projectId || !paymentId) {
+      return badRequest("Project ID and payment ID are required");
+    }
+    let body: { confirmDate?: string } = {};
+    try {
+      body = await context.json<{ confirmDate?: string }>();
+    } catch {
+      body = {};
+    }
+    if (!body.confirmDate) {
+      return badRequest("confirmDate is required");
+    }
+    let confirmDate: string;
+    try {
+      confirmDate = parseFlexibleDateInput(body.confirmDate, "confirmDate");
+    } catch (error) {
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+    const existing = await getPaymentsHistoryDocument(context.r2, projectId);
+    const target = existing?.payments.find((payment) => payment.id === paymentId);
+    if (!target) {
+      return notFound("Платёж не найден");
+    }
+    if (!paymentMatchesConfirmDate(target, confirmDate)) {
+      return unprocessable("Дата подтверждения не совпадает с платёжной записью");
+    }
+    const remaining = existing.payments.filter((payment) => payment.id !== paymentId);
+    if (remaining.length === existing.payments.length) {
+      return notFound("Платёж не найден");
+    }
+    const document = { payments: remaining };
+    await putPaymentsHistoryDocument(context.r2, projectId, document);
+    return jsonOk({ payments: document });
+  });
+
+  registerAdminRoute(router, "POST", ["/api/admin/projects/:projectId/payments/manual"], async (context) => {
+    const projectId = context.state.params.projectId;
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    let body: ManualPaymentsBody;
+    try {
+      body = await context.json<ManualPaymentsBody>();
+    } catch {
+      return badRequest("Invalid JSON body");
+    }
+    const rawEntries = body.entries ?? "";
+    const lines = rawEntries
+      .split(/\r?\n+/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (lines.length === 0) {
+      return badRequest("Введите хотя бы одну строку");
+    }
+    try {
+      const parsed = lines.map((line, index) => parseManualPaymentLine(line, index));
+      const existing = (await getPaymentsHistoryDocument(context.r2, projectId)) ?? { payments: [] };
+      const payments = [...existing.payments];
+      const billing = (await getBillingRecord(context.kv, projectId)) ?? null;
+      const currency = (body.currency?.trim() || billing?.currency || DEFAULT_PROJECT_CURRENCY).toUpperCase();
+      for (const entry of parsed) {
+        const paidAt = entry.status === "paid" ? `${entry.date}T00:00:00Z` : null;
+        const index = payments.findIndex((payment) => payment.periodTo === entry.date);
+        if (index >= 0) {
+          payments[index] = {
+            ...payments[index]!,
+            amount: entry.amount,
+            status: entry.status,
+            paidAt,
+          };
+        } else {
+          const record = parsePaymentPayload(
+            {
+              amount: entry.amount,
+              currency,
+              periodFrom: entry.date,
+              periodTo: entry.date,
+              paidAt,
+              status: entry.status,
+            },
+            projectId,
+          );
+          payments.unshift(record);
+        }
+      }
+      payments.sort((left, right) => {
+        if (left.periodTo !== right.periodTo) {
+          return left.periodTo < right.periodTo ? 1 : -1;
+        }
+        return left.periodFrom < right.periodFrom ? 1 : -1;
+      });
+      const updated = { payments };
+      await putPaymentsHistoryDocument(context.r2, projectId, updated);
+      const nextDue = parsed.find((entry) => entry.status !== "paid" && entry.status !== "cancelled");
+      if (nextDue) {
+        await updateNextPaymentDate(context.kv, projectId, nextDue.date, nextDue.status);
+      }
+      return jsonOk({ payments: updated });
     } catch (error) {
       if (error instanceof DataValidationError) {
         return unprocessable(error.message);
