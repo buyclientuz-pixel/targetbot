@@ -191,7 +191,7 @@ npm run deploy
 npm run qa
 ```
 
-Команда `npm run qa` запускает `node --test` через кастомный TypeScript loader (`scripts/ts-loader.mjs`), покрывая unit, integration и e2e сценарии.
+Команда `npm run qa` запускает `node --test` через кастомный TypeScript loader, подключённый через `scripts/register-ts-loader.mjs` (делегирует в `scripts/ts-loader.mjs`), покрывая unit, integration и e2e сценарии.
 
 ### Dry-run деплоя
 

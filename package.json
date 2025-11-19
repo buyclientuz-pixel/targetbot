@@ -10,8 +10,8 @@
     "dev": "wrangler dev",
     "lint": "eslint scripts --ext .js,.mjs",
     "typecheck": "tsc --noEmit --project tsconfig.json",
-    "test": "node --loader ./scripts/ts-loader.mjs --test \"tests/**/*.test.ts\"",
-    "qa": "node --loader ./scripts/ts-loader.mjs --test \"tests/**/*.test.ts\"",
+    "test": "node --import ./scripts/register-ts-loader.mjs --test \"tests/**/*.test.ts\"",
+    "qa": "node --import ./scripts/register-ts-loader.mjs --test \"tests/**/*.test.ts\"",
     "dry-run": "node ./scripts/dry-run.mjs",
     "format": "prettier \"**/*.{ts,js,json,md}\"",
     "sync:secrets": "node ./scripts/sync-secrets.mjs"
