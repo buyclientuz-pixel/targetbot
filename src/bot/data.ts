@@ -4,7 +4,11 @@ import type { R2Client } from "../infra/r2";
 import { getProjectsByUser } from "../domain/spec/projects-by-user";
 import { requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
 import { getBillingRecord, type BillingRecord } from "../domain/spec/billing";
-import { getAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
+import {
+  createDefaultAutoreportsRecord,
+  getAutoreportsRecord,
+  type AutoreportsRecord,
+} from "../domain/spec/autoreports";
 import {
   getProjectLeadsList,
   type ProjectLeadsListRecord,
@@ -24,13 +28,7 @@ const createDefaultBilling = (project: ProjectRecord): BillingRecord => ({
   autobilling: false,
 });
 
-const createDefaultAutoreports = (): AutoreportsRecord => ({
-  enabled: false,
-  time: "10:00",
-  mode: "yesterday_plus_week",
-  sendToChat: true,
-  sendToAdmin: false,
-});
+const createDefaultAutoreports = (): AutoreportsRecord => createDefaultAutoreportsRecord();
 
 const createEmptyLeadsList = (): ProjectLeadsListRecord => ({
   stats: { total: 0, today: 0 },

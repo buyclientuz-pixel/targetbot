@@ -37,6 +37,12 @@
 | `proj:campaign-actions:{projectId}` | Перейти к списку массовых действий по выбранным кампаниям. |
 | `proj:campaign-action:{projectId}:{action}` | Выполнить действие (`enable`, `disable`, `save`, `report`) над выбранными кампаниями. |
 | `proj:export:{projectId}` | Экспорт данных проекта. |
+| `project:autoreports:{projectId}` | Открыть панель автоотчётов проекта. |
+| `project:autoreports-toggle:{projectId}` | Включить/выключить автоотчёты. |
+| `project:autoreports-time:{projectId}` | Запросить ручной ввод времени автоотчёта. |
+| `project:autoreports-target:{projectId}:{channel}` | Переключить канал автоотчёта (`channel = chat/admin`). |
+| `project:autoreports-payment-toggle:{projectId}` | Включить или выключить алерт об оплате Meta. |
+| `project:autoreports-payment-target:{projectId}:{channel}` | Переключить канал алерта оплаты (`channel = chat/admin`). |
 | `proj:portal:{projectId}` | Ссылка на клиентский портал. |
 | `proj:portal-create:{projectId}` | Создать портал и сгенерировать ссылку для проекта. |
 | `proj:portal-regenerate:{projectId}` | Перегенерировать URL клиентского портала. |

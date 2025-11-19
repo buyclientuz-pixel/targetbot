@@ -494,12 +494,16 @@ const adminClientFactory = () => {
     els.settingsForm.elements.autoreportsTime.disabled = !enabled;
     els.settingsForm.elements.autoreportsSendChat.disabled = !enabled;
     els.settingsForm.elements.autoreportsSendAdmin.disabled = !enabled;
+    if (els.settingsForm.elements.autoreportsPaymentAlertsEnabled) {
+      els.settingsForm.elements.autoreportsPaymentAlertsEnabled.disabled = !enabled;
+    }
     const submitButton = els.settingsForm.querySelector('button[type="submit"]');
     if (submitButton) {
       submitButton.disabled = !enabled;
     }
     if (!detail) {
       els.settingsForm.reset();
+      updatePaymentAlertChannelState();
       return;
     }
     els.settingsForm.elements.kpiMode.value = detail.project.settings.kpi.mode;
@@ -509,6 +513,35 @@ const adminClientFactory = () => {
     els.settingsForm.elements.autoreportsTime.value = detail.autoreports.time;
     els.settingsForm.elements.autoreportsSendChat.checked = detail.autoreports.sendToChat;
     els.settingsForm.elements.autoreportsSendAdmin.checked = detail.autoreports.sendToAdmin;
+    if (els.settingsForm.elements.autoreportsPaymentAlertsEnabled) {
+      els.settingsForm.elements.autoreportsPaymentAlertsEnabled.checked = detail.autoreports.paymentAlerts.enabled;
+    }
+    if (els.settingsForm.elements.autoreportsPaymentAlertsSendChat) {
+      els.settingsForm.elements.autoreportsPaymentAlertsSendChat.checked = detail.autoreports.paymentAlerts.sendToChat;
+    }
+    if (els.settingsForm.elements.autoreportsPaymentAlertsSendAdmin) {
+      els.settingsForm.elements.autoreportsPaymentAlertsSendAdmin.checked = detail.autoreports.paymentAlerts.sendToAdmin;
+    }
+    updatePaymentAlertChannelState();
+  };
+
+    const updatePaymentAlertChannelState = () => {
+      if (!els.settingsForm) {
+        return;
+      }
+    const toggle = els.settingsForm.elements.autoreportsPaymentAlertsEnabled;
+    const chat = els.settingsForm.elements.autoreportsPaymentAlertsSendChat;
+    const admin = els.settingsForm.elements.autoreportsPaymentAlertsSendAdmin;
+    if (!toggle) {
+      return;
+    }
+    const shouldDisable = Boolean(toggle.disabled || !toggle.checked);
+    if (chat) {
+      chat.disabled = shouldDisable;
+    }
+    if (admin) {
+      admin.disabled = shouldDisable;
+    }
   };
 
     const fillLeadSettingsForm = (detail) => {
@@ -895,6 +928,11 @@ const adminClientFactory = () => {
         time: form.elements.autoreportsTime.value,
         sendToChat: form.elements.autoreportsSendChat.checked,
         sendToAdmin: form.elements.autoreportsSendAdmin.checked,
+        paymentAlerts: {
+          enabled: form.elements.autoreportsPaymentAlertsEnabled.checked,
+          sendToChat: form.elements.autoreportsPaymentAlertsSendChat.checked,
+          sendToAdmin: form.elements.autoreportsPaymentAlertsSendAdmin.checked,
+        },
       },
     };
     try {
@@ -995,6 +1033,12 @@ const adminClientFactory = () => {
     });
     els.paymentQuickForm?.addEventListener('submit', submitQuickPayments);
     els.settingsForm?.addEventListener('submit', submitSettings);
+    const paymentAlertToggle = els.settingsForm?.elements?.autoreportsPaymentAlertsEnabled;
+    if (paymentAlertToggle) {
+      paymentAlertToggle.addEventListener('change', () => {
+        updatePaymentAlertChannelState();
+      });
+    }
     els.leadSettingsForm?.addEventListener('submit', submitLeadSettings);
     els.webhookButton?.addEventListener('click', resetWebhook);
 

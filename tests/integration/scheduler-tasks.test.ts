@@ -7,7 +7,7 @@ const { R2Client } = await import("../../src/infra/r2.ts");
 const { createProject, putProject } = await import("../../src/domain/projects.ts");
 const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 const { putBillingRecord } = await import("../../src/domain/spec/billing.ts");
-const { putAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
+const { getAutoreportsRecord, putAutoreportsRecord } = await import("../../src/domain/spec/autoreports.ts");
 const { putProjectLeadsList, putLeadDetailRecord } = await import(
   "../../src/domain/spec/project-leads.ts"
 );
@@ -17,6 +17,8 @@ const { KV_KEYS } = await import("../../src/config/kv.ts");
 const { runAutoReports } = await import("../../src/services/auto-reports.ts");
 const { runMaintenance } = await import("../../src/services/maintenance.ts");
 const { R2_KEYS } = await import("../../src/config/r2.ts");
+const { ensureProjectSettings, upsertProjectSettings } = await import("../../src/domain/project-settings.ts");
+const { createMetaToken, upsertMetaToken } = await import("../../src/domain/meta-tokens.ts");
 
 interface TelegramCall {
   url: string;
@@ -41,6 +43,35 @@ const stubTelegramFetch = (): { calls: TelegramCall[]; restore: () => void } => 
     restore: () => {
       globalThis.fetch = originalFetch;
     },
+  };
+};
+
+const createAutoreportRecord = (
+  overrides: Partial<{
+    enabled: boolean;
+    time: string;
+    mode: string;
+    sendToChat: boolean;
+    sendToAdmin: boolean;
+    paymentAlerts: Record<string, unknown>;
+  }> = {},
+) => {
+  const { paymentAlerts, ...rest } = overrides;
+  return {
+    enabled: false,
+    time: "12:00",
+    mode: "today",
+    sendToChat: true,
+    sendToAdmin: false,
+    paymentAlerts: {
+      enabled: false,
+      sendToChat: true,
+      sendToAdmin: true,
+      lastAccountStatus: null,
+      lastAlertAt: null,
+      ...(paymentAlerts ?? {}),
+    },
+    ...rest,
   };
 };
 
@@ -71,13 +102,11 @@ test(
       nextPaymentDate: "2025-01-31",
       autobilling: true,
     });
-    await putAutoreportsRecord(kv, "proj-auto", {
-      enabled: true,
-      time: "12:00",
-      mode: "today",
-      sendToChat: false,
-      sendToAdmin: true,
-    });
+    await putAutoreportsRecord(
+      kv,
+      "proj-auto",
+      createAutoreportRecord({ enabled: true, time: "12:00", mode: "today", sendToChat: false, sendToAdmin: true }),
+    );
 
     const summaryEntry = createMetaCacheEntry("proj-auto", "summary:today", { from: "2025-01-01", to: "2025-01-01" }, {
       periodKey: "today",
@@ -211,13 +240,11 @@ test(
       nextPaymentDate: "2025-02-01",
       autobilling: false,
     });
-    await putAutoreportsRecord(kv, "proj-auto-msg", {
-      enabled: true,
-      time: "14:00",
-      mode: "today",
-      sendToChat: true,
-      sendToAdmin: false,
-    });
+    await putAutoreportsRecord(
+      kv,
+      "proj-auto-msg",
+      createAutoreportRecord({ enabled: true, time: "14:00", mode: "today", sendToChat: true, sendToAdmin: false }),
+    );
 
     const summaryMetrics = {
       spend: 15,
@@ -319,13 +346,11 @@ test(
       nextPaymentDate: "2025-02-15",
       autobilling: false,
     });
-    await putAutoreportsRecord(kv, "proj-auto-click", {
-      enabled: true,
-      time: "15:00",
-      mode: "today",
-      sendToChat: false,
-      sendToAdmin: true,
-    });
+    await putAutoreportsRecord(
+      kv,
+      "proj-auto-click",
+      createAutoreportRecord({ enabled: true, time: "15:00", mode: "today", sendToChat: false, sendToAdmin: true }),
+    );
 
     const emptyConversions: MetaSummaryMetrics = {
       spend: 30,
@@ -418,13 +443,11 @@ test(
       nextPaymentDate: "2025-02-20",
       autobilling: false,
     });
-    await putAutoreportsRecord(kv, "proj-manual-click", {
-      enabled: true,
-      time: "15:00",
-      mode: "today",
-      sendToChat: false,
-      sendToAdmin: true,
-    });
+    await putAutoreportsRecord(
+      kv,
+      "proj-manual-click",
+      createAutoreportRecord({ enabled: true, time: "15:00", mode: "today", sendToChat: false, sendToAdmin: true }),
+    );
 
     const emptyConversions: MetaSummaryMetrics = {
       spend: 25,
@@ -517,13 +540,11 @@ test(
       nextPaymentDate: "2025-01-31",
       autobilling: true,
     });
-    await putAutoreportsRecord(kv, "proj-auto-both", {
-      enabled: true,
-      time: "13:15",
-      mode: "today",
-      sendToChat: true,
-      sendToAdmin: true,
-    });
+    await putAutoreportsRecord(
+      kv,
+      "proj-auto-both",
+      createAutoreportRecord({ enabled: true, time: "13:15", mode: "today", sendToChat: true, sendToAdmin: true }),
+    );
 
     const summaryEntry = createMetaCacheEntry("proj-auto-both", "summary:today", { from: "2025-01-01", to: "2025-01-01" }, {
       periodKey: "today",
@@ -642,13 +663,11 @@ test(
       nextPaymentDate: "2025-02-01",
       autobilling: false,
     });
-    await putAutoreportsRecord(kv, "proj-auto-ny", {
-      enabled: true,
-      time: "09:30",
-      mode: "today",
-      sendToChat: false,
-      sendToAdmin: true,
-    });
+    await putAutoreportsRecord(
+      kv,
+      "proj-auto-ny",
+      createAutoreportRecord({ enabled: true, time: "09:30", mode: "today", sendToChat: false, sendToAdmin: true }),
+    );
 
     for (const periodKey of ["today", "yesterday", "week", "month"]) {
       const entry = createMetaCacheEntry(
@@ -715,6 +734,92 @@ test(
 
     assert.equal(telegram.calls.length, 1);
     assert.ok(String(telegram.calls[0].body.text ?? "").includes("📊 Отчёт"));
+  },
+);
+
+test(
+  "runAutoReports dispatches payment alert when Meta blocks billing",
+  { concurrency: false },
+  async () => {
+    const kvNamespace = new MemoryKVNamespace();
+    const kv = new KvClient(kvNamespace);
+    const project = createProject({
+      id: "proj-payment-alert",
+      name: "Payment Alerts",
+      adsAccountId: "act_payment",
+      ownerTelegramId: 600500,
+    });
+    await putProject(kv, project);
+    await putProjectRecord(kv, {
+      id: project.id,
+      name: project.name,
+      ownerId: project.ownerTelegramId,
+      adAccountId: project.adsAccountId,
+      chatId: -100500123,
+      portalUrl: "https://th-reports.buyclientuz.workers.dev/p/proj-payment-alert",
+      settings: { currency: "USD", timezone: "Asia/Tashkent", kpi: { mode: "auto", type: "LEAD", label: "Лиды" } },
+    });
+    await putBillingRecord(kv, project.id, {
+      tariff: 500,
+      currency: "USD",
+      nextPaymentDate: "2025-01-31",
+      autobilling: true,
+    });
+    await putAutoreportsRecord(
+      kv,
+      project.id,
+      createAutoreportRecord({
+        enabled: false,
+        paymentAlerts: { enabled: true, sendToChat: true, sendToAdmin: true },
+      }),
+    );
+
+    const settings = await ensureProjectSettings(kv, project.id);
+    await upsertProjectSettings(kv, { ...settings, meta: { facebookUserId: "fb_payment" } });
+    const metaToken = createMetaToken({ facebookUserId: "fb_payment", accessToken: "META_TOKEN" });
+    await upsertMetaToken(kv, metaToken);
+
+    const telegramCalls: TelegramCall[] = [];
+    const metaRequests: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("graph.facebook.com")) {
+        metaRequests.push(url);
+        return new Response(
+          JSON.stringify({ id: project.adsAccountId, name: "Birllash", account_status: 3 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      const body = typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+      telegramCalls.push({ url, body });
+      return new Response(JSON.stringify({ ok: true, result: { message_id: telegramCalls.length } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      await runAutoReports(kv, "TEST_TOKEN", new Date("2025-01-01T05:00:00.000Z"));
+      assert.equal(metaRequests.length, 1);
+      assert.equal(telegramCalls.length, 2);
+      const texts = telegramCalls.map((call) => String(call.body.text ?? ""));
+      assert.ok(texts.every((text) => /Meta остановила показ рекламы/.test(text)));
+      assert.ok(texts.every((text) => /Birllash/.test(text)));
+      const chatDelivery = telegramCalls.find((call) => call.body.chat_id === -100500123);
+      assert.ok(chatDelivery, "expected chat alert delivery");
+      const adminDelivery = telegramCalls.find((call) => call.body.chat_id === project.ownerTelegramId);
+      assert.ok(adminDelivery, "expected admin alert delivery");
+      const record = await getAutoreportsRecord(kv, project.id);
+      assert.ok(record);
+      assert.equal(record.paymentAlerts.lastAccountStatus, 3);
+      assert.ok(record.paymentAlerts.lastAlertAt);
+
+      await runAutoReports(kv, "TEST_TOKEN", new Date("2025-01-01T06:00:00.000Z"));
+      assert.equal(telegramCalls.length, 2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   },
 );
 

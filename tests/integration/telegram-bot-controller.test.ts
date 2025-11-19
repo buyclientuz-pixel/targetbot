@@ -118,6 +118,13 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     mode: "yesterday_plus_week",
     sendToChat: true,
     sendToAdmin: true,
+    paymentAlerts: {
+      enabled: false,
+      sendToChat: true,
+      sendToAdmin: true,
+      lastAccountStatus: null,
+      lastAlertAt: null,
+    },
   });
   const now = new Date();
   const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60 * 1000).toISOString();

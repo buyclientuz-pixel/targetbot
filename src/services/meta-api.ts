@@ -366,6 +366,27 @@ export const fetchMetaInsights = async (options: MetaFetchOptions): Promise<Meta
   };
 };
 
+export interface MetaAdAccountInfo {
+  id: string | null;
+  name: string | null;
+  account_status: number | null;
+  disable_reason: number | null;
+  disable_reasons: number[];
+  balance: string | null;
+  currency: string | null;
+}
+
+const normaliseAccountStatusNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseInt(value.trim(), 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+
 export const fetchMetaCampaignStatuses = async (
   accountId: string,
   accessToken: string,
@@ -393,6 +414,41 @@ export const fetchMetaCampaignStatuses = async (
   } while (after);
 
   return campaigns;
+};
+
+export const fetchMetaAdAccount = async (
+  options: { accountId: string; accessToken: string },
+): Promise<MetaAdAccountInfo> => {
+  if (!options.accountId) {
+    throw new DataValidationError("Meta Ads account id is required for account status");
+  }
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${options.accountId}`);
+  url.searchParams.set("access_token", options.accessToken);
+  url.searchParams.set(
+    "fields",
+    "id,name,account_status,disable_reason,disable_reasons,balance,currency",
+  );
+  const response = await retryOnMetaRateLimit(async () => {
+    const apiResponse = await fetch(url);
+    if (!apiResponse.ok) {
+      throw await createMetaApiError(apiResponse, "Meta account request");
+    }
+    return apiResponse;
+  });
+  const payload = (await response.json()) as Record<string, unknown>;
+  return {
+    id: typeof payload.id === "string" ? payload.id : null,
+    name: typeof payload.name === "string" ? payload.name : null,
+    account_status: normaliseAccountStatusNumber(payload.account_status),
+    disable_reason: normaliseAccountStatusNumber(payload.disable_reason),
+    disable_reasons: Array.isArray(payload.disable_reasons)
+      ? payload.disable_reasons
+          .map((entry) => normaliseAccountStatusNumber(entry))
+          .filter((entry): entry is number => entry != null)
+      : [],
+    balance: typeof payload.balance === "string" ? payload.balance : null,
+    currency: typeof payload.currency === "string" ? payload.currency : null,
+  };
 };
 
 const formatDateOnly = (date: Date): string => {

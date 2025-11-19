@@ -19,7 +19,20 @@ test("buildProjectCardMessage renders project snapshot", () => {
       },
     },
     billing: { tariff: 500, currency: "USD", nextPaymentDate: "2025-12-15", autobilling: true },
-    autoreports: { enabled: true, time: "10:00", mode: "yesterday_plus_week", sendToChat: true, sendToAdmin: true },
+    autoreports: {
+      enabled: true,
+      time: "10:00",
+      mode: "yesterday_plus_week",
+      sendToChat: true,
+      sendToAdmin: true,
+      paymentAlerts: {
+        enabled: false,
+        sendToChat: true,
+        sendToAdmin: true,
+        lastAccountStatus: null,
+        lastAlertAt: null,
+      },
+    },
     leads: {
       stats: { total: 168, today: 2 },
       leads: [

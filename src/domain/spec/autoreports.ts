@@ -1,7 +1,7 @@
 import { KV_KEYS } from "../../config/kv";
 import type { KvClient } from "../../infra/kv";
 import { DataValidationError } from "../../errors";
-import { assertBoolean, assertEnum, assertString } from "../validation";
+import { assertBoolean, assertEnum, assertOptionalNumber, assertOptionalString, assertString } from "../validation";
 
 export const AUTOREPORT_MODES = [
   "today",
@@ -14,13 +14,65 @@ export const AUTOREPORT_MODES = [
 ] as const;
 export type AutoreportMode = (typeof AUTOREPORT_MODES)[number];
 
+export interface AutoreportPaymentAlertSettings {
+  enabled: boolean;
+  sendToChat: boolean;
+  sendToAdmin: boolean;
+  lastAccountStatus: number | null;
+  lastAlertAt: string | null;
+}
+
 export interface AutoreportsRecord {
   enabled: boolean;
   time: string;
   mode: AutoreportMode;
   sendToChat: boolean;
   sendToAdmin: boolean;
+  paymentAlerts: AutoreportPaymentAlertSettings;
 }
+
+const DEFAULT_PAYMENT_ALERTS: AutoreportPaymentAlertSettings = {
+  enabled: false,
+  sendToChat: true,
+  sendToAdmin: true,
+  lastAccountStatus: null,
+  lastAlertAt: null,
+};
+
+const parsePaymentAlerts = (raw: unknown): AutoreportPaymentAlertSettings => {
+  if (!raw || typeof raw !== "object") {
+    return { ...DEFAULT_PAYMENT_ALERTS };
+  }
+  const record = raw as Record<string, unknown>;
+  return {
+    enabled: assertBoolean(record.enabled ?? record["enabled"] ?? DEFAULT_PAYMENT_ALERTS.enabled, "autoreports.paymentAlerts.enabled"),
+    sendToChat: assertBoolean(
+      record.sendToChat ?? record["send_to_chat"] ?? DEFAULT_PAYMENT_ALERTS.sendToChat,
+      "autoreports.paymentAlerts.send_to_chat",
+    ),
+    sendToAdmin: assertBoolean(
+      record.sendToAdmin ?? record["send_to_admin"] ?? DEFAULT_PAYMENT_ALERTS.sendToAdmin,
+      "autoreports.paymentAlerts.send_to_admin",
+    ),
+    lastAccountStatus: assertOptionalNumber(
+      record.lastAccountStatus ?? record["last_account_status"] ?? DEFAULT_PAYMENT_ALERTS.lastAccountStatus,
+      "autoreports.paymentAlerts.last_account_status",
+    ),
+    lastAlertAt: assertOptionalString(
+      record.lastAlertAt ?? record["last_alert_at"] ?? DEFAULT_PAYMENT_ALERTS.lastAlertAt,
+      "autoreports.paymentAlerts.last_alert_at",
+    ),
+  };
+};
+
+export const createDefaultAutoreportsRecord = (): AutoreportsRecord => ({
+  enabled: false,
+  time: "10:00",
+  mode: "yesterday_plus_week",
+  sendToChat: true,
+  sendToAdmin: false,
+  paymentAlerts: { ...DEFAULT_PAYMENT_ALERTS },
+});
 
 export const parseAutoreportsRecord = (raw: unknown): AutoreportsRecord => {
   if (!raw || typeof raw !== "object") {
@@ -53,12 +105,14 @@ export const parseAutoreportsRecord = (raw: unknown): AutoreportsRecord => {
   };
   const chatField = pickBoolean(["send_to_chat", "sendToChat"], "autoreports.send_to_chat");
   const adminField = pickBoolean(["send_to_admin", "sendToAdmin"], "autoreports.send_to_admin");
+  const paymentAlertsRaw = record.paymentAlerts ?? record["payment_alerts"];
   return {
     enabled: assertBoolean(record.enabled ?? record["enabled"], "autoreports.enabled"),
     time: assertString(record.time ?? record["time"], "autoreports.time"),
     mode: assertEnum(record.mode ?? record["mode"], "autoreports.mode", AUTOREPORT_MODES),
     sendToChat: chatField.present ? Boolean(chatField.value) : legacyRoute.chat,
     sendToAdmin: adminField.present ? Boolean(adminField.value) : legacyRoute.admin,
+    paymentAlerts: parsePaymentAlerts(paymentAlertsRaw),
   };
 };
 
@@ -68,6 +122,13 @@ export const serialiseAutoreportsRecord = (record: AutoreportsRecord): Record<st
   mode: record.mode,
   send_to_chat: record.sendToChat,
   send_to_admin: record.sendToAdmin,
+  payment_alerts: {
+    enabled: record.paymentAlerts.enabled,
+    send_to_chat: record.paymentAlerts.sendToChat,
+    send_to_admin: record.paymentAlerts.sendToAdmin,
+    last_account_status: record.paymentAlerts.lastAccountStatus,
+    last_alert_at: record.paymentAlerts.lastAlertAt,
+  },
 });
 
 export const getAutoreportsRecord = async (

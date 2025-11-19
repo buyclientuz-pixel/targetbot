@@ -10,7 +10,12 @@ import { getProject, parseProject } from "../domain/projects";
 import { getMetaToken, parseMetaToken, upsertMetaToken, deleteMetaToken } from "../domain/meta-tokens";
 import { putFbAuthRecord, type FbAdAccount, type FbAuthRecord } from "../domain/spec/fb-auth";
 import { getBillingRecord, putBillingRecord, type BillingRecord } from "../domain/spec/billing";
-import { getAutoreportsRecord, putAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
+import {
+  createDefaultAutoreportsRecord,
+  getAutoreportsRecord,
+  putAutoreportsRecord,
+  type AutoreportsRecord,
+} from "../domain/spec/autoreports";
 import {
   appendPaymentRecord,
   getPaymentsHistoryDocument,
@@ -621,6 +626,12 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                     <span><input type="checkbox" name="autoreportsSendAdmin" /> Админу</span>
                   </label>
                   <label>Время отчёта<input type="time" name="autoreportsTime" value="10:00" /></label>
+                  <label>Аллерт оплат<span><input type="checkbox" name="autoreportsPaymentAlertsEnabled" /> Включить</span></label>
+                  <label>
+                    Каналы алерта оплаты
+                    <span><input type="checkbox" name="autoreportsPaymentAlertsSendChat" /> В чат</span>
+                    <span><input type="checkbox" name="autoreportsPaymentAlertsSendAdmin" /> Админу</span>
+                  </label>
                   <button class="admin-btn" type="submit">Сохранить настройки</button>
                 </form>
               </div>
@@ -708,6 +719,11 @@ interface UpdateSettingsBody extends Record<string, unknown> {
     time?: string;
     sendToChat?: boolean;
     sendToAdmin?: boolean;
+    paymentAlerts?: {
+      enabled?: boolean;
+      sendToChat?: boolean;
+      sendToAdmin?: boolean;
+    };
   };
   leads?: {
     sendToChat?: boolean;
@@ -1455,14 +1471,24 @@ export const registerAdminRoutes = (router: Router): void => {
       let updatedAutoreports: AutoreportsRecord | null = null;
       if (body.autoreports) {
         const currentAutoreports =
-          (await getAutoreportsRecord(context.kv, projectId).catch(() => null)) ??
-          ({
-            enabled: false,
-            time: "10:00",
-            mode: "yesterday_plus_week",
-            sendToChat: true,
-            sendToAdmin: false,
-          } satisfies AutoreportsRecord);
+          (await getAutoreportsRecord(context.kv, projectId).catch(() => null)) ?? createDefaultAutoreportsRecord();
+        const nextPaymentAlerts = body.autoreports.paymentAlerts
+          ? {
+              ...currentAutoreports.paymentAlerts,
+              enabled:
+                typeof body.autoreports.paymentAlerts.enabled === "boolean"
+                  ? body.autoreports.paymentAlerts.enabled
+                  : currentAutoreports.paymentAlerts.enabled,
+              sendToChat:
+                typeof body.autoreports.paymentAlerts.sendToChat === "boolean"
+                  ? body.autoreports.paymentAlerts.sendToChat
+                  : currentAutoreports.paymentAlerts.sendToChat,
+              sendToAdmin:
+                typeof body.autoreports.paymentAlerts.sendToAdmin === "boolean"
+                  ? body.autoreports.paymentAlerts.sendToAdmin
+                  : currentAutoreports.paymentAlerts.sendToAdmin,
+            }
+          : currentAutoreports.paymentAlerts;
         updatedAutoreports = {
           ...currentAutoreports,
           enabled:
@@ -1481,6 +1507,7 @@ export const registerAdminRoutes = (router: Router): void => {
             typeof body.autoreports.sendToAdmin === "boolean"
               ? body.autoreports.sendToAdmin
               : currentAutoreports.sendToAdmin,
+          paymentAlerts: nextPaymentAlerts,
         } satisfies AutoreportsRecord;
         await putAutoreportsRecord(context.kv, projectId, updatedAutoreports);
       }

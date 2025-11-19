@@ -55,7 +55,11 @@ import {
 import { appendPaymentRecord, type PaymentRecord } from "../domain/spec/payments-history";
 import { putBillingRecord } from "../domain/spec/billing";
 import { getFbAuthRecord, putFbAuthRecord, type FbAuthRecord } from "../domain/spec/fb-auth";
-import { putAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
+import {
+  createDefaultAutoreportsRecord,
+  putAutoreportsRecord,
+  type AutoreportsRecord,
+} from "../domain/spec/autoreports";
 import {
   getLeadDetailRecord,
   putLeadDetailRecord,
@@ -198,13 +202,7 @@ const buildDefaultBillingRecord = (currency: string) => ({
   autobilling: false,
 });
 
-const buildDefaultAutoreportsRecord = (): AutoreportsRecord => ({
-  enabled: false,
-  time: "10:00",
-  mode: "yesterday_plus_week",
-  sendToChat: true,
-  sendToAdmin: false,
-});
+const buildDefaultAutoreportsRecord = (): AutoreportsRecord => createDefaultAutoreportsRecord();
 
 const addProjectToUserMembership = async (ctx: BotContext, userId: number, projectId: string): Promise<void> => {
   const membership = (await getProjectsByUser(ctx.kv, userId)) ?? { projects: [] };
@@ -1445,6 +1443,48 @@ const handleAutoreportsRecipientToggle = async (
   await renderAutoreportsPanel(runtime, userId, chatId, projectId);
 };
 
+const handlePaymentAlertToggle = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const nextRecord: AutoreportsRecord = {
+    ...bundle.autoreports,
+    paymentAlerts: {
+      ...bundle.autoreports.paymentAlerts,
+      enabled: !bundle.autoreports.paymentAlerts.enabled,
+    },
+  };
+  await putAutoreportsRecord(ctx.kv, projectId, nextRecord);
+  await renderAutoreportsPanel(runtime, userId, chatId, projectId);
+};
+
+const handlePaymentAlertRecipientToggle = async (
+  ctx: BotContext,
+  runtime: ReturnType<typeof buildPanelRuntime>,
+  userId: number,
+  chatId: number,
+  projectId: string,
+  target: "chat" | "admin",
+): Promise<void> => {
+  const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
+  const nextRecord: AutoreportsRecord = {
+    ...bundle.autoreports,
+    paymentAlerts: {
+      ...bundle.autoreports.paymentAlerts,
+      sendToChat:
+        target === "chat" ? !bundle.autoreports.paymentAlerts.sendToChat : bundle.autoreports.paymentAlerts.sendToChat,
+      sendToAdmin:
+        target === "admin" ? !bundle.autoreports.paymentAlerts.sendToAdmin : bundle.autoreports.paymentAlerts.sendToAdmin,
+    },
+  };
+  await putAutoreportsRecord(ctx.kv, projectId, nextRecord);
+  await renderAutoreportsPanel(runtime, userId, chatId, projectId);
+};
+
 const handleAutoreportsSendNow = async (
   ctx: BotContext,
   runtime: ReturnType<typeof buildPanelRuntime>,
@@ -1817,6 +1857,19 @@ const handleCallback = async (
           break;
         case "autoreports-target":
           await handleAutoreportsRecipientToggle(
+            ctx,
+            panelRuntime,
+            userId,
+            chatId,
+            parts[2]!,
+            parts[3]! as "chat" | "admin",
+          );
+          break;
+        case "autoreports-payment-toggle":
+          await handlePaymentAlertToggle(ctx, panelRuntime, userId, chatId, parts[2]!);
+          break;
+        case "autoreports-payment-target":
+          await handlePaymentAlertRecipientToggle(
             ctx,
             panelRuntime,
             userId,

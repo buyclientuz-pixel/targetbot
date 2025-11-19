@@ -120,10 +120,20 @@ test("autoreports parsing", () => {
     mode: "yesterday_plus_week",
     send_to_chat: true,
     send_to_admin: false,
+    payment_alerts: {
+      enabled: true,
+      send_to_chat: false,
+      send_to_admin: true,
+      last_account_status: 2,
+      last_alert_at: "2025-11-18T00:00:00Z",
+    },
   });
   assert.equal(record.mode, "yesterday_plus_week");
   assert.equal(record.sendToChat, true);
   assert.equal(record.sendToAdmin, false);
+  assert.equal(record.paymentAlerts.enabled, true);
+  assert.equal(record.paymentAlerts.sendToChat, false);
+  assert.equal(record.paymentAlerts.lastAccountStatus, 2);
 });
 
 test("project leads list", () => {

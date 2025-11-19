@@ -9,6 +9,13 @@ const baseAutoreports = {
   mode: "today",
   sendToChat: true,
   sendToAdmin: true,
+  paymentAlerts: {
+    enabled: true,
+    sendToChat: true,
+    sendToAdmin: true,
+    lastAccountStatus: null,
+    lastAlertAt: null,
+  },
 } as const;
 
 test("buildAutoreportsKeyboard exposes manual send button", () => {
@@ -17,5 +24,13 @@ test("buildAutoreportsKeyboard exposes manual send button", () => {
   assert.ok(
     callbacks.includes("auto_send_now:proj_a"),
     "expected auto_send_now callback in autoreports keyboard",
+  );
+  assert.ok(
+    callbacks.includes("project:autoreports-payment-toggle:proj_a"),
+    "expected payment toggle callback",
+  );
+  assert.ok(
+    callbacks.includes("project:autoreports-payment-target:proj_a:chat"),
+    "expected payment chat toggle callback",
   );
 });

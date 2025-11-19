@@ -95,6 +95,13 @@ const describeAutoreportTargets = (autoreports: AutoreportsRecord): string => {
   return segments.join(", ");
 };
 
+const describePaymentAlertTargets = (alerts: AutoreportsRecord["paymentAlerts"]): string => {
+  const segments: string[] = [];
+  segments.push(`👥 чат — ${alerts.sendToChat ? "вкл" : "выкл"}`);
+  segments.push(`👤 админ — ${alerts.sendToAdmin ? "вкл" : "выкл"}`);
+  return segments.join(", ");
+};
+
 const describeLeadNotificationTargets = (settings: ProjectLeadNotificationSettings): string => {
   const segments: string[] = [];
   segments.push(`👥 чат — ${settings.sendToChat ? "вкл" : "выкл"}`);
@@ -633,6 +640,11 @@ export const buildAutoreportsMessage = (
   lines.push(`Время: ${autoreports.time}`);
   lines.push(`Формат: ${describeAutoreportMode(autoreports.mode)}`);
   lines.push(`Получатели: ${describeAutoreportTargets(autoreports)}`);
+  lines.push(
+    `💳 Аллерт оплат: ${autoreports.paymentAlerts.enabled ? "включён" : "выключен"} (${describePaymentAlertTargets(
+      autoreports.paymentAlerts,
+    )})`,
+  );
   return lines.join("\n");
 };
 

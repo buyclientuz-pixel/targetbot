@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { resolveDatePreset, fetchMetaLeads, summariseMetaInsights, countMessagesFromActions } = await import(
+const {
+  resolveDatePreset,
+  fetchMetaLeads,
+  summariseMetaInsights,
+  countMessagesFromActions,
+  fetchMetaAdAccount,
+} = await import(
   "../../src/services/meta-api.ts",
 );
 
@@ -53,6 +59,40 @@ test("fetchMetaLeads returns account-level leads without enumerating forms", asy
     assert.equal(leads.length, 1);
     assert.ok(requests.some((request) => request.pathname.includes("/act_account/leads")));
     assert.ok(!requests.some((request) => request.pathname.includes("leadgen_forms")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchMetaAdAccount returns parsed account status", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    requests.push(url);
+    return new Response(
+      JSON.stringify({
+        id: "act_payment",
+        name: "BirLash",
+        account_status: "2",
+        disable_reason: 3,
+        disable_reasons: [3, "11"],
+        balance: "100",
+        currency: "USD",
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const info = await fetchMetaAdAccount({ accountId: "act_payment", accessToken: "token" });
+    assert.equal(info.id, "act_payment");
+    assert.equal(info.name, "BirLash");
+    assert.equal(info.account_status, 2);
+    assert.equal(info.disable_reason, 3);
+    assert.deepEqual(info.disable_reasons, [3, 11]);
+    assert.equal(info.balance, "100");
+    assert.equal(info.currency, "USD");
+    assert.ok(requests.some((request) => request.pathname.includes("/act_payment")));
   } finally {
     globalThis.fetch = originalFetch;
   }

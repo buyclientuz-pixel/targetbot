@@ -11,6 +11,7 @@ import { dispatchProjectMessage } from "./project-messaging";
 import { DataValidationError } from "../errors";
 import { getAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import { requireProjectRecord, type ProjectRecord, type KpiType } from "../domain/spec/project";
+import { maybeDispatchPaymentAlert } from "./payment-alerts";
 
 const DEFAULT_AUTOREPORT_TIMEZONE = "Asia/Tashkent";
 const SLOT_WINDOW_MS = 5 * 60 * 1000;
@@ -582,25 +583,36 @@ interface AutoreportProfile {
   recipients: { chat: boolean; admin: boolean };
 }
 
+interface AutoreportProfileResult {
+  profile: AutoreportProfile;
+  record: AutoreportsRecord | null;
+}
+
 const resolveAutoreportProfile = async (
   kv: KvClient,
   projectId: string,
   settings: ProjectSettings,
-): Promise<AutoreportProfile> => {
+): Promise<AutoreportProfileResult> => {
   const record = await getAutoreportsRecord(kv, projectId);
   if (!record) {
     return {
-      enabled: settings.reports.autoReportsEnabled,
-      slots: [...settings.reports.timeSlots],
-      mode: settings.reports.mode,
-      recipients: { chat: true, admin: false },
+      record: null,
+      profile: {
+        enabled: settings.reports.autoReportsEnabled,
+        slots: [...settings.reports.timeSlots],
+        mode: settings.reports.mode,
+        recipients: { chat: true, admin: false },
+      },
     };
   }
   return {
-    enabled: record.enabled,
-    slots: record.enabled && record.time ? [record.time] : [],
-    mode: record.mode,
-    recipients: { chat: record.sendToChat, admin: record.sendToAdmin },
+    record,
+    profile: {
+      enabled: record.enabled,
+      slots: record.enabled && record.time ? [record.time] : [],
+      mode: record.mode,
+      recipients: { chat: record.sendToChat, admin: record.sendToAdmin },
+    },
   };
 };
 
@@ -837,7 +849,15 @@ export const runAutoReports = async (
     try {
       const settings = await ensureProjectSettings(kv, project.id);
       const projectRecord = await requireProjectRecord(kv, project.id);
-      const profile = await resolveAutoreportProfile(kv, project.id, settings);
+      const { profile, record: autoreportsRecord } = await resolveAutoreportProfile(kv, project.id, settings);
+      await maybeDispatchPaymentAlert({
+        kv,
+        token,
+        project,
+        settings,
+        autoreports: autoreportsRecord,
+        now,
+      });
       if (!profile.enabled || profile.slots.length === 0) {
         continue;
       }
@@ -939,7 +959,7 @@ export const sendAutoReportNow = async (
   }
   const projectRecord = await requireProjectRecord(kv, projectId);
   const settings = await ensureProjectSettings(kv, projectId);
-  const profile = await resolveAutoreportProfile(kv, projectId, settings);
+  const { profile } = await resolveAutoreportProfile(kv, projectId, settings);
   if (!profile.recipients.chat && !profile.recipients.admin) {
     return;
   }

@@ -329,6 +329,22 @@ export const buildAutoreportsKeyboard = (
       },
     ],
     [
+      {
+        text: autoreports.paymentAlerts.enabled ? "💳 Аллерт оплат — вкл" : "💳 Аллерт оплат — выкл",
+        callback_data: `project:autoreports-payment-toggle:${projectId}`,
+      },
+    ],
+    [
+      {
+        text: autoreports.paymentAlerts.sendToChat ? "👥 Аллерт: чат" : "👥 Аллерт: выкл",
+        callback_data: `project:autoreports-payment-target:${projectId}:chat`,
+      },
+      {
+        text: autoreports.paymentAlerts.sendToAdmin ? "👤 Аллерт: админ" : "👤 Аллерт: выкл",
+        callback_data: `project:autoreports-payment-target:${projectId}:admin`,
+      },
+    ],
+    [
       { text: "📤 Отправить сейчас", callback_data: `auto_send_now:${projectId}` },
     ],
     [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],

@@ -91,6 +91,8 @@ erDiagram
 
 ```
 
+* `payment_alerts` отвечает за уведомление о блокировке списаний. Поля `enabled`, `send_chat`, `send_admin` включают каналы, `last_account_status`/`last_alert_at` выставляются воркером после отправки и сбрасываются при восстановлении статуса.
+
 ---
 
 # ----------------------------------------------------
@@ -141,6 +143,13 @@ project_settings:{project_id}
     "last_sent_daily": "2025-11-13",
     "last_sent_monday": "2025-11-10"
   },
+  "payment_alerts": {
+    "enabled": false,
+    "send_chat": true,
+    "send_admin": true,
+    "last_account_status": null,
+    "last_alert_at": null
+  },
   "kpi": {
     "default": ["spend", "leads", "cpa"],
     "per_campaign": {
@@ -176,6 +185,8 @@ auto_toggle:{project_id}
 auto_time_toggle:{project_id}:{HH:MM}
 auto_send_target:{project_id}:{chat|admin}
 auto_monday_toggle:{project_id}
+auto_payment_alert_toggle:{project_id}
+auto_payment_alert_target:{project_id}:{chat|admin}
 auto_send_now:{project_id}
 ```
 
