@@ -15,37 +15,48 @@ const createEnv = () => ({
   FB_LONG_TOKEN: "test-facebook-token",
 }) as import("../../src/worker/types.ts").TargetBotEnv;
 
-test("sync-leads imports new entries and exposes them over /leads", async () => {
+test("sync-leads auto-discovers forms, caches them and exposes leads", async () => {
   const env = createEnv();
   const router = createRouter();
   registerLeadWorkerRoutes(router);
-  await env.LEADS_KV.put("FORM_IDS:act_123", JSON.stringify(["999999"]));
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? new URL(input) : new URL((input as Request).url);
     if (url.hostname === "graph.facebook.com") {
+      if (url.pathname.endsWith("/leadgen_forms")) {
+        return new Response(JSON.stringify({ data: [{ id: "form_auto" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.pathname.includes("/form_auto/")) {
+        return new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "lead-1",
+                created_time: "2025-11-17T13:11:45+0000",
+                field_data: [
+                  { name: "full_name", values: ["Kamilla"] },
+                  { name: "phone_number", values: ["+998909999999"] },
+                ],
+              },
+              {
+                id: "lead-2",
+                created_time: "2025-11-18T10:00:00+0000",
+                field_data: [
+                  { name: "full_name", values: ["Aziz"] },
+                  { name: "phone_number", values: ["+998977777777"] },
+                ],
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
       return new Response(
-        JSON.stringify({
-          data: [
-            {
-              id: "lead-1",
-              created_time: "2025-11-17T13:11:45+0000",
-              field_data: [
-                { name: "full_name", values: ["Kamilla"] },
-                { name: "phone_number", values: ["+998909999999"] },
-              ],
-            },
-            {
-              id: "lead-2",
-              created_time: "2025-11-18T10:00:00+0000",
-              field_data: [
-                { name: "full_name", values: ["Aziz"] },
-                { name: "phone_number", values: ["+998977777777"] },
-              ],
-            },
-          ],
-        }),
+        JSON.stringify({ data: [] }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     }
@@ -64,6 +75,9 @@ test("sync-leads imports new entries and exposes them over /leads", async () => 
     const syncBody = (await syncResponse.json()) as { success: boolean; imported: number };
     assert.equal(syncBody.success, true);
     assert.equal(syncBody.imported, 2);
+    const cachedFormsRaw = await env.LEADS_KV.get("FORM_IDS:act_123");
+    assert.ok(cachedFormsRaw, "forms cache was persisted");
+    assert.deepEqual(JSON.parse(cachedFormsRaw!), ["form_auto"]);
 
     const leadsResponse = await router.dispatch(
       new Request("https://example.com/api/projects/act_123/leads"),

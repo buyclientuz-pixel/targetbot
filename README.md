@@ -113,7 +113,7 @@ npm run deploy
 ### API маршруты
 
 `GET /api/projects/:project_id/sync-leads`
-: читает `FORM_IDS:<project_id>`, выгружает лиды по каждой форме (`id`, `created_time`, `field_data`), сохраняет новые записи и возвращает `{ success: true, imported: <count> }`. Если Meta возвращает ошибку, API отдаёт её JSON/статус без модификаций.
+: автоматически перечисляет формы аккаунта (Meta Lead Ads Forms), кэширует их в `FORM_IDS:<project_id>`, выгружает лиды по каждой форме (`id`, `created_time`, `field_data`), сохраняет новые записи и возвращает `{ success: true, imported: <count> }`. Если Meta возвращает ошибку, API отдаёт её JSON/статус без модификаций.
 
 `GET /api/projects/:project_id/leads`
 : считывает все ключи `LEAD:<project_id>:*`, сортирует по `created_time` (DESC) и возвращает структуру:
@@ -136,20 +136,13 @@ npm run deploy
 
 ### KV-структура
 
-- `FORM_IDS:<project_id>` — JSON-массив строк `form_id` (пример: `["1192381723","98734562345"]`).
+- `FORM_IDS:<project_id>` — JSON-массив строк `form_id` (пример: `["1192381723","98734562345"]`). Значение создаётся автоматически при первом вызове `sync-leads`, но его можно перезаписать вручную для отладки/ограничения списка форм.
 - `LEAD:<project_id>:<lead_id>` — JSON объекта `{ lead_id, project_id, form_id, name, phone, created_time }`.
-
-### Добавление форм
-
-```bash
-wrangler kv:key put --binding LEADS_KV FORM_IDS:act_123 '["9988776655"]'
-```
 
 ### Проверка на проекте «Birllash»
 
-1. Сохраните реальные ID форм рекламного аккаунта клиента: `wrangler kv:key put --binding LEADS_KV FORM_IDS:birllash2025 '["<formA>","<formB>"]'`.
-2. Запустите синхронизацию: `curl -X GET https://th-reports.buyclientuz.workers.dev/api/projects/birllash2025/sync-leads` — в ответе должно быть `imported >= 3`.
-3. Проверьте выдачу: `curl https://th-reports.buyclientuz.workers.dev/api/projects/birllash2025/leads | jq '.total'` — значение обязано совпадать с количеством строк, а список `leads` будет отсортирован по `created_time` (последние заявки сверху).
+1. Запустите синхронизацию: `curl -X GET https://th-reports.buyclientuz.workers.dev/api/projects/birllash2025/sync-leads` — воркер сам найдёт формы, закэширует их в `FORM_IDS:birllash2025` и вернёт `imported >= 3` при наличии свежих лидов.
+2. Проверьте выдачу: `curl https://th-reports.buyclientuz.workers.dev/api/projects/birllash2025/leads | jq '.total'` — значение обязано совпадать с количеством строк, а список `leads` будет отсортирован по `created_time` (последние заявки сверху).
 
 Такой прогон подтверждает, что воркер способен вытянуть 3–4 лида из подключённого рекламного аккаунта без Cron-задач и сразу отдать их порталу/боту.
 

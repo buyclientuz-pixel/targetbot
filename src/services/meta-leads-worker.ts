@@ -38,6 +38,75 @@ export class MetaApiError extends Error {
 const getFormIdsKey = (projectId: string): string => `FORM_IDS:${projectId}`;
 const getLeadKey = (projectId: string, leadId: string): string => `LEAD:${projectId}:${leadId}`;
 
+const resolveMetaCredentials = (env: TargetBotEnv): { token: string; version: string } => {
+  const token = (env.FB_LONG_TOKEN ?? env.FACEBOOK_TOKEN)?.trim();
+  if (!token) {
+    throw new MetaApiError("FB_LONG_TOKEN is not configured", 500, {
+      error: "FB_LONG_TOKEN is not configured",
+    });
+  }
+  return { token, version: env.FACEBOOK_API_VERSION ?? "v18.0" };
+};
+
+interface LeadFormEntry {
+  id?: string | number | null;
+}
+
+interface LeadFormResponse {
+  data?: LeadFormEntry[];
+  paging?: { cursors?: { after?: string | null }; next?: string | null };
+}
+
+const fetchProjectLeadForms = async (env: TargetBotEnv, projectId: string): Promise<string[]> => {
+  const { token, version } = resolveMetaCredentials(env);
+  const forms: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = new URL(
+      `https://graph.facebook.com/${version}/${encodeURIComponent(projectId)}/leadgen_forms`,
+    );
+    url.searchParams.set("fields", "id");
+    url.searchParams.set("limit", "200");
+    url.searchParams.set("access_token", token);
+    if (cursor) {
+      url.searchParams.set("after", cursor);
+    }
+    const response = await fetch(url.toString());
+    const text = await response.text();
+    let payload: LeadFormResponse | string = {};
+    try {
+      payload = text ? (JSON.parse(text) as LeadFormResponse) : {};
+    } catch {
+      payload = text;
+    }
+    if (!response.ok) {
+      console.error("[leads] Meta leadgen form error", { projectId, status: response.status, payload });
+      throw new MetaApiError("Failed to fetch lead forms", response.status, payload);
+    }
+    const entries = Array.isArray((payload as LeadFormResponse).data)
+      ? ((payload as LeadFormResponse).data as LeadFormEntry[])
+      : [];
+    for (const entry of entries) {
+      if (entry && (typeof entry.id === "string" || typeof entry.id === "number")) {
+        const id = String(entry.id).trim();
+        if (id) {
+          forms.push(id);
+        }
+      }
+    }
+    cursor = (payload as LeadFormResponse).paging?.cursors?.after ?? undefined;
+  } while (cursor);
+  return forms;
+};
+
+const saveProjectFormIds = async (
+  env: TargetBotEnv,
+  projectId: string,
+  formIds: string[],
+): Promise<void> => {
+  await env.LEADS_KV.put(getFormIdsKey(projectId), JSON.stringify(formIds));
+};
+
 export const parseFieldData = (fieldData: MetaLeadFieldEntry[] | undefined): { name: string | null; phone: string | null } => {
   if (!Array.isArray(fieldData)) {
     return { name: null, phone: null };
@@ -71,14 +140,8 @@ export const fetchLeadsForForm = async (
   formId: string,
   env: TargetBotEnv,
 ): Promise<MetaLeadRecord[]> => {
-  const token = (env.FB_LONG_TOKEN ?? env.FACEBOOK_TOKEN)?.trim();
-  const apiVersion = env.FACEBOOK_API_VERSION ?? "v18.0";
-  if (!token) {
-    throw new MetaApiError("FB_LONG_TOKEN is not configured", 500, {
-      error: "FB_LONG_TOKEN is not configured",
-    });
-  }
-  const url = new URL(`https://graph.facebook.com/${apiVersion}/${encodeURIComponent(formId)}/leads`);
+  const { token, version } = resolveMetaCredentials(env);
+  const url = new URL(`https://graph.facebook.com/${version}/${encodeURIComponent(formId)}/leads`);
   url.searchParams.set("fields", "id,created_time,field_data");
   url.searchParams.set("access_token", token);
 
@@ -162,6 +225,26 @@ export const loadProjectFormIds = async (env: TargetBotEnv, projectId: string): 
   } catch (error) {
     console.error("[leads] Invalid FORM_IDS entry", { projectId, error });
     return [];
+  }
+};
+
+export const ensureProjectFormIds = async (env: TargetBotEnv, projectId: string): Promise<string[]> => {
+  const cached = await loadProjectFormIds(env, projectId);
+  if (cached.length > 0) {
+    return cached;
+  }
+  try {
+    const fetched = await fetchProjectLeadForms(env, projectId);
+    if (fetched.length > 0) {
+      await saveProjectFormIds(env, projectId, fetched);
+    }
+    return fetched;
+  } catch (error) {
+    if (error instanceof MetaApiError) {
+      throw error;
+    }
+    console.error("[leads] Failed to enumerate forms", { projectId, error });
+    throw error;
   }
 };
 

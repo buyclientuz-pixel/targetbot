@@ -513,6 +513,27 @@ export const renderPortalHtml = (projectId: string): string => {
           cancelled: 'danger',
           declined: 'danger',
         };
+        const resolvePaymentStatusKey = (payment) => {
+          const baseStatus = (payment?.status || '').toLowerCase();
+          if (baseStatus === 'paid' || baseStatus === 'cancelled' || baseStatus === 'declined') {
+            return baseStatus;
+          }
+          const dueRaw = payment?.paidAt || payment?.paid_at || payment?.periodTo || payment?.period_to;
+          const dueTime = dueRaw ? Date.parse(dueRaw) : Number.NaN;
+          const now = Date.now();
+          if (Number.isFinite(dueTime)) {
+            if (dueTime > now) {
+              return 'planned';
+            }
+            if (!payment?.paidAt && !payment?.paid_at && dueTime < now) {
+              return 'overdue';
+            }
+          }
+          if (baseStatus === 'pending') {
+            return 'planned';
+          }
+          return baseStatus || 'planned';
+        };
         const renderProject = (project) => {
           if (!project) return;
           document.title = 'Портал — ' + project.name;
@@ -693,7 +714,7 @@ export const renderPortalHtml = (projectId: string): string => {
           if (elements.paymentsBody) {
             elements.paymentsBody.innerHTML = payments
               .map((payment) => {
-                const statusKey = (payment.status || '').toLowerCase();
+                const statusKey = resolvePaymentStatusKey(payment);
                 const rawLabel = PAYMENT_STATUS_LABELS[statusKey] || payment.status || '—';
                 const statusLabel = escapeHtml(rawLabel);
                 const statusClass = PAYMENT_STATUS_STATES[statusKey] || 'muted';

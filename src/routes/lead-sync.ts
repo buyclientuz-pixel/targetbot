@@ -1,6 +1,11 @@
 import { jsonResponse } from "../http/responses";
 import type { Router } from "../worker/router";
-import { listLeads, loadProjectFormIds, MetaApiError, syncProjectLeads } from "../services/meta-leads-worker";
+import {
+  listLeads,
+  ensureProjectFormIds,
+  MetaApiError,
+  syncProjectLeads,
+} from "../services/meta-leads-worker";
 
 const badRequest = (message: string): Response => jsonResponse({ success: false, error: message }, { status: 400 });
 
@@ -20,7 +25,7 @@ export const registerLeadWorkerRoutes = (router: Router): void => {
       return badRequest("project_id is required");
     }
 
-    const formIds = await loadProjectFormIds(context.env, projectId);
+    const formIds = await ensureProjectFormIds(context.env, projectId);
     if (formIds.length === 0) {
       return jsonResponse({ success: true, imported: 0 });
     }
