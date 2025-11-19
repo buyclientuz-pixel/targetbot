@@ -361,7 +361,8 @@ export const loadProjectCampaigns = async (
     throw new DataValidationError("Project is missing adsAccountId for Meta insights");
   }
 
-  const periodRange = options?.periodRange ?? resolvePeriodRange(periodKey, settings.timezone);
+  const customPeriodRange = options?.periodRange ?? null;
+  const periodRange = customPeriodRange ?? resolvePeriodRange(periodKey, settings.timezone);
   const scope = buildScopedCacheKey(`campaigns:${periodKey}`, periodKey, periodRange, {
     forceScoped: Boolean(options?.forceCacheScope || periodRange.key === "custom"),
   });
@@ -373,10 +374,12 @@ export const loadProjectCampaigns = async (
   const facebookUserId = resolveFacebookUserId(settings, options?.facebookUserId);
 
   const token = await getMetaToken(kv, facebookUserId);
+  const metaPeriod = customPeriodRange ? resolveCustomMetaPeriod(periodRange) : resolveDatePreset(periodKey);
+
   const raw = await fetchMetaInsightsRaw({
     accountId: project.adsAccountId,
     accessToken: token.accessToken,
-    period: periodKey === "custom" ? resolveCustomMetaPeriod(periodRange) : resolveDatePreset(periodKey),
+    period: metaPeriod,
     level: "campaign",
     fields: ["campaign_id", "campaign_name", "objective", "spend", "impressions", "clicks", "actions"].join(","),
   });
