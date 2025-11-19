@@ -298,7 +298,22 @@ const extractScript = (html: string): string => {
 const createHarness = (): PortalHarness => {
   const document = new FakeDocument();
   const elements = document.getElements();
-  const location = { search: "" };
+  const location = { href: "https://example.com/p/birlash", search: "" };
+  const history = {
+    replaceState: (_state: unknown, _title: string | null, url?: string | URL | null) => {
+      if (!url) {
+        return;
+      }
+      const next = typeof url === "string" ? url : url.toString();
+      location.href = next;
+      try {
+        const parsed = new URL(next, "https://example.com");
+        location.search = parsed.search;
+      } catch {
+        location.search = "";
+      }
+    },
+  };
   const context: Record<string, unknown> = {
     document,
     window: {},
@@ -311,6 +326,7 @@ const createHarness = (): PortalHarness => {
     URL,
     URLSearchParams,
     location,
+    history,
     AbortController,
   };
   const windowRef = context.window as Record<string, unknown>;
@@ -325,6 +341,7 @@ const createHarness = (): PortalHarness => {
   windowRef.URL = URL;
   windowRef.URLSearchParams = URLSearchParams;
   windowRef.location = location;
+  windowRef.history = history;
   windowRef.AbortController = AbortController;
   return { document, elements, context };
 };
@@ -489,6 +506,120 @@ test("portal hides preloader and renders sections when data loads", async () => 
   assert.notEqual(elements.leadsBody.innerHTML, "");
   assert.ok(elements.error.classList.contains("portal__error--hidden"));
   assert.ok(elements.paymentsSubtitle.textContent.includes("Тариф"));
+});
+
+test("portal appends custom range parameters to API requests", async () => {
+  const html = renderPortalHtml("birlash");
+  const script = extractScript(html);
+  const { context } = createHarness();
+  const locationRef = context.location as { href: string; search: string };
+  locationRef.search = "?from=2025-11-10&to=2025-11-12";
+  locationRef.href = "https://example.com/p/birlash?from=2025-11-10&to=2025-11-12";
+
+  const wrap = (data: unknown) =>
+    new Response(JSON.stringify({ ok: true, data }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+  const responses = new Map<string, unknown>([
+    [
+      "/api/projects/birlash",
+      {
+        project: { id: "birlash", name: "birlash", portalUrl: "https://example.com" },
+      },
+    ],
+    [
+      "/api/projects/birlash/summary?period=custom&from=2025-11-10&to=2025-11-12",
+      {
+        periodKey: "custom",
+        period: { from: "2025-11-10", to: "2025-11-12" },
+        metrics: {
+          spend: 21,
+          impressions: 1400,
+          clicks: 200,
+          leads: 9,
+          messages: 3,
+          cpa: 21 / 9,
+          leadsTotal: 180,
+          leadsToday: 4,
+          cpaToday: 7 / 4,
+          currency: "USD",
+          kpiLabel: "Лиды",
+        },
+      },
+    ],
+    [
+      "/api/projects/birlash/leads/custom?from=2025-11-10&to=2025-11-12",
+      {
+        projectId: "birlash",
+        periodKey: "custom",
+        period: { from: "2025-11-10T00:00:00.000Z", to: "2025-11-12T23:59:59.000Z" },
+        stats: { total: 180, today: 4 },
+        syncedAt: "2025-11-12T12:00:00.000Z",
+        leads: [],
+      },
+    ],
+    [
+      "/api/projects/birlash/leads/custom/refresh?from=2025-11-10&to=2025-11-12",
+      {
+        projectId: "birlash",
+        periodKey: "custom",
+        period: { from: "2025-11-10T00:00:00.000Z", to: "2025-11-12T23:59:59.000Z" },
+        stats: { total: 180, today: 4 },
+        syncedAt: new Date().toISOString(),
+        leads: [],
+      },
+    ],
+    [
+      "/api/projects/birlash/campaigns?period=custom&from=2025-11-10&to=2025-11-12",
+      {
+        period: { from: "2025-11-10", to: "2025-11-12" },
+        periodKey: "custom",
+        summary: { spend: 21, impressions: 1400, clicks: 200, leads: 9, messages: 3 },
+        campaigns: [],
+        kpi: { mode: "auto", type: "LEAD", label: "Лиды" },
+      },
+    ],
+    [
+      "/api/projects/birlash/payments",
+      {
+        billing: { tariff: 500, currency: "USD", nextPaymentDate: "2025-12-15", autobilling: true },
+        payments: [],
+      },
+    ],
+  ]);
+
+  const fetchCalls: string[] = [];
+  const fetchMock = async (input: string | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.url;
+    const parsed = new URL(url, "https://example.com");
+    const key = parsed.pathname + parsed.search;
+    fetchCalls.push(key);
+    const data = responses.get(key);
+    if (!data) {
+      return { ok: false, status: 404, json: async () => ({ ok: false }), text: async () => "not found" };
+    }
+    return wrap(data);
+  };
+
+  context.fetch = fetchMock;
+  (context.window as Record<string, unknown>).fetch = fetchMock;
+
+  vm.runInNewContext(script, context);
+  await flushMicrotasks();
+
+  assert.ok(
+    fetchCalls.includes("/api/projects/birlash/summary?period=custom&from=2025-11-10&to=2025-11-12"),
+  );
+  assert.ok(
+    fetchCalls.includes("/api/projects/birlash/leads/custom?from=2025-11-10&to=2025-11-12"),
+  );
+  assert.ok(
+    fetchCalls.includes("/api/projects/birlash/campaigns?period=custom&from=2025-11-10&to=2025-11-12"),
+  );
+  const updatedSearch = (context.location as { search: string }).search;
+  assert.ok(updatedSearch.includes("period=custom"));
 });
 
 test("portal shows error overlay if summary loading times out", async () => {

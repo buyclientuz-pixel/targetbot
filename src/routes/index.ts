@@ -6,6 +6,7 @@ import { registerTelegramRoutes } from "./telegram";
 import { registerPortalRoutes } from "./portal";
 import { registerAdminRoutes } from "./admin";
 import { registerAuthRoutes } from "./auth";
+import { registerLeadWorkerRoutes } from "./lead-sync";
 
 export const registerCoreRoutes = (router: Router): void => {
   router.on("GET", "/healthz", async () => {
@@ -18,4 +19,5 @@ export const registerCoreRoutes = (router: Router): void => {
   registerTelegramRoutes(router);
   registerAdminRoutes(router);
   registerAuthRoutes(router);
+  registerLeadWorkerRoutes(router);
 };

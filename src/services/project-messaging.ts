@@ -3,13 +3,15 @@ import type { Project } from "../domain/projects";
 import type { KvClient } from "../infra/kv";
 import { sendTelegramMessage } from "./telegram";
 
+export type ProjectMessageRoute = "CHAT" | "ADMIN" | "BOTH";
+
 export interface DispatchProjectMessageOptions {
   kv: KvClient;
   project: Project;
   settings?: ProjectSettings;
   token?: string;
   text: string;
-  route?: ProjectSettings["alerts"]["route"];
+  route?: ProjectMessageRoute;
   parseMode?: "MarkdownV2" | "Markdown" | "HTML";
   replyMarkup?: unknown;
 }
@@ -30,11 +32,11 @@ const ensureSettings = async (
   return ensureProjectSettings(kv, project.id);
 };
 
-const shouldSendToChat = (route: ProjectSettings["alerts"]["route"]): boolean => {
+const shouldSendToChat = (route: ProjectMessageRoute): boolean => {
   return route === "CHAT" || route === "BOTH";
 };
 
-const shouldSendToAdmin = (route: ProjectSettings["alerts"]["route"]): boolean => {
+const shouldSendToAdmin = (route: ProjectMessageRoute): boolean => {
   return route === "ADMIN" || route === "BOTH";
 };
 
@@ -43,7 +45,7 @@ export const dispatchProjectMessage = async (
 ): Promise<DispatchResult> => {
   const token = options.token;
   const baseSettings = await ensureSettings(options.kv, options.project, options.settings);
-  const route = options.route ?? baseSettings.alerts.route;
+  const route = options.route ?? "CHAT";
 
   if (!token) {
     return { settings: baseSettings, delivered: { chat: false, admin: false } };

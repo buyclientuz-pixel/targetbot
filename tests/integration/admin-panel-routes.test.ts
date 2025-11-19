@@ -13,9 +13,11 @@ const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 const createEnv = () => ({
   KV: new MemoryKVNamespace(),
   R2: new MemoryR2Bucket(),
-  ADMIN_KEY: "secret",
+  LEADS_KV: new MemoryKVNamespace(),
   WORKER_URL: "admin.test.workers.dev",
   TELEGRAM_SECRET: "test-secret",
+  FACEBOOK_API_VERSION: "v18.0",
+  FB_LONG_TOKEN: "test-facebook-token",
 }) as import("../../src/worker/types.ts").TargetBotEnv;
 
 test("/admin serves the SPA shell", async () => {
@@ -28,12 +30,11 @@ test("/admin serves the SPA shell", async () => {
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.ok(html.includes("TargetBot Admin"));
-  assert.ok(html.includes("data-login-panel"));
-  assert.ok(!html.includes('<div class="admin-login admin-login--visible"'));
-  assert.ok(html.includes('<div class="admin-login" data-login-panel>'));
+  assert.ok(!html.includes("data-login-panel"));
+  assert.ok(!html.includes("admin-login"));
 });
 
-test("admin APIs require x-admin-key and return project summaries", async () => {
+test("admin APIs return project summaries without auth header", async () => {
   const env = createEnv();
   const router = createRouter();
   registerAdminRoutes(router);
@@ -55,16 +56,7 @@ test("admin APIs require x-admin-key and return project summaries", async () => 
   };
   await putProjectRecord(kv, projectRecord);
 
-  const unauthorized = await router.dispatch(new Request("https://example.com/api/admin/projects"), env, execution);
-  assert.equal(unauthorized.status, 401);
-
-  const response = await router.dispatch(
-    new Request("https://example.com/api/admin/projects", {
-      headers: { "x-admin-key": env.ADMIN_KEY! },
-    }),
-    env,
-    execution,
-  );
+  const response = await router.dispatch(new Request("https://example.com/api/admin/projects"), env, execution);
   assert.equal(response.status, 200);
   const payload = (await response.json()) as { ok: boolean; data: { projects: { id: string }[] } };
   assert.ok(payload.ok);

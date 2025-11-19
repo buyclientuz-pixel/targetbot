@@ -6,10 +6,10 @@ import { getOccupiedChatRecord } from "../domain/project-chats";
 import { getProject } from "../domain/projects";
 import { getProjectsByUser, type ProjectsByUserRecord } from "../domain/spec/projects-by-user";
 import { getUserSettingsRecord } from "../domain/spec/user-settings";
-import { getFbAuthRecord, type FbAuthRecord } from "../domain/spec/fb-auth";
+import { getFbAuthRecord } from "../domain/spec/fb-auth";
 import { getProjectLeadsList } from "../domain/spec/project-leads";
 import { getPaymentsHistoryDocument } from "../domain/spec/payments-history";
-import { ensureProjectSettings } from "../domain/project-settings";
+import { ensureProjectSettings, type ProjectLeadNotificationSettings } from "../domain/project-settings";
 import { getPortalSyncState, type PortalSyncState } from "../domain/portal-sync";
 import { translateMetaObjective } from "./meta-objectives";
 
@@ -105,6 +105,7 @@ export interface AdminProjectDetail extends ProjectBundle {
     enabled: boolean;
     sync: PortalSyncState;
   };
+  leadNotifications: ProjectLeadNotificationSettings;
 }
 
 export const loadAdminProjectDetail = async (
@@ -136,6 +137,7 @@ export const loadAdminProjectDetail = async (
       enabled: settings.portalEnabled,
       sync: portalSync,
     },
+    leadNotifications: settings.leads,
   } satisfies AdminProjectDetail;
 };
 
@@ -265,37 +267,6 @@ export const listAdminUsers = async (kv: KvClient): Promise<AdminUserEntry[]> =>
     }),
   );
   return entries.filter((entry): entry is AdminUserEntry => entry != null);
-};
-
-export interface AdminMetaAccountEntry {
-  userId: number;
-  expiresAt: string;
-  adAccounts: FbAuthRecord["adAccounts"];
-}
-
-export const listAdminMetaAccounts = async (kv: KvClient): Promise<AdminMetaAccountEntry[]> => {
-  const fbKeys = new Set<string>();
-  for (const key of await listKeys(kv, KV_PREFIXES.facebookAuth)) {
-    fbKeys.add(key);
-  }
-  for (const key of await listKeys(kv, KV_PREFIXES.fbAuth)) {
-    fbKeys.add(key);
-  }
-  const entries = await Promise.all(
-    Array.from(fbKeys).map(async (key) => {
-      const userIdRaw = key.includes(":") ? key.slice(key.indexOf(":") + 1) : key;
-      const userId = Number(userIdRaw);
-      if (!Number.isFinite(userId)) {
-        return null;
-      }
-      const record = await getFbAuthRecord(kv, userId);
-      if (!record) {
-        return null;
-      }
-      return { userId, expiresAt: record.expiresAt, adAccounts: record.adAccounts };
-    }),
-  );
-  return entries.filter((entry): entry is AdminMetaAccountEntry => entry != null);
 };
 
 export const listAdminProjectLeads = async (r2: R2Client, projectId: string) => {

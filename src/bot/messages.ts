@@ -1,5 +1,4 @@
 import type { BillingRecord } from "../domain/spec/billing";
-import type { AlertsRecord } from "../domain/spec/alerts";
 import type { AutoreportsRecord } from "../domain/spec/autoreports";
 import type { ProjectRecord } from "../domain/spec/project";
 import type { ProjectLeadsListRecord } from "../domain/spec/project-leads";
@@ -8,9 +7,12 @@ import type { PaymentsHistoryDocument } from "../domain/spec/payments-history";
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
 import type { FreeChatRecord } from "../domain/project-chats";
+import type { ProjectLeadNotificationSettings } from "../domain/project-settings";
 
 import type { AnalyticsOverview, FinanceOverview, ProjectBundle } from "./data";
+import { leadStatusLabel } from "./data";
 import { translateMetaObjective } from "../services/meta-objectives";
+import type { ProjectLeadsViewPayload } from "../services/project-leads-view";
 
 const escapeHtml = (value: string): string =>
   value
@@ -86,32 +88,51 @@ const formatChatLink = (chatId: number | null): string | null => {
   return `tg://user?id=${chatId}`;
 };
 
-const mapAlertsChannel = (alerts: AlertsRecord): string => {
-  if (!alerts.enabled) {
-    return "выключены";
-  }
-  switch (alerts.channel) {
-    case "chat":
-      return "включены (в чат)";
-    case "admin":
-      return "включены (админу)";
-    case "both":
-      return "включены (в чат и админу)";
-    default:
-      return "включены";
-  }
+const describeAutoreportTargets = (autoreports: AutoreportsRecord): string => {
+  const segments: string[] = [];
+  segments.push(`👥 чат — ${autoreports.sendToChat ? "вкл" : "выкл"}`);
+  segments.push(`👤 админ — ${autoreports.sendToAdmin ? "вкл" : "выкл"}`);
+  return segments.join(", ");
 };
 
-const mapAutoreportSendTo = (autoreports: AutoreportsRecord): string => {
-  switch (autoreports.sendTo) {
-    case "chat":
-      return "в чат";
-    case "admin":
-      return "админу";
-    case "both":
-      return "в чат и админу";
+const describeLeadNotificationTargets = (settings: ProjectLeadNotificationSettings): string => {
+  const segments: string[] = [];
+  segments.push(`👥 чат — ${settings.sendToChat ? "вкл" : "выкл"}`);
+  segments.push(`👤 админ — ${settings.sendToAdmin ? "вкл" : "выкл"}`);
+  return segments.join(", ");
+};
+
+const summariseAutoreportRecipients = (autoreports: AutoreportsRecord): string => {
+  const targets: string[] = [];
+  if (autoreports.sendToChat) {
+    targets.push("чат");
+  }
+  if (autoreports.sendToAdmin) {
+    targets.push("админ");
+  }
+  if (targets.length === 0) {
+    return "каналы: отключены";
+  }
+  return `каналы: ${targets.join(" + ")}`;
+};
+
+const describeAutoreportMode = (mode: string): string => {
+  switch (mode) {
+    case "today":
+      return "сегодня";
+    case "yesterday":
+      return "вчера";
+    case "week":
+      return "неделя";
+    case "month":
+      return "месяц";
+    case "all":
+    case "max":
+      return "максимум";
+    case "yesterday_plus_week":
+      return "вчера + неделя";
     default:
-      return "—";
+      return mode;
   }
 };
 
@@ -147,13 +168,6 @@ const buildPortalLine = (project: ProjectRecord): string => {
   return `🌐 Портал: <a href="${project.portalUrl}">Открыть клиентский портал</a>`;
 };
 
-export interface ProjectListItem {
-  id: string;
-  name: string;
-  spend: number | null;
-  currency: string;
-}
-
 export const buildMenuMessage = (options: { fbAuth: FbAuthRecord | null }): string => {
   const lines: string[] = [];
   if (options.fbAuth) {
@@ -172,40 +186,24 @@ export const buildMenuMessage = (options: { fbAuth: FbAuthRecord | null }): stri
   return lines.join("\n");
 };
 
-export const buildProjectsListMessage = (projects: ProjectListItem[]): string => {
-  if (projects.length === 0) {
-    return "У вас пока нет проектов. Добавьте их через портал или админ-панель.";
-  }
-  const lines: string[] = ["Ваши проекты:"];
-  projects.forEach((project, index) => {
-    const spend = formatMoney(project.spend, project.currency);
-    lines.push(`${index + 1}️⃣ ${escapeHtml(project.name)} [${spend}]`);
-  });
-  return lines.join("\n");
-};
-
 export const buildProjectCreationMessage = (options: {
   accounts: { id: string; name: string; currency: string }[];
   hasProjects: boolean;
 }): string => {
   const lines: string[] = [];
-  lines.push("Выберите рекламный аккаунт для подключения:");
-  lines.push("");
   if (options.accounts.length === 0) {
     lines.push("Не найдено рекламных аккаунтов.");
     lines.push("Подключите Facebook в разделе «Авторизация Facebook».\n");
   } else {
-    options.accounts.forEach((account, index) => {
-      lines.push(`${index + 1}. ${escapeHtml(account.name)} (${account.id}) — ${account.currency}`);
-    });
-    lines.push("");
-    lines.push("После выбора аккаунта бот попросит привязать чат-группу.");
+    lines.push("Выберите рекламный аккаунт через кнопки ниже.");
+    lines.push("Бот показывает текущие расходы и статус чата прямо в кнопках.");
+    lines.push("✅ — чат подключён, нажатие откроет карточку проекта.");
+    lines.push("⚙️ — чат не привязан, нажатие откроет выбор свободной группы.");
   }
-  lines.push(
-    options.hasProjects
-      ? "Нажмите «📂 Мои проекты», чтобы открыть существующие проекты."
-      : "У вас пока нет проектов. Добавьте их через портал или админ-панель.",
-  );
+  if (!options.hasProjects) {
+    lines.push("");
+    lines.push("У вас пока нет проектов. Добавьте их через портал или админ-панель.");
+  }
   return lines.join("\n");
 };
 
@@ -228,7 +226,7 @@ export const buildChatAlreadyUsedMessage = (): string =>
   "❌ Эта чат-группа уже используется другим проектом. Выберите другую.";
 
 export const buildProjectCardMessage = (bundle: ProjectBundle): string => {
-  const { project, billing, leads, campaigns, alerts, autoreports } = bundle;
+  const { project, billing, leads, campaigns, autoreports } = bundle;
   const spend = campaigns.summary.spend ?? null;
   const leadsToday = leads.stats.today ?? null;
   const cpa = computeCpa(spend, leadsToday);
@@ -253,14 +251,13 @@ export const buildProjectCardMessage = (bundle: ProjectBundle): string => {
   lines.push("");
   if (autoreports.enabled) {
     lines.push(
-      `🕒 Автоотчёты: <b>${autoreports.time}</b> (вкл, режим: вчера + неделя, ${mapAutoreportSendTo(
-        autoreports,
-      )})`,
+      `🕒 Автоотчёты: <b>${autoreports.time}</b> (вкл, режим: ${describeAutoreportMode(
+        autoreports.mode,
+      )}, ${summariseAutoreportRecipients(autoreports)})`,
     );
   } else {
     lines.push("🕒 Автоотчёты: выключены");
   }
-  lines.push(`🚨 Алерты: ${mapAlertsChannel(alerts)}`);
   lines.push("");
   lines.push(buildChatGroupLine(project));
   lines.push(buildPortalLine(project));
@@ -308,8 +305,8 @@ const formatLeadEntry = (lead: ProjectLeadsListRecord["leads"][number]): string 
   const lines: string[] = [];
   lines.push("🔔 Лид ожидает ответа");
   lines.push(`Имя: <b>${escapeHtml(lead.name)}</b>`);
-  lines.push(`Телефон: ${escapeHtml(lead.phone)}`);
-  lines.push(`Получен: ${formatDate(lead.createdAt)}`);
+  lines.push(`Контакт: ${escapeHtml(lead.phone)}`);
+  lines.push(`Получен: ${formatDateTime(lead.createdAt)}`);
   lines.push(`Реклама: ${escapeHtml(lead.campaignName)}`);
   if (lead.status === "new") {
     lines.push(`В очереди уже ${formatLeadDuration(lead.createdAt)}`);
@@ -321,13 +318,23 @@ const formatLeadEntry = (lead: ProjectLeadsListRecord["leads"][number]): string 
 
 export const buildLeadsMessage = (
   project: ProjectRecord,
-  leads: ProjectLeadsListRecord,
+  view: ProjectLeadsViewPayload,
   status: ProjectLeadsListRecord["leads"][number]["status"],
+  leadSettings: ProjectLeadNotificationSettings,
 ): string => {
-  const filtered = leads.leads.filter((lead) => lead.status === status).slice(0, 5);
+  const filtered = view.leads.filter((lead) => lead.status === status).slice(0, 5);
   const lines: string[] = [];
   lines.push(`Лиды проекта <b>${escapeHtml(project.name)}</b>`);
-  lines.push(`Всего: <b>${leads.stats.total}</b> | Сегодня: <b>${leads.stats.today}</b>`);
+  lines.push(`Период: ${view.period.from} — ${view.period.to}`);
+  lines.push(`Всего за период: <b>${view.periodStats.total}</b> | Сегодня: <b>${view.periodStats.today}</b>`);
+  if (view.periodKey !== "all" || view.stats.total !== view.periodStats.total) {
+    lines.push(`За всё время: <b>${view.stats.total}</b> | Сегодня: <b>${view.stats.today}</b>`);
+  }
+  const statusLabel = leadStatusLabel(status);
+  const statusCount = view.countsByStatus[status] ?? 0;
+  lines.push(`${statusLabel}: <b>${statusCount}</b>`);
+  lines.push("");
+  lines.push(`🔔 Уведомления: ${describeLeadNotificationTargets(leadSettings)}`);
   lines.push("");
   if (filtered.length === 0) {
     lines.push("В этом статусе заявок нет.");
@@ -350,11 +357,14 @@ export const buildReportMessage = (
   lines.push(`Отчёт по рекламе — <b>${escapeHtml(project.name)}</b>`);
   lines.push(`Период: ${campaigns.period.from} — ${campaigns.period.to}`);
   lines.push("");
+  const summaryLeads = campaigns.summary.leads ?? 0;
+  const summaryMessages = campaigns.summary.messages ?? 0;
   lines.push(`💰 Затраты: <b>${formatMoney(campaigns.summary.spend, project.settings.currency)}</b>`);
   lines.push(`👀 Показов: <b>${campaigns.summary.impressions}</b>`);
   lines.push(`👆 Кликов: <b>${campaigns.summary.clicks}</b>`);
-  lines.push(`🎯 KPI: <b>${campaigns.summary.leads}</b>`);
-  const cpa = computeCpa(campaigns.summary.spend, campaigns.summary.leads) ?? null;
+  lines.push(`🎯 Лиды: <b>${summaryLeads}</b>`);
+  lines.push(`💬 Сообщений: <b>${summaryMessages}</b>`);
+  const cpa = computeCpa(campaigns.summary.spend, summaryLeads) ?? null;
   lines.push(`📊 CPA: <b>${cpa ? formatMoney(cpa, project.settings.currency) : "—"}</b>`);
   lines.push("");
   if (campaigns.campaigns.length === 0) {
@@ -586,44 +596,8 @@ export const buildAutoreportsMessage = (
   lines.push(`Авто-отчёты — <b>${escapeHtml(project.name)}</b>`);
   lines.push(`Статус: ${autoreports.enabled ? "включены" : "выключены"}`);
   lines.push(`Время: ${autoreports.time}`);
-  lines.push("Формат: вчера + неделя");
-  lines.push(`Кому: ${mapAutoreportSendTo(autoreports)}`);
-  return lines.join("\n");
-};
-
-export const buildAutoreportsRouteMessage = (
-  project: ProjectRecord,
-  autoreports: AutoreportsRecord,
-): string => {
-  const lines: string[] = [];
-  lines.push(`Маршрут авто-отчётов — <b>${escapeHtml(project.name)}</b>`);
-  lines.push("Выберите, куда отправлять ежедневные авто-отчёты.");
-  lines.push(`Текущий маршрут: ${mapAutoreportSendTo(autoreports)}`);
-  return lines.join("\n");
-};
-
-export const buildAlertsMessage = (project: ProjectRecord, alerts: AlertsRecord): string => {
-  const lines: string[] = [];
-  lines.push(`Алерты — <b>${escapeHtml(project.name)}</b>`);
-  lines.push(`Статус: ${alerts.enabled ? "включены" : "выключены"}`);
-  lines.push(`Маршрут: ${mapAlertsChannel(alerts)}`);
-  lines.push(
-    `Типы: лиды ${alerts.types.leadInQueue ? "вкл" : "выкл"}, паузы ${
-      alerts.types.pause24h ? "вкл" : "выкл"
-    }, оплаты ${alerts.types.paymentReminder ? "вкл" : "выкл"}`,
-  );
-  lines.push(
-    `Порог очереди: ${alerts.leadQueueThresholdHours} ч, паузы: ${alerts.pauseThresholdHours} ч, ` +
-      `оплата за ${alerts.paymentReminderDays.join(", ")} дн.`,
-  );
-  return lines.join("\n");
-};
-
-export const buildAlertsRouteMessage = (project: ProjectRecord, alerts: AlertsRecord): string => {
-  const lines: string[] = [];
-  lines.push(`Маршрут алертов — <b>${escapeHtml(project.name)}</b>`);
-  lines.push("Укажите, куда отправлять напоминания и предупреждения.");
-  lines.push(`Сейчас: ${mapAlertsChannel(alerts)}`);
+  lines.push(`Формат: ${describeAutoreportMode(autoreports.mode)}`);
+  lines.push(`Получатели: ${describeAutoreportTargets(autoreports)}`);
   return lines.join("\n");
 };
 

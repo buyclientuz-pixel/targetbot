@@ -13,22 +13,13 @@ const { ensureProjectSettings, createDefaultProjectSettings, upsertProjectSettin
 const { getMetaToken } = await import("../../src/domain/meta-tokens.ts");
 const { putProjectRecord } = await import("../../src/domain/spec/project.ts");
 
-const ADMIN_KEY = "secret";
-
 const createEnv = () => ({
   KV: new MemoryKVNamespace(),
   R2: new MemoryR2Bucket(),
-  ADMIN_KEY,
+  LEADS_KV: new MemoryKVNamespace(),
+  FACEBOOK_API_VERSION: "v18.0",
+  FB_LONG_TOKEN: "test-facebook-token",
 }) as import("../../src/worker/types.ts").TargetBotEnv;
-
-const createAdminRequest = (url: string, init?: RequestInit): Request =>
-  new Request(url, {
-    ...init,
-    headers: {
-      ...(init?.headers ?? {}),
-      "x-admin-key": ADMIN_KEY,
-    },
-  });
 
 const readData = async <T>(response: Response): Promise<T> => {
   const payload = (await response.clone().json()) as { data: T };
@@ -42,21 +33,14 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
 
   const execution = new TestExecutionContext();
 
-  const pingUnauthorized = await router.dispatch(new Request("https://example.com/api/admin/ping"), env, execution);
-  assert.equal(pingUnauthorized.status, 401);
-
-  const pingResponse = await router.dispatch(
-    createAdminRequest("https://example.com/api/admin/ping"),
-    env,
-    execution,
-  );
+  const pingResponse = await router.dispatch(new Request("https://example.com/api/admin/ping"), env, execution);
   assert.equal(pingResponse.status, 200);
   const pingPayload = (await pingResponse.json()) as { ok: boolean; data: { status: string } };
   assert.ok(pingPayload.ok);
   assert.equal(pingPayload.data.status, "ok");
 
   const createResponse = await router.dispatch(
-    createAdminRequest("https://example.com/api/admin/projects", {
+    new Request("https://example.com/api/admin/projects", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -77,13 +61,13 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   assert.equal(createdBody.project.id, "birlash");
   assert.equal(createdBody.settings.projectId, "birlash");
 
-  const listResponse = await router.dispatch(createAdminRequest("https://example.com/api/admin/projects"), env, execution);
+  const listResponse = await router.dispatch(new Request("https://example.com/api/admin/projects"), env, execution);
   const listBody = await readData<{ projects: Array<{ id: string }> }>(listResponse);
   assert.equal(listBody.projects.length, 1);
   assert.equal(listBody.projects[0].id, "birlash");
 
   const updateResponse = await router.dispatch(
-    createAdminRequest("https://example.com/api/admin/projects/birlash", {
+    new Request("https://example.com/api/admin/projects/birlash", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "Birlash Updated" }),
@@ -97,12 +81,12 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   assert.equal(storedProject.name, "Birlash Updated");
 
   const settingsResponse = await router.dispatch(
-    createAdminRequest("https://example.com/api/admin/projects/birlash/settings", {
+    new Request("https://example.com/api/admin/projects/birlash/settings", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         billing: { tariff: 500, currency: "USD", nextPaymentDate: "2025-12-15" },
-        alerts: { route: "ADMIN" },
+        leads: { sendToChat: false, sendToAdmin: true },
       }),
     }),
     env,
@@ -111,11 +95,12 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   assert.equal(settingsResponse.status, 200);
   const updatedSettings = await ensureProjectSettings(kv, "birlash");
   assert.equal(updatedSettings.billing.tariff, 500);
-  assert.equal(updatedSettings.alerts.route, "ADMIN");
   assert.equal(updatedSettings.billing.nextPaymentDate, "2025-12-15");
+  assert.equal(updatedSettings.leads.sendToChat, false);
+  assert.equal(updatedSettings.leads.sendToAdmin, true);
 
   const metaResponse = await router.dispatch(
-    createAdminRequest("https://example.com/api/admin/meta-tokens/123", {
+    new Request("https://example.com/api/admin/meta-tokens/123", {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ accessToken: "access", refreshToken: "refresh" }),
@@ -129,7 +114,7 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   assert.equal(token.refreshToken, "refresh");
 
   const deleteResponse = await router.dispatch(
-    createAdminRequest("https://example.com/api/admin/projects/birlash", {
+    new Request("https://example.com/api/admin/projects/birlash", {
       method: "DELETE",
     }),
     env,
@@ -137,11 +122,7 @@ test("admin routes allow managing projects, settings, and Meta tokens", async ()
   );
   assert.equal(deleteResponse.status, 200);
 
-  const afterDelete = await router.dispatch(
-    createAdminRequest("https://example.com/api/admin/projects"),
-    env,
-    execution,
-  );
+  const afterDelete = await router.dispatch(new Request("https://example.com/api/admin/projects"), env, execution);
   const emptyList = await readData<{ projects: Array<{ id: string }> }>(afterDelete);
   assert.equal(emptyList.projects.length, 0);
 
@@ -173,7 +154,7 @@ test("admin portal routes manage lifecycle", async () => {
   await upsertProjectSettings(kv, { ...defaults, portalEnabled: false });
 
   const createResponse = await router.dispatch(
-    createAdminRequest(`https://example.com/api/admin/projects/${projectRecord.id}/portal/create`, { method: "POST" }),
+    new Request(`https://example.com/api/admin/projects/${projectRecord.id}/portal/create`, { method: "POST" }),
     env,
     execution,
   );
@@ -183,7 +164,7 @@ test("admin portal routes manage lifecycle", async () => {
   assert.equal(createdPortal.portal.enabled, true);
 
   const toggleResponse = await router.dispatch(
-    createAdminRequest(`https://example.com/api/admin/projects/${projectRecord.id}/portal/toggle`, { method: "POST" }),
+    new Request(`https://example.com/api/admin/projects/${projectRecord.id}/portal/toggle`, { method: "POST" }),
     env,
     execution,
   );
@@ -192,14 +173,14 @@ test("admin portal routes manage lifecycle", async () => {
   assert.equal(toggled.portal.enabled, false);
 
   const syncResponse = await router.dispatch(
-    createAdminRequest(`https://example.com/api/admin/projects/${projectRecord.id}/portal/sync`, { method: "POST" }),
+    new Request(`https://example.com/api/admin/projects/${projectRecord.id}/portal/sync`, { method: "POST" }),
     env,
     execution,
   );
   assert.equal(syncResponse.status, 422);
 
   const deleteResponse = await router.dispatch(
-    createAdminRequest(`https://example.com/api/admin/projects/${projectRecord.id}/portal`, { method: "DELETE" }),
+    new Request(`https://example.com/api/admin/projects/${projectRecord.id}/portal`, { method: "DELETE" }),
     env,
     execution,
   );

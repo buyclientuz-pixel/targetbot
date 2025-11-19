@@ -13,7 +13,7 @@ TargetBot is a single Cloudflare Worker that coordinates:
 - **Client portal** served as static HTML + API endpoints for analytics, leads, campaigns, payments, and billing state.
 - **Meta integrations** including proxy APIs, lead webhooks, token storage, and insights caching.
 - **Admin / back-office tools** to create and manage projects, settings, Meta tokens, and portal sessions.
-- **Scheduled jobs** that deliver auto-reports, alerting, and maintenance tasks (cleanup of stale leads and caches).
+- **Scheduled jobs** that deliver auto-reports and maintenance tasks (cleanup of stale leads and caches).
 
 The Worker communicates with:
 
@@ -26,9 +26,9 @@ The Worker communicates with:
 
 ### 2.1 Projects & Settings
 
-- **Creation**: Admin requests create `project:{id}` records in KV and seed `project-settings:{id}` with defaults (billing zeroed, alerts enabled, portal on).
+- **Creation**: Admin requests create `project:{id}` records in KV and seed `project-settings:{id}` with defaults (billing zeroed, портал включён).
 - **Retrieval**: All consumers (`/api/projects/:id`, bot menu, portal API) rely on the same CRUD helpers to keep shape consistent.
-- **Updates**: Billing, alerts, KPI, and chat routing are merged into the existing record, validated, and timestamped. Touching a project updates `updatedAt` to aid scheduling and audits.
+- **Updates**: Billing, KPI, and chat routing are merged into the existing record, validated, and timestamped. Touching a project updates `updatedAt` to aid scheduling and audits.
 - **Sessions**: Portal sessions are minted via `/api/projects/:id/sessions` with TTLs and stored in KV for stateless auth.
 
 ### 2.2 Meta Integration
@@ -36,13 +36,13 @@ The Worker communicates with:
 - **Tokens**: Stored under `meta-token:{fbUserId}` with access/refresh pair, rotation timestamp, and expiry. Admin panel exposes CRUD so operators can reconnect accounts without code deploys.
 - **Cache**: `meta-cache:{projectId}:{type}:{period}` retains last insight pulls for 60 seconds. Scheduled maintenance purges stale caches (>3 days) daily.
 - **Proxy**: `/api/meta/...` endpoints validate project, read tokens, check cache, hit Graph API when needed, and normalise metrics for portal + bot.
-- **Webhook**: `/api/meta/webhook` ingests lead payloads, deduplicates R2 objects, updates `lastStatusUpdate`, and routes alerts respecting chat/topic settings.
+- **Webhook**: `/api/meta/webhook` ingests lead payloads, deduplicates R2 objects, updates `lastStatusUpdate`, и отправляет уведомление о новом лиде в чат проекта.
 
 ### 2.3 Telegram Bot
 
 - **Webhook**: `/tg-webhook` + `/api/telegram/webhook` share controller logic. Token resolved from `TELEGRAM_BOT_TOKEN` or legacy `BOT_TOKEN`.
 - **Menu flow**: `/start` and "Меню" display entry keyboard. Options branch into Facebook auth (token state), projects list, analytics, billing, portal links, webhook health.
-- **Project card**: Combines project info, Meta metrics (today + totals), billing status, alerts state, and quick links (portal, chat thread). Buttons provide billing actions.
+- **Project card**: Combines project info, Meta metrics (today + totals), billing status и быстрые ссылки (портал, чат). Buttons provide billing actions.
 - **Billing actions**: Inline callbacks adjust tariff, extend payment window, or request manual inputs. Free-form replies stored via session state in KV to complete updates and create payment records in R2.
 - **Chat routing**: Bot finds chat topics named "Таргет"; caches IDs in settings; supports detach/attach flows.
 
@@ -53,10 +53,10 @@ The Worker communicates with:
 - **Tabs**: Today/Yesterday/Week/Month/Max share API; UI indicates active tab and reloads sections with mini spinners instead of full reset.
 - **Payments**: Portal fetches R2 payments list, allows POST/PUT via Worker to sync with billing settings; updates propagate to bot.
 
-### 2.5 Alerts & Auto Reports
+### 2.5 Auto Reports & Lead Notifications
 
 - **Scheduler**: Worker `scheduled` handler triggers every 5 minutes to check projects with auto reports enabled and due times (including special Monday range logic).
-- **Alerts**: Billing reminders, budget anomalies, token expiry, and pause detection track last alert timestamps in KV to prevent spam. Routing respects `alerts.route` options (CHAT / ADMIN / BOTH / NONE).
+- **Lead notifications**: Every ingested Meta lead triggers одно сообщение в чат проекта (тема «Таргет») и в личку владельца при необходимости.
 
 ### 2.6 Maintenance
 
@@ -73,8 +73,8 @@ The following phases bring the system back to a fully working state. Each phase 
 | 1. Admin Foundations | Restore ability to create/manage projects/settings/tokens via Worker APIs. | Implement `/api/admin/*` routes, seed defaults, add integration tests, document endpoints. | Working CRUD for projects/settings/tokens; tests verifying lifecycle. |
 | 2. Telegram Bot Validation | Ensure webhook + menu flows surface live data. | Smoke-test webhook with seeded project, verify menu/project card/billing updates, add troubleshooting notes. | Bot responds to `/start`, lists projects, updates billing. |
 | 3. Portal Restoration | Confirm `/portal/:id` + APIs deliver live metrics/leads/payments. | Seed R2 leads/payments, validate summary caches, ensure error fallbacks. | Functional portal with skeleton loaders and data switching. |
-| 4. Meta/Webhook Pipeline | Run end-to-end lead ingestion & alerts. | Replay sample webhook payload, confirm R2 storage and Telegram alert. | Documented webhook verification checklist. |
-| 5. Alerts & Maintenance | Validate cron jobs, retention, and alert dedupe. | Simulate due auto report, check cleanup sweeps. | Logs or test assertions confirming scheduler behaviour. |
+| 4. Meta/Webhook Pipeline | Run end-to-end lead ingestion & notifications. | Replay sample webhook payload, confirm R2 storage and Telegram message. | Documented webhook verification checklist. |
+| 5. Maintenance | Validate cron jobs and retention. | Simulate due auto report, check cleanup sweeps. | Logs or test assertions confirming scheduler behaviour. |
 | 6. QA & Ops | Dry-run pipeline, update runbooks, align staging/prod domains. | `npm run dry-run`, update checklists with new endpoints. | Verified release steps with admin coverage. |
 
 Each phase should conclude with README updates ("Выполнено" + "Следующее"), Git commits, and where applicable documentation cross-links (deployment guide, webhook guide, etc.).
@@ -85,7 +85,7 @@ Each phase should conclude with README updates ("Выполнено" + "След
 - ✅ **Phase 2 — Telegram Bot Validation.** Интеграционные тесты `tests/integration/telegram-bot-controller.test.ts` покрывают меню, карточки проектов и сценарии биллинга (включая +30 дней и ручной ввод дат).
 - ✅ **Phase 3 — Portal Restoration.** Интеграционный тест `tests/integration/portal-routes.test.ts` подтверждает работу HTML-портала и API summary/leads/campaigns/payments.
 - ✅ **Phase 4 — Meta/Webhook Pipeline.** Интеграционный тест `tests/integration/meta-webhook-route.test.ts` подтверждает ingest → R2 → Telegram и проверку verify token.
-- ✅ **Phase 5 — Alerts & Maintenance.** Интеграционный тест `tests/integration/scheduler-tasks.test.ts` покрывает автоотчёты, алерты и maintenance-очистку.
+- ✅ **Phase 5 — Auto Reports & Maintenance.** Интеграционный тест `tests/integration/scheduler-tasks.test.ts` покрывает автоотчёты и maintenance-очистку.
 - ✅ **Phase 6 — QA & Ops.** Прогон `npm run dry-run -- --skip-deploy` подтвердил единый пайплайн lint → typecheck → тесты, документы QA/ops обновлены с актуальными шагами.
 - ⏭️ **Post-release acceptance.** Следующий шаг — пройти ручную приёмку на стенде (бот, портал, webhook) и собрать фидбек поддержки.
 
@@ -97,7 +97,7 @@ Before marking the system fully restored we must:
    - `POST /api/admin/projects` creates a project and auto-seeds settings.
    - `GET /api/admin/projects` returns created record.
    - `PUT /api/admin/projects/{id}` updates owner/name.
-   - `PUT /api/admin/projects/{id}/settings` modifies billing/alerts.
+   - `PUT /api/admin/projects/{id}/settings` modifies billing settings.
    - `PUT /api/admin/meta-tokens/{fbUserId}` stores tokens retrievable via GET.
 
 2. **Telegram Bot**
@@ -114,7 +114,7 @@ Before marking the system fully restored we must:
 
 4. **Meta/Webhook**
    - `GET /api/meta/webhook` handshake returns verify token.
-   - `POST /api/meta/webhook` stores leads, dispatches Telegram alert respecting route/topic.
+   - `POST /api/meta/webhook` stores leads и отправляет одно уведомление в Telegram.
    - Meta cache respects 60-second freshness.
 
 5. **Scheduler & Maintenance**

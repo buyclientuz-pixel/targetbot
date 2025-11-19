@@ -18,6 +18,9 @@ const { createMetaCacheEntry, saveMetaCache } = await import("../../src/domain/m
 const createEnv = () => ({
   KV: new MemoryKVNamespace(),
   R2: new MemoryR2Bucket(),
+  LEADS_KV: new MemoryKVNamespace(),
+  FACEBOOK_API_VERSION: "v18.0",
+  FB_LONG_TOKEN: "test-facebook-token",
 }) as import("../../src/worker/types.ts").TargetBotEnv;
 
 test("portal routes serve HTML shell plus summary, leads, campaigns, and payments", async () => {
@@ -51,6 +54,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   });
 
   const recentLeadDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const leadsSyncedAt = new Date().toISOString();
   await putProjectLeadsList(r2, projectRecord.id, {
     stats: { total: 170, today: 2 },
     leads: [
@@ -65,7 +69,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
         type: "lead",
       },
     ],
-    syncedAt: recentLeadDate,
+    syncedAt: leadsSyncedAt,
   });
   await saveLead(
     r2,
@@ -137,7 +141,11 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.equal(leadsResponse.status, 200);
   const leadsPayload = (await leadsResponse.clone().json()) as {
     ok: boolean;
-    data: { leads: Array<{ id: string; status: string; contact: string }>; stats: { total: number; today: number } };
+    data: {
+      leads: Array<{ id: string; status: string; contact: string }>;
+      stats: { total: number; today: number };
+      periodStats: { total: number; today: number };
+    };
   };
   assert.ok(leadsPayload.ok);
   assert.equal(leadsPayload.data.leads.length, 1);
@@ -145,6 +153,8 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.equal(leadsPayload.data.leads[0]?.status, "new");
   assert.equal(leadsPayload.data.leads[0]?.contact, "+998902867999");
   assert.equal(leadsPayload.data.stats.total, 170);
+  assert.equal(leadsPayload.data.periodStats.total, 1);
+  assert.equal(leadsPayload.data.periodStats.today, 0);
 
   const customFrom = new Date(new Date(recentLeadDate).getTime() - 60 * 60 * 1000).toISOString();
   const customTo = new Date(new Date(recentLeadDate).getTime() + 60 * 60 * 1000).toISOString();
@@ -160,6 +170,7 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.ok(leadsRangePayload.ok);
   assert.equal(leadsRangePayload.data.periodKey, "custom");
   assert.equal(leadsRangePayload.data.leads.length, 1);
+  assert.equal(leadsRangePayload.data.periodStats.total, 1);
 
   const campaignsResponse = await router.dispatch(
     new Request("https://example.com/api/projects/birlash/campaigns?period=yesterday"),
@@ -177,6 +188,80 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   assert.equal(campaign?.id, "cmp-1");
   assert.equal(campaign?.spend, 16.15);
   assert.equal(campaign?.leads, 5);
+
+  const summaryCustomFrom = "2025-11-10";
+  const summaryCustomTo = "2025-11-12";
+  const customSummaryEntry = createMetaCacheEntry(
+    projectRecord.id,
+    "summary:custom:2025-11-10:2025-11-12",
+    { from: summaryCustomFrom, to: summaryCustomTo },
+    {
+      periodKey: "custom",
+      metrics: {
+        spend: 21,
+        impressions: 1400,
+        clicks: 200,
+        leads: 9,
+        messages: 3,
+        purchases: 0,
+        addToCart: 0,
+        calls: 0,
+        registrations: 0,
+        engagement: 0,
+        leadsToday: 4,
+        leadsTotal: 180,
+        cpa: 21 / 9,
+        spendToday: 7,
+        cpaToday: 7 / 4,
+      },
+      source: { cached: true },
+    },
+    60,
+  );
+  await saveMetaCache(kv, customSummaryEntry);
+  await putMetaCampaignsDocument(r2, projectRecord.id, {
+    period: { from: summaryCustomFrom, to: summaryCustomTo },
+    summary: { spend: 21, impressions: 1400, clicks: 200, leads: 9, messages: 3 },
+    campaigns: [
+      {
+        id: "cmp-custom",
+        name: "Custom",
+        objective: "LEAD_GENERATION",
+        kpiType: "LEAD",
+        spend: 21,
+        impressions: 1400,
+        clicks: 200,
+        leads: 9,
+        messages: 3,
+      },
+    ],
+    periodKey: "custom",
+  });
+
+  const summaryCustomResponse = await router.dispatch(
+    new Request(
+      "https://example.com/api/projects/birlash/summary?period=custom&from=2025-11-10&to=2025-11-12",
+    ),
+    env,
+    execution,
+  );
+  const summaryCustomPayload = (await summaryCustomResponse.clone().json()) as typeof summaryPayload;
+  assert.ok(summaryCustomPayload.ok);
+  assert.equal(summaryCustomPayload.data.period.from, summaryCustomFrom);
+  assert.equal(summaryCustomPayload.data.period.to, summaryCustomTo);
+  assert.equal(summaryCustomPayload.data.metrics.leads, 9);
+
+  const campaignsCustomResponse = await router.dispatch(
+    new Request(
+      "https://example.com/api/projects/birlash/campaigns?period=custom&from=2025-11-10&to=2025-11-12",
+    ),
+    env,
+    execution,
+  );
+  const campaignsCustomPayload = (await campaignsCustomResponse.clone().json()) as typeof campaignsPayload;
+  assert.ok(campaignsCustomPayload.ok);
+  assert.equal(campaignsCustomPayload.data.period.from, summaryCustomFrom);
+  assert.equal(campaignsCustomPayload.data.campaigns[0]?.id, "cmp-custom");
 
   const paymentsResponse = await router.dispatch(
     new Request("https://example.com/api/projects/birlash/payments"),

@@ -9,7 +9,7 @@
 
 # 🚀 **SPEC-AUTO-REPORT-v3 (FINAL INDUSTRIAL VERSION)**
 
-### *Auto-Report Engine · Alert Engine · KPI Engine · Export Engine · Routing Engine · Billing Engine*
+### *Auto-Report Engine · KPI Engine · Export Engine · Routing Engine · Billing Engine*
 
 Этот документ — основной **PASSPORT.md** / **SPEC.md** модуля отчётности и мониторинга Meta Ads через Telegram.
 
@@ -35,7 +35,6 @@
 * корректно обрабатывать ошибки Facebook API
 * иметь fallback-режимы
 * отправлять отчёты точно в заданное время
-* отправлять алерты по маршрутизации (admin / chat / both)
 * выполнять весь цикл раз в 5 минут
 * быть совместимым со всеми функциями проекта
 * НЕ требовать перезапуска бота после настроек
@@ -71,8 +70,8 @@ erDiagram
     PROJECT_SETTINGS {
         boolean auto_enabled
         string[] auto_times
-        string send_target
-        string alerts_target
+        boolean send_chat
+        boolean send_admin
         boolean monday_double
         date last_sent_daily
         date last_sent_monday
@@ -90,12 +89,6 @@ erDiagram
         string status
     }
 
-    PROJECT ||--o{ ALERT : "generated"
-    ALERT {
-        string type
-        string message
-        timestamp created_at
-    }
 ```
 
 ---
@@ -114,13 +107,11 @@ flowchart TD
 
     LOOP --> META[Validate META Link]
     LOOP --> BILLING[BILLING ENGINE]
-    LOOP --> ALERTS[ALERT ENGINE]
     LOOP --> AUTOREPORT[AUTO-REPORT ENGINE]
     LOOP --> KPIREFRESH[KPI Refresh]
     LOOP --> LOG[Health Log]
 
     AUTOREPORT --> SENDREPORT[Send Daily/Weekly Report]
-    ALERTS --> SENDALERT[Send Alerts via Routing]
 ```
 
 ---
@@ -144,8 +135,8 @@ project_settings:{project_id}
   "auto_report": {
     "enabled": true,
     "times": ["10:00", "15:00", "20:00"],
-    "send_target": "both",
-    "alerts_target": "admin",
+    "send_chat": true,
+    "send_admin": false,
     "monday_double_report": true,
     "last_sent_daily": "2025-11-13",
     "last_sent_monday": "2025-11-10"
@@ -183,23 +174,12 @@ project_settings:{project_id}
 auto_menu:{project_id}
 auto_toggle:{project_id}
 auto_time_toggle:{project_id}:{HH:MM}
-auto_send_target:{project_id}:{chat/admin/both}
+auto_send_target:{project_id}:{chat|admin}
 auto_monday_toggle:{project_id}
 auto_send_now:{project_id}
 ```
 
-### **4.2 ALERTS**
-
-```
-alert_menu:{project_id}
-alert_toggle_payment:{project_id}
-alert_toggle_spend:{project_id}
-alert_toggle_api:{project_id}
-alert_toggle_pause:{project_id}
-alert_route:{project_id}:{chat/admin/both}
-```
-
-### **4.3 KPI**
+### **4.2 KPI**
 
 ```
 kpi_menu:{project_id}
@@ -207,7 +187,7 @@ kpi_toggle_default:{project_id}:{metric}
 kpi_toggle_campaign:{project_id}:{campaign_id}:{metric}
 ```
 
-### **4.4 EXPORT**
+### **4.3 EXPORT**
 
 ```
 report_manual:{project_id}:{period}
@@ -263,17 +243,6 @@ Codex должен:
 ( ) Админ
 ( ) Оба
 
-📢 Алерты:
-[✔] Оплата
-[✔] Бюджет
-[✔] Meta API
-[✔] Пауза кампаний
-
-📡 Маршрут алертов:
-(•) В чат
-( ) Админ
-( ) Оба
-
 🔄 Отправить отчёт сейчас
 ⬅ Назад
 ```
@@ -292,11 +261,10 @@ CRON запускается каждые 5 минут:
 1. Загрузка всех проектов
 2. Проверка Meta API связи
 3. Проверка биллинга Meta
-4. Генерация алертов
-5. Проверка времени отчётов
-6. Отправка автоотчётов
-7. Обновление KPI
-8. Логирование
+4. Проверка времени отчётов
+5. Отправка автоотчётов
+6. Обновление KPI
+7. Логирование
 ```
 
 ---
@@ -344,43 +312,9 @@ if last_sent_daily == today → skip
 
 # ----------------------------------------------------
 
-# **9. ALERT ENGINE**
+# **9. CARDS ENGINE интеграция (профиль проекта)**
 
 # ----------------------------------------------------
-
-### Поддерживает 4 типа алертов и доработай чтобы они были еще более полезные:
-
-1. **Billing Alert**
-
-```
-‼ Проблема оплаты Meta
-Статус: В отсрочке
-```
-
-2. **Budget Anomaly Alert**
-
-```
-⚠ Аномальный расход
-Сегодня: $64 (↑128%)
-```
-
-3. **Meta API Errors**
-
-```
-⚠ Ошибка Meta API — adset missing
-```
-
-4. **Campaign Paused Alerts**
-
-```
-🚸 Кампания Broad на паузе >2ч
-```
-
----
-
-
----
-CARDS ENGINE интеграция (профиль проекта)
 
 В карточке проекта отображается:
 
@@ -388,11 +322,10 @@ CARDS ENGINE интеграция (профиль проекта)
 💳 Биллинг: задолженность $73 (🟡 В отсрочке)
 📅 Оплата: 02.12.2025
 ⏰ Автоотчёты: 10:00, 15:00 (вкл)
-📡 Алерты: включены (оба канала)
 🌐 Meta: Asan Ads (подключено)
 # ----------------------------------------------------
 
-# **11. FAIL-SAFE МЕХАНИЗМЫ**
+# **10. FAIL-SAFE МЕХАНИЗМЫ**
 
 # ----------------------------------------------------
 
@@ -400,15 +333,14 @@ CARDS ENGINE интеграция (профиль проекта)
 
 ```
 1) auto_report → отправляет заглушку
-2) alert_engine → отправляет алерт админу
-3) kpi_refresh → пропускает обновление
+2) kpi_refresh → пропускает обновление
 ```
 
 ---
 
 # ----------------------------------------------------
 
-# **12. СТРОГИЙ РЕЖИМ ДЛЯ CODEX**
+# **11. СТРОГИЙ РЕЖИМ ДЛЯ CODEX**
 
 # ----------------------------------------------------
 

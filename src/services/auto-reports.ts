@@ -12,6 +12,7 @@ import { DataValidationError } from "../errors";
 import { getAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import { requireProjectRecord, type ProjectRecord, type KpiType } from "../domain/spec/project";
 
+const DEFAULT_AUTOREPORT_TIMEZONE = "Asia/Tashkent";
 const SLOT_WINDOW_MS = 5 * 60 * 1000;
 
 type AutoGoalKey =
@@ -34,6 +35,10 @@ const GOAL_METADATA: Record<AutoGoalKey, { label: string; plural: string }> = {
   registrations: { label: "Подписки", plural: "подписок" },
   engagement: { label: "Вовлечённость", plural: "событий" },
 };
+
+const GOAL_KEYS = Object.keys(GOAL_METADATA) as AutoGoalKey[];
+const PRIORITY_GOALS: AutoGoalKey[] = ["leads", "messages"];
+const DEFAULT_AUTO_GOAL: AutoGoalKey = PRIORITY_GOALS[0] ?? "leads";
 
 const KPI_GOAL_MAP: Record<KpiType, AutoGoalKey> = {
   LEAD: "leads",
@@ -156,18 +161,79 @@ const parseSlot = (slot: string): { hours: number; minutes: number } | null => {
   return { hours, minutes };
 };
 
+const resolveTimezoneContext = (
+  now: Date,
+  timezone: string,
+): { year: number; month: number; day: number; offsetMs: number } => {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+    const parts = formatter.formatToParts(now);
+    const pick = (type: Intl.DateTimeFormatPartTypes): string | null =>
+      parts.find((part) => part.type === type)?.value ?? null;
+    const year = pick("year");
+    const month = pick("month");
+    const day = pick("day");
+    const hour = pick("hour") ?? "00";
+    const minute = pick("minute") ?? "00";
+    const second = pick("second") ?? "00";
+    if (!year || !month || !day) {
+      throw new Error("missing date parts");
+    }
+    const isoLocal = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+    const timezoneDate = new Date(`${isoLocal}Z`);
+    if (Number.isNaN(timezoneDate.getTime())) {
+      throw new Error("invalid timezone date");
+    }
+    return {
+      year: Number.parseInt(year, 10),
+      month: Number.parseInt(month, 10),
+      day: Number.parseInt(day, 10),
+      offsetMs: timezoneDate.getTime() - now.getTime(),
+    };
+  } catch {
+    return {
+      year: now.getUTCFullYear(),
+      month: now.getUTCMonth() + 1,
+      day: now.getUTCDate(),
+      offsetMs: 0,
+    };
+  }
+};
+
 const isSlotDue = (
   slot: string,
   now: Date,
   lastSentAt: string | null,
+  timezone: string,
 ): { due: boolean; scheduledAt: Date | null } => {
   const parsed = parseSlot(slot);
   if (!parsed) {
     return { due: false, scheduledAt: null };
   }
 
-  const scheduled = new Date(now);
-  scheduled.setUTCHours(parsed.hours, parsed.minutes, 0, 0);
+  const tzContext = resolveTimezoneContext(now, timezone);
+  const scheduledTimestamp = Date.UTC(
+    tzContext.year,
+    tzContext.month - 1,
+    tzContext.day,
+    parsed.hours,
+    parsed.minutes,
+    0,
+    0,
+  );
+  if (Number.isNaN(scheduledTimestamp)) {
+    return { due: false, scheduledAt: null };
+  }
+  const scheduled = new Date(scheduledTimestamp - tzContext.offsetMs);
 
   const diff = now.getTime() - scheduled.getTime();
   if (diff < 0 || diff > SLOT_WINDOW_MS) {
@@ -190,6 +256,8 @@ const mapKpiTypeToGoal = (type?: KpiType): AutoGoalKey => {
   }
   return KPI_GOAL_MAP[type] ?? "leads";
 };
+
+const isTrafficGoal = (goal: AutoGoalKey): boolean => goal === "traffic";
 
 const detectGoalFromObjective = (objective?: string | null): AutoGoalKey | null => {
   if (!objective) {
@@ -253,35 +321,87 @@ const getSummaryMetricValue = (metrics: MetaSummaryMetrics | undefined, goal: Au
   }
 };
 
-const determinePrimaryGoal = (rows: CampaignRow[], fallback: AutoGoalKey): AutoGoalKey => {
-  if (rows.length === 0) {
-    return fallback;
-  }
+const sumGoalMetrics = (rows: CampaignRow[]): Map<AutoGoalKey, number> => {
   const totals = new Map<AutoGoalKey, number>();
-  for (const row of rows) {
-    const detected = detectGoalFromObjective(row.objective) ?? fallback;
-    const value = getRowMetricValue(row, detected);
-    totals.set(detected, (totals.get(detected) ?? 0) + value);
+  for (const goal of GOAL_KEYS) {
+    totals.set(goal, 0);
   }
-  let bestGoal: AutoGoalKey = fallback;
-  let bestValue = totals.get(bestGoal) ?? 0;
-  for (const goal of Object.keys(GOAL_METADATA) as AutoGoalKey[]) {
-    const total = totals.get(goal) ?? 0;
+  for (const row of rows) {
+    for (const goal of GOAL_KEYS) {
+      const next = (totals.get(goal) ?? 0) + getRowMetricValue(row, goal);
+      totals.set(goal, next);
+    }
+  }
+  return totals;
+};
+
+const pickFirstNonZeroGoal = (totals: Map<AutoGoalKey, number>, order: AutoGoalKey[]): AutoGoalKey | null => {
+  for (const goal of order) {
+    if ((totals.get(goal) ?? 0) > 0) {
+      return goal;
+    }
+  }
+  return null;
+};
+
+const pickGoalFromSummary = (metrics?: MetaSummaryMetrics): AutoGoalKey | null => {
+  if (!metrics) {
+    return null;
+  }
+  for (const goal of PRIORITY_GOALS) {
+    if (getSummaryMetricValue(metrics, goal) > 0) {
+      return goal;
+    }
+  }
+  return null;
+};
+
+const determinePrimaryGoal = (
+  rows: CampaignRow[],
+  summary: MetaSummaryMetrics | undefined,
+  options: { defaultGoal: AutoGoalKey; fallbackGoal: AutoGoalKey },
+): AutoGoalKey => {
+  const summaryGoal = pickGoalFromSummary(summary);
+  if (summaryGoal) {
+    return summaryGoal;
+  }
+
+  if (rows.length === 0) {
+    return options.defaultGoal ?? options.fallbackGoal;
+  }
+
+  const metricTotals = sumGoalMetrics(rows);
+  const preferredGoal = pickFirstNonZeroGoal(metricTotals, PRIORITY_GOALS);
+  if (preferredGoal) {
+    return preferredGoal;
+  }
+
+  const detectedTotals = new Map<AutoGoalKey, number>();
+  for (const row of rows) {
+    const detected = detectGoalFromObjective(row.objective) ?? options.fallbackGoal;
+    const value = getRowMetricValue(row, detected);
+    detectedTotals.set(detected, (detectedTotals.get(detected) ?? 0) + value);
+  }
+
+  let bestGoal: AutoGoalKey = options.fallbackGoal;
+  let bestValue = detectedTotals.get(bestGoal) ?? 0;
+  for (const goal of GOAL_KEYS) {
+    const total = detectedTotals.get(goal) ?? 0;
     if (total > bestValue) {
       bestGoal = goal;
       bestValue = total;
     }
   }
-  if (bestValue === 0) {
-    for (const goal of Object.keys(GOAL_METADATA) as AutoGoalKey[]) {
-      const total = rows.reduce((acc, row) => acc + getRowMetricValue(row, goal), 0);
-      if (total > 0) {
-        return goal;
-      }
-    }
-    return fallback;
+
+  if (bestValue > 0 && !isTrafficGoal(bestGoal)) {
+    return bestGoal;
   }
-  return bestGoal;
+
+  const fallbackGoal = pickFirstNonZeroGoal(
+    metricTotals,
+    GOAL_KEYS.filter((goal) => !isTrafficGoal(goal)),
+  );
+  return fallbackGoal ?? options.defaultGoal ?? options.fallbackGoal;
 };
 
 const DEFAULT_METRICS: MetaSummaryMetrics = {
@@ -455,39 +575,32 @@ const resolvePeriodKeys = (mode: string, now: Date): string[] => {
   }
 };
 
-const mapAutoreportRoute = (
-  sendTo: AutoreportsRecord["sendTo"],
-): ProjectSettings["alerts"]["route"] => {
-  switch (sendTo) {
-    case "chat":
-      return "CHAT";
-    case "admin":
-      return "ADMIN";
-    case "both":
-    default:
-      return "BOTH";
-  }
-};
+interface AutoreportProfile {
+  enabled: boolean;
+  slots: string[];
+  mode: string;
+  recipients: { chat: boolean; admin: boolean };
+}
 
 const resolveAutoreportProfile = async (
   kv: KvClient,
   projectId: string,
   settings: ProjectSettings,
-): Promise<{ enabled: boolean; slots: string[]; mode: string; route: ProjectSettings["alerts"]["route"] }> => {
+): Promise<AutoreportProfile> => {
   const record = await getAutoreportsRecord(kv, projectId);
   if (!record) {
     return {
       enabled: settings.reports.autoReportsEnabled,
       slots: [...settings.reports.timeSlots],
       mode: settings.reports.mode,
-      route: settings.alerts.route,
+      recipients: { chat: true, admin: false },
     };
   }
   return {
     enabled: record.enabled,
     slots: record.enabled && record.time ? [record.time] : [],
     mode: record.mode,
-    route: mapAutoreportRoute(record.sendTo),
+    recipients: { chat: record.sendToChat, admin: record.sendToAdmin },
   };
 };
 
@@ -519,8 +632,20 @@ const buildReportMessage = (options: {
   goal: AutoGoalKey;
   campaigns: CampaignRow[];
   topPeriod: string;
+  includeFindings?: boolean;
 }): string => {
-  const { project, projectRecord, settings, slot, now, metricsByPeriod, goal, campaigns, topPeriod } = options;
+  const {
+    project,
+    projectRecord,
+    settings,
+    slot,
+    now,
+    metricsByPeriod,
+    goal,
+    campaigns,
+    topPeriod,
+    includeFindings = true,
+  } = options;
   const goalMeta = getGoalMetadata(goal);
   const currency = settings.billing.currency;
   const todayMetrics = getMetricsOrDefault(metricsByPeriod.get("today"));
@@ -534,20 +659,22 @@ const buildReportMessage = (options: {
   const todayCost = computeCostPerResult(todayMetrics.spend, todayValue);
   const yesterdayCost = computeCostPerResult(yesterdayMetrics.spend, yesterdayValue);
   const ctrToday = computeCtr(todayMetrics);
-  const reportDate = formatReportDate(now, projectRecord.settings.timezone ?? "UTC");
+  const reportDate = formatReportDate(now, projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE);
   const topCampaignLines = formatTopCampaigns(campaigns, goal, currency);
-  const findings = buildFindings({
-    goalLabel: goalMeta.label,
-    goalPlural: goalMeta.plural,
-    currency,
-    targetCpl: settings.kpi.targetCpl ?? null,
-    todayMetrics,
-    yesterdayMetrics,
-    todayValue,
-    yesterdayValue,
-    todayCost,
-    yesterdayCost,
-  });
+  const findings = includeFindings
+    ? buildFindings({
+        goalLabel: goalMeta.label,
+        goalPlural: goalMeta.plural,
+        currency,
+        targetCpl: settings.kpi.targetCpl ?? null,
+        todayMetrics,
+        yesterdayMetrics,
+        todayValue,
+        yesterdayValue,
+        todayCost,
+        yesterdayCost,
+      })
+    : null;
 
   const lines: string[] = [];
   lines.push(`📊 Отчёт | ${reportDate}`);
@@ -575,8 +702,10 @@ const buildReportMessage = (options: {
   lines.push(`Месяц: ${formatNumber(monthValue)} ${goalMeta.plural}`);
   lines.push(`CTR сегодня: ${formatPercent(ctrToday)}`);
   lines.push(`Динамика: ${describeTrend(todayValue, yesterdayValue)}`);
-  lines.push("");
-  lines.push(`Вывод: ${findings}`);
+  if (includeFindings && findings) {
+    lines.push("");
+    lines.push(`Вывод: ${findings}`);
+  }
   if (projectRecord.portalUrl && projectRecord.portalUrl.trim().length > 0) {
     lines.push("------");
     lines.push("👇 Для просмотра всех кампаний");
@@ -648,8 +777,16 @@ const loadAutoReportTemplate = async (options: {
     }
   }
 
-  const fallbackGoal = mapKpiTypeToGoal(projectRecord.settings.kpi.type);
-  const goal = determinePrimaryGoal(campaigns, fallbackGoal);
+  const kpiSettings = projectRecord.settings.kpi;
+  const manualGoal = mapKpiTypeToGoal(kpiSettings.type);
+  const topPeriodMetrics = metricsContext.metrics.get(topPeriod);
+  const goal =
+    kpiSettings.mode === "manual"
+      ? manualGoal
+      : determinePrimaryGoal(campaigns, topPeriodMetrics, {
+          defaultGoal: DEFAULT_AUTO_GOAL,
+          fallbackGoal: manualGoal,
+        });
   const replyMarkup =
     projectRecord.portalUrl && projectRecord.portalUrl.trim().length > 0
       ? { inline_keyboard: [[{ text: "Открыть портал", url: projectRecord.portalUrl }]] }
@@ -667,7 +804,12 @@ const loadAutoReportTemplate = async (options: {
   };
 };
 
-const renderAutoReportMessage = (template: AutoReportTemplate, slot: string, now: Date): string =>
+const renderAutoReportMessage = (
+  template: AutoReportTemplate,
+  slot: string,
+  now: Date,
+  options?: { includeFindings?: boolean },
+): string =>
   buildReportMessage({
     project: template.project,
     projectRecord: template.projectRecord,
@@ -678,6 +820,7 @@ const renderAutoReportMessage = (template: AutoReportTemplate, slot: string, now
     goal: template.goal,
     campaigns: template.campaigns,
     topPeriod: template.topPeriod,
+    includeFindings: options?.includeFindings ?? true,
   });
 
 export const runAutoReports = async (
@@ -695,20 +838,33 @@ export const runAutoReports = async (
       const settings = await ensureProjectSettings(kv, project.id);
       const projectRecord = await requireProjectRecord(kv, project.id);
       const profile = await resolveAutoreportProfile(kv, project.id, settings);
-      if (!profile.enabled || profile.slots.length === 0 || profile.route === "NONE") {
+      if (!profile.enabled || profile.slots.length === 0) {
         continue;
       }
 
       const state = await getReportScheduleState(kv, project.id);
       const dueSlots: Array<{ slot: string; scheduledAt: Date }> = [];
       for (const slot of profile.slots) {
-        const { due, scheduledAt } = isSlotDue(slot, now, state.slots[slot] ?? null);
+        const { due, scheduledAt } = isSlotDue(
+          slot,
+          now,
+          state.slots[slot] ?? null,
+          projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE,
+        );
         if (due && scheduledAt) {
           dueSlots.push({ slot, scheduledAt });
         }
       }
 
       if (dueSlots.length === 0) {
+        continue;
+      }
+
+      const hasRecipients = profile.recipients.chat || profile.recipients.admin;
+      if (!hasRecipients) {
+        for (const { slot, scheduledAt } of dueSlots) {
+          await markReportSlotDispatched(kv, project.id, slot, scheduledAt.toISOString());
+        }
         continue;
       }
 
@@ -730,21 +886,41 @@ export const runAutoReports = async (
         throw error;
       }
 
-      for (const { slot } of dueSlots) {
-        const message = renderAutoReportMessage(template, `${slot} (UTC)`, now);
-        const result = await dispatchProjectMessage({
-          kv,
-          token,
-          project: template.project,
-          settings: template.settings,
-          text: message,
-          parseMode: "HTML",
-          route: profile.route,
-          replyMarkup: template.replyMarkup,
-        });
-        await markReportSlotDispatched(kv, project.id, slot, new Date().toISOString());
-
-        template.settings = result.settings;
+      const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
+      for (const { slot, scheduledAt } of dueSlots) {
+        if (profile.recipients.chat) {
+          const chatMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, now, {
+            includeFindings: false,
+          });
+          const result = await dispatchProjectMessage({
+            kv,
+            token,
+            project: template.project,
+            settings: template.settings,
+            text: chatMessage,
+            parseMode: "HTML",
+            route: "CHAT",
+            replyMarkup: template.replyMarkup,
+          });
+          template.settings = result.settings;
+        }
+        if (profile.recipients.admin) {
+          const adminMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, now, {
+            includeFindings: true,
+          });
+          const result = await dispatchProjectMessage({
+            kv,
+            token,
+            project: template.project,
+            settings: template.settings,
+            text: adminMessage,
+            parseMode: "HTML",
+            route: "ADMIN",
+            replyMarkup: template.replyMarkup,
+          });
+          template.settings = result.settings;
+        }
+        await markReportSlotDispatched(kv, project.id, slot, scheduledAt.toISOString());
       }
     } catch (error) {
       console.error("auto-report failure", { projectId: project.id, error });
@@ -764,8 +940,8 @@ export const sendAutoReportNow = async (
   const projectRecord = await requireProjectRecord(kv, projectId);
   const settings = await ensureProjectSettings(kv, projectId);
   const profile = await resolveAutoreportProfile(kv, projectId, settings);
-  if (profile.route === "NONE") {
-    throw new Error("Auto-report route is disabled for this project");
+  if (!profile.recipients.chat && !profile.recipients.admin) {
+    return;
   }
 
   const template = await loadAutoReportTemplate({
@@ -775,18 +951,34 @@ export const sendAutoReportNow = async (
     mode: profile.mode,
     now,
   });
-  const timezone = projectRecord.settings.timezone ?? "UTC";
+  const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
   const slotLabel = formatManualSlotLabel(now, timezone);
-  const message = renderAutoReportMessage(template, slotLabel, now);
-  const result = await dispatchProjectMessage({
-    kv,
-    token,
-    project: template.project,
-    settings: template.settings,
-    text: message,
-    parseMode: "HTML",
-    route: profile.route,
-    replyMarkup: template.replyMarkup,
-  });
-  template.settings = result.settings;
+  if (profile.recipients.chat) {
+    const chatMessage = renderAutoReportMessage(template, slotLabel, now, { includeFindings: false });
+    const result = await dispatchProjectMessage({
+      kv,
+      token,
+      project: template.project,
+      settings: template.settings,
+      text: chatMessage,
+      parseMode: "HTML",
+      route: "CHAT",
+      replyMarkup: template.replyMarkup,
+    });
+    template.settings = result.settings;
+  }
+  if (profile.recipients.admin) {
+    const adminMessage = renderAutoReportMessage(template, slotLabel, now, { includeFindings: true });
+    const result = await dispatchProjectMessage({
+      kv,
+      token,
+      project: template.project,
+      settings: template.settings,
+      text: adminMessage,
+      parseMode: "HTML",
+      route: "ADMIN",
+      replyMarkup: template.replyMarkup,
+    });
+    template.settings = result.settings;
+  }
 };
