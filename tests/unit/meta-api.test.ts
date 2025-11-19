@@ -64,6 +64,37 @@ test("fetchMetaLeads returns account-level leads without enumerating forms", asy
   }
 });
 
+test("fetchMetaLeads normalises raw account id to act_ prefix", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    requests.push(url);
+    if (url.pathname.includes("/act_123456/leads")) {
+      return new Response(JSON.stringify({ data: [{ id: "lead-account", created_time: "2025-11-17T00:00:00Z" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "123456", accessToken: "token" });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/act_123456/leads")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetchMetaAdAccount returns parsed account status", async () => {
   const originalFetch = globalThis.fetch;
   const requests: URL[] = [];
