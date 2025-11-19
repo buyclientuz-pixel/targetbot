@@ -2,7 +2,6 @@ import { loadProjectBundle, type ProjectBundle } from "../bot/data";
 import {
   loadProjectSummary,
   loadProjectCampaignStatuses,
-  resolvePeriodRange,
   syncProjectCampaignDocument,
   type CampaignStatus,
 } from "../services/project-insights";
@@ -10,13 +9,16 @@ import { DataValidationError, EntityNotFoundError } from "../errors";
 import { jsonResponse } from "../http/responses";
 import { applyCors, preflight } from "../http/cors";
 import { requireProjectRecord } from "../domain/spec/project";
-import { listLeads, type Lead, type LeadStatus } from "../domain/leads";
 import { getProjectLeadsList, type ProjectLeadsListRecord } from "../domain/spec/project-leads";
 import type { R2Client } from "../infra/r2";
 import type { Router } from "../worker/router";
 import type { RequestContext } from "../worker/context";
 import { translateMetaObjective } from "../services/meta-objectives";
 import { refreshProjectLeads } from "../services/project-leads-sync";
+import { resolvePortalPeriodRange } from "../services/period-range";
+import { loadProjectLeadsView } from "../services/project-leads-view";
+import { fetchLiveProjectLeads } from "../services/project-live-leads";
+import type { Lead } from "../domain/leads";
 
 const htmlResponse = (body: string): Response =>
   new Response(body, {
@@ -44,6 +46,19 @@ const forbidden = (message: string): Response => jsonError(403, message);
 const notFound = (message: string): Response => jsonError(404, message);
 const unprocessable = (message: string): Response => jsonError(422, message);
 
+const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+
+export const shouldRefreshLeadSnapshot = (record: ProjectLeadsListRecord | null): boolean => {
+  if (!record?.syncedAt) {
+    return true;
+  }
+  const syncedAt = Date.parse(record.syncedAt);
+  if (!Number.isFinite(syncedAt)) {
+    return true;
+  }
+  return Date.now() - syncedAt > LEADS_REFRESH_WINDOW_MS;
+};
+
 const computeCpa = (spend: number, value: number): number | null => {
   if (!Number.isFinite(spend) || !Number.isFinite(value) || value <= 0) {
     return null;
@@ -61,17 +76,19 @@ const buildSummaryPayload = (
 ) => {
   const campaignsDoc = options?.campaigns ?? bundle.campaigns;
   const summaryMetrics = options?.summaryEntry?.payload.metrics;
+  const campaignSummary = campaignsDoc.summary ?? { spend: 0, impressions: 0, clicks: 0, leads: 0, messages: 0 };
   const summary = summaryMetrics
     ? {
         spend: summaryMetrics.spend,
         impressions: summaryMetrics.impressions,
         clicks: summaryMetrics.clicks,
         leads: summaryMetrics.leads,
-        messages: summaryMetrics.messages ?? campaignsDoc.summary.messages,
+        messages: summaryMetrics.messages ?? campaignSummary.messages,
       }
-    : campaignsDoc.summary;
-  const spend = summary.spend ?? 0;
-  const leads = summary.leads ?? 0;
+    : campaignSummary;
+  const spend = summary.spend ?? campaignSummary.spend ?? 0;
+  const leads = campaignSummary.leads ?? summary.leads ?? 0;
+  const messages = campaignSummary.messages ?? summary.messages ?? 0;
   const leadsToday = bundle.leads.stats.today ?? 0;
   return {
     project: {
@@ -83,10 +100,10 @@ const buildSummaryPayload = (
     periodKey: options?.summaryEntry?.payload.periodKey ?? campaignsDoc.periodKey ?? requestedPeriod,
     metrics: {
       spend,
-      impressions: summary.impressions ?? 0,
-      clicks: summary.clicks ?? 0,
+      impressions: summary.impressions ?? campaignSummary.impressions ?? 0,
+      clicks: summary.clicks ?? campaignSummary.clicks ?? 0,
       leads,
-      messages: summary.messages ?? 0,
+      messages,
       cpa: computeCpa(spend, leads),
       leadsTotal: bundle.leads.stats.total ?? 0,
       leadsToday,
@@ -97,120 +114,6 @@ const buildSummaryPayload = (
       kpiType: bundle.project.settings.kpi.type,
     },
   };
-};
-
-const mapLeadStatusForPortal = (
-  status: ProjectLeadsListRecord["leads"][number]["status"] | LeadStatus,
-): ProjectLeadsListRecord["leads"][number]["status"] => {
-  if (typeof status === "string") {
-    const normalised = status.toLowerCase();
-    if (normalised === "new" || normalised === "processing" || normalised === "done" || normalised === "trash") {
-      return normalised;
-    }
-  }
-  return "new";
-};
-
-const normaliseLeadContact = (lead: Lead): string => {
-  if (lead.contact && lead.contact.trim().length > 0) {
-    const contact = lead.contact.trim();
-    return contact.toLowerCase() === "сообщение" ? "сообщение" : contact;
-  }
-  if (lead.phone) {
-    return lead.phone;
-  }
-  if (lead.message) {
-    return "сообщение";
-  }
-  return "—";
-};
-
-const formatDateOnly = (date: Date): string => date.toISOString().split("T")[0] ?? date.toISOString();
-
-const resolveLeadsRange = (
-  periodKey: string,
-  from?: string | null,
-  to?: string | null,
-): ReturnType<typeof resolvePeriodRange> => {
-  if (!from && !to) {
-    return resolvePeriodRange(periodKey);
-  }
-  if (!from || !to) {
-    throw new DataValidationError("Параметры from и to должны быть указаны вместе");
-  }
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
-  if (Number.isNaN(fromDate.getTime())) {
-    throw new DataValidationError("Некорректное значение параметра from");
-  }
-  if (Number.isNaN(toDate.getTime())) {
-    throw new DataValidationError("Некорректное значение параметра to");
-  }
-  if (fromDate.getTime() > toDate.getTime()) {
-    throw new DataValidationError("Параметр from должен быть раньше to");
-  }
-  return {
-    key: "custom",
-    from: fromDate,
-    to: toDate,
-    period: { from: formatDateOnly(fromDate), to: formatDateOnly(toDate) },
-  } satisfies ReturnType<typeof resolvePeriodRange>;
-};
-
-const loadPortalLeadsPayload = async (
-  r2: R2Client,
-  projectId: string,
-  periodKey: string,
-  options?: { from?: string | null; to?: string | null },
-): Promise<{
-  period: ReturnType<typeof resolvePeriodRange>["period"];
-  periodKey: string;
-  leads: Array<{
-    id: string;
-    name: string;
-    contact: string;
-    phone: string | null;
-    message: string | null;
-    createdAt: string;
-    campaignName: string;
-    campaignId: string | null;
-    status: ProjectLeadsListRecord["leads"][number]["status"];
-    type: string;
-    source: string;
-  }>;
-  stats: ProjectLeadsListRecord["stats"];
-  syncedAt: string | null;
-}> => {
-  const range = resolveLeadsRange(periodKey, options?.from ?? null, options?.to ?? null);
-  const fromTime = range.from.getTime();
-  const toTime = range.to.getTime();
-  const leads = await listLeads(r2, projectId);
-  const filtered = leads
-    .filter((lead) => {
-      const created = Date.parse(lead.createdAt);
-      return Number.isFinite(created) && created >= fromTime && created <= toTime;
-    })
-    .map((lead) => ({
-      id: lead.id,
-      name: lead.name,
-      contact: normaliseLeadContact(lead),
-      phone: lead.phone,
-      message: lead.message,
-      createdAt: lead.createdAt,
-      campaignName: lead.campaign ?? "—",
-      campaignId: lead.campaignId,
-      status: mapLeadStatusForPortal(lead.status as LeadStatus),
-      type: lead.phone ? "lead" : "message",
-      source: lead.source,
-    }))
-    .sort((a, b) => (a.createdAt === b.createdAt ? 0 : a.createdAt > b.createdAt ? -1 : 1));
-  const summary = (await getProjectLeadsList(r2, projectId)) ?? null;
-  const todayKey = new Date().toISOString().slice(0, 10);
-  const stats = summary?.stats ?? {
-    total: leads.length,
-    today: leads.filter((lead) => lead.createdAt.slice(0, 10) === todayKey).length,
-  };
-  return { period: range.period, periodKey: range.key, leads: filtered, stats, syncedAt: summary?.syncedAt ?? null };
 };
 
 const buildCampaignsPayload = (
@@ -258,12 +161,50 @@ const respondWithProjectLeads = async (
   options?: { refresh?: boolean; from?: string | null; to?: string | null },
 ): Promise<Response> => {
   try {
-    if (options?.refresh) {
-      await refreshProjectLeads(context.kv, context.r2, projectId);
+    const projectRecord = await requireProjectRecord(context.kv, projectId);
+    const timeZone = projectRecord.settings.timezone ?? null;
+    const resolvedRange = resolvePortalPeriodRange(
+      periodKey,
+      timeZone,
+      options?.from ?? null,
+      options?.to ?? null,
+    );
+    const leadAccessToken = context.env.FB_LONG_TOKEN ?? context.env.FACEBOOK_TOKEN ?? null;
+    let liveLeads: Lead[] | null = null;
+    try {
+      liveLeads = await fetchLiveProjectLeads(context.kv, projectId, {
+        since: resolvedRange.from,
+        accessTokenOverride: leadAccessToken,
+      });
+    } catch (error) {
+      console.warn(`[portal] Failed to fetch live leads for ${projectId}: ${(error as Error).message}`);
     }
-    const payload = await loadPortalLeadsPayload(context.r2, projectId, periodKey, {
+    let snapshot: ProjectLeadsListRecord | null = null;
+    try {
+      snapshot = await getProjectLeadsList(context.r2, projectId);
+    } catch (error) {
+      console.warn(`[portal] Failed to read lead snapshot for ${projectId}: ${(error as Error).message}`);
+    }
+    const needsRefresh = options?.refresh === true || shouldRefreshLeadSnapshot(snapshot);
+    if (needsRefresh) {
+      try {
+        await refreshProjectLeads(context.kv, context.r2, projectId, {
+          projectRecord,
+          accessTokenOverride: leadAccessToken,
+        });
+      } catch (error) {
+        console.warn(
+          `[portal] Failed to refresh stored leads for ${projectId}: ${(error as Error).message}`,
+        );
+      }
+    }
+    const payload = await loadProjectLeadsView(context.r2, projectId, {
+      periodKey,
+      timeZone,
       from: options?.from ?? null,
       to: options?.to ?? null,
+      liveLeads,
+      liveSyncedAt: liveLeads ? new Date().toISOString() : null,
     });
     return jsonOk({ projectId, ...payload });
   } catch (error) {
@@ -286,6 +227,15 @@ export const renderPortalHtml = (projectId: string): string => {
         const TOKEN = new URLSearchParams(window.location.search).get('token');
         const REQUEST_TIMEOUT = 12000;
         const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+        const DISABLE_LEADS_UI = true;
+        const DISABLE_EXPORT_SECTION = true;
+        const hideElement = (selector) => {
+          const element = document.querySelector(selector);
+          if (element && element.style) {
+            element.style.display = 'none';
+          }
+          return element;
+        };
         const elements = {
           preloader: document.querySelector('[data-preloader]'),
           error: document.querySelector('[data-error]'),
@@ -303,6 +253,8 @@ export const renderPortalHtml = (projectId: string): string => {
           leadsEmpty: document.querySelector('[data-leads-empty]'),
           leadsSkeleton: document.querySelector('[data-leads-skeleton]'),
           leadsPeriod: document.querySelector('[data-leads-period]'),
+          leadsPeriodStats: document.querySelector('[data-leads-period-stats]'),
+          leadsTotalStats: document.querySelector('[data-leads-total-stats]'),
           campaignsBody: document.querySelector('[data-campaigns-body]'),
           campaignsEmpty: document.querySelector('[data-campaigns-empty]'),
           campaignsSkeleton: document.querySelector('[data-campaigns-skeleton]'),
@@ -321,12 +273,49 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const state = {
           period: 'today',
+          range: null,
           project: null,
           summary: null,
           leads: null,
           campaigns: null,
           payments: null,
+          disableLeads: false,
+          disableExport: false,
         };
+        if (DISABLE_LEADS_UI) {
+          state.disableLeads = true;
+          hideElement('[data-section="leads"]');
+          hideElement('[data-metric="leads"]');
+          hideElement('[data-metric="leads-today"]');
+          hideElement('[data-export-leads]');
+          elements.leadsBody = null;
+          elements.leadsEmpty = null;
+          elements.leadsSkeleton = null;
+          elements.leadsPeriod = null;
+          elements.leadsPeriodStats = null;
+          elements.leadsTotalStats = null;
+          elements.retryLeads = null;
+          elements.exportLeads = null;
+        }
+        if (DISABLE_EXPORT_SECTION) {
+          state.disableExport = true;
+          hideElement('[data-section="export"]');
+          hideElement('[data-export-campaigns]');
+          hideElement('[data-export-summary]');
+          elements.exportCampaigns = null;
+          elements.exportSummary = null;
+        }
+        const initialSearch = typeof window !== 'undefined' ? window.location.search || '' : '';
+        const initialParams = new URLSearchParams(initialSearch);
+        const initialPeriod = initialParams.get('period');
+        const initialFrom = initialParams.get('from');
+        const initialTo = initialParams.get('to');
+        if (initialFrom && initialTo) {
+          state.period = initialPeriod || 'custom';
+          state.range = { from: initialFrom, to: initialTo };
+        } else if (initialPeriod) {
+          state.period = initialPeriod;
+        }
         const appendToken = (url) => {
           if (!TOKEN) return url;
           const separator = url.includes('?') ? '&' : '?';
@@ -470,13 +459,36 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const fetchJson = (path) => requestJson(path);
         const postJson = (path) => requestJson(path, { method: 'POST' });
+        const rangeQuery = (hasQuery = false) => {
+          if (!state.range) return '';
+          const params = new URLSearchParams();
+          params.set('from', state.range.from);
+          params.set('to', state.range.to);
+          return (hasQuery ? '&' : '?') + params.toString();
+        };
         const portalClient = {
           project: () => fetchJson(API_BASE),
-          summary: (period) => fetchJson(API_BASE + '/summary?period=' + encodeURIComponent(period)),
-        leads: (period) => fetchJson(API_BASE + '/leads/' + encodeURIComponent(period)),
-        refreshLeads: (period) => postJson(API_BASE + '/leads/' + encodeURIComponent(period) + '/refresh'),
-          campaigns: (period) => fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period)),
+          summary: (period) =>
+            fetchJson(API_BASE + '/summary?period=' + encodeURIComponent(period) + rangeQuery(true)),
+          leads: (period) => fetchJson(API_BASE + '/leads/' + encodeURIComponent(period) + rangeQuery()),
+          refreshLeads: (period) =>
+            postJson(API_BASE + '/leads/' + encodeURIComponent(period) + '/refresh' + rangeQuery()),
+          campaigns: (period) =>
+            fetchJson(API_BASE + '/campaigns?period=' + encodeURIComponent(period) + rangeQuery(true)),
           payments: () => fetchJson(API_BASE + '/payments'),
+        };
+        const updateUrlState = () => {
+          if (!window?.history?.replaceState) return;
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.set('period', state.period);
+          if (state.range) {
+            nextUrl.searchParams.set('from', state.range.from);
+            nextUrl.searchParams.set('to', state.range.to);
+          } else {
+            nextUrl.searchParams.delete('from');
+            nextUrl.searchParams.delete('to');
+          }
+          window.history.replaceState({}, '', nextUrl.toString());
         };
         const KPI_LABELS = {
           LEAD: 'Лиды',
@@ -487,17 +499,40 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const PAYMENT_STATUS_LABELS = {
           paid: 'Оплачено',
-          planned: 'Просрочено',
+          planned: 'Запланировано',
+          pending: 'Запланировано',
           overdue: 'Просрочено',
           cancelled: 'Отказ',
           declined: 'Отказ',
         };
         const PAYMENT_STATUS_STATES = {
           paid: 'success',
-          planned: 'warning',
+          planned: 'muted',
+          pending: 'muted',
           overdue: 'warning',
           cancelled: 'danger',
           declined: 'danger',
+        };
+        const resolvePaymentStatusKey = (payment) => {
+          const baseStatus = (payment?.status || '').toLowerCase();
+          if (baseStatus === 'paid' || baseStatus === 'cancelled' || baseStatus === 'declined') {
+            return baseStatus;
+          }
+          const dueRaw = payment?.paidAt || payment?.paid_at || payment?.periodTo || payment?.period_to;
+          const dueTime = dueRaw ? Date.parse(dueRaw) : Number.NaN;
+          const now = Date.now();
+          if (Number.isFinite(dueTime)) {
+            if (dueTime > now) {
+              return 'planned';
+            }
+            if (!payment?.paidAt && !payment?.paid_at && dueTime < now) {
+              return 'overdue';
+            }
+          }
+          if (baseStatus === 'pending') {
+            return 'planned';
+          }
+          return baseStatus || 'planned';
         };
         const renderProject = (project) => {
           if (!project) return;
@@ -555,9 +590,23 @@ export const renderPortalHtml = (projectId: string): string => {
             elements.focusCpl.textContent = cplValue ?? '—';
           }
         };
+        const describeLeadStats = (label, stats) => {
+          if (!stats) {
+            return label + ': —';
+          }
+          const total = formatNumber(stats.total);
+          const today = formatNumber(stats.today);
+          return label + ': ' + total + ' | Сегодня: ' + today;
+        };
         const renderLeads = (payload) => {
           if (elements.leadsPeriod) {
             elements.leadsPeriod.textContent = formatDateRange(payload?.period);
+          }
+          if (elements.leadsPeriodStats) {
+            elements.leadsPeriodStats.textContent = describeLeadStats('Всего за период', payload?.periodStats);
+          }
+          if (elements.leadsTotalStats) {
+            elements.leadsTotalStats.textContent = describeLeadStats('За всё время', payload?.stats);
           }
           const leads = payload?.leads || [];
           if (elements.leadsBody) {
@@ -665,7 +714,7 @@ export const renderPortalHtml = (projectId: string): string => {
           if (elements.paymentsBody) {
             elements.paymentsBody.innerHTML = payments
               .map((payment) => {
-                const statusKey = (payment.status || '').toLowerCase();
+                const statusKey = resolvePaymentStatusKey(payment);
                 const rawLabel = PAYMENT_STATUS_LABELS[statusKey] || payment.status || '—';
                 const statusLabel = escapeHtml(rawLabel);
                 const statusClass = PAYMENT_STATUS_STATES[statusKey] || 'muted';
@@ -719,8 +768,13 @@ export const renderPortalHtml = (projectId: string): string => {
           }
         };
         const updateExportButtons = () => {
-          if (elements.exportLeads) {
+          if (state.disableExport) {
+            return;
+          }
+          if (!state.disableLeads && elements.exportLeads) {
             elements.exportLeads.disabled = !state.leads || !state.leads.leads?.length;
+          } else if (elements.exportLeads) {
+            elements.exportLeads.disabled = true;
           }
           if (elements.exportCampaigns) {
             elements.exportCampaigns.disabled = !state.campaigns || !state.campaigns.campaigns?.length;
@@ -754,7 +808,7 @@ export const renderPortalHtml = (projectId: string): string => {
           setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         };
         const exportLeads = () => {
-          if (!state.leads?.leads?.length) return;
+          if (state.disableLeads || !state.leads?.leads?.length) return;
           const header = toCsvRow(['ID', 'Имя', 'Контакт', 'Кампания', 'Статус', 'Дата']);
           const rows = state.leads.leads.map((lead) => {
             const contact = (lead.contact || lead.phone || '').trim() || 'сообщение';
@@ -763,7 +817,7 @@ export const renderPortalHtml = (projectId: string): string => {
           downloadFile('leads-' + state.period + '.csv', [header, ...rows].join('\n'), 'text/csv');
         };
         const exportCampaigns = () => {
-          if (!state.campaigns?.campaigns?.length) return;
+          if (state.disableExport || !state.campaigns?.campaigns?.length) return;
           const header = toCsvRow(['ID', 'Название', 'Цель', 'Расход', 'Показы', 'Клики', 'KPI', 'CPA']);
           const rows = state.campaigns.campaigns.map((campaign) => {
             const kpiValue = campaignKpiValue(campaign, campaign.kpiType);
@@ -782,7 +836,7 @@ export const renderPortalHtml = (projectId: string): string => {
           downloadFile('campaigns-' + state.period + '.csv', [header, ...rows].join('\n'), 'text/csv');
         };
         const exportSummary = () => {
-          if (!state.summary) return;
+          if (state.disableExport || !state.summary) return;
           downloadFile('summary-' + state.period + '.json', JSON.stringify(state.summary, null, 2), 'application/json');
         };
         const loadProject = async () => {
@@ -793,12 +847,16 @@ export const renderPortalHtml = (projectId: string): string => {
         const loadSummary = async (period) => {
           state.period = period;
           markActivePeriod(period);
+          updateUrlState();
           const summary = await portalClient.summary(period);
           state.summary = summary;
           renderMetrics(summary);
           updateExportButtons();
         };
         const loadLeads = async (period, options = {}) => {
+          if (state.disableLeads) {
+            return;
+          }
           const { refresh = false, skipAuto = false } = options;
           setSectionLoading('leads', true);
           try {
@@ -841,8 +899,13 @@ export const renderPortalHtml = (projectId: string): string => {
           }
         };
         const refreshPeriodData = async (period) => {
+          state.range = null;
           try {
-            await Promise.all([loadSummary(period), loadLeads(period), loadCampaigns(period)]);
+            const loaders = [loadSummary(period), loadCampaigns(period)];
+            if (!state.disableLeads) {
+              loaders.push(loadLeads(period));
+            }
+            await Promise.all(loaders);
           } catch (error) {
             showError(error?.message || 'Не удалось загрузить данные.');
           }
@@ -855,7 +918,9 @@ export const renderPortalHtml = (projectId: string): string => {
             await Promise.all([loadProject(), loadSummary(state.period)]);
             toggleContent(true);
             showPreloader(false);
-            loadLeads(state.period);
+            if (!state.disableLeads) {
+              loadLeads(state.period);
+            }
             loadCampaigns(state.period);
             loadPayments();
           } catch (error) {
@@ -866,7 +931,9 @@ export const renderPortalHtml = (projectId: string): string => {
         elements.retryButtons?.forEach?.((button) => {
           button.addEventListener('click', () => bootstrap());
         });
-        elements.retryLeads?.addEventListener('click', () => loadLeads(state.period, { refresh: true }));
+        if (!state.disableLeads) {
+          elements.retryLeads?.addEventListener('click', () => loadLeads(state.period, { refresh: true }));
+        }
         elements.retryCampaigns?.addEventListener('click', () => loadCampaigns(state.period));
         elements.retryPayments?.addEventListener('click', () => loadPayments());
         elements.periodButtons?.forEach?.((button) => {
@@ -877,9 +944,13 @@ export const renderPortalHtml = (projectId: string): string => {
             }
           });
         });
-        elements.exportLeads?.addEventListener('click', exportLeads);
-        elements.exportCampaigns?.addEventListener('click', exportCampaigns);
-        elements.exportSummary?.addEventListener('click', exportSummary);
+        if (!state.disableExport) {
+          if (!state.disableLeads) {
+            elements.exportLeads?.addEventListener('click', exportLeads);
+          }
+          elements.exportCampaigns?.addEventListener('click', exportCampaigns);
+          elements.exportSummary?.addEventListener('click', exportSummary);
+        }
         bootstrap();
         window.PortalApp = { reload: bootstrap };
       })();
@@ -973,6 +1044,19 @@ export const renderPortalHtml = (projectId: string): string => {
       .portal-section__subtitle {
         color: var(--portal-muted);
         font-size: 14px;
+      }
+      .portal-section__meta {
+        margin-top: 6px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--portal-muted);
+      }
+      .portal-section__meta span {
+        background: rgba(15, 23, 42, 0.08);
+        border-radius: 999px;
+        padding: 2px 10px;
       }
       .portal-metrics {
         display: grid;
@@ -1224,6 +1308,12 @@ export const renderPortalHtml = (projectId: string): string => {
         margin-top: 16px;
         overflow-x: auto;
       }
+      .portal-section[data-section="leads"],
+      .portal-section[data-section="export"],
+      .portal-metric[data-metric="leads"],
+      .portal-metric[data-metric="leads-today"] {
+        display: none;
+      }
       @media (max-width: 768px) {
         .portal__content {
           padding: 20px 12px 32px;
@@ -1353,6 +1443,10 @@ export const renderPortalHtml = (projectId: string): string => {
             <div>
               <div class="portal-section__title">Лиды</div>
               <div class="portal-section__subtitle" data-leads-period>—</div>
+              <div class="portal-section__meta">
+                <span data-leads-period-stats>Всего за период: —</span>
+                <span data-leads-total-stats>За всё время: —</span>
+              </div>
             </div>
             <button class="portal-retry" type="button" data-retry-leads>Обновить</button>
           </div>
@@ -1492,12 +1586,18 @@ export const registerPortalRoutes = (router: Router): void => {
     }
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
     try {
       const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      const resolvedRange = resolvePortalPeriodRange(periodKey, bundle.project.settings?.timezone ?? null, from, to);
+      const effectivePeriodKey = resolvedRange.key;
       let summaryEntry: import("../domain/meta-cache").MetaCacheEntry<import("../domain/meta-summary").MetaSummaryPayload> | null =
         null;
       try {
-        const summaryResult = await loadProjectSummary(context.kv, projectId, periodKey);
+        const summaryResult = await loadProjectSummary(context.kv, projectId, effectivePeriodKey, {
+          periodRange: resolvedRange,
+        });
         summaryEntry = summaryResult.entry;
       } catch (error) {
         if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
@@ -1507,9 +1607,10 @@ export const registerPortalRoutes = (router: Router): void => {
         }
       }
       let campaignsDoc = bundle.campaigns;
-      if (!campaignsDoc || campaignsDoc.periodKey !== periodKey || campaignsDoc.campaigns.length === 0) {
+      if (!campaignsDoc || campaignsDoc.periodKey !== effectivePeriodKey || campaignsDoc.campaigns.length === 0) {
         try {
-          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, effectivePeriodKey, {
+            periodRange: resolvedRange,
             projectRecord: bundle.project,
           });
         } catch (error) {
@@ -1520,7 +1621,7 @@ export const registerPortalRoutes = (router: Router): void => {
           }
         }
       }
-      return jsonOk(buildSummaryPayload(bundle, periodKey, { summaryEntry, campaigns: campaignsDoc }));
+      return jsonOk(buildSummaryPayload(bundle, effectivePeriodKey, { summaryEntry, campaigns: campaignsDoc }));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);
@@ -1592,14 +1693,19 @@ export const registerPortalRoutes = (router: Router): void => {
     }
     const url = new URL(context.request.url);
     const periodKey = url.searchParams.get("period") ?? "today";
+    const from = url.searchParams.get("from");
+    const to = url.searchParams.get("to");
     try {
       const bundle = await loadProjectBundle(context.kv, context.r2, projectId);
+      const resolvedRange = resolvePortalPeriodRange(periodKey, bundle.project.settings?.timezone ?? null, from, to);
+      const effectivePeriodKey = resolvedRange.key;
       let campaignsDoc = bundle.campaigns;
       let campaignStatuses: CampaignStatus[] | null = null;
-      if (!campaignsDoc || campaignsDoc.periodKey !== periodKey || campaignsDoc.campaigns.length === 0) {
+      if (!campaignsDoc || campaignsDoc.periodKey !== effectivePeriodKey || campaignsDoc.campaigns.length === 0) {
         try {
-          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, periodKey, {
+          campaignsDoc = await syncProjectCampaignDocument(context.kv, context.r2, projectId, effectivePeriodKey, {
             projectRecord: bundle.project,
+            periodRange: resolvedRange,
           });
         } catch (error) {
           if (error instanceof EntityNotFoundError || error instanceof DataValidationError) {
@@ -1619,7 +1725,7 @@ export const registerPortalRoutes = (router: Router): void => {
           throw error;
         }
       }
-      return jsonOk(buildCampaignsPayload(bundle, periodKey, campaignsDoc, campaignStatuses));
+      return jsonOk(buildCampaignsPayload(bundle, effectivePeriodKey, campaignsDoc, campaignStatuses));
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);

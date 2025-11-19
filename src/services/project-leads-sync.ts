@@ -87,7 +87,7 @@ const extractFieldValue = (record: MetaLeadRecord, keys: string[]): string | nul
   return null;
 };
 
-const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead | null => {
+export const buildLeadFromMeta = (record: MetaLeadRecord, projectId: string): Lead | null => {
   const name =
     extractFieldValue(record, ["full_name", "name", "first_name"]) ??
     extractFieldValue(record, ["last_name"]) ??
@@ -167,7 +167,8 @@ const persistLeadSyncState = async (
 export interface ProjectLeadSyncOptions {
   project: Project;
   settings: ProjectSettings;
-  facebookUserId: string;
+  facebookUserId: string | null;
+  accessTokenOverride?: string | null;
   projectRecord: ProjectRecord;
 }
 
@@ -208,8 +209,11 @@ const ensureProjectLeadSyncOptions = async (
     }
   }
   const settings = options?.settings ?? (await ensureProjectSettings(kv, projectId));
-  const facebookUserId = requireFacebookUserId(settings, options?.facebookUserId);
-  return { project, settings, facebookUserId, projectRecord };
+  const overrideToken = options?.accessTokenOverride?.trim();
+  const facebookUserId = overrideToken
+    ? options?.facebookUserId ?? settings.meta.facebookUserId ?? null
+    : requireFacebookUserId(settings, options?.facebookUserId);
+  return { project, settings, facebookUserId, projectRecord, accessTokenOverride: overrideToken ?? null };
 };
 
 export const syncProjectLeadsFromMeta = async (
@@ -235,7 +239,16 @@ export const syncProjectLeadsFromMeta = async (
     accessToken: form.accessToken ?? undefined,
   }));
   const useCachedFormsOnly = Boolean(cachedLeadForms && cachedForms.length > 0);
-  const token = await getMetaToken(kv, options.facebookUserId);
+  const overrideToken = options.accessTokenOverride?.trim();
+  let tokenValue: { accessToken: string } | null = null;
+  if (overrideToken) {
+    tokenValue = { accessToken: overrideToken };
+  } else if (options.facebookUserId) {
+    tokenValue = await getMetaToken(kv, options.facebookUserId);
+  }
+  if (!tokenValue) {
+    throw new DataValidationError("Проекту не назначен Meta-аккаунт для лидов");
+  }
   const retentionDays = await getLeadRetentionDays(kv, 30);
   let leadSyncState: ProjectLeadSyncState | null = null;
   try {
@@ -248,7 +261,7 @@ export const syncProjectLeadsFromMeta = async (
   const since = resolveLeadSyncSince(retentionDays, leadSyncState);
   const leadFetchOptions = {
     accountId,
-    accessToken: token.accessToken,
+    accessToken: tokenValue.accessToken,
     limit: LEAD_SYNC_LIMIT,
     since,
     cachedForms,

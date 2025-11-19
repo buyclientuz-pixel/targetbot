@@ -195,23 +195,85 @@ const countActionsByMatcher = (actions: unknown, matcher: ActionMatcher): number
   }, 0);
 };
 
+const maxActionValueByMatcher = (actions: unknown, matcher: ActionMatcher): number => {
+  if (!Array.isArray(actions)) {
+    return 0;
+  }
+  return actions.reduce((maxValue, action) => {
+    if (!action || typeof action !== "object") {
+      return maxValue;
+    }
+    const record = action as Record<string, unknown>;
+    const type = normaliseActionType(record.action_type);
+    if (!type || !matcher(type)) {
+      return maxValue;
+    }
+    const value = parseNumber(record.value);
+    return value > maxValue ? value : maxValue;
+  }, 0);
+};
+
 const includesAny = (value: string, keywords: string[]): boolean => {
   return keywords.some((keyword) => value.includes(keyword));
 };
 
-export const countLeadsFromActions = (actions: unknown): number => {
-  return countActionsByMatcher(actions, (type) =>
-    type === "lead" || type.includes("lead") || type.includes("submit_application"),
-  );
+const createExactMatcher = (target: string): ActionMatcher => {
+  return (type) => type === target;
 };
 
-const isMessageAction = (type: string): boolean => {
+const createPrefixMatcher = (prefix: string): ActionMatcher => {
+  return (type) => type.startsWith(prefix);
+};
+
+const LEAD_ACTION_PRIORITY: ActionMatcher[] = [
+  createExactMatcher("lead"),
+  createExactMatcher("onsite_conversion.lead"),
+  createExactMatcher("onsite_conversion.lead_grouped"),
+  createExactMatcher("onsite_conversion.submit_lead_form"),
+  createExactMatcher("leadgen"),
+  createExactMatcher("leadgen_grouped"),
+  createExactMatcher("leadgen.other"),
+  createExactMatcher("submit_application"),
+  createPrefixMatcher("leadgen."),
+  createPrefixMatcher("leadgen_"),
+  createPrefixMatcher("onsite_conversion.lead"),
+];
+
+export const countLeadsFromActions = (actions: unknown): number => {
+  for (const matcher of LEAD_ACTION_PRIORITY) {
+    const value = maxActionValueByMatcher(actions, matcher);
+    if (value > 0) {
+      return value;
+    }
+  }
+  return maxActionValueByMatcher(actions, (type) => type.includes("lead") || type.includes("submit_application"));
+};
+
+const MESSAGE_ACTION_PRIORITY: ActionMatcher[] = [
+  createExactMatcher("messaging_conversation_started"),
+  createExactMatcher("onsite_conversion.messaging_conversation_started_7d"),
+  createExactMatcher("messaging_conversation_started_7d"),
+  createExactMatcher("onsite_conversion.messaging_first_reply"),
+  createExactMatcher("messaging_first_reply"),
+  createPrefixMatcher("onsite_conversion.messaging_conversation_started"),
+  createPrefixMatcher("messaging_conversation_started"),
+  createPrefixMatcher("onsite_conversion.messaging_first_reply"),
+  createPrefixMatcher("messaging_first_reply"),
+];
+
+const isGenericMessageAction = (type: string): boolean => {
   const lower = type.toLowerCase();
   return lower.includes("message") || lower.includes("messaging");
 };
 
 export const countMessagesFromActions = (actions: unknown): number => {
-  return countActionsByMatcher(actions, (type) => isMessageAction(type));
+  for (const matcher of MESSAGE_ACTION_PRIORITY) {
+    const value = maxActionValueByMatcher(actions, matcher);
+    if (value > 0) {
+      return value;
+    }
+  }
+  return maxActionValueByMatcher(actions, (type) => isGenericMessageAction(type));
 };
 
 export const countPurchasesFromActions = (actions: unknown): number => {
@@ -304,6 +366,27 @@ export const fetchMetaInsights = async (options: MetaFetchOptions): Promise<Meta
   };
 };
 
+export interface MetaAdAccountInfo {
+  id: string | null;
+  name: string | null;
+  account_status: number | null;
+  disable_reason: number | null;
+  disable_reasons: number[];
+  balance: string | null;
+  currency: string | null;
+}
+
+const normaliseAccountStatusNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number.parseInt(value.trim(), 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+
 export const fetchMetaCampaignStatuses = async (
   accountId: string,
   accessToken: string,
@@ -331,6 +414,41 @@ export const fetchMetaCampaignStatuses = async (
   } while (after);
 
   return campaigns;
+};
+
+export const fetchMetaAdAccount = async (
+  options: { accountId: string; accessToken: string },
+): Promise<MetaAdAccountInfo> => {
+  if (!options.accountId) {
+    throw new DataValidationError("Meta Ads account id is required for account status");
+  }
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${options.accountId}`);
+  url.searchParams.set("access_token", options.accessToken);
+  url.searchParams.set(
+    "fields",
+    "id,name,account_status,disable_reason,disable_reasons,balance,currency",
+  );
+  const response = await retryOnMetaRateLimit(async () => {
+    const apiResponse = await fetch(url);
+    if (!apiResponse.ok) {
+      throw await createMetaApiError(apiResponse, "Meta account request");
+    }
+    return apiResponse;
+  });
+  const payload = (await response.json()) as Record<string, unknown>;
+  return {
+    id: typeof payload.id === "string" ? payload.id : null,
+    name: typeof payload.name === "string" ? payload.name : null,
+    account_status: normaliseAccountStatusNumber(payload.account_status),
+    disable_reason: normaliseAccountStatusNumber(payload.disable_reason),
+    disable_reasons: Array.isArray(payload.disable_reasons)
+      ? payload.disable_reasons
+          .map((entry) => normaliseAccountStatusNumber(entry))
+          .filter((entry): entry is number => entry != null)
+      : [],
+    balance: typeof payload.balance === "string" ? payload.balance : null,
+    currency: typeof payload.currency === "string" ? payload.currency : null,
+  };
 };
 
 const formatDateOnly = (date: Date): string => {

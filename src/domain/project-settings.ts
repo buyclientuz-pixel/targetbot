@@ -12,10 +12,7 @@ import {
 } from "./validation";
 import { getProjectRecord } from "./spec/project";
 import { getBillingRecord } from "./spec/billing";
-import { getAlertsRecord, type AlertsRecord } from "./spec/alerts";
 import { getAutoreportsRecord } from "./spec/autoreports";
-
-export type ProjectAlertRoute = "CHAT" | "ADMIN" | "BOTH" | "NONE";
 
 export interface ProjectBillingSettings {
   tariff: number;
@@ -35,13 +32,9 @@ export interface ProjectReportSettings {
   mode: string;
 }
 
-export interface ProjectAlertSettings {
-  leadNotifications: boolean;
-  billingAlerts: boolean;
-  budgetAlerts: boolean;
-  metaApiAlerts: boolean;
-  pauseAlerts: boolean;
-  route: ProjectAlertRoute;
+export interface ProjectLeadNotificationSettings {
+  sendToChat: boolean;
+  sendToAdmin: boolean;
 }
 
 export interface ProjectMetaSettings {
@@ -56,24 +49,11 @@ export interface ProjectSettings {
   billing: ProjectBillingSettings;
   kpi: ProjectKpiSettings;
   reports: ProjectReportSettings;
-  alerts: ProjectAlertSettings;
+  leads: ProjectLeadNotificationSettings;
   meta: ProjectMetaSettings;
   createdAt: string;
   updatedAt: string;
 }
-
-const ALERT_ROUTES: ProjectAlertRoute[] = ["CHAT", "ADMIN", "BOTH", "NONE"];
-
-const parseAlertRoute = (value: unknown, fallback: ProjectAlertRoute): ProjectAlertRoute => {
-  if (value == null) {
-    return fallback;
-  }
-  const str = assertString(value, "projectSettings.alerts.route");
-  if (!ALERT_ROUTES.includes(str as ProjectAlertRoute)) {
-    throw new DataValidationError(`Unsupported alert route '${str}'`);
-  }
-  return str as ProjectAlertRoute;
-};
 
 const parseBilling = (
   value: unknown,
@@ -120,6 +100,17 @@ const parseReports = (value: unknown, defaults: ProjectReportSettings): ProjectR
   };
 };
 
+const parseLeadNotifications = (
+  value: unknown,
+  defaults: ProjectLeadNotificationSettings,
+): ProjectLeadNotificationSettings => {
+  const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return {
+    sendToChat: assertBoolean(record.sendToChat ?? defaults.sendToChat, "projectSettings.leads.sendToChat"),
+    sendToAdmin: assertBoolean(record.sendToAdmin ?? defaults.sendToAdmin, "projectSettings.leads.sendToAdmin"),
+  };
+};
+
 const parseMetaSettings = (value: unknown, defaults: ProjectMetaSettings): ProjectMetaSettings => {
   const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   return {
@@ -127,33 +118,6 @@ const parseMetaSettings = (value: unknown, defaults: ProjectMetaSettings): Proje
       record.facebookUserId ?? defaults.facebookUserId,
       "projectSettings.meta.facebookUserId",
     ),
-  };
-};
-
-const parseAlerts = (value: unknown, defaults: ProjectAlertSettings): ProjectAlertSettings => {
-  const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
-  return {
-    leadNotifications: assertBoolean(
-      record.leadNotifications ?? defaults.leadNotifications,
-      "projectSettings.alerts.leadNotifications",
-    ),
-    billingAlerts: assertBoolean(
-      record.billingAlerts ?? defaults.billingAlerts,
-      "projectSettings.alerts.billingAlerts",
-    ),
-    budgetAlerts: assertBoolean(
-      record.budgetAlerts ?? defaults.budgetAlerts,
-      "projectSettings.alerts.budgetAlerts",
-    ),
-    metaApiAlerts: assertBoolean(
-      record.metaApiAlerts ?? defaults.metaApiAlerts,
-      "projectSettings.alerts.metaApiAlerts",
-    ),
-    pauseAlerts: assertBoolean(
-      record.pauseAlerts ?? defaults.pauseAlerts,
-      "projectSettings.alerts.pauseAlerts",
-    ),
-    route: parseAlertRoute(record.route, defaults.route),
   };
 };
 
@@ -192,7 +156,7 @@ export const parseProjectSettings = (raw: unknown, projectId: string): ProjectSe
     billing: parseBilling(record.billing, defaults.billing),
     kpi: parseKpi(record.kpi, defaults.kpi),
     reports: parseReports(record.reports, defaults.reports),
-    alerts: parseAlerts(record.alerts, defaults.alerts),
+    leads: parseLeadNotifications(record.leads, defaults.leads),
     meta: parseMetaSettings(record.meta, defaults.meta),
     createdAt,
     updatedAt,
@@ -207,7 +171,7 @@ export const serialiseProjectSettings = (settings: ProjectSettings): Record<stri
   billing: settings.billing,
   kpi: settings.kpi,
   reports: settings.reports,
-  alerts: settings.alerts,
+  leads: settings.leads,
   meta: settings.meta,
   createdAt: settings.createdAt,
   updatedAt: settings.updatedAt,
@@ -235,13 +199,9 @@ export const createDefaultProjectSettings = (projectId: string): ProjectSettings
       timeSlots: [],
       mode: "yesterday",
     },
-    alerts: {
-      leadNotifications: true,
-      billingAlerts: true,
-      budgetAlerts: true,
-      metaApiAlerts: true,
-      pauseAlerts: true,
-      route: "CHAT",
+    leads: {
+      sendToChat: true,
+      sendToAdmin: false,
     },
     meta: {
       facebookUserId: null,
@@ -249,19 +209,6 @@ export const createDefaultProjectSettings = (projectId: string): ProjectSettings
     createdAt: now,
     updatedAt: now,
   };
-};
-
-const mapAlertChannelToRoute = (channel: AlertsRecord["channel"]): ProjectAlertRoute => {
-  switch (channel) {
-    case "chat":
-      return "CHAT";
-    case "admin":
-      return "ADMIN";
-    case "both":
-      return "BOTH";
-    default:
-      return "CHAT";
-  }
 };
 
 const mapAutoreportMode = (mode: string): string => {
@@ -283,10 +230,9 @@ const loadProjectRecordSafe = async (
 };
 
 const hydrateFromSpec = async (kv: KvClient, settings: ProjectSettings): Promise<ProjectSettings> => {
-  const [projectRecord, billingRecord, alertsRecord, autoreportsRecord] = await Promise.all([
+  const [projectRecord, billingRecord, autoreportsRecord] = await Promise.all([
     loadProjectRecordSafe(kv, settings.projectId),
     getBillingRecord(kv, settings.projectId),
-    getAlertsRecord(kv, settings.projectId),
     getAutoreportsRecord(kv, settings.projectId),
   ]);
 
@@ -307,19 +253,6 @@ const hydrateFromSpec = async (kv: KvClient, settings: ProjectSettings): Promise
         currency: billingRecord.currency,
         nextPaymentDate: billingRecord.nextPaymentDate ?? null,
         autobillingEnabled: billingRecord.autobilling,
-      },
-    };
-  }
-
-  if (alertsRecord) {
-    hydrated = {
-      ...hydrated,
-      alerts: {
-        ...hydrated.alerts,
-        leadNotifications: alertsRecord.types.leadInQueue,
-        billingAlerts: alertsRecord.types.paymentReminder,
-        pauseAlerts: alertsRecord.types.pause24h,
-        route: mapAlertChannelToRoute(alertsRecord.channel),
       },
     };
   }

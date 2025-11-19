@@ -2,7 +2,6 @@ export * from "./fb-auth";
 export * from "./projects-by-user";
 export * from "./project";
 export * from "./billing";
-export * from "./alerts";
 export * from "./autoreports";
 export * from "./project-leads";
 export * from "./meta-campaigns";

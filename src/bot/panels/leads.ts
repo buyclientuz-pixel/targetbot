@@ -1,13 +1,18 @@
+import { ensureProjectSettings } from "../../domain/project-settings";
+import type { ProjectLeadsListRecord } from "../../domain/spec/project-leads";
+import type { Lead } from "../../domain/leads";
 import { loadProjectBundle } from "../data";
 import type { InlineKeyboardMarkup } from "../types";
 import type { PanelRenderer } from "./types";
-import type { ProjectLeadsListRecord } from "../../domain/spec/project-leads";
 import { buildLeadsMessage } from "../messages";
 import { buildLeadsKeyboard } from "../keyboards";
 import { refreshProjectLeads } from "../../services/project-leads-sync";
+import { loadProjectLeadsView } from "../../services/project-leads-view";
+import { parseLeadsPanelState, toLeadsPanelContext } from "../leads-panel-state";
+import { fetchLiveProjectLeads } from "../../services/project-live-leads";
+import { resolvePortalPeriodRange } from "../../services/period-range";
 
 const fallbackKeyboard: InlineKeyboardMarkup = { inline_keyboard: [[{ text: "⬅️ Назад", callback_data: "panel:projects" }]] };
-const DEFAULT_STATUS: ProjectLeadsListRecord["leads"][number]["status"] = "new";
 const LEADS_REFRESH_WINDOW_MS = 10 * 60 * 1000;
 
 const needsLeadRefresh = (record: ProjectLeadsListRecord): boolean => {
@@ -25,22 +30,53 @@ const needsLeadRefresh = (record: ProjectLeadsListRecord): boolean => {
 };
 
 export const render: PanelRenderer = async ({ runtime, params }) => {
-  const status = (params[0] as ProjectLeadsListRecord["leads"][number]["status"]) ?? DEFAULT_STATUS;
-  const projectId = params[1];
+  const state = parseLeadsPanelState(params, 0);
+  const projectId = state.projectId;
   if (!projectId) {
     return { text: "Проект не найден.", keyboard: fallbackKeyboard };
   }
   let bundle = await loadProjectBundle(runtime.kv, runtime.r2, projectId);
   if (bundle.project.adAccountId && needsLeadRefresh(bundle.leads)) {
     try {
-      await refreshProjectLeads(runtime.kv, runtime.r2, projectId);
+      await refreshProjectLeads(runtime.kv, runtime.r2, projectId, {
+        accessTokenOverride: runtime.facebookLongToken ?? runtime.facebookToken ?? null,
+      });
       bundle = await loadProjectBundle(runtime.kv, runtime.r2, projectId);
     } catch (error) {
       console.warn(`[bot:leads] Failed to refresh leads for ${projectId}: ${(error as Error).message}`);
     }
   }
+  const settings = await ensureProjectSettings(runtime.kv, projectId);
+  const timeZone = bundle.project.settings?.timezone ?? runtime.defaultTimezone ?? null;
+  const resolvedRange = resolvePortalPeriodRange(state.periodKey, timeZone, state.from, state.to);
+  let liveLeads: Lead[] | null = null;
+  try {
+    liveLeads = await fetchLiveProjectLeads(runtime.kv, projectId, {
+      since: resolvedRange.from,
+      accessTokenOverride: runtime.facebookLongToken ?? runtime.facebookToken ?? null,
+    });
+  } catch (error) {
+    console.warn(`[bot:leads] Failed to load live leads for ${projectId}: ${(error as Error).message}`);
+  }
+  const view = await loadProjectLeadsView(runtime.r2, projectId, {
+    periodKey: state.periodKey,
+    timeZone,
+    from: state.from,
+    to: state.to,
+    liveLeads: liveLeads && liveLeads.length > 0 ? liveLeads : undefined,
+    liveSyncedAt: liveLeads && liveLeads.length > 0 ? new Date().toISOString() : undefined,
+  });
+  let panelContext = toLeadsPanelContext(state);
+  if (panelContext.mode === "form") {
+    const targetFormId = panelContext.formId ?? null;
+    const leadsForForm = view.leads.filter((lead) => (lead.formId ?? null) === targetFormId);
+    const maxPage = Math.max(Math.ceil(leadsForForm.length / 5) - 1, 0);
+    if (panelContext.page > maxPage) {
+      panelContext = { ...panelContext, page: maxPage };
+    }
+  }
   return {
-    text: buildLeadsMessage(bundle.project, bundle.leads, status),
-    keyboard: buildLeadsKeyboard(projectId, bundle.leads.leads, status),
+    text: buildLeadsMessage(bundle.project, view, panelContext, settings.leads),
+    keyboard: buildLeadsKeyboard(projectId, view, panelContext, settings.leads),
   };
 };

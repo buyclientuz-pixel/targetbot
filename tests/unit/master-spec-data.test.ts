@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseAlertsRecord, serialiseAlertsRecord } from "../../src/domain/spec/alerts";
 import { parseAutoreportsRecord } from "../../src/domain/spec/autoreports";
 import { parseBillingRecord } from "../../src/domain/spec/billing";
 import { getFbAuthRecord, parseFbAuthRecord, serialiseFbAuthRecord } from "../../src/domain/spec/fb-auth";
@@ -114,41 +113,27 @@ test("projects by user list", () => {
   assert.deepEqual(parsed.projects, ["proj_1", "proj_2"]);
 });
 
-test("billing and alerts parsing", () => {
-  const billing = parseBillingRecord({
-    tariff: 500,
-    currency: "USD",
-    next_payment_date: "2025-12-15",
-    autobilling: true,
-  });
-  assert.equal(billing.nextPaymentDate, "2025-12-15");
-
-  const alerts = parseAlertsRecord({
-    enabled: true,
-    channel: "both",
-    types: {
-      lead_in_queue: true,
-      pause_24h: true,
-      payment_reminder: false,
-    },
-    lead_queue_threshold_hours: 1,
-    pause_threshold_hours: 24,
-    payment_reminder_days: [7, 1],
-  });
-  assert.equal(alerts.types.leadInQueue, true);
-
-  const serialisedAlerts = serialiseAlertsRecord(alerts);
-  assert.equal(serialisedAlerts.types.lead_in_queue, true);
-});
-
 test("autoreports parsing", () => {
   const record = parseAutoreportsRecord({
     enabled: true,
     time: "10:00",
     mode: "yesterday_plus_week",
-    send_to: "both",
+    send_to_chat: true,
+    send_to_admin: false,
+    payment_alerts: {
+      enabled: true,
+      send_to_chat: false,
+      send_to_admin: true,
+      last_account_status: 2,
+      last_alert_at: "2025-11-18T00:00:00Z",
+    },
   });
   assert.equal(record.mode, "yesterday_plus_week");
+  assert.equal(record.sendToChat, true);
+  assert.equal(record.sendToAdmin, false);
+  assert.equal(record.paymentAlerts.enabled, true);
+  assert.equal(record.paymentAlerts.sendToChat, false);
+  assert.equal(record.paymentAlerts.lastAccountStatus, 2);
 });
 
 test("project leads list", () => {

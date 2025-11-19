@@ -1,5 +1,6 @@
 import { getBotSession, saveBotSession } from "../domain/bot-sessions";
 import { editTelegramMessage, sendTelegramMessage, TelegramError } from "../services/telegram";
+import { parseLeadsPanelState, serialiseLeadsPanelParams } from "./leads-panel-state";
 import type { TelegramMessage } from "./types";
 import type { PanelRuntime } from "./panels/types";
 import { render as renderMain } from "./panels/main";
@@ -11,7 +12,6 @@ import { render as renderFinance } from "./panels/finance";
 import { render as renderUsers } from "./panels/users";
 import { render as renderSettings } from "./panels/settings";
 import { render as renderWebhooks } from "./panels/webhooks";
-import { render as renderMeta } from "./panels/meta";
 import { render as renderBilling } from "./panels/billing";
 import { render as renderLeads } from "./panels/leads";
 import { render as renderLeadDetail } from "./panels/lead-detail";
@@ -23,7 +23,6 @@ import { render as renderChatInfo } from "./panels/chat-info";
 import { render as renderChatChange } from "./panels/chat-change";
 import { render as renderChatUnlink } from "./panels/chat-unlink";
 import { render as renderAutoreports } from "./panels/autoreports";
-import { render as renderAlerts } from "./panels/alerts";
 import { render as renderKpi } from "./panels/kpi";
 import { render as renderProjectEditPanel } from "./panels/project-edit";
 import { render as renderProjectDelete } from "./panels/project-delete";
@@ -41,9 +40,6 @@ const resolvePanel = (panelId: string): ResolveResult => {
   if (panelId === "panel:projects" || panelId === "cmd:projects") {
     return { renderer: renderProjects, params: [], id: "projects" };
   }
-  if (panelId === "panel:projects:list" || panelId === "project:list") {
-    return { renderer: renderProjects, params: ["list"], id: "projects:list" };
-  }
   if (panelId === "project:menu") {
     return { renderer: renderMain, params: [], id: "main" };
   }
@@ -57,8 +53,13 @@ const resolvePanel = (panelId: string): ResolveResult => {
     return { renderer: renderBilling, params: [panelId.split(":")[2]!], id: panelId };
   }
   if (panelId.startsWith("project:leads:")) {
-    const [, , status, projectId] = panelId.split(":");
-    return { renderer: renderLeads, params: [status ?? "new", projectId ?? ""], id: panelId };
+    const parts = panelId.split(":");
+    const state = parseLeadsPanelState(parts, 2);
+    return {
+      renderer: renderLeads,
+      params: serialiseLeadsPanelParams(state),
+      id: panelId,
+    };
   }
   if (panelId.startsWith("lead:detail:")) {
     const [, , projectId, leadId] = panelId.split(":");
@@ -84,17 +85,6 @@ const resolvePanel = (panelId: string): ResolveResult => {
   }
   if (panelId.startsWith("project:autoreports:")) {
     return { renderer: renderAutoreports, params: [panelId.split(":")[2]!], id: panelId };
-  }
-  if (panelId.startsWith("project:autoreports-route:")) {
-    const [, , , projectId] = panelId.split(":");
-    return { renderer: renderAutoreports, params: [projectId ?? "", "route"], id: panelId };
-  }
-  if (panelId.startsWith("project:alerts:")) {
-    return { renderer: renderAlerts, params: [panelId.split(":")[2]!], id: panelId };
-  }
-  if (panelId.startsWith("project:alerts-route:")) {
-    const [, , , projectId] = panelId.split(":");
-    return { renderer: renderAlerts, params: [projectId ?? "", "route"], id: panelId };
   }
   if (panelId.startsWith("project:kpi:")) {
     return { renderer: renderKpi, params: [panelId.split(":")[2]!], id: panelId };
@@ -125,9 +115,6 @@ const resolvePanel = (panelId: string): ResolveResult => {
   }
   if (panelId === "panel:webhooks" || panelId === "cmd:webhooks") {
     return { renderer: renderWebhooks, params: [], id: "webhooks" };
-  }
-  if (panelId === "panel:meta" || panelId === "cmd:meta") {
-    return { renderer: renderMeta, params: [], id: "meta" };
   }
   return { renderer: renderMain, params: [], id: "main" };
 };
@@ -208,3 +195,4 @@ export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRe
     });
   }
 };
+import { parseLeadsPanelState, serialiseLeadsPanelParams } from "./leads-panel-state";

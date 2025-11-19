@@ -19,10 +19,18 @@ head_sampling_rate = 1
 binding = "KV"
 id = "0132cf582ce247d4b806a2be748e34c6"
 
+[[kv_namespaces]]
+binding = "LEADS_KV"
+id = "0132cf582ce247d4b806a2be748e34c6"
+preview_id = "0132cf582ce247d4b806a2be748e34c6"
+
 [[r2_buckets]]
 binding = "R2"
 bucket_name = "botbucket"
 preview_bucket_name = "botbucket"
+
+[vars]
+FACEBOOK_API_VERSION = "v18.0"
 
 [triggers]
 crons = ["*/5 * * * *", "0 3 * * *"]

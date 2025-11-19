@@ -9,12 +9,21 @@ import {
 import { getProject, parseProject } from "../domain/projects";
 import { getMetaToken, parseMetaToken, upsertMetaToken, deleteMetaToken } from "../domain/meta-tokens";
 import { putFbAuthRecord, type FbAdAccount, type FbAuthRecord } from "../domain/spec/fb-auth";
-import { getBillingRecord, putBillingRecord } from "../domain/spec/billing";
+import { getBillingRecord, putBillingRecord, type BillingRecord } from "../domain/spec/billing";
+import {
+  createDefaultAutoreportsRecord,
+  getAutoreportsRecord,
+  putAutoreportsRecord,
+  type AutoreportsRecord,
+} from "../domain/spec/autoreports";
 import {
   appendPaymentRecord,
   getPaymentsHistoryDocument,
+  putPaymentsHistoryDocument,
+  replacePaymentRecord,
   type PaymentRecord,
 } from "../domain/spec/payments-history";
+import { normalisePaymentStatusLabel } from "../domain/payment-status";
 import { requireProjectRecord, putProjectRecord } from "../domain/spec/project";
 import { getPortalSyncState, deletePortalSyncState, type PortalSyncState } from "../domain/portal-sync";
 import { DataValidationError, EntityConflictError, EntityNotFoundError } from "../errors";
@@ -22,14 +31,12 @@ import { jsonResponse } from "../http/responses";
 import type { KvClient } from "../infra/kv";
 import type { Router } from "../worker/router";
 import type { TargetBotEnv } from "../worker/types";
-import { ensureAdminRequest } from "../services/admin-auth";
 import {
   listAdminProjectSummaries,
   loadAdminProjectDetail,
   buildAdminAnalyticsOverview,
   buildAdminFinanceOverview,
   listAdminUsers,
-  listAdminMetaAccounts,
   listAdminProjectLeads,
 } from "../services/admin-dashboard";
 import { getWebhookInfo, setWebhook } from "../services/telegram";
@@ -39,7 +46,7 @@ import { buildAdminClientScript } from "./admin-client";
 
 const ADMIN_CORS_HEADERS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-headers": "content-type, authorization, x-admin-key",
+  "access-control-allow-headers": "content-type, authorization",
   "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
 };
 
@@ -106,12 +113,12 @@ const SYNC_KEY_LABELS: Record<string, string> = {
   leads: "лиды",
 };
 
-const describePortalSyncResult = (result: PortalSyncResult): string => {
-  const successful = result.periods.filter((entry) => entry.ok).length;
+const describePortalSyncResult = (result: PortalSyncResult): string | null => {
   const failed = result.periods.filter((entry) => !entry.ok);
   if (failed.length === 0) {
-    return `Портал обновлён (${successful}/${result.periods.length}).`;
+    return null;
   }
+  const successful = result.periods.length - failed.length;
   const issues = failed
     .map((entry) => `${SYNC_KEY_LABELS[entry.periodKey] ?? entry.periodKey}: ${entry.error ?? "ошибка"}`)
     .join(", ");
@@ -416,34 +423,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
         ul {
           padding-left: 18px;
         }
-        .admin-login {
-          position: fixed;
-          inset: 0;
-          background: rgba(0, 0, 0, 0.75);
-          display: none;
-          align-items: center;
-          justify-content: center;
-          z-index: 100;
-        }
-        .admin-login--visible {
-          display: flex;
-        }
-        .admin-login__form {
-          background: var(--panel);
-          padding: 32px;
-          border-radius: 20px;
-          width: min(420px, 92vw);
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-          border: 1px solid var(--border);
-        }
-        .admin-login__form input {
-          width: 100%;
-        }
-        .admin-login__form button {
-          margin-left: 0;
-        }
         @media (max-width: 960px) {
           .admin-shell {
             flex-direction: column;
@@ -478,15 +457,13 @@ const renderAdminHtml = (workerUrl: string | null): string => {
             <button class="admin-nav__item" data-nav="analytics">Аналитика</button>
             <button class="admin-nav__item" data-nav="finance">Финансы</button>
             <button class="admin-nav__item" data-nav="users">Пользователи</button>
-            <button class="admin-nav__item" data-nav="meta">Meta / Facebook</button>
             <button class="admin-nav__item" data-nav="webhooks">Webhook</button>
             <button class="admin-nav__item" data-nav="settings">Настройки</button>
           </nav>
-          <div class="admin-sidebar__actions">
-            <button class="admin-btn admin-btn--ghost" data-action="refresh">Обновить</button>
-            <button class="admin-btn admin-btn--danger" data-action="logout">Выйти</button>
-          </div>
-        </aside>
+            <div class="admin-sidebar__actions">
+              <button class="admin-btn admin-btn--ghost" data-action="refresh">Обновить</button>
+            </div>
+          </aside>
         <main class="admin-shell__content">
           <header class="admin-header">
             <div>
@@ -554,6 +531,14 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                   </div>
                 </div>
                 <h4>Лиды</h4>
+                <form class="form-grid" data-lead-settings-form>
+                  <label>
+                    Уведомления о лидах
+                    <span><input type="checkbox" name="leadSendChat" /> В чат</span>
+                    <span><input type="checkbox" name="leadSendAdmin" /> Админу</span>
+                  </label>
+                  <button class="admin-btn" type="submit">Сохранить уведомления</button>
+                </form>
                 <div class="table-wrapper">
                   <table>
                     <thead>
@@ -596,32 +581,57 @@ const renderAdminHtml = (workerUrl: string | null): string => {
                         <th>Статус</th>
                         <th>Оплачено</th>
                         <th>Комментарий</th>
+                        <th>Действия</th>
                       </tr>
                     </thead>
                     <tbody data-payments-body></tbody>
                   </table>
                 </div>
                 <form class="form-grid" data-payment-form>
+                  <input type="hidden" name="paymentId" data-payment-id-input />
                   <label>Сумма<input name="amount" type="number" min="0" step="0.01" required /></label>
                   <label>Валюта<input name="currency" value="USD" required /></label>
                   <label>Период с<input name="periodFrom" type="date" required /></label>
                   <label>Период до<input name="periodTo" type="date" required /></label>
                   <label>Дата оплаты<input name="paidAt" type="datetime-local" /></label>
-                  <label>Статус<select name="status"><option value="planned">Запланирован</option><option value="paid">Оплачен</option><option value="cancelled">Отменён</option></select></label>
+                  <label>Статус<select name="status"><option value="planned">Запланирован</option><option value="paid">Оплачен</option><option value="overdue">Просрочен</option><option value="cancelled">Отменён</option></select></label>
                   <label class="grid-full">Комментарий<textarea name="comment" rows="2"></textarea></label>
-                  <button class="admin-btn" type="submit">Добавить платёж</button>
+                  <div class="form-grid__actions">
+                    <button class="admin-btn" type="submit" data-payment-submit>Сохранить платёж</button>
+                    <button class="admin-btn admin-btn--ghost" type="button" data-payment-cancel hidden>Отменить</button>
+                  </div>
+                </form>
+                <form class="form-grid" data-payment-quick-form>
+                  <label class="grid-full">
+                    Быстрый ввод оплат
+                    <textarea
+                      name="entries"
+                      rows="3"
+                      placeholder="500 18.11.2025 Просрочено\n500 19.11.2025 Оплачено"
+                      data-payment-quick-input
+                    ></textarea>
+                    <span class="form-hint">Каждая строка: сумма, дата (DD.MM.YYYY или YYYY-MM-DD) и статус.</span>
+                  </label>
+                  <button class="admin-btn" type="submit">Применить строки</button>
                 </form>
                 <hr />
                 <form class="form-grid" data-settings-form>
                   <label>Режим KPI<select name="kpiMode"><option value="auto">Авто</option><option value="manual">Ручной</option></select></label>
                   <label>Тип KPI<select name="kpiType"><option value="LEAD">Лиды</option><option value="MESSAGE">Сообщения</option><option value="CLICK">Клики</option><option value="VIEW">Просмотры</option><option value="PURCHASE">Покупки</option></select></label>
                   <label>Название KPI<input name="kpiLabel" /></label>
-                  <label>Канал алертов<select name="alertsChannel"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="alertsEnabled" /> Включить</span></label>
-                  <label><input type="checkbox" name="alertLead" /> Напоминать о лидах</label>
-                  <label><input type="checkbox" name="alertPause" /> Кампании на паузе</label>
-                  <label><input type="checkbox" name="alertPayment" /> Напоминать об оплате</label>
-                  <label>Автоотчёты<select name="autoreportsSendTo"><option value="chat">В чат</option><option value="admin">Админу</option><option value="both">Оба</option></select><span><input type="checkbox" name="autoreportsEnabled" /> Включить</span></label>
+                  <label>Автоотчёты<span><input type="checkbox" name="autoreportsEnabled" /> Включить</span></label>
+                  <label>
+                    Каналы автоотчёта
+                    <span><input type="checkbox" name="autoreportsSendChat" /> В чат</span>
+                    <span><input type="checkbox" name="autoreportsSendAdmin" /> Админу</span>
+                  </label>
                   <label>Время отчёта<input type="time" name="autoreportsTime" value="10:00" /></label>
+                  <label>Аллерт оплат<span><input type="checkbox" name="autoreportsPaymentAlertsEnabled" /> Включить</span></label>
+                  <label>
+                    Каналы алерта оплаты
+                    <span><input type="checkbox" name="autoreportsPaymentAlertsSendChat" /> В чат</span>
+                    <span><input type="checkbox" name="autoreportsPaymentAlertsSendAdmin" /> Админу</span>
+                  </label>
                   <button class="admin-btn" type="submit">Сохранить настройки</button>
                 </form>
               </div>
@@ -667,23 +677,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
               </table>
             </div>
           </section>
-          <section class="admin-section" data-section="meta" hidden>
-            <div class="admin-panel__header">
-              <h2>Meta / Facebook</h2>
-            </div>
-            <div class="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>User ID</th>
-                    <th>Токен до</th>
-                    <th>Аккаунты</th>
-                  </tr>
-                </thead>
-                <tbody data-meta-body></tbody>
-              </table>
-            </div>
-          </section>
           <section class="admin-section" data-section="webhooks" hidden>
             <div class="admin-panel__header">
               <div>
@@ -703,14 +696,6 @@ const renderAdminHtml = (workerUrl: string | null): string => {
           </section>
         </main>
       </div>
-      <div class="admin-login" data-login-panel>
-        <form class="admin-login__form" data-login-form>
-          <h2>Админ-доступ</h2>
-          <p class="muted">Введите код доступа, чтобы разблокировать панель.</p>
-          <input type="password" name="adminKey" data-admin-key placeholder="••••" required />
-          <button class="admin-btn" type="submit">Войти</button>
-        </form>
-      </div>
       <script>${script}</script>
     </body>
   </html>`;
@@ -728,7 +713,23 @@ interface UpdateProjectBody {
   ownerTelegramId?: number;
 }
 
-interface UpdateSettingsBody extends Record<string, unknown> {}
+interface UpdateSettingsBody extends Record<string, unknown> {
+  autoreports?: {
+    enabled?: boolean;
+    time?: string;
+    sendToChat?: boolean;
+    sendToAdmin?: boolean;
+    paymentAlerts?: {
+      enabled?: boolean;
+      sendToChat?: boolean;
+      sendToAdmin?: boolean;
+    };
+  };
+  leads?: {
+    sendToChat?: boolean;
+    sendToAdmin?: boolean;
+  };
+}
 
 interface UpsertMetaTokenBody {
   accessToken?: string;
@@ -744,6 +745,11 @@ interface CreatePaymentBody {
   paidAt?: string | null;
   status?: PaymentRecord["status"];
   comment?: string | null;
+}
+
+interface ManualPaymentsBody {
+  entries?: string;
+  currency?: string | null;
 }
 
 interface UpdateFbAuthBody {
@@ -763,17 +769,15 @@ const registerAdminRoute = (
 ): void => {
   for (const pathname of paths) {
     router.on("OPTIONS", pathname, () => optionsResponse());
-    router.on(method, pathname, async (context) => {
-      const guard = ensureAdminRequest(context);
-      if (guard) {
-        return guard;
-      }
-      return handler(context);
-    });
+    router.on(method, pathname, async (context) => handler(context));
   }
 };
 
-const parsePaymentPayload = (body: CreatePaymentBody, projectId: string): PaymentRecord => {
+const parsePaymentPayload = (
+  body: CreatePaymentBody,
+  projectId: string,
+  options?: { id?: string },
+): PaymentRecord => {
   if (typeof body.amount !== "number" || body.amount <= 0) {
     throw new DataValidationError("amount must be a positive number");
   }
@@ -783,12 +787,9 @@ const parsePaymentPayload = (body: CreatePaymentBody, projectId: string): Paymen
   if (!body.periodFrom || !body.periodTo) {
     throw new DataValidationError("periodFrom and periodTo are required");
   }
-  const status = body.status ?? "planned";
-  if (!["planned", "paid", "cancelled"].includes(status)) {
-    throw new DataValidationError("status must be planned, paid or cancelled");
-  }
+  const status = normalisePaymentStatusLabel(body.status ?? "planned");
   return {
-    id: `pay_${projectId}_${Date.now()}`,
+    id: options?.id ?? `pay_${projectId}_${Date.now()}`,
     amount: body.amount,
     currency: body.currency,
     periodFrom: body.periodFrom,
@@ -797,6 +798,97 @@ const parsePaymentPayload = (body: CreatePaymentBody, projectId: string): Paymen
     status,
     comment: body.comment ?? null,
   } satisfies PaymentRecord;
+};
+
+const FLEXIBLE_DATE_PATTERN = /(\d{4}-\d{2}-\d{2}|\d{2}[.]\d{2}[.]\d{4})/;
+
+const parseFlexibleDateInput = (value: string, label = "date"): string => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    throw new DataValidationError(`${label} is required`);
+  }
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [_, year, month, day] = isoMatch;
+    const parsed = Date.parse(`${year}-${month}-${day}T00:00:00Z`);
+    if (Number.isNaN(parsed)) {
+      throw new DataValidationError(`${label} has invalid date`);
+    }
+    return `${year}-${month}-${day}`;
+  }
+  const dottedMatch = trimmed.match(/^(\d{2})[.](\d{2})[.](\d{4})$/);
+  if (dottedMatch) {
+    const [_, day, month, year] = dottedMatch;
+    const parsed = Date.parse(`${year}-${month}-${day}T00:00:00Z`);
+    if (Number.isNaN(parsed)) {
+      throw new DataValidationError(`${label} has invalid date`);
+    }
+    return `${year}-${month}-${day}`;
+  }
+  throw new DataValidationError(`${label} must use YYYY-MM-DD or DD.MM.YYYY`);
+};
+
+const formatPromptDate = (isoDate: string | null | undefined): string => {
+  if (!isoDate) {
+    return "";
+  }
+  const [year, month, day] = isoDate.split("-");
+  if (!year || !month || !day) {
+    return isoDate;
+  }
+  return `${day}.${month}.${year}`;
+};
+
+const parseManualPaymentLine = (line: string, index: number): { amount: number; date: string; status: PaymentRecord["status"] } => {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    throw new DataValidationError(`Строка ${index + 1} пуста`);
+  }
+  const amountMatch = trimmed.match(/([0-9]+(?:[.,][0-9]+)?)/);
+  if (!amountMatch) {
+    throw new DataValidationError(`Строка ${index + 1}: не удалось распознать сумму`);
+  }
+  const amount = Number.parseFloat(amountMatch[1].replace(",", "."));
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new DataValidationError(`Строка ${index + 1}: сумма должна быть больше нуля`);
+  }
+  const tail = trimmed.slice(amountMatch.index! + amountMatch[0].length).trim();
+  if (!tail) {
+    throw new DataValidationError(`Строка ${index + 1}: укажите дату`);
+  }
+  const dateMatch = tail.match(FLEXIBLE_DATE_PATTERN);
+  if (!dateMatch) {
+    throw new DataValidationError(`Строка ${index + 1}: используйте дату в формате DD.MM.YYYY или YYYY-MM-DD`);
+  }
+  const isoDate = parseFlexibleDateInput(dateMatch[0], `Строка ${index + 1}: дата`);
+  const statusRaw = tail.slice(dateMatch.index! + dateMatch[0].length).trim();
+  const status = normalisePaymentStatusLabel(statusRaw || undefined);
+  return { amount, date: isoDate, status };
+};
+
+const paymentMatchesConfirmDate = (payment: PaymentRecord, isoDate: string): boolean => {
+  const paidAtDate = payment.paidAt ? payment.paidAt.split("T")[0] ?? payment.paidAt : null;
+  return payment.periodTo === isoDate || payment.periodFrom === isoDate || paidAtDate === isoDate;
+};
+
+const updateNextPaymentDate = async (
+  kv: KvClient,
+  projectId: string,
+  date: string | null | undefined,
+  status?: PaymentRecord["status"],
+): Promise<void> => {
+  if (!date || status === "paid" || status === "cancelled") {
+    return;
+  }
+  const existing =
+    (await getBillingRecord(kv, projectId)) ??
+    ({
+      tariff: 0,
+      currency: DEFAULT_PROJECT_CURRENCY,
+      nextPaymentDate: date,
+      autobilling: false,
+    } satisfies BillingRecord);
+  await putBillingRecord(kv, projectId, { ...existing, nextPaymentDate: date });
 };
 
 const clearMetaCache = async (
@@ -880,17 +972,145 @@ export const registerAdminRoutes = (router: Router): void => {
     try {
       const record = parsePaymentPayload(body, projectId);
       const payments = await appendPaymentRecord(context.r2, projectId, record);
-      if (body.periodTo) {
-        const billing = (await getBillingRecord(context.kv, projectId)) ?? {
-          tariff: body.amount ?? 0,
-          currency: body.currency ?? "USD",
-          nextPaymentDate: body.periodTo,
-          autobilling: false,
-        };
-        billing.nextPaymentDate = body.periodTo;
-        await putBillingRecord(context.kv, projectId, billing);
-      }
+      await updateNextPaymentDate(context.kv, projectId, record.periodTo, record.status);
       return jsonOk({ payments });
+    } catch (error) {
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+
+  registerAdminRoute(router, "PUT", ["/api/admin/projects/:projectId/payments/:paymentId"], async (context) => {
+    const projectId = context.state.params.projectId;
+    const paymentId = context.state.params.paymentId;
+    if (!projectId || !paymentId) {
+      return badRequest("Project ID and payment ID are required");
+    }
+    let body: CreatePaymentBody;
+    try {
+      body = await context.json<CreatePaymentBody>();
+    } catch {
+      return badRequest("Invalid JSON body");
+    }
+    try {
+      const record = parsePaymentPayload(body, projectId, { id: paymentId });
+      const payments = await replacePaymentRecord(context.r2, projectId, record);
+      await updateNextPaymentDate(context.kv, projectId, record.periodTo, record.status);
+      return jsonOk({ payments });
+    } catch (error) {
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+  });
+
+  registerAdminRoute(router, "DELETE", ["/api/admin/projects/:projectId/payments/:paymentId"], async (context) => {
+    const projectId = context.state.params.projectId;
+    const paymentId = context.state.params.paymentId;
+    if (!projectId || !paymentId) {
+      return badRequest("Project ID and payment ID are required");
+    }
+    let body: { confirmDate?: string } = {};
+    try {
+      body = await context.json<{ confirmDate?: string }>();
+    } catch {
+      body = {};
+    }
+    if (!body.confirmDate) {
+      return badRequest("confirmDate is required");
+    }
+    let confirmDate: string;
+    try {
+      confirmDate = parseFlexibleDateInput(body.confirmDate, "confirmDate");
+    } catch (error) {
+      if (error instanceof DataValidationError) {
+        return unprocessable(error.message);
+      }
+      throw error;
+    }
+    const existing = await getPaymentsHistoryDocument(context.r2, projectId);
+    const target = existing?.payments.find((payment) => payment.id === paymentId);
+    if (!target) {
+      return notFound("Платёж не найден");
+    }
+    if (!paymentMatchesConfirmDate(target, confirmDate)) {
+      return unprocessable("Дата подтверждения не совпадает с платёжной записью");
+    }
+    const remaining = existing.payments.filter((payment) => payment.id !== paymentId);
+    if (remaining.length === existing.payments.length) {
+      return notFound("Платёж не найден");
+    }
+    const document = { payments: remaining };
+    await putPaymentsHistoryDocument(context.r2, projectId, document);
+    return jsonOk({ payments: document });
+  });
+
+  registerAdminRoute(router, "POST", ["/api/admin/projects/:projectId/payments/manual"], async (context) => {
+    const projectId = context.state.params.projectId;
+    if (!projectId) {
+      return badRequest("Project ID is required");
+    }
+    let body: ManualPaymentsBody;
+    try {
+      body = await context.json<ManualPaymentsBody>();
+    } catch {
+      return badRequest("Invalid JSON body");
+    }
+    const rawEntries = body.entries ?? "";
+    const lines = rawEntries
+      .split(/\r?\n+/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (lines.length === 0) {
+      return badRequest("Введите хотя бы одну строку");
+    }
+    try {
+      const parsed = lines.map((line, index) => parseManualPaymentLine(line, index));
+      const existing = (await getPaymentsHistoryDocument(context.r2, projectId)) ?? { payments: [] };
+      const payments = [...existing.payments];
+      const billing = (await getBillingRecord(context.kv, projectId)) ?? null;
+      const currency = (body.currency?.trim() || billing?.currency || DEFAULT_PROJECT_CURRENCY).toUpperCase();
+      for (const entry of parsed) {
+        const paidAt = entry.status === "paid" ? `${entry.date}T00:00:00Z` : null;
+        const index = payments.findIndex((payment) => payment.periodTo === entry.date);
+        if (index >= 0) {
+          payments[index] = {
+            ...payments[index]!,
+            amount: entry.amount,
+            status: entry.status,
+            paidAt,
+          };
+        } else {
+          const record = parsePaymentPayload(
+            {
+              amount: entry.amount,
+              currency,
+              periodFrom: entry.date,
+              periodTo: entry.date,
+              paidAt,
+              status: entry.status,
+            },
+            projectId,
+          );
+          payments.unshift(record);
+        }
+      }
+      payments.sort((left, right) => {
+        if (left.periodTo !== right.periodTo) {
+          return left.periodTo < right.periodTo ? 1 : -1;
+        }
+        return left.periodFrom < right.periodFrom ? 1 : -1;
+      });
+      const updated = { payments };
+      await putPaymentsHistoryDocument(context.r2, projectId, updated);
+      const nextDue = parsed.find((entry) => entry.status !== "paid" && entry.status !== "cancelled");
+      if (nextDue) {
+        await updateNextPaymentDate(context.kv, projectId, nextDue.date, nextDue.status);
+      }
+      return jsonOk({ payments: updated });
     } catch (error) {
       if (error instanceof DataValidationError) {
         return unprocessable(error.message);
@@ -1055,11 +1275,6 @@ export const registerAdminRoutes = (router: Router): void => {
   registerAdminRoute(router, "GET", ["/api/admin/users", "/api/users"], async (context) => {
     const users = await listAdminUsers(context.kv);
     return jsonOk({ users });
-  });
-
-  registerAdminRoute(router, "GET", ["/api/admin/meta/accounts"], async (context) => {
-    const accounts = await listAdminMetaAccounts(context.kv);
-    return jsonOk({ accounts });
   });
 
   registerAdminRoute(router, "POST", ["/api/admin/update-facebook-token"], async (context) => {
@@ -1253,6 +1468,49 @@ export const registerAdminRoutes = (router: Router): void => {
     try {
       await getProject(context.kv, projectId);
       const existing = await ensureProjectSettings(context.kv, projectId);
+      let updatedAutoreports: AutoreportsRecord | null = null;
+      if (body.autoreports) {
+        const currentAutoreports =
+          (await getAutoreportsRecord(context.kv, projectId).catch(() => null)) ?? createDefaultAutoreportsRecord();
+        const nextPaymentAlerts = body.autoreports.paymentAlerts
+          ? {
+              ...currentAutoreports.paymentAlerts,
+              enabled:
+                typeof body.autoreports.paymentAlerts.enabled === "boolean"
+                  ? body.autoreports.paymentAlerts.enabled
+                  : currentAutoreports.paymentAlerts.enabled,
+              sendToChat:
+                typeof body.autoreports.paymentAlerts.sendToChat === "boolean"
+                  ? body.autoreports.paymentAlerts.sendToChat
+                  : currentAutoreports.paymentAlerts.sendToChat,
+              sendToAdmin:
+                typeof body.autoreports.paymentAlerts.sendToAdmin === "boolean"
+                  ? body.autoreports.paymentAlerts.sendToAdmin
+                  : currentAutoreports.paymentAlerts.sendToAdmin,
+            }
+          : currentAutoreports.paymentAlerts;
+        updatedAutoreports = {
+          ...currentAutoreports,
+          enabled:
+            typeof body.autoreports.enabled === "boolean"
+              ? body.autoreports.enabled
+              : currentAutoreports.enabled,
+          time:
+            typeof body.autoreports.time === "string" && body.autoreports.time.trim().length > 0
+              ? body.autoreports.time
+              : currentAutoreports.time,
+          sendToChat:
+            typeof body.autoreports.sendToChat === "boolean"
+              ? body.autoreports.sendToChat
+              : currentAutoreports.sendToChat,
+          sendToAdmin:
+            typeof body.autoreports.sendToAdmin === "boolean"
+              ? body.autoreports.sendToAdmin
+              : currentAutoreports.sendToAdmin,
+          paymentAlerts: nextPaymentAlerts,
+        } satisfies AutoreportsRecord;
+        await putAutoreportsRecord(context.kv, projectId, updatedAutoreports);
+      }
       const merged = {
         ...existing,
         ...body,
@@ -1268,9 +1526,9 @@ export const registerAdminRoutes = (router: Router): void => {
           ...existing.reports,
           ...(body.reports as Record<string, unknown> | undefined),
         },
-        alerts: {
-          ...existing.alerts,
-          ...(body.alerts as Record<string, unknown> | undefined),
+        leads: {
+          ...existing.leads,
+          ...(body.leads as Record<string, unknown> | undefined),
         },
         meta: {
           ...existing.meta,
@@ -1279,6 +1537,16 @@ export const registerAdminRoutes = (router: Router): void => {
         updatedAt: new Date().toISOString(),
         projectId,
       } satisfies Record<string, unknown>;
+      if (updatedAutoreports) {
+        merged.reports = {
+          autoReportsEnabled: updatedAutoreports.enabled,
+          timeSlots:
+            updatedAutoreports.enabled && updatedAutoreports.time
+              ? [updatedAutoreports.time]
+              : [],
+          mode: updatedAutoreports.mode,
+        };
+      }
       const validated = parseProjectSettings(merged, projectId);
       await upsertProjectSettings(context.kv, validated);
       return jsonResponse({ settings: validated });

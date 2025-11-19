@@ -5,14 +5,30 @@ import {
   getReportScheduleState,
   markReportSlotDispatched,
 } from "../domain/report-state";
-import { loadProjectSummary, loadProjectCampaigns, mapCampaignRows, type CampaignRow } from "./project-insights";
+import {
+  loadProjectSummary,
+  loadProjectCampaigns,
+  mapCampaignRows,
+  resolvePeriodRange,
+  type CampaignRow,
+  type PeriodRange,
+} from "./project-insights";
 import type { MetaSummaryMetrics } from "../domain/meta-summary";
 import { dispatchProjectMessage } from "./project-messaging";
 import { DataValidationError } from "../errors";
 import { getAutoreportsRecord, type AutoreportsRecord } from "../domain/spec/autoreports";
 import { requireProjectRecord, type ProjectRecord, type KpiType } from "../domain/spec/project";
+import { maybeDispatchPaymentAlert } from "./payment-alerts";
 
+const DEFAULT_AUTOREPORT_TIMEZONE = "Asia/Tashkent";
 const SLOT_WINDOW_MS = 5 * 60 * 1000;
+const REPORT_DAY_OFFSET_DAYS = 1;
+
+const shiftDateByDays = (date: Date, days: number): Date => {
+  const copy = new Date(date);
+  copy.setUTCDate(copy.getUTCDate() + days);
+  return copy;
+};
 
 type AutoGoalKey =
   | "leads"
@@ -34,6 +50,10 @@ const GOAL_METADATA: Record<AutoGoalKey, { label: string; plural: string }> = {
   registrations: { label: "Подписки", plural: "подписок" },
   engagement: { label: "Вовлечённость", plural: "событий" },
 };
+
+const GOAL_KEYS = Object.keys(GOAL_METADATA) as AutoGoalKey[];
+const PRIORITY_GOALS: AutoGoalKey[] = ["leads", "messages"];
+const DEFAULT_AUTO_GOAL: AutoGoalKey = PRIORITY_GOALS[0] ?? "leads";
 
 const KPI_GOAL_MAP: Record<KpiType, AutoGoalKey> = {
   LEAD: "leads",
@@ -156,18 +176,79 @@ const parseSlot = (slot: string): { hours: number; minutes: number } | null => {
   return { hours, minutes };
 };
 
+const resolveTimezoneContext = (
+  now: Date,
+  timezone: string,
+): { year: number; month: number; day: number; offsetMs: number } => {
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    });
+    const parts = formatter.formatToParts(now);
+    const pick = (type: Intl.DateTimeFormatPartTypes): string | null =>
+      parts.find((part) => part.type === type)?.value ?? null;
+    const year = pick("year");
+    const month = pick("month");
+    const day = pick("day");
+    const hour = pick("hour") ?? "00";
+    const minute = pick("minute") ?? "00";
+    const second = pick("second") ?? "00";
+    if (!year || !month || !day) {
+      throw new Error("missing date parts");
+    }
+    const isoLocal = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
+    const timezoneDate = new Date(`${isoLocal}Z`);
+    if (Number.isNaN(timezoneDate.getTime())) {
+      throw new Error("invalid timezone date");
+    }
+    return {
+      year: Number.parseInt(year, 10),
+      month: Number.parseInt(month, 10),
+      day: Number.parseInt(day, 10),
+      offsetMs: timezoneDate.getTime() - now.getTime(),
+    };
+  } catch {
+    return {
+      year: now.getUTCFullYear(),
+      month: now.getUTCMonth() + 1,
+      day: now.getUTCDate(),
+      offsetMs: 0,
+    };
+  }
+};
+
 const isSlotDue = (
   slot: string,
   now: Date,
   lastSentAt: string | null,
+  timezone: string,
 ): { due: boolean; scheduledAt: Date | null } => {
   const parsed = parseSlot(slot);
   if (!parsed) {
     return { due: false, scheduledAt: null };
   }
 
-  const scheduled = new Date(now);
-  scheduled.setUTCHours(parsed.hours, parsed.minutes, 0, 0);
+  const tzContext = resolveTimezoneContext(now, timezone);
+  const scheduledTimestamp = Date.UTC(
+    tzContext.year,
+    tzContext.month - 1,
+    tzContext.day,
+    parsed.hours,
+    parsed.minutes,
+    0,
+    0,
+  );
+  if (Number.isNaN(scheduledTimestamp)) {
+    return { due: false, scheduledAt: null };
+  }
+  const scheduled = new Date(scheduledTimestamp - tzContext.offsetMs);
 
   const diff = now.getTime() - scheduled.getTime();
   if (diff < 0 || diff > SLOT_WINDOW_MS) {
@@ -190,6 +271,8 @@ const mapKpiTypeToGoal = (type?: KpiType): AutoGoalKey => {
   }
   return KPI_GOAL_MAP[type] ?? "leads";
 };
+
+const isTrafficGoal = (goal: AutoGoalKey): boolean => goal === "traffic";
 
 const detectGoalFromObjective = (objective?: string | null): AutoGoalKey | null => {
   if (!objective) {
@@ -253,35 +336,87 @@ const getSummaryMetricValue = (metrics: MetaSummaryMetrics | undefined, goal: Au
   }
 };
 
-const determinePrimaryGoal = (rows: CampaignRow[], fallback: AutoGoalKey): AutoGoalKey => {
-  if (rows.length === 0) {
-    return fallback;
-  }
+const sumGoalMetrics = (rows: CampaignRow[]): Map<AutoGoalKey, number> => {
   const totals = new Map<AutoGoalKey, number>();
-  for (const row of rows) {
-    const detected = detectGoalFromObjective(row.objective) ?? fallback;
-    const value = getRowMetricValue(row, detected);
-    totals.set(detected, (totals.get(detected) ?? 0) + value);
+  for (const goal of GOAL_KEYS) {
+    totals.set(goal, 0);
   }
-  let bestGoal: AutoGoalKey = fallback;
-  let bestValue = totals.get(bestGoal) ?? 0;
-  for (const goal of Object.keys(GOAL_METADATA) as AutoGoalKey[]) {
-    const total = totals.get(goal) ?? 0;
+  for (const row of rows) {
+    for (const goal of GOAL_KEYS) {
+      const next = (totals.get(goal) ?? 0) + getRowMetricValue(row, goal);
+      totals.set(goal, next);
+    }
+  }
+  return totals;
+};
+
+const pickFirstNonZeroGoal = (totals: Map<AutoGoalKey, number>, order: AutoGoalKey[]): AutoGoalKey | null => {
+  for (const goal of order) {
+    if ((totals.get(goal) ?? 0) > 0) {
+      return goal;
+    }
+  }
+  return null;
+};
+
+const pickGoalFromSummary = (metrics?: MetaSummaryMetrics): AutoGoalKey | null => {
+  if (!metrics) {
+    return null;
+  }
+  for (const goal of PRIORITY_GOALS) {
+    if (getSummaryMetricValue(metrics, goal) > 0) {
+      return goal;
+    }
+  }
+  return null;
+};
+
+const determinePrimaryGoal = (
+  rows: CampaignRow[],
+  summary: MetaSummaryMetrics | undefined,
+  options: { defaultGoal: AutoGoalKey; fallbackGoal: AutoGoalKey },
+): AutoGoalKey => {
+  const summaryGoal = pickGoalFromSummary(summary);
+  if (summaryGoal) {
+    return summaryGoal;
+  }
+
+  if (rows.length === 0) {
+    return options.defaultGoal ?? options.fallbackGoal;
+  }
+
+  const metricTotals = sumGoalMetrics(rows);
+  const preferredGoal = pickFirstNonZeroGoal(metricTotals, PRIORITY_GOALS);
+  if (preferredGoal) {
+    return preferredGoal;
+  }
+
+  const detectedTotals = new Map<AutoGoalKey, number>();
+  for (const row of rows) {
+    const detected = detectGoalFromObjective(row.objective) ?? options.fallbackGoal;
+    const value = getRowMetricValue(row, detected);
+    detectedTotals.set(detected, (detectedTotals.get(detected) ?? 0) + value);
+  }
+
+  let bestGoal: AutoGoalKey = options.fallbackGoal;
+  let bestValue = detectedTotals.get(bestGoal) ?? 0;
+  for (const goal of GOAL_KEYS) {
+    const total = detectedTotals.get(goal) ?? 0;
     if (total > bestValue) {
       bestGoal = goal;
       bestValue = total;
     }
   }
-  if (bestValue === 0) {
-    for (const goal of Object.keys(GOAL_METADATA) as AutoGoalKey[]) {
-      const total = rows.reduce((acc, row) => acc + getRowMetricValue(row, goal), 0);
-      if (total > 0) {
-        return goal;
-      }
-    }
-    return fallback;
+
+  if (bestValue > 0 && !isTrafficGoal(bestGoal)) {
+    return bestGoal;
   }
-  return bestGoal;
+
+  const fallbackGoal = pickFirstNonZeroGoal(
+    metricTotals,
+    GOAL_KEYS.filter((goal) => !isTrafficGoal(goal)),
+  );
+  return fallbackGoal ?? options.defaultGoal ?? options.fallbackGoal;
 };
 
 const DEFAULT_METRICS: MetaSummaryMetrics = {
@@ -309,7 +444,7 @@ const describeTrend = (current: number, previous: number): string => {
     return "—";
   }
   if (previous <= 0 && current > 0) {
-    return "⬆️ рост (не было данных вчера)";
+    return "⬆️ рост (не было данных позавчера)";
   }
   if (previous > 0) {
     const delta = ((current - previous) / previous) * 100;
@@ -318,7 +453,7 @@ const describeTrend = (current: number, previous: number): string => {
     }
     const arrow = delta > 0 ? "⬆️" : "⬇️";
     const formatted = delta > 0 ? `+${delta.toFixed(0)}` : delta.toFixed(0);
-    return `${arrow} ${formatted}% к вчера`;
+    return `${arrow} ${formatted}% к позавчера`;
   }
   return "—";
 };
@@ -328,56 +463,56 @@ const buildFindings = (options: {
   goalPlural: string;
   currency: string;
   targetCpl: number | null;
-  todayMetrics: MetaSummaryMetrics;
-  yesterdayMetrics: MetaSummaryMetrics;
-  todayValue: number;
-  yesterdayValue: number;
-  todayCost: number | null;
-  yesterdayCost: number | null;
+  reportMetrics: MetaSummaryMetrics;
+  previousMetrics: MetaSummaryMetrics;
+  reportValue: number;
+  previousValue: number;
+  reportCost: number | null;
+  previousCost: number | null;
 }) => {
   const findings: string[] = [];
-  const todaySpend = options.todayMetrics.spend;
-  const yesterdaySpend = options.yesterdayMetrics.spend;
+  const reportSpend = options.reportMetrics.spend;
+  const previousSpend = options.previousMetrics.spend;
   if (
     options.targetCpl != null &&
-    options.todayCost != null &&
-    options.todayCost > options.targetCpl * 1.2
+    options.reportCost != null &&
+    options.reportCost > options.targetCpl * 1.2
   ) {
     findings.push(
-      `❗ Стоимость результата ${formatCurrency(options.todayCost, options.currency)} выше цели ${formatCurrency(options.targetCpl, options.currency)}.`,
+      `❗ Стоимость результата ${formatCurrency(options.reportCost, options.currency)} за вчера выше цели ${formatCurrency(options.targetCpl, options.currency)}.`,
     );
   }
-  const ctrToday = computeCtr(options.todayMetrics);
-  const ctrYesterday = computeCtr(options.yesterdayMetrics);
-  if (ctrToday != null && ctrToday < 0.5) {
-    findings.push(`⚠️ CTR ${formatPercent(ctrToday)} слишком низкий — обновите креативы.`);
+  const ctrReport = computeCtr(options.reportMetrics);
+  const ctrPrevious = computeCtr(options.previousMetrics);
+  if (ctrReport != null && ctrReport < 0.5) {
+    findings.push(`⚠️ CTR ${formatPercent(ctrReport)} вчера слишком низкий — обновите креативы.`);
   }
   if (
-    ctrToday != null &&
-    ctrYesterday != null &&
-    ctrYesterday > 0 &&
-    ctrToday < ctrYesterday * 0.7
+    ctrReport != null &&
+    ctrPrevious != null &&
+    ctrPrevious > 0 &&
+    ctrReport < ctrPrevious * 0.7
   ) {
-    const drop = ((ctrToday - ctrYesterday) / ctrYesterday) * 100;
-    findings.push(`⚠️ CTR упал на ${Math.abs(drop).toFixed(0)}% к вчера.`);
+    const drop = ((ctrReport - ctrPrevious) / ctrPrevious) * 100;
+    findings.push(`⚠️ CTR упал на ${Math.abs(drop).toFixed(0)}% к позавчера.`);
   }
-  if (options.yesterdayValue > 0) {
-    const diff = ((options.todayValue - options.yesterdayValue) / options.yesterdayValue) * 100;
+  if (options.previousValue > 0) {
+    const diff = ((options.reportValue - options.previousValue) / options.previousValue) * 100;
     if (diff <= -30) {
       findings.push(`⚠️ ${options.goalLabel} снизились на ${Math.abs(diff).toFixed(0)}%.`);
     }
-  } else if (options.todayValue === 0 && options.yesterdayValue > 0) {
-    findings.push(`⚠️ Нет ${options.goalPlural} сегодня — проверьте кампании.`);
+  } else if (options.reportValue === 0 && options.previousValue > 0) {
+    findings.push(`⚠️ Нет ${options.goalPlural} вчера — проверьте кампании.`);
   }
-  if (todaySpend > yesterdaySpend && options.todayValue <= options.yesterdayValue) {
+  if (reportSpend > previousSpend && options.reportValue <= options.previousValue) {
     findings.push("⚠️ Расход растёт без роста результатов.");
   }
   if (
-    options.todayCost != null &&
-    options.yesterdayCost != null &&
-    options.todayCost > options.yesterdayCost * 1.3
+    options.reportCost != null &&
+    options.previousCost != null &&
+    options.reportCost > options.previousCost * 1.3
   ) {
-    findings.push("⚠️ CPA вырос по сравнению со вчерашним днём.");
+    findings.push("⚠️ CPA вырос по сравнению с позавчерашним днём.");
   }
   if (findings.length === 0) {
     return "🟢 Всё стабильно, держим курс.";
@@ -455,48 +590,52 @@ const resolvePeriodKeys = (mode: string, now: Date): string[] => {
   }
 };
 
-const mapAutoreportRoute = (
-  sendTo: AutoreportsRecord["sendTo"],
-): ProjectSettings["alerts"]["route"] => {
-  switch (sendTo) {
-    case "chat":
-      return "CHAT";
-    case "admin":
-      return "ADMIN";
-    case "both":
-    default:
-      return "BOTH";
-  }
-};
+interface AutoreportProfile {
+  enabled: boolean;
+  slots: string[];
+  mode: string;
+  recipients: { chat: boolean; admin: boolean };
+}
+
+interface AutoreportProfileResult {
+  profile: AutoreportProfile;
+  record: AutoreportsRecord | null;
+}
 
 const resolveAutoreportProfile = async (
   kv: KvClient,
   projectId: string,
   settings: ProjectSettings,
-): Promise<{ enabled: boolean; slots: string[]; mode: string; route: ProjectSettings["alerts"]["route"] }> => {
+): Promise<AutoreportProfileResult> => {
   const record = await getAutoreportsRecord(kv, projectId);
   if (!record) {
     return {
-      enabled: settings.reports.autoReportsEnabled,
-      slots: [...settings.reports.timeSlots],
-      mode: settings.reports.mode,
-      route: settings.alerts.route,
+      record: null,
+      profile: {
+        enabled: settings.reports.autoReportsEnabled,
+        slots: [...settings.reports.timeSlots],
+        mode: settings.reports.mode,
+        recipients: { chat: true, admin: false },
+      },
     };
   }
   return {
-    enabled: record.enabled,
-    slots: record.enabled && record.time ? [record.time] : [],
-    mode: record.mode,
-    route: mapAutoreportRoute(record.sendTo),
+    record,
+    profile: {
+      enabled: record.enabled,
+      slots: record.enabled && record.time ? [record.time] : [],
+      mode: record.mode,
+      recipients: { chat: record.sendToChat, admin: record.sendToAdmin },
+    },
   };
 };
 
 const periodLabel = (key: string): string => {
   switch (key) {
     case "today":
-      return "Сегодня";
-    case "yesterday":
       return "Вчера";
+    case "yesterday":
+      return "Позавчера";
     case "week":
       return "Неделя";
     case "month":
@@ -514,43 +653,57 @@ const buildReportMessage = (options: {
   projectRecord: ProjectRecord;
   settings: ProjectSettings;
   slot: string;
-  now: Date;
+  reportDate: Date;
   metricsByPeriod: Map<string, MetaSummaryMetrics>;
   goal: AutoGoalKey;
   campaigns: CampaignRow[];
   topPeriod: string;
+  includeFindings?: boolean;
 }): string => {
-  const { project, projectRecord, settings, slot, now, metricsByPeriod, goal, campaigns, topPeriod } = options;
+  const {
+    project,
+    projectRecord,
+    settings,
+    slot,
+    reportDate,
+    metricsByPeriod,
+    goal,
+    campaigns,
+    topPeriod,
+    includeFindings = true,
+  } = options;
   const goalMeta = getGoalMetadata(goal);
   const currency = settings.billing.currency;
-  const todayMetrics = getMetricsOrDefault(metricsByPeriod.get("today"));
-  const yesterdayMetrics = getMetricsOrDefault(metricsByPeriod.get("yesterday"));
+  const reportMetrics = getMetricsOrDefault(metricsByPeriod.get("today"));
+  const previousMetrics = getMetricsOrDefault(metricsByPeriod.get("yesterday"));
   const weekMetrics = getMetricsOrDefault(metricsByPeriod.get("week"));
   const monthMetrics = getMetricsOrDefault(metricsByPeriod.get("month"));
-  const todayValue = getSummaryMetricValue(todayMetrics, goal);
-  const yesterdayValue = getSummaryMetricValue(yesterdayMetrics, goal);
+  const reportValue = getSummaryMetricValue(reportMetrics, goal);
+  const previousValue = getSummaryMetricValue(previousMetrics, goal);
   const weekValue = getSummaryMetricValue(weekMetrics, goal);
   const monthValue = getSummaryMetricValue(monthMetrics, goal);
-  const todayCost = computeCostPerResult(todayMetrics.spend, todayValue);
-  const yesterdayCost = computeCostPerResult(yesterdayMetrics.spend, yesterdayValue);
-  const ctrToday = computeCtr(todayMetrics);
-  const reportDate = formatReportDate(now, projectRecord.settings.timezone ?? "UTC");
+  const reportCost = computeCostPerResult(reportMetrics.spend, reportValue);
+  const previousCost = computeCostPerResult(previousMetrics.spend, previousValue);
+  const ctrReport = computeCtr(reportMetrics);
+  const reportDateLabel = formatReportDate(reportDate, projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE);
   const topCampaignLines = formatTopCampaigns(campaigns, goal, currency);
-  const findings = buildFindings({
-    goalLabel: goalMeta.label,
-    goalPlural: goalMeta.plural,
-    currency,
-    targetCpl: settings.kpi.targetCpl ?? null,
-    todayMetrics,
-    yesterdayMetrics,
-    todayValue,
-    yesterdayValue,
-    todayCost,
-    yesterdayCost,
-  });
+  const findings = includeFindings
+    ? buildFindings({
+        goalLabel: goalMeta.label,
+        goalPlural: goalMeta.plural,
+        currency,
+        targetCpl: settings.kpi.targetCpl ?? null,
+        reportMetrics,
+        previousMetrics,
+        reportValue,
+        previousValue,
+        reportCost,
+        previousCost,
+      })
+    : null;
 
   const lines: string[] = [];
-  lines.push(`📊 Отчёт | ${reportDate}`);
+  lines.push(`📊 Отчёт | ${reportDateLabel}`);
   lines.push(`Проект: ${escapeHtml(project.name)}`);
   lines.push(`Цель: ${goalMeta.label}`);
   lines.push(`Слот: ${slot}`);
@@ -560,23 +713,25 @@ const buildReportMessage = (options: {
   lines.push(...topCampaignLines);
   lines.push("──────────");
   lines.push(
-    `Сегодня: ${formatNumber(todayValue)} ${goalMeta.plural} · расход ${formatCurrency(
-      todayMetrics.spend,
+    `Вчера: ${formatNumber(reportValue)} ${goalMeta.plural} · расход ${formatCurrency(
+      reportMetrics.spend,
       currency,
-    )} · цена ${formatOptionalCurrency(todayCost, currency)}`,
+    )} · цена ${formatOptionalCurrency(reportCost, currency)}`,
   );
   lines.push(
-    `Вчера: ${formatNumber(yesterdayValue)} ${goalMeta.plural} · цена ${formatOptionalCurrency(
-      yesterdayCost,
+    `Позавчера: ${formatNumber(previousValue)} ${goalMeta.plural} · цена ${formatOptionalCurrency(
+      previousCost,
       currency,
     )}`,
   );
   lines.push(`Неделя: ${formatNumber(weekValue)} ${goalMeta.plural}`);
   lines.push(`Месяц: ${formatNumber(monthValue)} ${goalMeta.plural}`);
-  lines.push(`CTR сегодня: ${formatPercent(ctrToday)}`);
-  lines.push(`Динамика: ${describeTrend(todayValue, yesterdayValue)}`);
-  lines.push("");
-  lines.push(`Вывод: ${findings}`);
+  lines.push(`CTR вчера: ${formatPercent(ctrReport)}`);
+  lines.push(`Динамика: ${describeTrend(reportValue, previousValue)}`);
+  if (includeFindings && findings) {
+    lines.push("");
+    lines.push(`Вывод: ${findings}`);
+  }
   if (projectRecord.portalUrl && projectRecord.portalUrl.trim().length > 0) {
     lines.push("------");
     lines.push("👇 Для просмотра всех кампаний");
@@ -589,14 +744,18 @@ const loadMetricsForPeriods = async (
   projectId: string,
   periods: string[],
   initial?: { project: Project; settings: ProjectSettings },
+  options?: { periodRanges?: Map<string, PeriodRange> },
 ): Promise<{ project: Project; settings: ProjectSettings; metrics: Map<string, MetaSummaryMetrics> }> => {
   const metrics = new Map<string, MetaSummaryMetrics>();
   let context = initial;
 
   for (const period of periods) {
+    const periodRange = options?.periodRanges?.get(period);
     const result = await loadProjectSummary(kv, projectId, period, {
       project: context?.project,
       settings: context?.settings,
+      periodRange,
+      forceCacheScope: Boolean(periodRange),
     });
     context = { project: result.project, settings: result.settings };
     metrics.set(period, result.entry.payload.metrics);
@@ -617,6 +776,7 @@ interface AutoReportTemplate {
   goal: AutoGoalKey;
   campaigns: CampaignRow[];
   topPeriod: string;
+  reportDate: Date;
   replyMarkup?: { inline_keyboard: Array<Array<{ text: string; url: string }>> };
 }
 
@@ -632,7 +792,15 @@ const loadAutoReportTemplate = async (options: {
   const { kv, projectId, projectRecord, mode, now, project, settings } = options;
   const periodKeys = collectPeriodKeys(mode, now);
   const initialContext = project && settings ? { project, settings } : undefined;
-  const metricsContext = await loadMetricsForPeriods(kv, projectId, periodKeys, initialContext);
+  const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
+  const reportDate = shiftDateByDays(now, -REPORT_DAY_OFFSET_DAYS);
+  const periodRanges = new Map<string, PeriodRange>();
+  for (const period of periodKeys) {
+    periodRanges.set(period, resolvePeriodRange(period, timezone, { now: reportDate }));
+  }
+  const metricsContext = await loadMetricsForPeriods(kv, projectId, periodKeys, initialContext, {
+    periodRanges,
+  });
   const topPeriod = resolveTopPeriod(mode);
 
   let campaigns: CampaignRow[] = [];
@@ -640,6 +808,8 @@ const loadAutoReportTemplate = async (options: {
     const campaignsResult = await loadProjectCampaigns(kv, projectId, topPeriod, {
       project: metricsContext.project,
       settings: metricsContext.settings,
+      periodRange: periodRanges.get(topPeriod),
+      forceCacheScope: Boolean(periodRanges.get(topPeriod)),
     });
     campaigns = mapCampaignRows(campaignsResult.entry.payload);
   } catch (error) {
@@ -648,8 +818,16 @@ const loadAutoReportTemplate = async (options: {
     }
   }
 
-  const fallbackGoal = mapKpiTypeToGoal(projectRecord.settings.kpi.type);
-  const goal = determinePrimaryGoal(campaigns, fallbackGoal);
+  const kpiSettings = projectRecord.settings.kpi;
+  const manualGoal = mapKpiTypeToGoal(kpiSettings.type);
+  const topPeriodMetrics = metricsContext.metrics.get(topPeriod);
+  const goal =
+    kpiSettings.mode === "manual"
+      ? manualGoal
+      : determinePrimaryGoal(campaigns, topPeriodMetrics, {
+          defaultGoal: DEFAULT_AUTO_GOAL,
+          fallbackGoal: manualGoal,
+        });
   const replyMarkup =
     projectRecord.portalUrl && projectRecord.portalUrl.trim().length > 0
       ? { inline_keyboard: [[{ text: "Открыть портал", url: projectRecord.portalUrl }]] }
@@ -663,21 +841,27 @@ const loadAutoReportTemplate = async (options: {
     goal,
     campaigns,
     topPeriod,
+    reportDate,
     replyMarkup,
   };
 };
 
-const renderAutoReportMessage = (template: AutoReportTemplate, slot: string, now: Date): string =>
+const renderAutoReportMessage = (
+  template: AutoReportTemplate,
+  slot: string,
+  options?: { includeFindings?: boolean },
+): string =>
   buildReportMessage({
     project: template.project,
     projectRecord: template.projectRecord,
     settings: template.settings,
     slot,
-    now,
+    reportDate: template.reportDate,
     metricsByPeriod: template.metricsByPeriod,
     goal: template.goal,
     campaigns: template.campaigns,
     topPeriod: template.topPeriod,
+    includeFindings: options?.includeFindings ?? true,
   });
 
 export const runAutoReports = async (
@@ -694,21 +878,42 @@ export const runAutoReports = async (
     try {
       const settings = await ensureProjectSettings(kv, project.id);
       const projectRecord = await requireProjectRecord(kv, project.id);
-      const profile = await resolveAutoreportProfile(kv, project.id, settings);
-      if (!profile.enabled || profile.slots.length === 0 || profile.route === "NONE") {
+      const { profile, record: autoreportsRecord } = await resolveAutoreportProfile(kv, project.id, settings);
+      await maybeDispatchPaymentAlert({
+        kv,
+        token,
+        project,
+        settings,
+        autoreports: autoreportsRecord,
+        now,
+      });
+      if (!profile.enabled || profile.slots.length === 0) {
         continue;
       }
 
       const state = await getReportScheduleState(kv, project.id);
       const dueSlots: Array<{ slot: string; scheduledAt: Date }> = [];
       for (const slot of profile.slots) {
-        const { due, scheduledAt } = isSlotDue(slot, now, state.slots[slot] ?? null);
+        const { due, scheduledAt } = isSlotDue(
+          slot,
+          now,
+          state.slots[slot] ?? null,
+          projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE,
+        );
         if (due && scheduledAt) {
           dueSlots.push({ slot, scheduledAt });
         }
       }
 
       if (dueSlots.length === 0) {
+        continue;
+      }
+
+      const hasRecipients = profile.recipients.chat || profile.recipients.admin;
+      if (!hasRecipients) {
+        for (const { slot, scheduledAt } of dueSlots) {
+          await markReportSlotDispatched(kv, project.id, slot, scheduledAt.toISOString());
+        }
         continue;
       }
 
@@ -730,21 +935,41 @@ export const runAutoReports = async (
         throw error;
       }
 
-      for (const { slot } of dueSlots) {
-        const message = renderAutoReportMessage(template, `${slot} (UTC)`, now);
-        const result = await dispatchProjectMessage({
-          kv,
-          token,
-          project: template.project,
-          settings: template.settings,
-          text: message,
-          parseMode: "HTML",
-          route: profile.route,
-          replyMarkup: template.replyMarkup,
-        });
-        await markReportSlotDispatched(kv, project.id, slot, new Date().toISOString());
-
-        template.settings = result.settings;
+      const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
+      for (const { slot, scheduledAt } of dueSlots) {
+        if (profile.recipients.chat) {
+          const chatMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, {
+            includeFindings: false,
+          });
+          const result = await dispatchProjectMessage({
+            kv,
+            token,
+            project: template.project,
+            settings: template.settings,
+            text: chatMessage,
+            parseMode: "HTML",
+            route: "CHAT",
+            replyMarkup: template.replyMarkup,
+          });
+          template.settings = result.settings;
+        }
+        if (profile.recipients.admin) {
+          const adminMessage = renderAutoReportMessage(template, `${slot} (${timezone})`, {
+            includeFindings: true,
+          });
+          const result = await dispatchProjectMessage({
+            kv,
+            token,
+            project: template.project,
+            settings: template.settings,
+            text: adminMessage,
+            parseMode: "HTML",
+            route: "ADMIN",
+            replyMarkup: template.replyMarkup,
+          });
+          template.settings = result.settings;
+        }
+        await markReportSlotDispatched(kv, project.id, slot, scheduledAt.toISOString());
       }
     } catch (error) {
       console.error("auto-report failure", { projectId: project.id, error });
@@ -763,9 +988,9 @@ export const sendAutoReportNow = async (
   }
   const projectRecord = await requireProjectRecord(kv, projectId);
   const settings = await ensureProjectSettings(kv, projectId);
-  const profile = await resolveAutoreportProfile(kv, projectId, settings);
-  if (profile.route === "NONE") {
-    throw new Error("Auto-report route is disabled for this project");
+  const { profile } = await resolveAutoreportProfile(kv, projectId, settings);
+  if (!profile.recipients.chat && !profile.recipients.admin) {
+    return;
   }
 
   const template = await loadAutoReportTemplate({
@@ -775,18 +1000,34 @@ export const sendAutoReportNow = async (
     mode: profile.mode,
     now,
   });
-  const timezone = projectRecord.settings.timezone ?? "UTC";
+  const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
   const slotLabel = formatManualSlotLabel(now, timezone);
-  const message = renderAutoReportMessage(template, slotLabel, now);
-  const result = await dispatchProjectMessage({
-    kv,
-    token,
-    project: template.project,
-    settings: template.settings,
-    text: message,
-    parseMode: "HTML",
-    route: profile.route,
-    replyMarkup: template.replyMarkup,
-  });
-  template.settings = result.settings;
+  if (profile.recipients.chat) {
+    const chatMessage = renderAutoReportMessage(template, slotLabel, { includeFindings: false });
+    const result = await dispatchProjectMessage({
+      kv,
+      token,
+      project: template.project,
+      settings: template.settings,
+      text: chatMessage,
+      parseMode: "HTML",
+      route: "CHAT",
+      replyMarkup: template.replyMarkup,
+    });
+    template.settings = result.settings;
+  }
+  if (profile.recipients.admin) {
+    const adminMessage = renderAutoReportMessage(template, slotLabel, { includeFindings: true });
+    const result = await dispatchProjectMessage({
+      kv,
+      token,
+      project: template.project,
+      settings: template.settings,
+      text: adminMessage,
+      parseMode: "HTML",
+      route: "ADMIN",
+      replyMarkup: template.replyMarkup,
+    });
+    template.settings = result.settings;
+  }
 };

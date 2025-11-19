@@ -30,7 +30,7 @@ jobs:
         run: node ./scripts/ensure-registry.mjs
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --force --progress=false
 
       - name: Lint
         run: npm run lint
@@ -40,6 +40,15 @@ jobs:
 
       - name: Tests
         run: npm test
+
+      - name: Sync Facebook long-lived token secret
+        if: ${{ secrets.FB_LONG_TOKEN != '' || secrets.FACEBOOK_TOKEN != '' }}
+        env:
+          FB_LONG_TOKEN: ${{ secrets.FB_LONG_TOKEN != '' && secrets.FB_LONG_TOKEN || secrets.FACEBOOK_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUD_FLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUD_FLARE_AC_ID }}
+        run: |
+          printf "%s" "$FB_LONG_TOKEN" | npx wrangler secret put FB_LONG_TOKEN --non-interactive
 
       - name: Deploy to Cloudflare
         run: npm run deploy

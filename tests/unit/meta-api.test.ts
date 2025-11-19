@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { resolveDatePreset, fetchMetaLeads } = await import("../../src/services/meta-api.ts");
+const {
+  resolveDatePreset,
+  fetchMetaLeads,
+  summariseMetaInsights,
+  countMessagesFromActions,
+  fetchMetaAdAccount,
+} = await import(
+  "../../src/services/meta-api.ts",
+);
 
 test("resolveDatePreset clamps all-period window and supports legacy max alias", () => {
   const realNow = Date.now;
@@ -51,6 +59,40 @@ test("fetchMetaLeads returns account-level leads without enumerating forms", asy
     assert.equal(leads.length, 1);
     assert.ok(requests.some((request) => request.pathname.includes("/act_account/leads")));
     assert.ok(!requests.some((request) => request.pathname.includes("leadgen_forms")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchMetaAdAccount returns parsed account status", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input.toString());
+    requests.push(url);
+    return new Response(
+      JSON.stringify({
+        id: "act_payment",
+        name: "BirLash",
+        account_status: "2",
+        disable_reason: 3,
+        disable_reasons: [3, "11"],
+        balance: "100",
+        currency: "USD",
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    const info = await fetchMetaAdAccount({ accountId: "act_payment", accessToken: "token" });
+    assert.equal(info.id, "act_payment");
+    assert.equal(info.name, "BirLash");
+    assert.equal(info.account_status, 2);
+    assert.equal(info.disable_reason, 3);
+    assert.deepEqual(info.disable_reasons, [3, 11]);
+    assert.equal(info.balance, "100");
+    assert.equal(info.currency, "USD");
+    assert.ok(requests.some((request) => request.pathname.includes("/act_payment")));
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -176,6 +218,23 @@ test("fetchMetaLeads returns empty list when both leadgen sources have no forms"
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("countMessagesFromActions prioritises messaging conversation started metrics", () => {
+  const actions = [
+    { action_type: "messaging_first_reply", value: "4" },
+    { action_type: "messaging_conversation_started", value: "9" },
+    { action_type: "onsite_conversion.messaging_conversation_started_7d", value: "7" },
+  ];
+  assert.equal(countMessagesFromActions(actions), 9);
+});
+
+test("countMessagesFromActions falls back to generic message counters", () => {
+  const actions = [
+    { action_type: "other", value: "2" },
+    { action_type: "outbound_message", value: "5" },
+  ];
+  assert.equal(countMessagesFromActions(actions), 5);
 });
 
 test("fetchMetaLeads falls back to lead campaigns when forms are unavailable", async () => {
@@ -678,4 +737,74 @@ test("fetchMetaLeads invokes persistence callback when forms are enumerated", as
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("summariseMetaInsights does not double count duplicate lead actions", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "10",
+        impressions: "1000",
+        clicks: "100",
+        actions: [
+          { action_type: "lead", value: "9" },
+          { action_type: "leadgen_grouped", value: "9" },
+          { action_type: "onsite_conversion.lead_grouped", value: "9" },
+          { action_type: "submit_application", value: "9" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 9);
+});
+
+test("summariseMetaInsights keeps submit_application counts when lead metric is missing", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "10",
+        impressions: "1000",
+        clicks: "100",
+        actions: [
+          { action_type: "submit_application", value: "7" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 7);
+});
+
+test("summariseMetaInsights prefers canonical lead metrics before generic lead matches", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "12",
+        impressions: "1200",
+        clicks: "240",
+        actions: [
+          { action_type: "leadgen_grouped", value: "45" },
+          { action_type: "lead", value: "9" },
+          { action_type: "leadgen.custom_form", value: "30" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 9);
+});
+
+test("summariseMetaInsights still falls back to fuzzy lead matches when canonical metrics are missing", () => {
+  const summary = summariseMetaInsights({
+    data: [
+      {
+        spend: "7",
+        impressions: "900",
+        clicks: "30",
+        actions: [
+          { action_type: "custom_lead_signal", value: "5" },
+          { action_type: "leadgen_callback", value: "12" },
+        ],
+      },
+    ],
+  });
+  assert.equal(summary.leads, 12);
 });

@@ -11,6 +11,8 @@ export interface PanelRuntime {
   telegramToken: string;
   telegramSecret: string;
   adminIds: number[];
+  facebookLongToken?: string | null;
+  facebookToken?: string | null;
 }
 
 export interface PanelRendererOptions {

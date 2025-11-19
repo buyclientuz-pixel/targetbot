@@ -21,6 +21,7 @@ const { syncProjectLeadsFromMeta } = await import("../../src/services/project-le
 const installLeadsStub = () => {
   const originalFetch = globalThis.fetch;
   const leadFilterValues: number[] = [];
+  const accessTokens: string[] = [];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const target =
       typeof input === "string"
@@ -31,6 +32,12 @@ const installLeadsStub = () => {
             ? input.toString()
             : String(input);
     const url = new URL(target);
+    if (url.hostname === "graph.facebook.com") {
+      const token = url.searchParams.get("access_token");
+      if (token) {
+        accessTokens.push(token);
+      }
+    }
     if (url.hostname === "graph.facebook.com" && url.pathname.includes("/leadgen_forms")) {
       return new Response(
         JSON.stringify({ data: [{ id: "form-sync" }] }),
@@ -91,7 +98,7 @@ const installLeadsStub = () => {
   const restore = () => {
     globalThis.fetch = originalFetch;
   };
-  return Object.assign(restore, { leadFilterValues });
+  return Object.assign(restore, { leadFilterValues, accessTokens });
 };
 
 const writeProjectRecord = async (
@@ -161,6 +168,36 @@ test("syncProjectLeadsFromMeta persists leads and updates summary", async () => 
     assert.equal(state?.projectId, "proj-sync-leads");
     assert.equal(state?.lastLeadCreatedAt, "2025-11-16T12:00:00.000Z");
     assert.ok(state?.lastSyncAt);
+  } finally {
+    restore();
+  }
+});
+
+test("syncProjectLeadsFromMeta accepts override token without facebook user", async () => {
+  const kv = new KvClient(new MemoryKVNamespace());
+  const r2 = new R2Client(new MemoryR2Bucket());
+  const project = createProject({ id: "proj-override", name: "Override", adsAccountId: "act_override", ownerTelegramId: 3 });
+  await putProject(kv, project);
+  const projectRecord = await writeProjectRecord(kv, project);
+  const settings = createDefaultProjectSettings("proj-override");
+  await upsertProjectSettings(kv, {
+    ...settings,
+    projectId: "proj-override",
+    portalEnabled: true,
+    meta: { facebookUserId: null },
+  });
+  const restore = installLeadsStub();
+  try {
+    const result = await syncProjectLeadsFromMeta(kv, r2, "proj-override", {
+      project,
+      settings: { ...settings, meta: { facebookUserId: null } },
+      facebookUserId: null,
+      accessTokenOverride: "override-token",
+      projectRecord,
+    });
+    assert.equal(result.fetched, 3);
+    assert.equal(result.stored, 3);
+    assert.ok(restore.accessTokens.every((token) => token === "override-token"));
   } finally {
     restore();
   }

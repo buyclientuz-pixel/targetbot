@@ -3,7 +3,7 @@ import type { R2Client } from "../../infra/r2";
 import { DataValidationError } from "../../errors";
 import { assertNumber, assertOptionalString, assertString } from "../validation";
 
-export type PaymentStatus = "planned" | "paid" | "cancelled";
+export type PaymentStatus = "planned" | "paid" | "cancelled" | "overdue";
 
 export interface PaymentRecord {
   id: string;
@@ -20,7 +20,7 @@ export interface PaymentsHistoryDocument {
   payments: PaymentRecord[];
 }
 
-const PAYMENT_STATUS_VALUES: readonly PaymentStatus[] = ["planned", "paid", "cancelled"];
+const PAYMENT_STATUS_VALUES: readonly PaymentStatus[] = ["planned", "paid", "cancelled", "overdue"];
 
 const parsePaymentRecord = (raw: unknown, index: number): PaymentRecord => {
   if (!raw || typeof raw !== "object") {
@@ -98,3 +98,24 @@ export const appendPaymentRecord = async (
   await putPaymentsHistoryDocument(r2, projectId, updated);
   return updated;
 };
+
+export const replacePaymentRecord = async (
+  r2: R2Client,
+  projectId: string,
+  record: PaymentRecord,
+): Promise<PaymentsHistoryDocument> => {
+  const existing = await getPaymentsHistoryDocument(r2, projectId);
+  if (!existing) {
+    throw new DataValidationError("История оплат ещё не создана");
+  }
+  const index = existing.payments.findIndex((payment) => payment.id === record.id);
+  if (index === -1) {
+    throw new DataValidationError("Платёж не найден");
+  }
+  const payments = [...existing.payments];
+  payments[index] = record;
+  const updated: PaymentsHistoryDocument = { payments };
+  await putPaymentsHistoryDocument(r2, projectId, updated);
+  return updated;
+};
+

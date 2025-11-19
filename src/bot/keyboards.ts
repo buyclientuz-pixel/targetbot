@@ -1,23 +1,35 @@
 import type { AutoreportsRecord } from "../domain/spec/autoreports";
-import type { AlertsRecord } from "../domain/spec/alerts";
-import type { ProjectLeadsListRecord } from "../domain/spec/project-leads";
+import type { ProjectLeadNotificationSettings } from "../domain/project-settings";
 import type { UserSettingsRecord } from "../domain/spec/user-settings";
 import type { FreeChatRecord } from "../domain/project-chats";
 import type { FbAuthRecord } from "../domain/spec/fb-auth";
+import type { ProjectLeadsViewPayload } from "../services/project-leads-view";
+import { buildLeadsPanelId, buildLeadsPayloadSegment, type LeadsPanelContext } from "./leads-panel-state";
 
-import type { ProjectListItem } from "./messages";
+import type { AccountBindingOverview, AccountSpendSnapshot } from "./data";
 import type { InlineKeyboardMarkup } from "./types";
 
-const formatMoney = (value: number | null, currency: string): string => {
-  if (value == null) {
-    return "—";
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  USD: "$",
+  EUR: "€",
+  RUB: "₽",
+  UZS: "сум",
+  KZT: "₸",
+};
+
+const getCurrencySymbol = (currency: string): string => {
+  const upper = currency?.toUpperCase?.() ?? "";
+  return CURRENCY_SYMBOLS[upper] ?? (upper || "$");
+};
+
+const formatAccountSpend = (snapshot: AccountSpendSnapshot, fallbackCurrency: string): string => {
+  const symbol = getCurrencySymbol(snapshot.currency || fallbackCurrency);
+  if (snapshot.amount == null) {
+    return `—${symbol}`;
   }
-  return new Intl.NumberFormat("ru-RU", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(value);
+  const formatter = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const amountText = formatter.format(snapshot.amount).replace(/\u00a0/g, " ");
+  return `${amountText}${symbol}`;
 };
 
 interface MainMenuKeyboardOptions {
@@ -30,7 +42,7 @@ export const buildMainMenuKeyboard = (options: MainMenuKeyboardOptions): InlineK
     : { text: "Авторизация Facebook", callback_data: "cmd:auth" };
   return {
     inline_keyboard: [
-      [facebookButton, { text: "Meta-аккаунты", callback_data: "cmd:meta" }],
+      [facebookButton],
       [
         { text: "Проекты", callback_data: "cmd:projects" },
         { text: "Аналитика", callback_data: "cmd:analytics" },
@@ -47,30 +59,40 @@ export const buildMainMenuKeyboard = (options: MainMenuKeyboardOptions): InlineK
   };
 };
 
-export const buildProjectListKeyboard = (projects: ProjectListItem[]): InlineKeyboardMarkup => ({
-  inline_keyboard: projects.map((project, index) => [
-    {
-      text: `${index + 1}️⃣ ${project.name} [${formatMoney(project.spend, project.currency)}]`,
-      callback_data: `project:card:${project.id}`,
-    },
-  ]),
-});
-
 export const buildProjectCreationKeyboard = (
   accounts: FbAuthRecord["adAccounts"],
-  options: { hasProjects: boolean },
-): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    ...accounts.map((account) => [
-      {
-        text: `${account.name} (${account.id}) — ${account.currency}`,
-        callback_data: `project:add:${account.id}`,
-      },
-    ]),
-    ...(options.hasProjects ? [[{ text: "📂 Мои проекты", callback_data: "project:list" }]] : []),
-    [{ text: "🏠 Меню", callback_data: "project:menu" }],
-  ],
-});
+  options: {
+    hasProjects: boolean;
+    accountSpends?: Record<string, AccountSpendSnapshot>;
+    accountBindings?: Record<string, AccountBindingOverview>;
+  },
+): InlineKeyboardMarkup => {
+  const spendMap = options.accountSpends ?? {};
+  const bindings = options.accountBindings ?? {};
+  return {
+    inline_keyboard: [
+      ...accounts.map((account) => {
+        const binding = bindings[account.id];
+        const icon = binding?.hasChat ? "✅" : "⚙️";
+        const callback = binding
+          ? binding.hasChat
+            ? `project:card:${binding.projectId}`
+            : `project:chat-change:${binding.projectId}`
+          : `project:add:${account.id}`;
+        return [
+          {
+            text: `${icon} ${account.name} — ${formatAccountSpend(
+              spendMap[account.id] ?? { amount: null, currency: account.currency },
+              account.currency,
+            )}`,
+            callback_data: callback,
+          },
+        ];
+      }),
+      [{ text: "🏠 Меню", callback_data: "project:menu" }],
+    ],
+  };
+};
 
 export const buildProjectActionsKeyboard = (projectId: string): InlineKeyboardMarkup => ({
   inline_keyboard: [
@@ -83,7 +105,7 @@ export const buildProjectActionsKeyboard = (projectId: string): InlineKeyboardMa
       { text: "🚫 Отвязать чат", callback_data: `project:chat-unlink:${projectId}` },
     ],
     [
-      { text: "💬 Лиды", callback_data: `project:leads:new:${projectId}` },
+      { text: "💬 Лиды", callback_data: buildLeadsPanelId(projectId) },
       { text: "📈 Отчёт по рекламе", callback_data: `project:report:${projectId}` },
     ],
     [
@@ -96,17 +118,14 @@ export const buildProjectActionsKeyboard = (projectId: string): InlineKeyboardMa
     ],
     [
       { text: "🕒 Авто-отчёты", callback_data: `project:autoreports:${projectId}` },
-      { text: "🚨 Алерты", callback_data: `project:alerts:${projectId}` },
-    ],
-    [
       { text: "⚙ Изменить KPI проекта", callback_data: `project:kpi:${projectId}` },
-      { text: "📂 Настройки", callback_data: `project:edit:${projectId}` },
     ],
     [
+      { text: "📂 Настройки", callback_data: `project:edit:${projectId}` },
       { text: "🧨 Удалить", callback_data: `project:delete:${projectId}` },
     ],
     [
-      { text: "⬅️ К списку", callback_data: "project:list" },
+      { text: "⬅️ К списку", callback_data: "cmd:projects" },
       { text: "🏠 Меню", callback_data: "project:menu" },
     ],
   ],
@@ -129,31 +148,99 @@ export const buildBillingKeyboard = (projectId: string): InlineKeyboardMarkup =>
 
 export const buildLeadsKeyboard = (
   projectId: string,
-  leads: ProjectLeadsListRecord["leads"],
-  status: ProjectLeadsListRecord["leads"][number]["status"],
-): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: "🆕 Новые", callback_data: `project:leads:new:${projectId}` },
-      { text: "⏳ В обработке", callback_data: `project:leads:processing:${projectId}` },
-    ],
-    [
-      { text: "✅ Завершённые", callback_data: `project:leads:done:${projectId}` },
-      { text: "🗑 В корзине", callback_data: `project:leads:trash:${projectId}` },
-    ],
-    ...leads
-      .filter((lead) => lead.status === status)
-      .slice(0, 5)
-      .map((lead) => [
+  view: ProjectLeadsViewPayload,
+  context: LeadsPanelContext,
+  leadSettings: ProjectLeadNotificationSettings,
+): InlineKeyboardMarkup => {
+  const inline_keyboard: InlineKeyboardMarkup["inline_keyboard"] = [];
+  const buildPeriodButton = (label: string, periodKey: string) => {
+    const isActive = view.periodKey === periodKey;
+    const targetContext: LeadsPanelContext = {
+      ...context,
+      periodKey,
+      from: periodKey === "custom" ? context.from : null,
+      to: periodKey === "custom" ? context.to : null,
+      page: 0,
+    };
+    return {
+      text: `${isActive ? "• " : ""}${label}`,
+      callback_data: buildLeadsPanelId(projectId, targetContext),
+    };
+  };
+  inline_keyboard.push([
+    buildPeriodButton("Сегодня", "today"),
+    buildPeriodButton("Неделя", "week"),
+  ]);
+  inline_keyboard.push([
+    buildPeriodButton("Месяц", "month"),
+    buildPeriodButton("Все время", "all"),
+  ]);
+  inline_keyboard.push([
+    {
+      text: context.periodKey === "custom" ? "📅 Период: свой" : "📅 Указать даты",
+      callback_data: `project:leads-range:${buildLeadsPayloadSegment(projectId, context)}`,
+    },
+  ]);
+
+  if (context.mode === "form") {
+    const targetFormId = context.formId ?? null;
+    const leadsForForm = view.leads.filter((lead) => (lead.formId ?? null) === targetFormId);
+    const maxPage = Math.max(Math.ceil(leadsForForm.length / 5) - 1, 0);
+    const safePage = Math.min(context.page, maxPage);
+    const prevContext: LeadsPanelContext = { ...context, page: Math.max(safePage - 1, 0) };
+    const nextContext: LeadsPanelContext = { ...context, page: Math.min(safePage + 1, maxPage) };
+    const navRow: InlineKeyboardMarkup["inline_keyboard"][number] = [];
+    if (safePage > 0) {
+      navRow.push({ text: "⬅️ Назад", callback_data: buildLeadsPanelId(projectId, prevContext) });
+    }
+    if (safePage < maxPage) {
+      navRow.push({ text: "➡️ Далее", callback_data: buildLeadsPanelId(projectId, nextContext) });
+    }
+    if (navRow.length > 0) {
+      inline_keyboard.push(navRow);
+    }
+    inline_keyboard.push([
+      {
+        text: "↩️ К формам",
+        callback_data: buildLeadsPanelId(projectId, { ...context, mode: "forms", formId: null, page: 0 }),
+      },
+    ]);
+  } else if (view.forms.length > 0) {
+    view.forms.forEach((form) => {
+      inline_keyboard.push([
         {
-          text: `🔎 ${lead.name}`,
-          callback_data: `lead:view:${projectId}:${lead.id}`,
+          text: `${form.periodTotal} — ${form.name}`,
+          callback_data: buildLeadsPanelId(projectId, { ...context, mode: "form", formId: form.formId ?? null, page: 0 }),
         },
-      ]),
-    [{ text: "📤 Экспорт лидов", callback_data: `project:export-leads:${projectId}` }],
-    [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],
-  ],
-});
+      ]);
+    });
+  } else {
+    inline_keyboard.push([
+      { text: "Лиды появятся после синхронизации", callback_data: buildLeadsPanelId(projectId, context) },
+    ]);
+  }
+
+  const encodeTargetToggle = (channel: "chat" | "admin") =>
+    `project:leads-target:${channel}:${buildLeadsPayloadSegment(projectId, context)}`;
+  inline_keyboard.push([
+    {
+      text: leadSettings.sendToChat ? "👥 Чат — вкл" : "👥 Чат — выкл",
+      callback_data: encodeTargetToggle("chat"),
+    },
+    {
+      text: leadSettings.sendToAdmin ? "👤 Админ — вкл" : "👤 Админ — выкл",
+      callback_data: encodeTargetToggle("admin"),
+    },
+  ]);
+
+  const periodSuffix =
+    context.periodKey === "custom" ? `:${context.from ?? ""}:${context.to ?? ""}` : "";
+  const exportCallback = `project:export-leads:${projectId}:${context.periodKey}${periodSuffix}`;
+  inline_keyboard.push([{ text: "📤 Экспорт лидов", callback_data: exportCallback }]);
+  inline_keyboard.push([{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }]);
+
+  return { inline_keyboard };
+};
 
 export const buildExportKeyboard = (projectId: string): InlineKeyboardMarkup => ({
   inline_keyboard: [
@@ -198,6 +285,7 @@ export const buildChatBindingKeyboard = (
       },
     ]),
     [{ text: "🔗 Отправить ссылку вручную", callback_data: `project:bind-manual:${accountId}` }],
+    [{ text: "⬅️ Назад", callback_data: "cmd:projects" }],
     [{ text: "🏠 Меню", callback_data: "project:menu" }],
   ],
 });
@@ -231,7 +319,30 @@ export const buildAutoreportsKeyboard = (
       { text: "🕒 Изменить время", callback_data: `project:autoreports-time:${projectId}` },
     ],
     [
-      { text: "👥 Кому отправлять", callback_data: `project:autoreports-route:${projectId}` },
+      {
+        text: autoreports.sendToChat ? "👥 Чат — вкл" : "👥 Чат — выкл",
+        callback_data: `project:autoreports-target:${projectId}:chat`,
+      },
+      {
+        text: autoreports.sendToAdmin ? "👤 Админ — вкл" : "👤 Админ — выкл",
+        callback_data: `project:autoreports-target:${projectId}:admin`,
+      },
+    ],
+    [
+      {
+        text: autoreports.paymentAlerts.enabled ? "💳 Аллерт оплат — вкл" : "💳 Аллерт оплат — выкл",
+        callback_data: `project:autoreports-payment-toggle:${projectId}`,
+      },
+    ],
+    [
+      {
+        text: autoreports.paymentAlerts.sendToChat ? "👥 Аллерт: чат" : "👥 Аллерт: выкл",
+        callback_data: `project:autoreports-payment-target:${projectId}:chat`,
+      },
+      {
+        text: autoreports.paymentAlerts.sendToAdmin ? "👤 Аллерт: админ" : "👤 Аллерт: выкл",
+        callback_data: `project:autoreports-payment-target:${projectId}:admin`,
+      },
     ],
     [
       { text: "📤 Отправить сейчас", callback_data: `auto_send_now:${projectId}` },
@@ -240,48 +351,6 @@ export const buildAutoreportsKeyboard = (
   ],
 });
 
-export const buildAutoreportsRouteKeyboard = (projectId: string): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: "В чат", callback_data: `project:autoreports-send:${projectId}:chat` },
-      { text: "Админу", callback_data: `project:autoreports-send:${projectId}:admin` },
-      { text: "В чат и админу", callback_data: `project:autoreports-send:${projectId}:both` },
-    ],
-    [{ text: "⬅️ Назад", callback_data: `project:autoreports:${projectId}` }],
-  ],
-});
-
-export const buildAlertsKeyboard = (
-  projectId: string,
-  alerts: AlertsRecord,
-): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: alerts.enabled ? "⛔️ Выключить" : "✅ Включить", callback_data: `project:alerts-toggle:${projectId}` },
-      { text: "Маршрут", callback_data: `project:alerts-route:${projectId}` },
-    ],
-    [
-      { text: `Лиды: ${alerts.types.leadInQueue ? "вкл" : "выкл"}`, callback_data: `project:alerts-type:${projectId}:lead` },
-      { text: `Паузы: ${alerts.types.pause24h ? "вкл" : "выкл"}`, callback_data: `project:alerts-type:${projectId}:pause` },
-      {
-        text: `Оплаты: ${alerts.types.paymentReminder ? "вкл" : "выкл"}`,
-        callback_data: `project:alerts-type:${projectId}:payment`,
-      },
-    ],
-    [{ text: "⬅️ Назад", callback_data: `project:card:${projectId}` }],
-  ],
-});
-
-export const buildAlertsRouteKeyboard = (projectId: string): InlineKeyboardMarkup => ({
-  inline_keyboard: [
-    [
-      { text: "В чат", callback_data: `project:alerts-route-set:${projectId}:chat` },
-      { text: "Админу", callback_data: `project:alerts-route-set:${projectId}:admin` },
-      { text: "Обе стороны", callback_data: `project:alerts-route-set:${projectId}:both` },
-    ],
-    [{ text: "⬅️ Назад", callback_data: `project:alerts:${projectId}` }],
-  ],
-});
 
 export const buildKpiKeyboard = (projectId: string): InlineKeyboardMarkup => ({
   inline_keyboard: [

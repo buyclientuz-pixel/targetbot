@@ -1,6 +1,15 @@
 import { KV_KEYS } from "../config/kv";
 import type { KvClient } from "../infra/kv";
 
+interface LeadsRangeSessionContext {
+  periodKey: string;
+  from: string | null;
+  to: string | null;
+  mode: "forms" | "form";
+  formId: string | null;
+  page: number;
+}
+
 export type BotSessionState =
   | { type: "idle" }
   | { type: "panel"; panelId: string }
@@ -10,7 +19,8 @@ export type BotSessionState =
   | { type: "project:edit"; projectId: string; field: "name" | "ad" | "owner" }
   | { type: "project:create-manual"; accountId: string }
   | { type: "chat:manual"; projectId: string }
-  | { type: "autoreports:set-time"; projectId: string };
+  | { type: "autoreports:set-time"; projectId: string }
+  | { type: "leads:set-range"; projectId: string; context: LeadsRangeSessionContext };
 
 export interface BotPanelState {
   panelId: string;

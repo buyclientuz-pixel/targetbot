@@ -40,6 +40,7 @@
    npx wrangler secret put TELEGRAM_BOT_TOKEN
    # если в текущем продакшене используется старое имя
    npx wrangler secret put BOT_TOKEN
+   npx wrangler secret put FB_LONG_TOKEN
    npx wrangler secret put META_APP_ID
    npx wrangler secret put META_APP_SECRET
    npx wrangler secret put META_APP_SYSTEM_USER_TOKEN
@@ -57,12 +58,11 @@
 | `config:meta-cache-retention-days` | TTL кешей Meta (по умолчанию 3). |
 | `config:report-scan-window` | Окно проверки автоотчётов (в минутах, по умолчанию 5). |
 | `project:{projectId}` | Данные проекта. |
-| `project-settings:{projectId}` | Настройки проекта (чаты, биллинг, алерты). |
+| `project-settings:{projectId}` | Настройки проекта (чаты, биллинг, автоотчёты). |
 | `meta-token:{fbUserId}` | OAuth-токены Meta. |
 | `meta-cache:{projectId}:{scope}` | Кешы статистики. |
 | `portal-session:{sessionId}` | Сессии клиентского портала. |
 | `bot-session:{telegramUserId}` | Состояния диалогов бота. |
-| `alert-state:{projectId}:{type}` | Последние алерты. |
 | `report-state:{projectId}:{slot}` | Состояния автоотчётов. |
 
 ## 4. Конфигурация R2
@@ -109,10 +109,9 @@ logs/{date}/... (опционально)
 - Для отката используйте `npx wrangler deployments rollback <deployment-id>`.
 - Храните архивы конфигурации KV/R2 (`wrangler kv:namespace export`, `wrangler r2 object list`).
 
-## 8. Мониторинг и алерты
+## 8. Мониторинг
 - Подключите Cloudflare Analytics или Workers Metrics для слежения за ошибками и latency.
 - Включите оповещения о неудачных Cron-триггерах.
-- Контролируйте Telegram-уведомления: `alert-state:*` фиксирует последнее отправленное сообщение, очищайте при необходимости.
 - Для Meta токенов настройте напоминания о ротации (раз в 50 дней).
 
 ## 9. Контроль качества
@@ -121,7 +120,7 @@ logs/{date}/... (опционально)
 - Ведите чек-лист: лид → уведомление → портал → оплата → автоотчёт.
 
 ## 10. Экстренные действия
-- При сбое Meta API переведите `project-settings.alerts.metaApiAlerts = false`, чтобы подавить шум.
+- При сбое Meta API временно отключите auto-sync или снижайте частоту запросов через `config:meta-cache-retention-days`, чтобы подавить шум.
 - При подозрении на утечку токена — отозвать Meta System User token и обновить `meta-token:*`.
 - При поломке бота — перевести `project-settings.portalEnabled = false`, чтобы скрыть ссылки на портал.
 

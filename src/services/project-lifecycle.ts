@@ -26,7 +26,6 @@ export const cleanupProjectStorage = async (kv: KvClient, r2: R2Client, projectI
   await Promise.all([
     kv.delete(KV_KEYS.billing(projectId)),
     kv.delete(KV_KEYS.autoreports(projectId)),
-    kv.delete(KV_KEYS.alerts(projectId)),
     kv.delete(KV_KEYS.projectSettings(projectId)),
   ]);
 
