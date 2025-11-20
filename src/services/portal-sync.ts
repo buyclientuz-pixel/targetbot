@@ -125,7 +125,12 @@ export const syncPortalMetrics = async (
 
   for (const periodKey of periods) {
     try {
-      await loadProjectSummary(kv, projectId, periodKey, { project, settings, facebookUserId });
+      await loadProjectSummary(kv, projectId, periodKey, {
+        project,
+        settings,
+        facebookUserId,
+        projectRecord,
+      });
       await syncProjectCampaignDocument(kv, r2, projectId, periodKey, {
         project,
         settings,

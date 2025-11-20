@@ -431,6 +431,7 @@ const DEFAULT_METRICS: MetaSummaryMetrics = {
   registrations: 0,
   engagement: 0,
   leadsToday: 0,
+  messagesToday: 0,
   leadsTotal: 0,
   cpa: null,
   spendToday: 0,

@@ -148,11 +148,49 @@ const formatKpi = (project: ProjectRecord): string => {
   return `${mode}, ${escapeHtml(project.settings.kpi.label)}`;
 };
 
-const computeCpa = (spend: number | null, leadsToday: number | null): number | null => {
-  if (spend == null || leadsToday == null || leadsToday === 0) {
+type KpiType = ProjectRecord["settings"]["kpi"]["type"];
+
+const computeCpa = (spend: number | null, kpiValue: number | null): number | null => {
+  if (spend == null || kpiValue == null || kpiValue === 0) {
     return null;
   }
-  return spend / leadsToday;
+  return spend / kpiValue;
+};
+
+const resolveCampaignKpiValue = (
+  campaign: MetaCampaignsDocument["campaigns"][number],
+  fallbackType: KpiType,
+): number => {
+  const kpiType = campaign.kpiType ?? fallbackType;
+  switch (kpiType) {
+    case "MESSAGE":
+      return campaign.messages;
+    case "CLICK":
+      return campaign.clicks;
+    case "VIEW":
+      return campaign.impressions;
+    case "PURCHASE":
+      return campaign.leads;
+    case "LEAD":
+    default:
+      return campaign.leads;
+  }
+};
+
+const resolveSummaryKpiValue = (summary: MetaCampaignsDocument["summary"], kpiType: KpiType): number => {
+  switch (kpiType) {
+    case "MESSAGE":
+      return summary.messages;
+    case "CLICK":
+      return summary.clicks;
+    case "VIEW":
+      return summary.impressions;
+    case "PURCHASE":
+      return summary.leads;
+    case "LEAD":
+    default:
+      return summary.leads;
+  }
 };
 
 const formatLeadsLine = (stats: ProjectLeadsListRecord["stats"]): string => {
@@ -235,8 +273,10 @@ export const buildChatAlreadyUsedMessage = (): string =>
 export const buildProjectCardMessage = (bundle: ProjectBundle): string => {
   const { project, billing, leads, campaigns, autoreports } = bundle;
   const spend = campaigns.summary.spend ?? null;
-  const leadsToday = leads.stats.today ?? null;
-  const cpa = computeCpa(spend, leadsToday);
+  const kpiType = project.settings.kpi.type;
+  const kpiValue = resolveSummaryKpiValue(campaigns.summary, kpiType);
+  const todaysValue = (kpiType === "MESSAGE" ? campaigns.summary.messages : leads.stats.today) ?? null;
+  const cpa = computeCpa(spend, todaysValue ?? kpiValue);
 
   const lines: string[] = [];
   lines.push(`🏗 Проект: <b>${escapeHtml(project.name)}</b>`);
@@ -399,14 +439,16 @@ export const buildReportMessage = (
   lines.push(`Отчёт по рекламе — <b>${escapeHtml(project.name)}</b>`);
   lines.push(`Период: ${campaigns.period.from} — ${campaigns.period.to}`);
   lines.push("");
-  const summaryLeads = campaigns.summary.leads ?? 0;
+  const kpiType = project.settings.kpi.type;
+  const kpiLabel = project.settings.kpi.label;
+  const summaryKpiValue = resolveSummaryKpiValue(campaigns.summary, kpiType);
   const summaryMessages = campaigns.summary.messages ?? 0;
   lines.push(`💰 Затраты: <b>${formatMoney(campaigns.summary.spend, project.settings.currency)}</b>`);
   lines.push(`👀 Показов: <b>${campaigns.summary.impressions}</b>`);
   lines.push(`👆 Кликов: <b>${campaigns.summary.clicks}</b>`);
-  lines.push(`🎯 Лиды: <b>${summaryLeads}</b>`);
+  lines.push(`🎯 ${escapeHtml(kpiLabel)}: <b>${summaryKpiValue}</b>`);
   lines.push(`💬 Сообщений: <b>${summaryMessages}</b>`);
-  const cpa = computeCpa(campaigns.summary.spend, summaryLeads) ?? null;
+  const cpa = computeCpa(campaigns.summary.spend, summaryKpiValue) ?? null;
   lines.push(`📊 CPA: <b>${cpa ? formatMoney(cpa, project.settings.currency) : "—"}</b>`);
   lines.push("");
   if (campaigns.campaigns.length === 0) {
@@ -417,8 +459,9 @@ export const buildReportMessage = (
       .slice(0, 3)
       .forEach((campaign, index) => {
         const objectiveLabel = translateMetaObjective(campaign.objective);
+        const kpiValue = resolveCampaignKpiValue(campaign, kpiType);
         lines.push(
-          `${index + 1}️⃣ <b>${escapeHtml(campaign.name)}</b> — ${campaign.leads} ` +
+          `${index + 1}️⃣ <b>${escapeHtml(campaign.name)}</b> — ${kpiValue} ${escapeHtml(kpiLabel)} ` +
             `${objectiveLabel} за ${formatMoney(campaign.spend, project.settings.currency, 2)}`,
         );
       });
@@ -442,8 +485,9 @@ export const buildCampaignsMessage = (
         lines.push("");
       }
       lines.push(`• <b>${escapeHtml(campaign.name)}</b> (${translateMetaObjective(campaign.objective)})`);
+      const kpiValue = resolveCampaignKpiValue(campaign, project.settings.kpi.type);
       lines.push(
-        `  Показатель: ${campaign.leads} | Расход: ${formatMoney(
+        `  ${escapeHtml(project.settings.kpi.label)}: ${kpiValue} | Расход: ${formatMoney(
           campaign.spend,
           project.settings.currency,
           2,

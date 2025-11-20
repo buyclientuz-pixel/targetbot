@@ -5,6 +5,7 @@ import { ensureProjectSettings, type ProjectSettings } from "../domain/project-s
 import { getProject, type Project } from "../domain/projects";
 import { requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
 import { type MetaSummaryPayload } from "../domain/meta-summary";
+import type { MetaInsightsSummary } from "./meta-api";
 import { putMetaCampaignsDocument, type MetaCampaignsDocument } from "../domain/spec/meta-campaigns";
 import type { KpiType } from "../domain/spec/project";
 import type { KvClient } from "../infra/kv";
@@ -200,6 +201,22 @@ const resolveCustomMetaPeriod = (periodRange: PeriodRange): MetaInsightsPeriod =
   to: periodRange.period.to,
 });
 
+const resolveInsightsKpiValue = (summary: MetaInsightsSummary, kpiType: KpiType): number => {
+  switch (kpiType) {
+    case "MESSAGE":
+      return summary.messages;
+    case "CLICK":
+      return summary.clicks;
+    case "VIEW":
+      return summary.impressions;
+    case "PURCHASE":
+      return summary.leads;
+    case "LEAD":
+    default:
+      return summary.leads;
+  }
+};
+
 const buildScopedCacheKey = (
   base: string,
   periodKey: string,
@@ -247,10 +264,12 @@ export const loadProjectSummary = async (
     facebookUserId?: string | null;
     periodRange?: PeriodRange;
     forceCacheScope?: boolean;
+    projectRecord?: ProjectRecord;
   },
 ): Promise<{ entry: MetaCacheEntry<MetaSummaryPayload>; project: Project; settings: ProjectSettings }> => {
   const project = options?.project ?? (await getProject(kv, projectId));
   const settings = options?.settings ?? (await ensureProjectSettings(kv, projectId));
+  const projectRecord = options?.projectRecord ?? (await requireProjectRecord(kv, projectId));
 
   if (!project.adsAccountId) {
     throw new DataValidationError("Project is missing adsAccountId for Meta insights");
@@ -303,6 +322,9 @@ export const loadProjectSummary = async (
           settings.timezone,
         );
 
+  const periodKpiValue = resolveInsightsKpiValue(requestedInsights.payload.summary, projectRecord.settings.kpi.type);
+  const todayKpiValue = resolveInsightsKpiValue(todayInsights.payload.summary, projectRecord.settings.kpi.type);
+
   const metrics = {
     spend: requestedInsights.payload.summary.spend,
     impressions: requestedInsights.payload.summary.impressions,
@@ -315,16 +337,11 @@ export const loadProjectSummary = async (
     registrations: requestedInsights.payload.summary.registrations,
     engagement: requestedInsights.payload.summary.engagement,
     leadsToday: todayInsights.payload.summary.leads,
+    messagesToday: todayInsights.payload.summary.messages,
     leadsTotal: lifetimeInsights.payload.summary.leads,
-    cpa:
-      requestedInsights.payload.summary.leads > 0
-        ? requestedInsights.payload.summary.spend / requestedInsights.payload.summary.leads
-        : null,
+    cpa: periodKpiValue > 0 ? requestedInsights.payload.summary.spend / periodKpiValue : null,
     spendToday: todayInsights.payload.summary.spend,
-    cpaToday:
-      todayInsights.payload.summary.leads > 0
-        ? todayInsights.payload.summary.spend / todayInsights.payload.summary.leads
-        : null,
+    cpaToday: todayKpiValue > 0 ? todayInsights.payload.summary.spend / todayKpiValue : null,
   } satisfies MetaSummaryPayload["metrics"];
 
   const summaryEntry = createMetaCacheEntry<MetaSummaryPayload>(

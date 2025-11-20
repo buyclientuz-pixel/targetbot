@@ -1227,6 +1227,7 @@ test("auto_send_now dispatches manual auto-report", async () => {
     registrations: 0,
     engagement: 0,
     leadsToday: 8,
+    messagesToday: 4,
     leadsTotal: 180,
     cpa: 3.75,
     spendToday: 30,
