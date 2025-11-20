@@ -5,14 +5,16 @@
   "type": "module",
   "scripts": {
     "preinstall": "node ./scripts/ensure-registry.mjs",
-    "build": "wrangler deploy",
+    "build": "wrangler deploy --dry-run",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "lint": "eslint . --ext .js",
+    "lint": "eslint scripts --ext .js,.mjs",
     "typecheck": "tsc --noEmit --project tsconfig.json",
-    "test": "node --loader ./scripts/ts-loader.mjs --test \"tests/**/*.test.ts\"",
-    "qa": "node --loader ./scripts/ts-loader.mjs --test \"tests/**/*.test.ts\"",
-    "dry-run": "node ./scripts/dry-run.mjs"
+    "test": "node --import ./scripts/register-ts-loader.mjs --test \"tests/**/*.test.ts\"",
+    "qa": "node --import ./scripts/register-ts-loader.mjs --test \"tests/**/*.test.ts\"",
+    "dry-run": "node ./scripts/dry-run.mjs",
+    "format": "prettier \"**/*.{ts,js,json,md}\"",
+    "sync:secrets": "node ./scripts/sync-secrets.mjs"
   },
   "devDependencies": {
     "eslint": "^9.39.1",

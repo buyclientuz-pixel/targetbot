@@ -1,6 +1,5 @@
 import { getBotSession, saveBotSession } from "../domain/bot-sessions";
 import { editTelegramMessage, sendTelegramMessage, TelegramError } from "../services/telegram";
-import { parseLeadsPanelState, serialiseLeadsPanelParams } from "./leads-panel-state";
 import type { TelegramMessage } from "./types";
 import type { PanelRuntime } from "./panels/types";
 import { render as renderMain } from "./panels/main";
@@ -122,16 +121,38 @@ const resolvePanel = (panelId: string): ResolveResult => {
 export const PANEL_ERROR_MESSAGE =
   "⚠️ Не удалось загрузить панель. Нажмите /start и попробуйте снова.";
 
+export const resolvePanelThreadId = (
+  session: Awaited<ReturnType<typeof getBotSession>>,
+  chatId: number,
+  messageThreadId?: number | null,
+): number | null => {
+  if (messageThreadId != null) {
+    return messageThreadId;
+  }
+  if (session.panel?.chatId === chatId) {
+    return session.panel.messageThreadId ?? null;
+  }
+  return null;
+};
+
 interface RenderRequest {
   runtime: PanelRuntime;
   userId: number;
   chatId: number;
   panelId: string;
+  messageThreadId?: number | null;
 }
 
-export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRequest): Promise<void> => {
+export const renderPanel = async ({
+  runtime,
+  userId,
+  chatId,
+  panelId,
+  messageThreadId,
+}: RenderRequest): Promise<void> => {
   const session = await getBotSession(runtime.kv, userId);
   const resolved = resolvePanel(panelId);
+  const threadId = resolvePanelThreadId(session, chatId, messageThreadId);
   let result;
   try {
     result = await resolved.renderer({ runtime, userId, chatId, panelId: resolved.id, params: resolved.params });
@@ -148,7 +169,10 @@ export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRe
     });
     return;
   }
-  let messageId = session.panel?.chatId === chatId ? session.panel?.messageId ?? null : null;
+  let messageId =
+    session.panel?.chatId === chatId && session.panel?.messageThreadId === threadId
+      ? session.panel?.messageId ?? null
+      : null;
   try {
     if (messageId) {
       try {
@@ -169,6 +193,7 @@ export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRe
     if (!messageId) {
       const sent = (await sendTelegramMessage<TelegramMessage>(runtime.telegramToken, {
         chatId,
+        messageThreadId: threadId ?? undefined,
         text: result.text,
         replyMarkup: result.keyboard,
       })) as TelegramMessage | undefined;
@@ -178,7 +203,7 @@ export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRe
     }
     await saveBotSession(runtime.kv, {
       ...session,
-      panel: messageId ? { chatId, messageId, panelId: resolved.id } : session.panel,
+      panel: messageId ? { chatId, messageId, panelId: resolved.id, messageThreadId: threadId } : session.panel,
       state: { type: "panel", panelId: resolved.id },
     });
   } catch (error) {

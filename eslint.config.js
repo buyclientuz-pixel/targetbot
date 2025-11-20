@@ -1,9 +1,18 @@
-import prettierPlugin from "eslint-plugin-prettier";
+const commonRules = {
+  quotes: ["error", "double", { avoidEscape: true }],
+  "no-var": "error",
+  "prefer-const": "error",
+  semi: ["error", "always"],
+};
+
+const commonIgnores = ["dist/**", ".wrangler/**", "node_modules/**", "**/*.{ts,tsx}"];
 
 export default [
   {
-    files: ["**/*.js"],
-    ignores: ["dist/**", ".wrangler/**", "node_modules/**"],
+    ignores: commonIgnores,
+  },
+  {
+    files: ["**/*.{js,mjs}", "scripts/**/*.{js,mjs}"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",
@@ -11,15 +20,6 @@ export default [
     linterOptions: {
       reportUnusedDisableDirectives: true,
     },
-    plugins: {
-      prettier: prettierPlugin,
-    },
-    rules: {
-      "prettier/prettier": "error",
-      quotes: ["error", "double", { avoidEscape: true }],
-      "no-var": "error",
-      "prefer-const": "error",
-      semi: ["error", "always"],
-    },
+    rules: commonRules,
   },
 ];

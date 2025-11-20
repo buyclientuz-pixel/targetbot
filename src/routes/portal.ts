@@ -66,12 +66,49 @@ const computeCpa = (spend: number, value: number): number | null => {
   return spend / value;
 };
 
+const resolveKpiValue = (
+  summary: { leads?: number; messages?: number; clicks?: number; impressions?: number },
+  kpiType: ProjectBundle["project"]["settings"]["kpi"]["type"],
+): number => {
+  switch (kpiType) {
+    case "MESSAGE":
+      return summary.messages ?? 0;
+    case "CLICK":
+      return summary.clicks ?? 0;
+    case "VIEW":
+      return summary.impressions ?? 0;
+    case "PURCHASE":
+      return summary.leads ?? 0;
+    case "LEAD":
+    default:
+      return summary.leads ?? 0;
+  }
+};
+
+const resolveKpiToday = (
+  summary: import("../domain/meta-summary").MetaSummaryMetrics | undefined,
+  leadsToday: number,
+  kpiType: ProjectBundle["project"]["settings"]["kpi"]["type"],
+): number => {
+  switch (kpiType) {
+    case "MESSAGE":
+      return summary?.messagesToday ?? 0;
+    case "CLICK":
+    case "VIEW":
+    case "PURCHASE":
+    case "LEAD":
+    default:
+      return leadsToday;
+  }
+};
+
 const buildSummaryPayload = (
   bundle: ProjectBundle,
   requestedPeriod: string,
   options?: {
     summaryEntry?: import("../domain/meta-cache").MetaCacheEntry<import("../domain/meta-summary").MetaSummaryPayload> | null;
     campaigns?: import("../domain/spec/meta-campaigns").MetaCampaignsDocument;
+    periodRange?: ReturnType<typeof resolvePortalPeriodRange>;
   },
 ) => {
   const campaignsDoc = options?.campaigns ?? bundle.campaigns;
@@ -89,29 +126,41 @@ const buildSummaryPayload = (
   const spend = summary.spend ?? campaignSummary.spend ?? 0;
   const leads = campaignSummary.leads ?? summary.leads ?? 0;
   const messages = campaignSummary.messages ?? summary.messages ?? 0;
-  const leadsToday = bundle.leads.stats.today ?? 0;
+  const effectivePeriodKey = options?.summaryEntry?.payload.periodKey ?? campaignsDoc.periodKey ?? requestedPeriod;
+  const includeTodayMetrics = effectivePeriodKey === "today";
+  const leadsToday = includeTodayMetrics ? bundle.leads.stats.today ?? 0 : 0;
+  const kpiType = bundle.project.settings.kpi.type;
+  const kpiValue = resolveKpiValue(summary, kpiType);
+  const kpiToday = includeTodayMetrics ? resolveKpiToday(summaryMetrics, leadsToday, kpiType) : 0;
+  const period = options?.summaryEntry?.period ?? options?.periodRange?.period ?? campaignsDoc.period;
+  const normalisedPeriod = period;
+
   return {
     project: {
       id: bundle.project.id,
       name: bundle.project.name,
       portalUrl: bundle.project.portalUrl,
     },
-    period: options?.summaryEntry?.period ?? campaignsDoc.period,
-    periodKey: options?.summaryEntry?.payload.periodKey ?? campaignsDoc.periodKey ?? requestedPeriod,
+    period: normalisedPeriod,
+    periodKey: effectivePeriodKey,
     metrics: {
       spend,
       impressions: summary.impressions ?? campaignSummary.impressions ?? 0,
       clicks: summary.clicks ?? campaignSummary.clicks ?? 0,
       leads,
       messages,
-      cpa: computeCpa(spend, leads),
+      cpa: computeCpa(spend, kpiValue),
       leadsTotal: bundle.leads.stats.total ?? 0,
       leadsToday,
-      cpaToday: summaryMetrics?.cpaToday ?? computeCpa(summaryMetrics?.spendToday ?? spend, leadsToday),
-      spendToday: summaryMetrics?.spendToday ?? (requestedPeriod === "today" ? spend : summaryMetrics?.spendToday ?? 0),
+      cpaToday: includeTodayMetrics
+        ? summaryMetrics?.cpaToday ?? computeCpa(summaryMetrics?.spendToday ?? spend, kpiToday)
+        : null,
+      spendToday: includeTodayMetrics
+        ? summaryMetrics?.spendToday ?? (requestedPeriod === "today" ? spend : summaryMetrics?.spendToday ?? 0)
+        : 0,
       currency: bundle.project.settings.currency,
       kpiLabel: bundle.project.settings.kpi.label,
-      kpiType: bundle.project.settings.kpi.type,
+      kpiType,
     },
   };
 };
@@ -1621,7 +1670,13 @@ export const registerPortalRoutes = (router: Router): void => {
           }
         }
       }
-      return jsonOk(buildSummaryPayload(bundle, effectivePeriodKey, { summaryEntry, campaigns: campaignsDoc }));
+      return jsonOk(
+        buildSummaryPayload(bundle, effectivePeriodKey, {
+          summaryEntry,
+          campaigns: campaignsDoc,
+          periodRange: resolvedRange,
+        }),
+      );
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         return notFound(error.message);

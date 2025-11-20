@@ -10,6 +10,7 @@ export interface MetaSummaryMetrics {
   registrations: number;
   engagement: number;
   leadsToday: number;
+  messagesToday: number;
   leadsTotal: number;
   cpa: number | null;
   spendToday: number;

@@ -4,6 +4,7 @@ import test from "node:test";
 const {
   resolveDatePreset,
   fetchMetaLeads,
+  fetchMetaInsightsRaw,
   summariseMetaInsights,
   countMessagesFromActions,
   fetchMetaAdAccount,
@@ -23,6 +24,40 @@ test("resolveDatePreset clamps all-period window and supports legacy max alias",
     assert.deepEqual(resolveDatePreset("max"), period);
   } finally {
     Date.now = realNow;
+  }
+});
+
+test("fetchMetaInsightsRaw requests 1d attribution windows for consistent day-level results", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedUrls: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    requestedUrls.push(url);
+    return new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    await fetchMetaInsightsRaw({
+      accountId: "act_123", 
+      accessToken: "token",
+      period: { preset: "today" },
+    });
+    assert.equal(requestedUrls.length, 1);
+    const url = requestedUrls[0];
+    assert.equal(url.searchParams.get("action_attribution_windows"), "1d_click,1d_view");
+    assert.equal(url.searchParams.get("action_report_time"), "conversion");
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 
@@ -59,6 +94,71 @@ test("fetchMetaLeads returns account-level leads without enumerating forms", asy
     assert.equal(leads.length, 1);
     assert.ok(requests.some((request) => request.pathname.includes("/act_account/leads")));
     assert.ok(!requests.some((request) => request.pathname.includes("leadgen_forms")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchMetaLeads normalises raw account id to act_ prefix", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    requests.push(url);
+    if (url.pathname.includes("/act_123456/leads")) {
+      return new Response(JSON.stringify({ data: [{ id: "lead-account", created_time: "2025-11-17T00:00:00Z" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "123456", accessToken: "token" });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/act_123456/leads")));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fetchMetaLeads extracts numeric ad account id from URLs and labels", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    requests.push(url);
+    if (url.pathname.includes("/act_654321/leads")) {
+      return new Response(JSON.stringify({ data: [{ id: "lead-account", created_time: "2025-11-17T00:00:00Z" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({
+      accountId: "https://business.facebook.com/adsmanager/manage/campaigns?act=654321&business_id=123",
+      accessToken: "token",
+    });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/act_654321/leads")));
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -524,6 +624,71 @@ test("fetchMetaLeads falls back to ad creative forms when pages don't expose lea
   }
 });
 
+test("fetchMetaLeads enriches account forms with page tokens before fetching leads", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    requests.push(url);
+    if (url.pathname.includes("/act_page_token/leads") && !url.pathname.includes("/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_page_token/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-page-token" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/act_page_token/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "pg-pt", access_token: "page-token" }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/pg-pt/leadgen_forms")) {
+      return new Response(JSON.stringify({ data: [{ id: "form-page-token" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/form-page-token/leads")) {
+      const token = url.searchParams.get("access_token");
+      if (token !== "page-token") {
+        return new Response(JSON.stringify({ error: { message: "wrong token" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-page", created_time: "2025-11-20T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_page_token", accessToken: "acct-token" });
+    assert.equal(leads.length, 1);
+    assert.ok(requests.some((request) => request.pathname.includes("/pg-pt/leadgen_forms")));
+    const leadRequest = requests.find((request) => request.pathname.includes("/form-page-token/leads"));
+    assert.ok(leadRequest);
+    assert.equal(leadRequest?.searchParams.get("access_token"), "page-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("fetchMetaLeads tolerates rate limit errors from ad creative fallback", async () => {
   const originalFetch = globalThis.fetch;
   const originalSetTimeout = globalThis.setTimeout;
@@ -624,6 +789,76 @@ test("fetchMetaLeads retries ad creative fallback requests after transient rate 
     assert.equal(leads.length, 1);
     assert.equal(leads[0]?.id, "lead-after-retry");
     assert.equal(adRequests, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
+test("fetchMetaLeads retries when Meta returns ad-account rate limit errors", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void) => {
+    callback();
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  let attempts = 0;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    requests.push(url);
+    if (url.pathname.includes("/act_80004/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_80004/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_80004/leadgen_forms")) {
+      return new Response(JSON.stringify({ error: { message: "edge missing" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_80004/ads")) {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: "(#80004) There have been too many calls to this ad-account.",
+              code: 80004,
+              error_subcode: 2446079,
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          data: [
+            { creative: { object_story_spec: { children: [{ leadgen_form_id: "form-ads-80004" }] } } },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/form-ads-80004/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-80004", created_time: "2025-11-21T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_rate_limit_80004", accessToken: "acct-token" });
+    assert.equal(leads.length, 1);
+    assert.equal(leads[0]?.id, "lead-80004");
+    assert.equal(attempts, 2);
+    assert.ok(requests.some((request) => request.pathname.includes("/form-ads-80004/leads")));
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.setTimeout = originalSetTimeout;

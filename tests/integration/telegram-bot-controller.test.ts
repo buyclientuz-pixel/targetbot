@@ -207,6 +207,7 @@ const seedProject = async (kv: InstanceType<typeof KvClient>, r2: InstanceType<t
     }),
   );
   await putMetaCampaignsDocument(r2, "proj_a", {
+    periodKey: "today",
     period: { from: "2025-01-01", to: "2025-01-01" },
     summary: { spend: 120, impressions: 1000, clicks: 100, leads: 5, messages: 0 },
     campaigns: [
@@ -264,7 +265,7 @@ const createScopedCampaignEntry = (
   periodKey: string,
   timezone: string,
   reportDate: Date,
-  payload: import("../../src/domain/meta-cache.ts").MetaInsightsRawResponse,
+  payload: import("../../src/services/meta-api.ts").MetaInsightsRawResponse,
   ttlSeconds = 3600,
 ) => {
   const { scope, period } = scopedCache("campaigns", periodKey, timezone, reportDate);
@@ -1104,19 +1105,22 @@ test("Telegram bot controller serves analytics, users, finance and webhook secti
     await controller.handleUpdate({
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Аналитика" },
     } as unknown as TelegramUpdate);
-    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Сводная аналитика"));
+    const analyticsText = String(findLastSendMessage(stub.requests)?.body.text ?? "");
+    assert.ok(analyticsText.includes("Сводная аналитика"));
 
     stub.requests.length = 0;
     await controller.handleUpdate({
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Пользователи" },
     } as unknown as TelegramUpdate);
-    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Пользователи и доступы"));
+    const usersText = String(findLastSendMessage(stub.requests)?.body.text ?? "");
+    assert.ok(usersText.includes("Пользователи и доступы"));
 
     stub.requests.length = 0;
     await controller.handleUpdate({
       message: { chat: { id: 100 }, from: { id: 100 }, text: "Финансы" },
     } as unknown as TelegramUpdate);
-    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Финансы (все проекты)"));
+    const financeText = String(findLastSendMessage(stub.requests)?.body.text ?? "");
+    assert.ok(financeText.includes("Финансы (все проекты)"));
 
     stub.requests.length = 0;
     await controller.handleUpdate({
@@ -1124,7 +1128,8 @@ test("Telegram bot controller serves analytics, users, finance and webhook secti
     } as unknown as TelegramUpdate);
     const webhookRequest = stub.requests.find((entry) => entry.url.includes("getWebhookInfo"));
     assert.ok(webhookRequest);
-    assert.ok(findLastSendMessage(stub.requests)?.body.text?.includes("Telegram Webhook"));
+    const webhookText = String(findLastSendMessage(stub.requests)?.body.text ?? "");
+    assert.ok(webhookText.includes("Telegram Webhook"));
   } finally {
     stub.restore();
   }
@@ -1202,6 +1207,22 @@ test("Telegram bot controller updates chat bindings via selection and manual inp
 
 
 test("auto_send_now dispatches manual auto-report", async () => {
+  const RealDate = Date;
+  const fixedNow = new RealDate("2025-11-20T12:00:00Z");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).Date = class extends RealDate {
+    constructor(value?: unknown) {
+      if (arguments.length === 0) {
+        super(fixedNow.getTime());
+      } else {
+        super(value as any);
+      }
+    }
+    static now() {
+      return fixedNow.getTime();
+    }
+  } as DateConstructor;
+
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());
   await seedProject(kv, r2);
@@ -1210,27 +1231,53 @@ test("auto_send_now dispatches manual auto-report", async () => {
     createProject({ id: "proj_a", name: "BirLash", adsAccountId: "act_123", ownerTelegramId: 100 }),
   );
 
-  const summaryMetrics = {
-    spend: 30,
-    impressions: 2000,
-    clicks: 220,
-    leads: 8,
-    messages: 4,
+  const timezone = "Asia/Tashkent";
+  const reportDate = shiftDateByDays(new Date(), -1);
+  const todayMetrics = {
+    spend: 44.94,
+    impressions: 3000,
+    clicks: 280,
+    leads: 21,
+    messages: 12,
     purchases: 1,
     addToCart: 0,
     calls: 0,
     registrations: 0,
     engagement: 0,
-    leadsToday: 8,
-    leadsTotal: 180,
-    cpa: 3.75,
-    spendToday: 30,
-    cpaToday: 3.75,
+    leadsToday: 21,
+    messagesToday: 12,
+    leadsTotal: 300,
+    cpa: 2.14,
+    spendToday: 44.94,
+    cpaToday: 2.14,
+  } satisfies MetaSummaryMetrics;
+  const yesterdayMetrics = {
+    spend: 12,
+    impressions: 1800,
+    clicks: 150,
+    leads: 9,
+    messages: 4,
+    purchases: 0,
+    addToCart: 0,
+    calls: 0,
+    registrations: 0,
+    engagement: 0,
+    leadsToday: 9,
+    messagesToday: 4,
+    leadsTotal: 200,
+    cpa: 1.33,
+    spendToday: 12,
+    cpaToday: 1.33,
   } satisfies MetaSummaryMetrics;
 
-  const timezone = "Asia/Tashkent";
-  const reportDate = shiftDateByDays(new Date(), -1);
-  for (const periodKey of ["today", "yesterday", "week", "month"]) {
+  const summaryByPeriod: Record<string, MetaSummaryMetrics> = {
+    today: todayMetrics,
+    yesterday: yesterdayMetrics,
+    week: todayMetrics,
+    month: todayMetrics,
+  };
+
+  for (const periodKey of Object.keys(summaryByPeriod)) {
     await saveMetaCache(
       kv,
       createScopedSummaryEntry(
@@ -1238,7 +1285,7 @@ test("auto_send_now dispatches manual auto-report", async () => {
         periodKey,
         timezone,
         reportDate,
-        { periodKey, metrics: summaryMetrics, source: {} } as MetaSummaryPayload,
+        { periodKey, metrics: summaryByPeriod[periodKey], source: {} } as MetaSummaryPayload,
         3600,
       ),
     );
@@ -1246,33 +1293,38 @@ test("auto_send_now dispatches manual auto-report", async () => {
 
   await saveMetaCache(
     kv,
-    createScopedCampaignEntry(
-      "proj_a",
-      "today",
-      timezone,
-      reportDate,
-      {
-        data: [
-          {
-            campaign_id: "cmp1",
-            campaign_name: "Lead Ads",
-            objective: "LEAD_GENERATION",
-            spend: 30,
-            impressions: 2000,
-            clicks: 220,
-            actions: [
-              { action_type: "lead", value: 8 },
-              { action_type: "onsite_conversion.messaging_conversation_started_7d", value: 4 },
-            ],
-          },
-        ],
-      },
-      3600,
+      createScopedCampaignEntry(
+        "proj_a",
+        "today",
+        timezone,
+        reportDate,
+        {
+          data: [
+            {
+              campaign_id: "cmp1",
+              campaign_name: "Lead Ads",
+              objective: "LEAD_GENERATION",
+              spend: 44.94,
+              impressions: 3000,
+              clicks: 280,
+              actions: [
+                { action_type: "lead", value: 21 },
+                { action_type: "onsite_conversion.messaging_conversation_started_7d", value: 12 },
+              ],
+            },
+          ],
+        },
+        3600,
     ),
   );
 
   const controller = createController(kv, r2);
-  const stub = installFetchStub();
+  const stub = installFetchStub((url) => {
+    if (url.includes("graph.facebook.com")) {
+      throw new Error(`unexpected graph request: ${url}`);
+    }
+    return undefined;
+  });
 
   try {
     await controller.handleUpdate({
@@ -1295,10 +1347,16 @@ test("auto_send_now dispatches manual auto-report", async () => {
     assert.match(String(chatDelivery?.body?.text ?? ""), /ручной запуск/);
     assert.match(JSON.stringify(chatDelivery?.body?.reply_markup ?? {}), /Открыть портал/);
 
+    const normalised = String(chatDelivery?.body?.text ?? "").replace(/\u00a0/g, " ");
+    assert.match(normalised, /Вчера: 21 лидов · расход 44,94 \$ · цена 2,14 \$/);
+    assert.match(normalised, /Позавчера: 9 лидов · цена 1,33 \$/);
+
     const ownerDelivery = reportRequests.find((entry) => entry.body.chat_id === 100);
     assert.ok(ownerDelivery, "expected owner delivery for auto report");
   } finally {
     stub.restore();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Date = RealDate;
   }
 });
 

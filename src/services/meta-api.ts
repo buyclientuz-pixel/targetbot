@@ -100,14 +100,25 @@ const createMetaApiError = async (response: Response, context: string): Promise<
   return new MetaApiError(context, response.status, errorBody, parseMetaErrorPayload(errorBody));
 };
 
-const META_RATE_LIMIT_ERROR_CODE = 17;
+const META_RATE_LIMIT_ERROR_CODES = new Set([4, 17, 80004]);
+const META_RATE_LIMIT_ERROR_SUBCODES = new Set([1504022, 2446079]);
 
 const isMetaRateLimitError = (error: unknown): boolean => {
   if (error instanceof MetaApiError) {
-    return error.code === META_RATE_LIMIT_ERROR_CODE;
+    if (error.code && META_RATE_LIMIT_ERROR_CODES.has(error.code)) {
+      return true;
+    }
+    if (error.errorSubcode && META_RATE_LIMIT_ERROR_SUBCODES.has(error.errorSubcode)) {
+      return true;
+    }
   }
   if (error instanceof Error) {
-    return /User request limit reached/i.test(error.message) || /"code"\s*:\s*17/.test(error.message);
+    return (
+      /User request limit reached/i.test(error.message) ||
+      /too many calls to this ad-account/i.test(error.message) ||
+      /Application request limit reached/i.test(error.message) ||
+      /"code"\s*:\s*(4|17|80004)/.test(error.message)
+    );
   }
   return false;
 };
@@ -306,10 +317,12 @@ const buildInsightsUrl = (options: MetaFetchOptions): URL => {
     throw new DataValidationError("Meta access token is required");
   }
 
-  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${accountId}/insights`);
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${normaliseAdAccountId(accountId)}/insights`);
   url.searchParams.set("access_token", accessToken);
   url.searchParams.set("fields", fields);
   url.searchParams.set("level", level);
+  url.searchParams.set("action_attribution_windows", "1d_click,1d_view");
+  url.searchParams.set("action_report_time", "conversion");
   if (period.preset === "time_range" && period.from && period.to) {
     url.searchParams.set("time_range", JSON.stringify({ since: period.from, until: period.to }));
   } else {
@@ -391,11 +404,12 @@ export const fetchMetaCampaignStatuses = async (
   accountId: string,
   accessToken: string,
 ): Promise<Record<string, unknown>[]> => {
+  const normalisedAccountId = normaliseAdAccountId(accountId);
   let after: string | undefined;
   const campaigns: Record<string, unknown>[] = [];
 
   do {
-    const url = buildCampaignsUrl(accountId, accessToken, after);
+    const url = buildCampaignsUrl(normalisedAccountId, accessToken, after);
     const response = await retryOnMetaRateLimit(async () => {
       const apiResponse = await fetch(url);
       if (!apiResponse.ok) {
@@ -422,7 +436,8 @@ export const fetchMetaAdAccount = async (
   if (!options.accountId) {
     throw new DataValidationError("Meta Ads account id is required for account status");
   }
-  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${options.accountId}`);
+  const accountId = normaliseAdAccountId(options.accountId);
+  const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${accountId}`);
   url.searchParams.set("access_token", options.accessToken);
   url.searchParams.set(
     "fields",
@@ -557,6 +572,25 @@ const isLeadCampaignEligible = (campaign: Record<string, unknown>): boolean => {
   return false;
 };
 
+
+const normaliseAdAccountId = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const actMatch = /act[_-]?(\d+)/i.exec(trimmed);
+  const numericMatch = actMatch ?? /([0-9]{5,})/.exec(trimmed);
+  if (numericMatch && numericMatch[1]) {
+    return `act_${numericMatch[1]}`;
+  }
+  if (numericMatch && numericMatch[0]) {
+    return `act_${numericMatch[0]}`;
+  }
+  if (/^act_\w+/i.test(trimmed)) {
+    return trimmed.startsWith("act_") ? trimmed : `act_${trimmed.slice(4)}`;
+  }
+  return `act_${trimmed}`;
+};
 
 const buildLeadUrl = (nodeId: string, options: MetaLeadFetchOptions, cursor?: string): URL => {
   const url = new URL(`${GRAPH_API_BASE}/${GRAPH_API_VERSION}/${nodeId}/leads`);
@@ -941,7 +975,8 @@ const fetchLeadsViaCampaigns = async (
   options: MetaLeadFetchOptions,
   limit?: number,
 ): Promise<MetaLeadRecord[]> => {
-  const campaigns = await fetchMetaCampaignStatuses(options.accountId, options.accessToken);
+  const accountId = normaliseAdAccountId(options.accountId);
+  const campaigns = await fetchMetaCampaignStatuses(accountId, options.accessToken);
   const campaignIds = campaigns
     .filter((campaign) => campaign && typeof campaign === "object" && isLeadCampaignEligible(campaign))
     .map((campaign) => {
@@ -990,13 +1025,15 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   if (!options.accessToken) {
     throw new DataValidationError("Meta access token is required for leads");
   }
+  const accountId = normaliseAdAccountId(options.accountId);
+  const optionsWithAccount: MetaLeadFetchOptions = { ...options, accountId };
   const limit = options.limit;
   const cachedForms = normaliseLeadGenFormList(options.cachedForms);
   const shouldUseCachedFormsOnly = Boolean(options.useCachedFormsOnly && cachedForms.length > 0);
   let accountError: Error | null = null;
   let ignorableAccountError = false;
   try {
-    const accountLeads = await fetchLeadsForNode(options.accountId, options, limit);
+    const accountLeads = await fetchLeadsForNode(accountId, { ...options, accountId }, limit);
     if (accountLeads.length > 0) {
       return limit ? accountLeads.slice(0, limit) : accountLeads;
     }
@@ -1004,7 +1041,7 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     accountError = error as Error;
     ignorableAccountError =
       isMissingAdAccountLeadsEdgeError(error) || isMetaRateLimitError(error);
-    console.warn(`[meta] Failed to download leads via account ${options.accountId}: ${accountError.message}`);
+    console.warn(`[meta] Failed to download leads via account ${accountId}: ${accountError.message}`);
   }
   let primaryError: Error | null = null;
   let pageFallbackError: Error | null = null;
@@ -1013,36 +1050,68 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
   let adsFallbackAttempted = false;
   let forms: LeadGenFormDescriptor[] = shouldUseCachedFormsOnly ? cachedForms : [];
   let formsFromApi = false;
+  const enrichFormsWithPageTokens = async () => {
+    if (forms.length === 0) {
+      return;
+    }
+    const needsEnrichment = forms.some(
+      (form) => !form.accessToken || form.accessToken === options.accessToken,
+    );
+    if (!needsEnrichment) {
+      return;
+    }
+    try {
+      const pageForms = await fetchLeadGenFormsViaPages(accountId, options.accessToken);
+      if (pageForms.length === 0) {
+        return;
+      }
+      const merged = new Map<string, LeadGenFormDescriptor>();
+      for (const form of forms) {
+        merged.set(form.id, form);
+      }
+      for (const form of pageForms) {
+        const existing = merged.get(form.id);
+        if (!existing || !existing.accessToken || existing.accessToken === options.accessToken) {
+          merged.set(form.id, form);
+        }
+      }
+      forms = Array.from(merged.values());
+    } catch (error) {
+      console.warn(
+        `[meta] Failed to enrich leadgen forms with page tokens for account ${accountId}: ${(error as Error).message}`,
+      );
+    }
+  };
   let campaignFallbackError: Error | null = null;
   let campaignFallbackAttempted = false;
   const tryCampaignFallback = async (): Promise<MetaLeadRecord[]> => {
     campaignFallbackAttempted = true;
-    return fetchLeadsViaCampaigns(options, limit);
+    return fetchLeadsViaCampaigns(optionsWithAccount, limit);
   };
   if (!shouldUseCachedFormsOnly) {
     try {
-      const fetchedForms = await fetchLeadGenForms(options.accountId, options.accessToken);
+      const fetchedForms = await fetchLeadGenForms(accountId, options.accessToken);
       forms = fetchedForms;
       formsFromApi = fetchedForms.length > 0;
     } catch (error) {
       primaryError = error as Error;
       if (isMetaRateLimitError(primaryError)) {
         console.warn(
-          `[meta] Rate limited while enumerating leadgen forms for account ${options.accountId}: ${primaryError.message}`,
+          `[meta] Rate limited while enumerating leadgen forms for account ${accountId}: ${primaryError.message}`,
         );
       }
     }
     if (forms.length === 0) {
       pageFallbackAttempted = true;
       try {
-        const pageForms = await fetchLeadGenFormsViaPages(options.accountId, options.accessToken);
+        const pageForms = await fetchLeadGenFormsViaPages(accountId, options.accessToken);
         forms = pageForms;
         formsFromApi = pageForms.length > 0;
       } catch (error) {
         pageFallbackError = error as Error;
         if (isMetaRateLimitError(pageFallbackError)) {
           console.warn(
-            `[meta] Rate limited while enumerating page leadgen forms for account ${options.accountId}: ${pageFallbackError.message}`,
+          `[meta] Rate limited while enumerating page leadgen forms for account ${accountId}: ${pageFallbackError.message}`,
           );
         }
       }
@@ -1050,14 +1119,14 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     if (forms.length === 0) {
       adsFallbackAttempted = true;
       try {
-        const adForms = await fetchLeadGenFormsViaAds(options.accountId, options.accessToken);
+        const adForms = await fetchLeadGenFormsViaAds(accountId, options.accessToken);
         forms = adForms;
         formsFromApi = adForms.length > 0;
       } catch (error) {
         adsFallbackError = error as Error;
         if (isMetaRateLimitError(adsFallbackError)) {
           console.warn(
-            `[meta] Rate limited while enumerating ad creative leadgen forms for account ${options.accountId}: ${adsFallbackError.message}`,
+          `[meta] Rate limited while enumerating ad creative leadgen forms for account ${accountId}: ${adsFallbackError.message}`,
           );
         }
       }
@@ -1076,7 +1145,7 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
       campaignFallbackError = error as Error;
       if (isMetaRateLimitError(campaignFallbackError)) {
         console.warn(
-          `[meta] Rate limited while fetching campaign leads for account ${options.accountId}: ${campaignFallbackError.message}`,
+          `[meta] Rate limited while fetching campaign leads for account ${accountId}: ${campaignFallbackError.message}`,
         );
       }
     }
@@ -1102,6 +1171,7 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     }
     return [];
   }
+  await enrichFormsWithPageTokens();
   if (formsFromApi && forms.length > 0 && options.onFormsEnumerated) {
     await options.onFormsEnumerated(forms);
   }
@@ -1144,7 +1214,7 @@ export const fetchMetaLeads = async (options: MetaLeadFetchOptions): Promise<Met
     campaignFallbackError = error as Error;
     if (isMetaRateLimitError(campaignFallbackError)) {
       console.warn(
-        `[meta] Rate limited while fetching campaign leads for account ${options.accountId}: ${campaignFallbackError.message}`,
+        `[meta] Rate limited while fetching campaign leads for account ${accountId}: ${campaignFallbackError.message}`,
       );
     }
   }

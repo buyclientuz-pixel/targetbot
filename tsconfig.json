@@ -3,13 +3,14 @@
     "target": "ES2020",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
     "strict": false,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["./types/cloudflare"]
+    "types": ["./types/cloudflare", "./types/node-stubs"]
   },
-  "include": ["types/**/*.d.ts", "src/**/*.ts"],
+  "include": ["types/**/*.d.ts", "src/**/*.ts", "tests/**/*.ts"],
   "exclude": ["node_modules"]
 }

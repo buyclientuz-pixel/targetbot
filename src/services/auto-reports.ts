@@ -10,6 +10,7 @@ import {
   loadProjectCampaigns,
   mapCampaignRows,
   resolvePeriodRange,
+  resolveDatePresetForProject,
   type CampaignRow,
   type PeriodRange,
 } from "./project-insights";
@@ -431,6 +432,7 @@ const DEFAULT_METRICS: MetaSummaryMetrics = {
   registrations: 0,
   engagement: 0,
   leadsToday: 0,
+  messagesToday: 0,
   leadsTotal: 0,
   cpa: null,
   spendToday: 0,
@@ -795,7 +797,24 @@ const loadAutoReportTemplate = async (options: {
   const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
   const reportDate = shiftDateByDays(now, -REPORT_DAY_OFFSET_DAYS);
   const periodRanges = new Map<string, PeriodRange>();
+  const resolvedYesterday = resolveDatePresetForProject(projectRecord, "yesterday", { now });
+  periodRanges.set("today", {
+    key: "today",
+    from: resolvedYesterday.fromUtc,
+    to: resolvedYesterday.toUtc,
+    period: resolvedYesterday.period,
+  });
+  const previousDay = resolveDatePresetForProject(projectRecord, "yesterday", { now: shiftDateByDays(now, -1) });
+  periodRanges.set("yesterday", {
+    key: "yesterday",
+    from: previousDay.fromUtc,
+    to: previousDay.toUtc,
+    period: previousDay.period,
+  });
   for (const period of periodKeys) {
+    if (period === "today" || period === "yesterday") {
+      continue;
+    }
     periodRanges.set(period, resolvePeriodRange(period, timezone, { now: reportDate }));
   }
   const metricsContext = await loadMetricsForPeriods(kv, projectId, periodKeys, initialContext, {

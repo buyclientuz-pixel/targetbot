@@ -14,7 +14,7 @@ export type PortalPeriodKey = "today" | "yesterday" | "week" | "month" | "all";
 const normalisePortalPeriodKey = (key: PortalPeriodKey | "max"): PortalPeriodKey => (key === "max" ? "all" : key);
 
 export const PORTAL_PERIOD_KEYS: PortalPeriodKey[] = ["today", "yesterday", "week", "month", "all"];
-const DEFAULT_PERIOD_PLAN: PortalPeriodKey[] = PORTAL_PERIOD_KEYS.filter((key) => key !== "today").concat("today");
+const DEFAULT_PERIOD_PLAN: PortalPeriodKey[] = [...PORTAL_PERIOD_KEYS.filter((key) => key !== "today"), "today"];
 export const PORTAL_AUTO_PERIOD_PLAN: PortalPeriodKey[] = [...DEFAULT_PERIOD_PLAN];
 
 export type PortalSyncTaskKey = PortalPeriodKey | "leads";
@@ -114,18 +114,23 @@ export const syncPortalMetrics = async (
   ): void => {
     if (outcome.ok) {
       periodResults.push({ periodKey, ok: true });
-      return;
-    }
-    const message = outcome.error.message;
-    periodResults.push({ periodKey, ok: false, error: message });
-    if (!firstError) {
-      firstError = outcome.error;
+    } else {
+      const error = (outcome as { ok: false; error: Error }).error;
+      periodResults.push({ periodKey, ok: false, error: error.message });
+      if (!firstError) {
+        firstError = error;
+      }
     }
   };
 
   for (const periodKey of periods) {
     try {
-      await loadProjectSummary(kv, projectId, periodKey, { project, settings, facebookUserId });
+      await loadProjectSummary(kv, projectId, periodKey, {
+        project,
+        settings,
+        facebookUserId,
+        projectRecord,
+      });
       await syncProjectCampaignDocument(kv, r2, projectId, periodKey, {
         project,
         settings,

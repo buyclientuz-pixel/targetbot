@@ -14,10 +14,10 @@ export async function resolve(specifier, context, defaultResolve) {
   } catch (error) {
     if (
       error instanceof Error &&
-      'code' in error &&
-      error.code === 'ERR_MODULE_NOT_FOUND' &&
-      !specifier.endsWith('.ts') &&
-      !specifier.endsWith('.js')
+      "code" in error &&
+      error.code === "ERR_MODULE_NOT_FOUND" &&
+      !specifier.endsWith(".ts") &&
+      !specifier.endsWith(".js")
     ) {
       return defaultResolve(`${specifier}.ts`, context, defaultResolve);
     }

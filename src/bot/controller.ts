@@ -166,6 +166,16 @@ const extractChatId = (update: TelegramUpdate): number | null => {
   return null;
 };
 
+const extractMessageThreadId = (update: TelegramUpdate): number | null => {
+  if (typeof update.message?.message_thread_id === "number") {
+    return update.message.message_thread_id;
+  }
+  if (typeof update.callback_query?.message?.message_thread_id === "number") {
+    return update.callback_query.message.message_thread_id;
+  }
+  return null;
+};
+
 const recordChatFromUpdate = async (ctx: BotContext, update: TelegramUpdate): Promise<void> => {
   const chat = update.message?.chat ?? update.callback_query?.message?.chat;
   if (!chat || chat.type === "private") {
@@ -317,6 +327,7 @@ const renderMainPanelFromCommand = async (
   runtime: ReturnType<typeof buildPanelRuntime>,
   userId: number,
   chatId: number,
+  messageThreadId?: number | null,
   session?: BotSession,
 ): Promise<void> => {
   const currentSession = session ?? (await getBotSession(ctx.kv, userId));
@@ -328,7 +339,7 @@ const renderMainPanelFromCommand = async (
       state: { type: "idle" },
     });
   }
-  await renderPanel({ runtime, userId, chatId, panelId: "panel:main" });
+  await renderPanel({ runtime, userId, chatId, panelId: "panel:main", messageThreadId });
 };
 
 const ensureLegacyKeyboardCleared = async (
@@ -603,9 +614,10 @@ const notifyBillingChange = async (
   chatId: number,
   projectId: string,
   message: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
-  await sendTelegramMessage(ctx.token, { chatId, text: message });
-  await renderPanel({ runtime, userId, chatId, panelId: `project:billing:${projectId}` });
+  await sendTelegramMessage(ctx.token, { chatId, text: message, messageThreadId: messageThreadId ?? undefined });
+  await renderPanel({ runtime, userId, chatId, panelId: `project:billing:${projectId}`, messageThreadId });
 };
 
 const handleBillingAdd30 = async (
@@ -614,6 +626,7 @@ const handleBillingAdd30 = async (
   userId: number,
   chatId: number,
   projectId: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   const baseDate = bundle.billing.nextPaymentDate || todayIsoDate();
@@ -630,7 +643,8 @@ const handleBillingAdd30 = async (
       "planned",
     ),
   );
-  await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Дата следующего платежа обновлена: ${nextDate}`);
+  await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Дата следующего платежа обновлена: ${nextDate}`,
+    messageThreadId);
 };
 
 const handleBillingTariff = async (
@@ -640,6 +654,7 @@ const handleBillingTariff = async (
   chatId: number,
   projectId: string,
   tariff: number,
+  messageThreadId?: number | null,
 ): Promise<void> => {
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
   const updated = { ...bundle.billing, tariff };
@@ -656,6 +671,7 @@ const handleBillingTariff = async (
       minimumFractionDigits: 0,
       maximumFractionDigits: 2,
     }).format(tariff)}`,
+    messageThreadId,
   );
 };
 
@@ -666,6 +682,7 @@ const handleBillingDateInput = async (
   chatId: number,
   projectId: string,
   dateInput: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
   const parsed = parseDateInput(dateInput);
   const bundle = await loadProjectBundle(ctx.kv, ctx.r2, projectId);
@@ -681,7 +698,8 @@ const handleBillingDateInput = async (
       "planned",
     ),
   );
-  await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Дата следующего платежа обновлена: ${parsed}`);
+  await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Дата следующего платежа обновлена: ${parsed}`,
+    messageThreadId);
 };
 
 const handleBillingManualInput = async (
@@ -691,6 +709,7 @@ const handleBillingManualInput = async (
   chatId: number,
   projectId: string,
   input: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
   const { amount, date, status: rawStatus } = parseManualBillingInput(input);
   const parsedDate = parseDateInput(date);
@@ -704,7 +723,8 @@ const handleBillingManualInput = async (
     projectId,
     createPaymentRecord({ amount, currency: bundle.billing.currency }, parsedDate, parsedDate, resolvedStatus, paidAt),
   );
-  await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Оплата обновлена: ${parsedDate}`);
+  await notifyBillingChange(ctx, runtime, userId, chatId, projectId, `✅ Оплата обновлена: ${parsedDate}`,
+    messageThreadId);
 };
 
 const handleLeadNotificationToggle = async (
@@ -715,6 +735,7 @@ const handleLeadNotificationToggle = async (
   projectId: string,
   target: "chat" | "admin",
   context: LeadsPanelContext,
+  messageThreadId?: number | null,
 ): Promise<void> => {
   const settings = await ensureProjectSettings(ctx.kv, projectId);
   const nextSettings = {
@@ -732,6 +753,7 @@ const handleLeadNotificationToggle = async (
     userId,
     chatId,
     panelId: buildLeadsPanelId(projectId, context),
+    messageThreadId,
   });
 };
 
@@ -743,6 +765,7 @@ const handleLeadsRangeInput = async (
   projectId: string,
   context: LeadsPanelContext,
   input: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
   const { from, to } = parseDateRangeInput(input);
   await renderPanel({
@@ -750,6 +773,7 @@ const handleLeadsRangeInput = async (
     userId,
     chatId,
     panelId: buildLeadsPanelId(projectId, { ...context, periodKey: "custom", from, to, page: 0 }),
+    messageThreadId,
   });
 };
 
@@ -804,8 +828,9 @@ const renderPortalPanel = async (
   userId: number,
   chatId: number,
   projectId: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
-  await renderPanel({ runtime, userId, chatId, panelId: `project:portal:${projectId}` });
+  await renderPanel({ runtime, userId, chatId, panelId: `project:portal:${projectId}`, messageThreadId });
 };
 
 const PORTAL_SYNC_KEY_LABELS: Record<string, string> = {
@@ -1117,8 +1142,9 @@ const renderSettingsPanel = async (
   runtime: ReturnType<typeof buildPanelRuntime>,
   userId: number,
   chatId: number,
+  messageThreadId?: number | null,
 ): Promise<void> => {
-  await renderPanel({ runtime, userId, chatId, panelId: "panel:settings" });
+  await renderPanel({ runtime, userId, chatId, panelId: "panel:settings", messageThreadId });
 };
 
 const renderChatPanel = async (
@@ -1126,8 +1152,9 @@ const renderChatPanel = async (
   userId: number,
   chatId: number,
   projectId: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
-  await renderPanel({ runtime, userId, chatId, panelId: `project:chat:${projectId}` });
+  await renderPanel({ runtime, userId, chatId, panelId: `project:chat:${projectId}`, messageThreadId });
 };
 
 const renderAutoreportsPanel = async (
@@ -1135,8 +1162,9 @@ const renderAutoreportsPanel = async (
   userId: number,
   chatId: number,
   projectId: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
-  await renderPanel({ runtime, userId, chatId, panelId: `project:autoreports:${projectId}` });
+  await renderPanel({ runtime, userId, chatId, panelId: `project:autoreports:${projectId}`, messageThreadId });
 };
 
 const renderKpiPanel = async (
@@ -1144,8 +1172,9 @@ const renderKpiPanel = async (
   userId: number,
   chatId: number,
   projectId: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
-  await renderPanel({ runtime, userId, chatId, panelId: `project:kpi:${projectId}` });
+  await renderPanel({ runtime, userId, chatId, panelId: `project:kpi:${projectId}`, messageThreadId });
 };
 
 const renderProjectEditPanel = async (
@@ -1153,8 +1182,9 @@ const renderProjectEditPanel = async (
   userId: number,
   chatId: number,
   projectId: string,
+  messageThreadId?: number | null,
 ): Promise<void> => {
-  await renderPanel({ runtime, userId, chatId, panelId: `project:edit:${projectId}` });
+  await renderPanel({ runtime, userId, chatId, panelId: `project:edit:${projectId}`, messageThreadId });
 };
 
 const sendDeleteConfirm = async (ctx: BotContext, chatId: number, projectId: string): Promise<void> => {
@@ -1597,9 +1627,10 @@ const handleSettingsChange = async (
   userId: number,
   chatId: number,
   patch: Partial<UserSettingsRecord>,
+  messageThreadId?: number | null,
 ): Promise<void> => {
   await updateUserSettingsRecord(ctx.kv, userId, patch, { timezone: ctx.defaultTimezone, language: "ru" });
-  await renderSettingsPanel(runtime, userId, chatId);
+  await renderSettingsPanel(runtime, userId, chatId, messageThreadId);
 };
 
 const buildChatUnlinkKeyboard = (projectId: string) => ({
@@ -1626,6 +1657,7 @@ const handleTextCommand = async (
   userId: number,
   text: string,
   panelRuntime: ReturnType<typeof buildPanelRuntime>,
+  messageThreadId?: number | null,
   session?: BotSession,
 ): Promise<void> => {
   const normalized = text.trim();
@@ -1640,33 +1672,33 @@ const handleTextCommand = async (
     lower === "меню" ||
     lower === "menu"
   ) {
-    await renderMainPanelFromCommand(ctx, panelRuntime, userId, chatId, session);
+    await renderMainPanelFromCommand(ctx, panelRuntime, userId, chatId, messageThreadId, session);
     return;
   }
   switch (normalized) {
     case "Авторизация Facebook":
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:fb-auth" });
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:fb-auth", messageThreadId });
       return;
     case "Проекты":
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects" });
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:projects", messageThreadId });
       return;
     case "Аналитика":
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:analytics" });
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:analytics", messageThreadId });
       return;
     case "Пользователи":
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:users" });
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:users", messageThreadId });
       return;
     case "Финансы":
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:finance" });
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:finance", messageThreadId });
       return;
     case "Вебхуки Telegram":
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:webhooks" });
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:webhooks", messageThreadId });
       return;
     case "Настройки":
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:settings" });
+      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:settings", messageThreadId });
       return;
     default:
-      await renderMainPanelFromCommand(ctx, panelRuntime, userId, chatId, session);
+      await renderMainPanelFromCommand(ctx, panelRuntime, userId, chatId, messageThreadId, session);
   }
 };
 
@@ -1676,6 +1708,7 @@ const handleCallback = async (
   userId: number,
   data: string,
   panelRuntime: ReturnType<typeof buildPanelRuntime>,
+  messageThreadId?: number | null,
 ): Promise<void> => {
   const parts = data.split(":");
   const scope = parts[0];
@@ -1705,20 +1738,20 @@ const handleCallback = async (
             return "panel:main";
         }
       })();
-      await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: targetPanel });
+      await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: targetPanel });
       break;
     }
     case "project": {
       const action = parts[1];
       switch (action) {
         case "card":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "project:card:" + parts[2]! });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: "project:card:" + parts[2]! });
           break;
         case "menu":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: "panel:main" });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: "panel:main" });
           break;
         case "add":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: data });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: data });
           break;
         case "bind":
           await handleProjectBind(ctx, chatId, userId, parts[2]!, Number(parts[3]));
@@ -1735,10 +1768,10 @@ const handleCallback = async (
           });
           break;
         case "billing":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:billing:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:billing:${parts[2]!}` });
           break;
         case "leads": {
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: data });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: data });
           break;
         }
         case "leads-target": {
@@ -1755,6 +1788,7 @@ const handleCallback = async (
             state.projectId,
             target,
             toLeadsPanelContext(state),
+            messageThreadId,
           );
           break;
         }
@@ -1775,13 +1809,13 @@ const handleCallback = async (
           break;
         }
         case "report":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:report:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:report:${parts[2]!}` });
           break;
         case "campaigns":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:campaigns:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:campaigns:${parts[2]!}` });
           break;
         case "portal":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:portal:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:portal:${parts[2]!}` });
           break;
         case "portal-create":
           await handlePortalCreate(ctx, panelRuntime, userId, chatId, parts[2]!);
@@ -1796,7 +1830,7 @@ const handleCallback = async (
           await handlePortalDelete(ctx, panelRuntime, userId, chatId, parts[2]!);
           break;
         case "export":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:export:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:export:${parts[2]!}` });
           break;
         case "export-leads": {
           const projectId = parts[2];
@@ -1816,10 +1850,10 @@ const handleCallback = async (
           await sendCsvExport(ctx, chatId, parts[2]!, "payments");
           break;
         case "chat":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:chat:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:chat:${parts[2]!}` });
           break;
         case "chat-change":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:chat-change:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:chat-change:${parts[2]!}` });
           break;
         case "chat-manual":
           await saveBotSession(ctx.kv, {
@@ -1836,13 +1870,13 @@ const handleCallback = async (
           await handleChatSelect(ctx, panelRuntime, userId, chatId, parts[2]!, Number(parts[3]));
           break;
         case "chat-unlink":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:chat-unlink:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:chat-unlink:${parts[2]!}` });
           break;
         case "chat-unlink-confirm":
           await handleChatUnlink(ctx, panelRuntime, userId, chatId, parts[2]!);
           break;
         case "autoreports":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:autoreports:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:autoreports:${parts[2]!}` });
           break;
         case "autoreports-toggle":
           await handleAutoreportsToggle(ctx, panelRuntime, userId, chatId, parts[2]!);
@@ -1879,7 +1913,7 @@ const handleCallback = async (
           );
           break;
         case "kpi":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:kpi:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:kpi:${parts[2]!}` });
           break;
         case "kpi-mode":
           await handleKpiModeChange(
@@ -1902,7 +1936,7 @@ const handleCallback = async (
           );
           break;
         case "edit":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:edit:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:edit:${parts[2]!}` });
           break;
         case "edit-name":
         case "edit-ad":
@@ -1927,7 +1961,7 @@ const handleCallback = async (
           });
           break;
         case "delete":
-          await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `project:delete:${parts[2]!}` });
+          await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `project:delete:${parts[2]!}` });
           break;
         case "delete-confirm":
           await handleProjectDelete(ctx, panelRuntime, userId, chatId, parts[2]!);
@@ -1941,9 +1975,9 @@ const handleCallback = async (
       const action = parts[1];
       const projectId = parts[2]!;
       if (action === "add30") {
-        await handleBillingAdd30(ctx, panelRuntime, userId, chatId, projectId);
+        await handleBillingAdd30(ctx, panelRuntime, userId, chatId, projectId, messageThreadId);
       } else if (action === "tariff") {
-        await handleBillingTariff(ctx, panelRuntime, userId, chatId, projectId, Number(parts[3]));
+        await handleBillingTariff(ctx, panelRuntime, userId, chatId, projectId, Number(parts[3]), messageThreadId);
       } else if (action === "set-date") {
         await saveBotSession(ctx.kv, {
           userId,
@@ -1964,7 +1998,7 @@ const handleCallback = async (
     case "lead": {
       const action = parts[1];
       if (action === "view") {
-        await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `lead:detail:${parts[2]!}:${parts[3]!}` });
+        await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `lead:detail:${parts[2]!}:${parts[3]!}` });
       } else if (action === "status") {
         await handleLeadStatusChange(
           ctx,
@@ -1973,7 +2007,7 @@ const handleCallback = async (
           parts[3]!,
           parts[4]! as ProjectLeadsListRecord["leads"][number]["status"],
         );
-        await renderPanel({ runtime: panelRuntime, userId, chatId, panelId: `lead:detail:${parts[2]!}:${parts[3]!}` });
+        await renderPanel({ runtime: panelRuntime, userId, chatId, messageThreadId, panelId: `lead:detail:${parts[2]!}:${parts[3]!}` });
       }
       break;
     }
@@ -2025,9 +2059,9 @@ const handleCallback = async (
     case "settings": {
       const target = parts[1];
       if (target === "language") {
-        await handleSettingsChange(ctx, panelRuntime, userId, chatId, { language: parts[2]! });
+        await handleSettingsChange(ctx, panelRuntime, userId, chatId, { language: parts[2]! }, messageThreadId);
       } else if (target === "tz") {
-        await handleSettingsChange(ctx, panelRuntime, userId, chatId, { timezone: parts[2]! });
+        await handleSettingsChange(ctx, panelRuntime, userId, chatId, { timezone: parts[2]! }, messageThreadId);
       }
       break;
     }
@@ -2070,6 +2104,7 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
       const panelRuntime = buildPanelRuntime(ctx);
       const userId = extractUserId(update);
       const chatId = extractChatId(update);
+      const messageThreadId = extractMessageThreadId(update);
       if (userId == null || chatId == null) {
         return;
       }
@@ -2091,17 +2126,27 @@ const createTelegramBotController = (options: CreateTelegramBotControllerOptions
       if (update.message?.text) {
         let session = cachedSession ?? (await getBotSession(ctx.kv, userId));
         cachedSession = session;
-        if (await handleSessionInput(ctx, chatId, userId, update.message.text, session, panelRuntime)) {
+        if (
+          await handleSessionInput(ctx, chatId, userId, update.message.text, session, panelRuntime, messageThreadId)
+        ) {
           return;
         }
         session = await ensureLegacyKeyboardCleared(ctx, chatId, userId, session);
         cachedSession = session;
-        await handleTextCommand(ctx, chatId, userId, update.message.text.trim(), panelRuntime, session);
+        await handleTextCommand(
+          ctx,
+          chatId,
+          userId,
+          update.message.text.trim(),
+          panelRuntime,
+          messageThreadId,
+          session,
+        );
         return;
       }
 
       if (update.callback_query?.data) {
-        await handleCallback(ctx, chatId, userId, update.callback_query.data, panelRuntime);
+        await handleCallback(ctx, chatId, userId, update.callback_query.data, panelRuntime, messageThreadId);
         if (update.callback_query.id) {
           await answerCallbackQuery(ctx.token, { id: update.callback_query.id });
         }
@@ -2119,6 +2164,7 @@ const handleSessionInput = async (
   text: string,
   sessionState: Awaited<ReturnType<typeof getBotSession>>,
   panelRuntime: ReturnType<typeof buildPanelRuntime>,
+  messageThreadId?: number | null,
 ): Promise<boolean> => {
   if (!sessionState || !sessionState.state || sessionState.state.type === "idle") {
     return false;
@@ -2131,11 +2177,27 @@ const handleSessionInput = async (
   try {
     switch (sessionState.state.type) {
       case "billing:set-date":
-        await handleBillingDateInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, trimmed);
+        await handleBillingDateInput(
+          ctx,
+          panelRuntime,
+          userId,
+          chatId,
+          sessionState.state.projectId,
+          trimmed,
+          messageThreadId,
+        );
         await clearBotSession(ctx.kv, userId);
         return true;
       case "billing:manual":
-        await handleBillingManualInput(ctx, panelRuntime, userId, chatId, sessionState.state.projectId, trimmed);
+        await handleBillingManualInput(
+          ctx,
+          panelRuntime,
+          userId,
+          chatId,
+          sessionState.state.projectId,
+          trimmed,
+          messageThreadId,
+        );
         await clearBotSession(ctx.kv, userId);
         return true;
       case "facebook:token":
@@ -2175,16 +2237,18 @@ const handleSessionInput = async (
         sessionState.state.projectId,
         sessionState.state.context,
         trimmed,
+        messageThreadId,
       );
       await clearBotSession(ctx.kv, userId);
       return true;
     default:
       return false;
   }
-} catch (error) {
+  } catch (error) {
     await sendTelegramMessage(ctx.token, {
       chatId,
       text: `⚠️ ${((error as Error).message ?? 'Не удалось обработать ввод').slice(0, 300)}`,
+      messageThreadId: messageThreadId ?? undefined,
     });
     return true;
   }

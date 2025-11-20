@@ -6,6 +6,7 @@ import { resolveTelegramToken } from "../../src/config/telegram";
 const baseEnv = {
   KV: {} as KVNamespace,
   R2: {} as R2Bucket,
+  LEADS_KV: {} as KVNamespace,
 };
 
 describe("resolveTelegramToken", () => {

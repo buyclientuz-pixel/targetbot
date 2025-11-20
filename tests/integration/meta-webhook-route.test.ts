@@ -55,6 +55,7 @@ test("Meta webhook route persists leads and dispatches Telegram notifications", 
       lastRoute = options.route ?? null;
       return {
         delivered: { chat: true, admin: false },
+        settings: createDefaultProjectSettings(options.project.id),
       };
     },
   });
@@ -97,7 +98,9 @@ test("Meta webhook route persists leads and dispatches Telegram notifications", 
   assert.ok(response.status >= 200 && response.status < 300);
 
   const r2 = new R2Client(r2Bucket);
-  const detail = await r2.getJson(R2_KEYS.projectLead("birlash", "343782"));
+  const detail = (await r2.getJson(R2_KEYS.projectLead("birlash", "343782"))) as
+    | { id?: string; phone?: string; status?: string }
+    | null;
   assert.ok(detail);
   assert.equal(detail?.id, "343782");
   assert.equal(detail?.phone, "+998902867999");
@@ -155,6 +158,7 @@ test("Lead notifications honor chat/admin toggles", async () => {
       lastRoute = options.route ?? null;
       return {
         delivered: { chat: options.route !== "ADMIN", admin: options.route !== "CHAT" },
+        settings: createDefaultProjectSettings(options.project.id),
       };
     },
   });

@@ -5,6 +5,7 @@ import { ensureProjectSettings, type ProjectSettings } from "../domain/project-s
 import { getProject, type Project } from "../domain/projects";
 import { requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
 import { type MetaSummaryPayload } from "../domain/meta-summary";
+import type { MetaInsightsSummary } from "./meta-api";
 import { putMetaCampaignsDocument, type MetaCampaignsDocument } from "../domain/spec/meta-campaigns";
 import type { KpiType } from "../domain/spec/project";
 import type { KvClient } from "../infra/kv";
@@ -37,12 +38,6 @@ const toIsoDate = (date: Date): string => date.toISOString().split("T")[0] ?? da
 const startOfDay = (date: Date): Date => {
   const copy = new Date(date);
   copy.setUTCHours(0, 0, 0, 0);
-  return copy;
-};
-
-const endOfDay = (date: Date): Date => {
-  const copy = new Date(date);
-  copy.setUTCHours(23, 59, 59, 999);
   return copy;
 };
 
@@ -87,7 +82,7 @@ const extractZonedParts = (date: Date, timeZone: string): Record<string, number>
   const formatter = zonedPartsFormatter(timeZone);
   const parts = formatter.formatToParts(date);
   const map = new Map(parts.map((part) => [part.type, part.value] as const));
-  const numeric = (type: string): number => Number.parseInt(map.get(type) ?? "0", 10);
+  const numeric = (type: Intl.DateTimeFormatPartTypes): number => Number.parseInt(map.get(type) ?? "0", 10);
   return {
     year: numeric("year"),
     month: numeric("month"),
@@ -123,15 +118,6 @@ const startOfDayWithZone = (date: Date, timeZone: string | null): Date => {
   return new Date(utcTime);
 };
 
-const endOfDayWithZone = (date: Date, timeZone: string | null): Date => {
-  if (!timeZone) {
-    return endOfDay(date);
-  }
-  const { parts, offsetMs } = resolveZoneOffset(date, timeZone);
-  const utcTime = Date.UTC(parts.year, parts.month - 1, parts.day, 23, 59, 59, 999) - offsetMs;
-  return new Date(utcTime);
-};
-
 const buildPeriodRange = (
   key: string,
   from: Date,
@@ -152,35 +138,50 @@ export const resolvePeriodRange = (
   const normalised = periodKey === "max" ? "all" : periodKey;
   const tz = normaliseTimeZone(timeZone);
   const now = options?.now ?? new Date();
-  const today = startOfDayWithZone(now, tz);
+  const todayStart = startOfDayWithZone(now, tz);
   switch (normalised) {
     case "today": {
-      const to = endOfDayWithZone(today, tz);
-      return buildPeriodRange(normalised, today, to, tz);
+      const to = startOfDayWithZone(addDays(todayStart, 1), tz);
+      return buildPeriodRange(normalised, todayStart, to, tz);
     }
     case "yesterday": {
-      const from = startOfDayWithZone(addDays(today, -1), tz);
-      const to = endOfDayWithZone(from, tz);
+      const from = startOfDayWithZone(addDays(todayStart, -1), tz);
+      const to = startOfDayWithZone(todayStart, tz);
+      return buildPeriodRange(normalised, from, to, tz);
+    }
+    case "previous": {
+      const from = startOfDayWithZone(addDays(todayStart, -2), tz);
+      const to = startOfDayWithZone(addDays(todayStart, -1), tz);
       return buildPeriodRange(normalised, from, to, tz);
     }
     case "week": {
-      const from = startOfDayWithZone(addDays(today, -6), tz);
-      const to = endOfDayWithZone(today, tz);
+      const from = startOfDayWithZone(addDays(todayStart, -6), tz);
+      const to = startOfDayWithZone(addDays(todayStart, 1), tz);
       return buildPeriodRange(normalised, from, to, tz);
     }
     case "month": {
-      const from = startOfDayWithZone(addDays(today, -29), tz);
-      const to = endOfDayWithZone(today, tz);
+      const from = startOfDayWithZone(addDays(todayStart, -29), tz);
+      const to = startOfDayWithZone(addDays(todayStart, 1), tz);
       return buildPeriodRange(normalised, from, to, tz);
     }
     case "all": {
       const from = startOfDayWithZone(new Date(0), tz);
-      const to = endOfDayWithZone(today, tz);
+      const to = startOfDayWithZone(addDays(todayStart, 1), tz);
       return buildPeriodRange(normalised, from, to, tz);
     }
     default:
       return resolvePeriodRange("today", tz);
   }
+};
+
+export const resolveDatePresetForProject = (
+  project: { settings: { timezone?: string | null } },
+  preset: string,
+  options?: { now?: Date },
+): { fromUtc: Date; toUtc: Date; label: string; period: PeriodRange["period"] } => {
+  const timezone = project.settings.timezone ?? null;
+  const range = resolvePeriodRange(preset, timezone, options);
+  return { fromUtc: range.from, toUtc: range.to, label: preset, period: range.period };
 };
 
 const resolveFacebookUserId = (settings: ProjectSettings, provided?: string | null): string => {
@@ -194,11 +195,33 @@ const resolveFacebookUserId = (settings: ProjectSettings, provided?: string | nu
   return value;
 };
 
+const decrementDateOnly = (value: string): string => {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return formatDateOnly(date);
+};
+
 const resolveCustomMetaPeriod = (periodRange: PeriodRange): MetaInsightsPeriod => ({
   preset: "time_range",
   from: periodRange.period.from,
-  to: periodRange.period.to,
+  to: decrementDateOnly(periodRange.period.to),
 });
+
+const resolveInsightsKpiValue = (summary: MetaInsightsSummary, kpiType: KpiType): number => {
+  switch (kpiType) {
+    case "MESSAGE":
+      return summary.messages;
+    case "CLICK":
+      return summary.clicks;
+    case "VIEW":
+      return summary.impressions;
+    case "PURCHASE":
+      return summary.leads;
+    case "LEAD":
+    default:
+      return summary.leads;
+  }
+};
 
 const buildScopedCacheKey = (
   base: string,
@@ -247,10 +270,12 @@ export const loadProjectSummary = async (
     facebookUserId?: string | null;
     periodRange?: PeriodRange;
     forceCacheScope?: boolean;
+    projectRecord?: ProjectRecord;
   },
 ): Promise<{ entry: MetaCacheEntry<MetaSummaryPayload>; project: Project; settings: ProjectSettings }> => {
   const project = options?.project ?? (await getProject(kv, projectId));
   const settings = options?.settings ?? (await ensureProjectSettings(kv, projectId));
+  const projectRecord = options?.projectRecord ?? (await requireProjectRecord(kv, projectId));
 
   if (!project.adsAccountId) {
     throw new DataValidationError("Project is missing adsAccountId for Meta insights");
@@ -303,6 +328,9 @@ export const loadProjectSummary = async (
           settings.timezone,
         );
 
+  const periodKpiValue = resolveInsightsKpiValue(requestedInsights.payload.summary, projectRecord.settings.kpi.type);
+  const todayKpiValue = resolveInsightsKpiValue(todayInsights.payload.summary, projectRecord.settings.kpi.type);
+
   const metrics = {
     spend: requestedInsights.payload.summary.spend,
     impressions: requestedInsights.payload.summary.impressions,
@@ -315,16 +343,11 @@ export const loadProjectSummary = async (
     registrations: requestedInsights.payload.summary.registrations,
     engagement: requestedInsights.payload.summary.engagement,
     leadsToday: todayInsights.payload.summary.leads,
+    messagesToday: todayInsights.payload.summary.messages,
     leadsTotal: lifetimeInsights.payload.summary.leads,
-    cpa:
-      requestedInsights.payload.summary.leads > 0
-        ? requestedInsights.payload.summary.spend / requestedInsights.payload.summary.leads
-        : null,
+    cpa: periodKpiValue > 0 ? requestedInsights.payload.summary.spend / periodKpiValue : null,
     spendToday: todayInsights.payload.summary.spend,
-    cpaToday:
-      todayInsights.payload.summary.leads > 0
-        ? todayInsights.payload.summary.spend / todayInsights.payload.summary.leads
-        : null,
+    cpaToday: todayKpiValue > 0 ? todayInsights.payload.summary.spend / todayKpiValue : null,
   } satisfies MetaSummaryPayload["metrics"];
 
   const summaryEntry = createMetaCacheEntry<MetaSummaryPayload>(

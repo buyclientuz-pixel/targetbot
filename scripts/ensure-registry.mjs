@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-import { execSync } from 'node:child_process';
+import { execSync } from "node:child_process";
 
 const registries = [
   process.env.NPM_REGISTRY_OVERRIDE,
-  'https://registry.npmjs.cf/',
-  'https://registry.npmjs.org/'
+  "https://registry.npmjs.cf/",
+  "https://registry.npmjs.org/",
 ].filter(Boolean);
 
-const normalize = (url) => (url.endsWith('/') ? url.slice(0, -1) : url);
+const normalize = (url) => (url.endsWith("/") ? url.slice(0, -1) : url);
 
 async function isReachable(url) {
   const target = `${normalize(url)}/-/ping`;
@@ -26,12 +26,12 @@ async function isReachable(url) {
 async function main() {
   for (const url of registries) {
     if (await isReachable(url)) {
-      execSync(`npm config set registry ${url} --location=project`, { stdio: 'inherit' });
+      execSync(`npm config set registry ${url} --location=project`, { stdio: "inherit" });
       console.log(`✅ Using npm registry: ${url}`);
       return;
     }
   }
-  console.error('❌ No npm registry endpoints are reachable.');
+  console.error("❌ No npm registry endpoints are reachable.");
   process.exit(1);
 }
 

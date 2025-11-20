@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MemoryKVNamespace, MemoryR2Bucket } from "../utils/mocks.ts";
+import type { AutoreportsRecord } from "../../src/domain/spec/autoreports.ts";
 import type { MetaSummaryMetrics, MetaSummaryPayload } from "../../src/domain/meta-summary.ts";
 
 const { KvClient } = await import("../../src/infra/kv.ts");
@@ -48,15 +49,8 @@ const stubTelegramFetch = (): { calls: TelegramCall[]; restore: () => void } => 
 };
 
 const createAutoreportRecord = (
-  overrides: Partial<{
-    enabled: boolean;
-    time: string;
-    mode: string;
-    sendToChat: boolean;
-    sendToAdmin: boolean;
-    paymentAlerts: Record<string, unknown>;
-  }> = {},
-) => {
+  overrides: Partial<AutoreportsRecord> = {},
+): AutoreportsRecord => {
   const { paymentAlerts, ...rest } = overrides;
   return {
     enabled: false,
@@ -109,7 +103,7 @@ const createScopedCampaignEntry = (
   periodKey: string,
   timezone: string,
   reportDate: Date,
-  payload: import("../../src/domain/meta-cache.ts").MetaInsightsRawResponse,
+  payload: import("../../src/services/meta-api.ts").MetaInsightsRawResponse,
   ttlSeconds = 3600,
 ) => {
   const { scope, period } = scopedCache("campaigns", periodKey, timezone, reportDate);
@@ -171,6 +165,7 @@ test(
           registrations: 0,
           engagement: 0,
           leadsToday: 4,
+          messagesToday: 2,
           leadsTotal: 200,
           cpa: 5,
           spendToday: 20,
@@ -201,6 +196,7 @@ test(
             registrations: 0,
             engagement: 0,
             leadsToday: 4,
+            messagesToday: 2,
             leadsTotal: 200,
             cpa: 5,
             spendToday: 20,
@@ -309,6 +305,7 @@ test(
       registrations: 0,
       engagement: 0,
       leadsToday: 0,
+      messagesToday: 6,
       leadsTotal: 120,
       cpa: null,
       spendToday: 15,
@@ -419,6 +416,7 @@ test(
       registrations: 0,
       engagement: 0,
       leadsToday: 0,
+      messagesToday: 0,
       leadsTotal: 120,
       cpa: null,
       spendToday: 30,
@@ -519,6 +517,7 @@ test(
       registrations: 0,
       engagement: 0,
       leadsToday: 0,
+      messagesToday: 0,
       leadsTotal: 80,
       cpa: null,
       spendToday: 25,
@@ -629,6 +628,7 @@ test(
           registrations: 0,
           engagement: 0,
           leadsToday: 8,
+          messagesToday: 1,
           leadsTotal: 250,
           cpa: 5,
           spendToday: 40,
@@ -659,6 +659,7 @@ test(
             registrations: 0,
             engagement: 0,
             leadsToday: 6,
+            messagesToday: 1,
             leadsTotal: 200,
             cpa: 5,
             spendToday: 30,
@@ -738,7 +739,7 @@ test(
     await putAutoreportsRecord(
       kv,
       "proj-auto-ny",
-      createAutoreportRecord({ enabled: true, time: "09:30", mode: "today", sendToChat: false, sendToAdmin: true }),
+      createAutoreportRecord({ enabled: true, time: "09:30", mode: "today", sendToChat: true, sendToAdmin: true }),
     );
 
     const now = new Date("2025-01-01T14:31:00.000Z");
@@ -764,6 +765,7 @@ test(
             registrations: 0,
             engagement: 0,
             leadsToday: 6,
+            messagesToday: 3,
             leadsTotal: 400,
             cpa: 5,
             spendToday: 30,
@@ -845,7 +847,13 @@ test(
       project.id,
       createAutoreportRecord({
         enabled: false,
-        paymentAlerts: { enabled: true, sendToChat: true, sendToAdmin: true },
+        paymentAlerts: {
+          enabled: true,
+          sendToChat: true,
+          sendToAdmin: true,
+          lastAccountStatus: null,
+          lastAlertAt: null,
+        },
       }),
     );
 

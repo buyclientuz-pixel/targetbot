@@ -27,7 +27,8 @@ export const resolvePortalPeriodRange = (
       if (mode === "start") {
         copy.setUTCHours(0, 0, 0, 0);
       } else {
-        copy.setUTCHours(23, 59, 59, 999);
+        copy.setUTCHours(0, 0, 0, 0);
+        copy.setUTCDate(copy.getUTCDate() + 1);
       }
       return copy;
     }

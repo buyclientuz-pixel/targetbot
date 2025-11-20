@@ -4,6 +4,7 @@ import type { R2Client } from "../infra/r2";
 import { loadProjectBundle, type ProjectBundle } from "../bot/data";
 import { getOccupiedChatRecord } from "../domain/project-chats";
 import { getProject } from "../domain/projects";
+import { requireProjectRecord } from "../domain/spec/project";
 import { getProjectsByUser, type ProjectsByUserRecord } from "../domain/spec/projects-by-user";
 import { getUserSettingsRecord } from "../domain/spec/user-settings";
 import { getFbAuthRecord } from "../domain/spec/fb-auth";
@@ -27,7 +28,10 @@ const listKeys = async (kv: KvClient, prefix: string): Promise<string[]> => {
   return collected;
 };
 
-const loadAllProjectBundles = async (kv: KvClient, r2: R2Client): Promise<ProjectBundle[]> => {
+const loadAllProjectBundles = async (
+  kv: KvClient,
+  r2: R2Client,
+): Promise<{ id: string; bundle: ProjectBundle | null; fallback?: Awaited<ReturnType<typeof requireProjectRecord>> }[]> => {
   const keys = await listKeys(kv, KV_PREFIXES.projects);
   if (keys.length === 0) {
     return [];
@@ -36,13 +40,19 @@ const loadAllProjectBundles = async (kv: KvClient, r2: R2Client): Promise<Projec
     keys.map(async (key) => {
       const projectId = stripPrefix(key, KV_PREFIXES.projects);
       try {
-        return await loadProjectBundle(kv, r2, projectId);
+        const bundle = await loadProjectBundle(kv, r2, projectId);
+        return { id: projectId, bundle };
       } catch {
-        return null;
+        try {
+          const fallback = await requireProjectRecord(kv, projectId);
+          return { id: projectId, bundle: null, fallback };
+        } catch {
+          return { id: projectId, bundle: null };
+        }
       }
     }),
   );
-  return bundles.filter((bundle): bundle is ProjectBundle => bundle != null);
+  return bundles;
 };
 
 export interface AdminProjectSummary {
@@ -70,28 +80,41 @@ export const listAdminProjectSummaries = async (
 ): Promise<AdminProjectSummary[]> => {
   const bundles = await loadAllProjectBundles(kv, r2);
   const summaries: AdminProjectSummary[] = [];
-  for (const bundle of bundles) {
-    const meta = await getProject(kv, bundle.project.id).catch(() => null);
-    const chatRecord = bundle.project.chatId
-      ? await getOccupiedChatRecord(kv, bundle.project.chatId).catch(() => null)
-      : null;
+  for (const entry of bundles) {
+    const meta = await getProject(kv, entry.id).catch(() => null);
+    const projectBundle = entry.bundle;
+    const projectRecord = entry.fallback ?? null;
+
+    if (!projectBundle && !projectRecord) {
+      continue;
+    }
+
+    const chatId = projectBundle?.project.chatId ?? projectRecord?.chatId ?? null;
+    const chatRecord = chatId ? await getOccupiedChatRecord(kv, chatId).catch(() => null) : null;
+    const portalUrl = projectBundle?.project.portalUrl ?? projectRecord?.portalUrl ?? "";
+    const settings = projectBundle?.project.settings ?? projectRecord?.settings;
+
+    if (!settings) {
+      continue;
+    }
+
     summaries.push({
-      id: bundle.project.id,
-      name: bundle.project.name,
-      ownerId: bundle.project.ownerId,
-      adAccountId: bundle.project.adAccountId,
-      chatId: bundle.project.chatId,
+      id: projectBundle?.project.id ?? projectRecord!.id,
+      name: projectBundle?.project.name ?? projectRecord!.name,
+      ownerId: projectBundle?.project.ownerId ?? projectRecord!.ownerId,
+      adAccountId: projectBundle?.project.adAccountId ?? projectRecord?.adsAccountId ?? null,
+      chatId,
       chatTitle: chatRecord?.chatTitle ?? null,
-      currency: bundle.project.settings.currency,
-      kpiLabel: bundle.project.settings.kpi.label,
-      kpiType: bundle.project.settings.kpi.type,
+      currency: settings.currency,
+      kpiLabel: settings.kpi.label,
+      kpiType: settings.kpi.type,
       createdAt: meta?.createdAt ?? null,
       updatedAt: meta?.updatedAt ?? null,
-      portalUrl: bundle.project.portalUrl,
-      status: bundle.project.chatId && bundle.project.adAccountId ? "active" : "pending",
-      leadsToday: bundle.leads.stats.today ?? 0,
-      leadsTotal: bundle.leads.stats.total ?? 0,
-      spend: bundle.campaigns.summary.spend ?? 0,
+      portalUrl,
+      status: chatId && (projectBundle?.project.adsAccountId ?? projectRecord?.adsAccountId) ? "active" : "pending",
+      leadsToday: projectBundle?.leads.stats.today ?? 0,
+      leadsTotal: projectBundle?.leads.stats.total ?? 0,
+      spend: projectBundle?.campaigns.summary.spend ?? 0,
     });
   }
   return summaries.sort((a, b) => a.name.localeCompare(b.name));
