@@ -26,6 +26,7 @@ export interface BotPanelState {
   panelId: string;
   chatId: number;
   messageId: number;
+  messageThreadId: number | null;
 }
 
 export interface BotSession {

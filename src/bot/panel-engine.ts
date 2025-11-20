@@ -126,11 +126,19 @@ interface RenderRequest {
   userId: number;
   chatId: number;
   panelId: string;
+  messageThreadId?: number | null;
 }
 
-export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRequest): Promise<void> => {
+export const renderPanel = async ({
+  runtime,
+  userId,
+  chatId,
+  panelId,
+  messageThreadId,
+}: RenderRequest): Promise<void> => {
   const session = await getBotSession(runtime.kv, userId);
   const resolved = resolvePanel(panelId);
+  const threadId = messageThreadId ?? session.panel?.messageThreadId ?? null;
   let result;
   try {
     result = await resolved.renderer({ runtime, userId, chatId, panelId: resolved.id, params: resolved.params });
@@ -147,7 +155,10 @@ export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRe
     });
     return;
   }
-  let messageId = session.panel?.chatId === chatId ? session.panel?.messageId ?? null : null;
+  let messageId =
+    session.panel?.chatId === chatId && session.panel?.messageThreadId === threadId
+      ? session.panel?.messageId ?? null
+      : null;
   try {
     if (messageId) {
       try {
@@ -168,6 +179,7 @@ export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRe
     if (!messageId) {
       const sent = (await sendTelegramMessage<TelegramMessage>(runtime.telegramToken, {
         chatId,
+        messageThreadId: threadId ?? undefined,
         text: result.text,
         replyMarkup: result.keyboard,
       })) as TelegramMessage | undefined;
@@ -177,7 +189,7 @@ export const renderPanel = async ({ runtime, userId, chatId, panelId }: RenderRe
     }
     await saveBotSession(runtime.kv, {
       ...session,
-      panel: messageId ? { chatId, messageId, panelId: resolved.id } : session.panel,
+      panel: messageId ? { chatId, messageId, panelId: resolved.id, messageThreadId: threadId } : session.panel,
       state: { type: "panel", panelId: resolved.id },
     });
   } catch (error) {
