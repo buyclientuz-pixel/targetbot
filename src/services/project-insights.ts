@@ -195,10 +195,16 @@ const resolveFacebookUserId = (settings: ProjectSettings, provided?: string | nu
   return value;
 };
 
+const decrementDateOnly = (value: string): string => {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return formatDateOnly(date);
+};
+
 const resolveCustomMetaPeriod = (periodRange: PeriodRange): MetaInsightsPeriod => ({
   preset: "time_range",
   from: periodRange.period.from,
-  to: periodRange.period.to,
+  to: decrementDateOnly(periodRange.period.to),
 });
 
 const resolveInsightsKpiValue = (summary: MetaInsightsSummary, kpiType: KpiType): number => {
