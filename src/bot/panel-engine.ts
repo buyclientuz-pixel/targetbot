@@ -121,6 +121,20 @@ const resolvePanel = (panelId: string): ResolveResult => {
 export const PANEL_ERROR_MESSAGE =
   "⚠️ Не удалось загрузить панель. Нажмите /start и попробуйте снова.";
 
+export const resolvePanelThreadId = (
+  session: Awaited<ReturnType<typeof getBotSession>>,
+  chatId: number,
+  messageThreadId?: number | null,
+): number | null => {
+  if (messageThreadId != null) {
+    return messageThreadId;
+  }
+  if (session.panel?.chatId === chatId) {
+    return session.panel.messageThreadId ?? null;
+  }
+  return null;
+};
+
 interface RenderRequest {
   runtime: PanelRuntime;
   userId: number;
@@ -138,7 +152,7 @@ export const renderPanel = async ({
 }: RenderRequest): Promise<void> => {
   const session = await getBotSession(runtime.kv, userId);
   const resolved = resolvePanel(panelId);
-  const threadId = messageThreadId ?? session.panel?.messageThreadId ?? null;
+  const threadId = resolvePanelThreadId(session, chatId, messageThreadId);
   let result;
   try {
     result = await resolved.renderer({ runtime, userId, chatId, panelId: resolved.id, params: resolved.params });
