@@ -795,16 +795,17 @@ const loadAutoReportTemplate = async (options: {
   const periodKeys = collectPeriodKeys(mode, now);
   const initialContext = project && settings ? { project, settings } : undefined;
   const timezone = projectRecord.settings.timezone ?? DEFAULT_AUTOREPORT_TIMEZONE;
+  const timezoneContext = { settings: { timezone } };
   const reportDate = shiftDateByDays(now, -REPORT_DAY_OFFSET_DAYS);
   const periodRanges = new Map<string, PeriodRange>();
-  const resolvedYesterday = resolveDatePresetForProject(projectRecord, "yesterday", { now });
+  const resolvedYesterday = resolveDatePresetForProject(timezoneContext, "yesterday", { now });
   periodRanges.set("today", {
     key: "today",
     from: resolvedYesterday.fromUtc,
     to: resolvedYesterday.toUtc,
     period: resolvedYesterday.period,
   });
-  const previousDay = resolveDatePresetForProject(projectRecord, "yesterday", { now: shiftDateByDays(now, -1) });
+  const previousDay = resolveDatePresetForProject(timezoneContext, "yesterday", { now: shiftDateByDays(now, -1) });
   periodRanges.set("yesterday", {
     key: "yesterday",
     from: previousDay.fromUtc,
