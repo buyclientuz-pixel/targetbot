@@ -435,8 +435,10 @@ const DEFAULT_METRICS: MetaSummaryMetrics = {
   messagesToday: 0,
   leadsTotal: 0,
   cpa: null,
+  conversion: null,
   spendToday: 0,
   cpaToday: null,
+  conversionToday: null,
 };
 
 const getMetricsOrDefault = (metrics?: MetaSummaryMetrics): MetaSummaryMetrics => metrics ?? DEFAULT_METRICS;

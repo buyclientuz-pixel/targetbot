@@ -13,8 +13,10 @@ export interface MetaSummaryMetrics {
   messagesToday: number;
   leadsTotal: number;
   cpa: number | null;
+  conversion: number | null;
   spendToday: number;
   cpaToday: number | null;
+  conversionToday?: number | null;
 }
 
 export interface MetaSummaryPayload {

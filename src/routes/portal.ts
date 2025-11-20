@@ -66,6 +66,14 @@ const computeCpa = (spend: number, value: number): number | null => {
   return spend / value;
 };
 
+const computeConversionRate = (value: number, clicks?: number, impressions?: number): number | null => {
+  const denominator = clicks && clicks > 0 ? clicks : impressions ?? 0;
+  if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(denominator) || denominator <= 0) {
+    return null;
+  }
+  return (value / denominator) * 100;
+};
+
 const resolveKpiValue = (
   summary: { leads?: number; messages?: number; clicks?: number; impressions?: number },
   kpiType: ProjectBundle["project"]["settings"]["kpi"]["type"],
@@ -132,6 +140,21 @@ const buildSummaryPayload = (
   const kpiType = bundle.project.settings.kpi.type;
   const kpiValue = resolveKpiValue(summary, kpiType);
   const kpiToday = includeTodayMetrics ? resolveKpiToday(summaryMetrics, leadsToday, kpiType) : 0;
+  const conversion =
+    summaryMetrics?.conversion ??
+    computeConversionRate(
+      kpiValue,
+      summary.clicks ?? campaignSummary.clicks ?? 0,
+      summary.impressions ?? campaignSummary.impressions ?? 0,
+    );
+  const conversionToday = includeTodayMetrics
+    ? summaryMetrics?.conversionToday ??
+      computeConversionRate(
+        kpiToday,
+        summaryMetrics?.clicks ?? summary.clicks ?? 0,
+        summaryMetrics?.impressions ?? summary.impressions ?? 0,
+      )
+    : null;
   const period = options?.summaryEntry?.period ?? options?.periodRange?.period ?? campaignsDoc.period;
   const normalisedPeriod = period;
 
@@ -150,11 +173,13 @@ const buildSummaryPayload = (
       leads,
       messages,
       cpa: computeCpa(spend, kpiValue),
+      conversion,
       leadsTotal: bundle.leads.stats.total ?? 0,
       leadsToday,
       cpaToday: includeTodayMetrics
         ? summaryMetrics?.cpaToday ?? computeCpa(summaryMetrics?.spendToday ?? spend, kpiToday)
         : null,
+      conversionToday,
       spendToday: includeTodayMetrics
         ? summaryMetrics?.spendToday ?? (requestedPeriod === "today" ? spend : summaryMetrics?.spendToday ?? 0)
         : 0,
@@ -177,8 +202,11 @@ const buildCampaignsPayload = (
     const status = statusMap.get(campaign.id);
     const resolvedStatus = status?.status ?? status?.effectiveStatus ?? status?.configuredStatus ?? null;
     const objectiveValue = status?.objective ?? campaign.objective;
+    const kpiValue = resolveKpiValue(campaign, campaign.kpiType);
+    const conversion = campaign.conversion ?? computeConversionRate(kpiValue, campaign.clicks, campaign.impressions);
     return {
       ...campaign,
+      conversion,
       objective: objectiveValue,
       objectiveLabel: translateMetaObjective(objectiveValue),
       status: resolvedStatus,
@@ -296,7 +324,7 @@ export const renderPortalHtml = (projectId: string): string => {
           metrics: document.querySelectorAll('[data-metric]'),
           focusTarget: document.querySelector('[data-focus-target]'),
           focusCpa: document.querySelector('[data-focus-cpa]'),
-          focusCpl: document.querySelector('[data-focus-cpl]'),
+          focusConversion: document.querySelector('[data-focus-conversion]'),
           periodButtons: document.querySelectorAll('[data-period-button]'),
           leadsBody: document.querySelector('[data-leads-body]'),
           leadsEmpty: document.querySelector('[data-leads-empty]'),
@@ -385,6 +413,20 @@ export const renderPortalHtml = (projectId: string): string => {
           } catch {
             return value.toFixed(2) + ' ' + currency;
           }
+        };
+        const formatPercent = (value) => {
+          if (typeof value !== 'number' || !Number.isFinite(value)) {
+            return '—';
+          }
+          const formatted = value.toFixed(value >= 1 ? 1 : 2);
+          return formatted + '%';
+        };
+        const computeConversionRate = (value, clicks, impressions) => {
+          const denominator = clicks && clicks > 0 ? clicks : impressions ?? 0;
+          if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(denominator) || denominator <= 0) {
+            return null;
+          }
+          return (value / denominator) * 100;
         };
         const formatDate = (value) => {
           if (!value) return '—';
@@ -630,13 +672,16 @@ export const renderPortalHtml = (projectId: string): string => {
                 ? formatMoney(spendValue / metrics.messages, metrics.currency || 'USD')
                 : '—'
               : values.cpa;
-          const cplValue =
-            metrics.leads > 0 ? formatMoney(spendValue / metrics.leads, metrics.currency || 'USD') : '—';
+          const targetCount = highlightKey === 'messages' ? metrics.messages : metrics.leads;
+          const conversionValue =
+            metrics.conversion != null
+              ? formatPercent(metrics.conversion)
+              : formatPercent(computeConversionRate(targetCount, metrics.clicks, metrics.impressions));
           if (elements.focusCpa) {
             elements.focusCpa.textContent = cpaTarget ?? '—';
           }
-          if (elements.focusCpl) {
-            elements.focusCpl.textContent = cplValue ?? '—';
+          if (elements.focusConversion) {
+            elements.focusConversion.textContent = conversionValue ?? '—';
           }
         };
         const describeLeadStats = (label, stats) => {
@@ -723,6 +768,8 @@ export const renderPortalHtml = (projectId: string): string => {
               .map((campaign) => {
                 const kpiValue = campaignKpiValue(campaign, campaign.kpiType);
                 const cpa = kpiValue && Number(kpiValue) > 0 ? campaign.spend / kpiValue : null;
+                const conversion = campaign.conversion ?? computeConversionRate(kpiValue, campaign.clicks, campaign.impressions);
+                const conversionLabel = conversion != null ? formatPercent(conversion) : '—';
                 const objectiveLabel = escapeHtml(campaign.objectiveLabel || campaign.objective || '—');
                 const kpiLabel = KPI_LABELS[campaign.kpiType] || 'Результат';
                 return (
@@ -735,6 +782,7 @@ export const renderPortalHtml = (projectId: string): string => {
                   formatNumber(kpiValue) +
                   '<span class="portal-table__note">' + kpiLabel + '</span>' +
                   '</td>' +
+                  '<td>' + conversionLabel + '</td>' +
                   '<td>' + (cpa != null ? formatMoney(cpa, currency) : '—') + '</td>' +
                   '</tr>'
                 );
@@ -867,10 +915,11 @@ export const renderPortalHtml = (projectId: string): string => {
         };
         const exportCampaigns = () => {
           if (state.disableExport || !state.campaigns?.campaigns?.length) return;
-          const header = toCsvRow(['ID', 'Название', 'Цель', 'Расход', 'Показы', 'Клики', 'KPI', 'CPA']);
+          const header = toCsvRow(['ID', 'Название', 'Цель', 'Расход', 'Показы', 'Клики', 'KPI', 'CR', 'CPA']);
           const rows = state.campaigns.campaigns.map((campaign) => {
             const kpiValue = campaignKpiValue(campaign, campaign.kpiType);
             const cpa = kpiValue && Number(kpiValue) > 0 ? campaign.spend / kpiValue : '';
+            const conversion = campaign.conversion ?? computeConversionRate(kpiValue, campaign.clicks, campaign.impressions);
             return toCsvRow([
               campaign.id,
               campaign.name,
@@ -879,6 +928,7 @@ export const renderPortalHtml = (projectId: string): string => {
               campaign.impressions,
               campaign.clicks,
               kpiValue,
+              conversion,
               cpa,
             ]);
           });
@@ -974,6 +1024,7 @@ export const renderPortalHtml = (projectId: string): string => {
             loadPayments();
           } catch (error) {
             showPreloader(false);
+            console.error('[portal] bootstrap failed', error);
             showError(error?.message || 'Не удалось загрузить данные.');
           }
         };
@@ -1482,8 +1533,8 @@ export const renderPortalHtml = (projectId: string): string => {
               <div class="portal-focus__value" data-focus-cpa>—</div>
             </div>
             <div class="portal-focus__item">
-              <div class="portal-focus__label">CPL</div>
-              <div class="portal-focus__value" data-focus-cpl>—</div>
+              <div class="portal-focus__label">CR</div>
+              <div class="portal-focus__value" data-focus-conversion>—</div>
             </div>
           </div>
         </section>
@@ -1538,6 +1589,7 @@ export const renderPortalHtml = (projectId: string): string => {
                   <th>Показы</th>
                   <th>Клики</th>
                   <th>Целевая метрика</th>
+                  <th>CR</th>
                   <th>CPA</th>
                 </tr>
               </thead>
