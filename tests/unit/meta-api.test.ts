@@ -760,6 +760,76 @@ test("fetchMetaLeads retries ad creative fallback requests after transient rate 
   }
 });
 
+test("fetchMetaLeads retries when Meta returns ad-account rate limit errors", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = ((callback: (...args: unknown[]) => void) => {
+    callback();
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+  let attempts = 0;
+  const requests: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url);
+    requests.push(url);
+    if (url.pathname.includes("/act_80004/leads")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_80004/campaigns")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_80004/leadgen_forms")) {
+      return new Response(JSON.stringify({ error: { message: "edge missing" } }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.pathname.includes("/me/accounts")) {
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.pathname.includes("/act_80004/ads")) {
+      attempts += 1;
+      if (attempts === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: "(#80004) There have been too many calls to this ad-account.",
+              code: 80004,
+              error_subcode: 2446079,
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          data: [
+            { creative: { object_story_spec: { children: [{ leadgen_form_id: "form-ads-80004" }] } } },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.pathname.includes("/form-ads-80004/leads")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "lead-80004", created_time: "2025-11-21T00:00:00Z", field_data: [] }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const leads = await fetchMetaLeads({ accountId: "act_rate_limit_80004", accessToken: "acct-token" });
+    assert.equal(leads.length, 1);
+    assert.equal(leads[0]?.id, "lead-80004");
+    assert.equal(attempts, 2);
+    assert.ok(requests.some((request) => request.pathname.includes("/form-ads-80004/leads")));
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
 test("fetchMetaLeads reuses cached forms when enumeration fails", async () => {
   const originalFetch = globalThis.fetch;
   const requests: URL[] = [];

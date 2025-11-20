@@ -100,14 +100,25 @@ const createMetaApiError = async (response: Response, context: string): Promise<
   return new MetaApiError(context, response.status, errorBody, parseMetaErrorPayload(errorBody));
 };
 
-const META_RATE_LIMIT_ERROR_CODE = 17;
+const META_RATE_LIMIT_ERROR_CODES = new Set([4, 17, 80004]);
+const META_RATE_LIMIT_ERROR_SUBCODES = new Set([1504022, 2446079]);
 
 const isMetaRateLimitError = (error: unknown): boolean => {
   if (error instanceof MetaApiError) {
-    return error.code === META_RATE_LIMIT_ERROR_CODE;
+    if (error.code && META_RATE_LIMIT_ERROR_CODES.has(error.code)) {
+      return true;
+    }
+    if (error.errorSubcode && META_RATE_LIMIT_ERROR_SUBCODES.has(error.errorSubcode)) {
+      return true;
+    }
   }
   if (error instanceof Error) {
-    return /User request limit reached/i.test(error.message) || /"code"\s*:\s*17/.test(error.message);
+    return (
+      /User request limit reached/i.test(error.message) ||
+      /too many calls to this ad-account/i.test(error.message) ||
+      /Application request limit reached/i.test(error.message) ||
+      /"code"\s*:\s*(4|17|80004)/.test(error.message)
+    );
   }
   return false;
 };
