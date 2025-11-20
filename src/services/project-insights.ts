@@ -196,10 +196,16 @@ const resolveFacebookUserId = (settings: ProjectSettings, provided?: string | nu
   return value;
 };
 
+const shiftDateOnly = (value: string, days: number): string => {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return formatDateOnly(date);
+};
+
 const resolveCustomMetaPeriod = (periodRange: PeriodRange): MetaInsightsPeriod => ({
   preset: "time_range",
   from: periodRange.period.from,
-  to: periodRange.period.to,
+  to: shiftDateOnly(periodRange.period.to, -1),
 });
 
 const resolveInsightsKpiValue = (summary: MetaInsightsSummary, kpiType: KpiType): number => {
