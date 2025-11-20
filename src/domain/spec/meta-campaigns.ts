@@ -1,7 +1,7 @@
 import { R2_KEYS } from "../../config/r2";
 import type { R2Client } from "../../infra/r2";
 import { DataValidationError } from "../../errors";
-import { assertEnum, assertNumber, assertOptionalString, assertString } from "../validation";
+import { assertEnum, assertNumber, assertOptionalNumber, assertOptionalString, assertString } from "../validation";
 import { KPI_TYPES } from "./project";
 
 export interface MetaPeriodRange {
@@ -15,6 +15,7 @@ export interface MetaSummaryMetrics {
   clicks: number;
   leads: number;
   messages: number;
+  conversion?: number | null;
 }
 
 export interface MetaCampaignRecord extends MetaSummaryMetrics {
@@ -22,6 +23,7 @@ export interface MetaCampaignRecord extends MetaSummaryMetrics {
   name: string;
   objective: string;
   kpiType: typeof KPI_TYPES[number];
+  conversion: number | null;
 }
 
 export interface MetaCampaignsDocument {
@@ -36,12 +38,17 @@ const parseSummary = (raw: unknown, field: string): MetaSummaryMetrics => {
     throw new DataValidationError(`${field} must be an object`);
   }
   const record = raw as Record<string, unknown>;
-  return {
+  const summary = {
     spend: assertNumber(record.spend ?? record["spend"], `${field}.spend`),
     impressions: assertNumber(record.impressions ?? record["impressions"], `${field}.impressions`),
     clicks: assertNumber(record.clicks ?? record["clicks"], `${field}.clicks`),
     leads: assertNumber(record.leads ?? record["leads"], `${field}.leads`),
     messages: assertNumber(record.messages ?? record["messages"], `${field}.messages`),
+  } satisfies MetaSummaryMetrics;
+
+  return {
+    ...summary,
+    conversion: assertOptionalNumber(record.conversion ?? record["conversion"], `${field}.conversion`),
   };
 };
 
@@ -74,6 +81,7 @@ const parseCampaign = (raw: unknown, index: number): MetaCampaignRecord => {
     clicks: assertNumber(record.clicks ?? record["clicks"], `meta.campaigns[${index}].clicks`),
     leads: assertNumber(record.leads ?? record["leads"], `meta.campaigns[${index}].leads`),
     messages: assertNumber(record.messages ?? record["messages"], `meta.campaigns[${index}].messages`),
+    conversion: assertOptionalNumber(record.conversion ?? record["conversion"], `meta.campaigns[${index}].conversion`),
   };
 };
 
@@ -121,6 +129,7 @@ export const putMetaCampaignsDocument = async (
       clicks: campaign.clicks,
       leads: campaign.leads,
       messages: campaign.messages,
+      conversion: campaign.conversion,
     })),
   });
 };

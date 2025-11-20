@@ -50,7 +50,9 @@ test("loadProjectCampaigns requests custom time range when explicit period is pr
   const insightsRequest = requests.find((request) => request.pathname.includes("/act_123/insights"));
   assert.ok(insightsRequest, "insights request should be issued");
   const timeRange = insightsRequest?.searchParams.get("time_range") ?? "";
-  assert.equal(timeRange, JSON.stringify({ since: periodRange.period.from, until: periodRange.period.to }));
+  const until = new Date(`${periodRange.period.to}T00:00:00.000Z`);
+  until.setUTCDate(until.getUTCDate() - 1);
+  assert.equal(timeRange, JSON.stringify({ since: periodRange.period.from, until: until.toISOString().split("T")[0] }));
 });
 
 test("resolveDatePresetForProject anchors yesterday to the prior calendar day in project timezone", () => {

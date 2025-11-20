@@ -6,7 +6,7 @@ import { getProject, type Project } from "../domain/projects";
 import { requireProjectRecord, type ProjectRecord } from "../domain/spec/project";
 import { type MetaSummaryPayload } from "../domain/meta-summary";
 import type { MetaInsightsSummary } from "./meta-api";
-import { putMetaCampaignsDocument, type MetaCampaignsDocument } from "../domain/spec/meta-campaigns";
+import { putMetaCampaignsDocument, type MetaCampaignRecord, type MetaCampaignsDocument } from "../domain/spec/meta-campaigns";
 import type { KpiType } from "../domain/spec/project";
 import type { KvClient } from "../infra/kv";
 import type { R2Client } from "../infra/r2";
@@ -17,6 +17,7 @@ import {
   resolveDatePreset,
   summariseMetaInsights,
 } from "./meta-api";
+import { formatDateOnly } from "./period-range";
 import { DataValidationError } from "../errors";
 import type { MetaInsightsPeriod, MetaInsightsRawResponse } from "./meta-api";
 
@@ -195,16 +196,16 @@ const resolveFacebookUserId = (settings: ProjectSettings, provided?: string | nu
   return value;
 };
 
-const decrementDateOnly = (value: string): string => {
+const shiftDateOnly = (value: string, days: number): string => {
   const date = new Date(`${value}T00:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() - 1);
+  date.setUTCDate(date.getUTCDate() + days);
   return formatDateOnly(date);
 };
 
 const resolveCustomMetaPeriod = (periodRange: PeriodRange): MetaInsightsPeriod => ({
   preset: "time_range",
   from: periodRange.period.from,
-  to: decrementDateOnly(periodRange.period.to),
+  to: shiftDateOnly(periodRange.period.to, -1),
 });
 
 const resolveInsightsKpiValue = (summary: MetaInsightsSummary, kpiType: KpiType): number => {
@@ -221,6 +222,15 @@ const resolveInsightsKpiValue = (summary: MetaInsightsSummary, kpiType: KpiType)
     default:
       return summary.leads;
   }
+};
+
+const resolveConversionRate = (summary: MetaInsightsSummary, kpiType: KpiType): number | null => {
+  const numerator = resolveInsightsKpiValue(summary, kpiType);
+  const denominator = summary.clicks > 0 ? summary.clicks : summary.impressions;
+  if (numerator <= 0 || denominator <= 0) {
+    return null;
+  }
+  return (numerator / denominator) * 100;
 };
 
 const buildScopedCacheKey = (
@@ -330,6 +340,8 @@ export const loadProjectSummary = async (
 
   const periodKpiValue = resolveInsightsKpiValue(requestedInsights.payload.summary, projectRecord.settings.kpi.type);
   const todayKpiValue = resolveInsightsKpiValue(todayInsights.payload.summary, projectRecord.settings.kpi.type);
+  const periodConversion = resolveConversionRate(requestedInsights.payload.summary, projectRecord.settings.kpi.type);
+  const todayConversion = resolveConversionRate(todayInsights.payload.summary, projectRecord.settings.kpi.type);
 
   const metrics = {
     spend: requestedInsights.payload.summary.spend,
@@ -346,8 +358,10 @@ export const loadProjectSummary = async (
     messagesToday: todayInsights.payload.summary.messages,
     leadsTotal: lifetimeInsights.payload.summary.leads,
     cpa: periodKpiValue > 0 ? requestedInsights.payload.summary.spend / periodKpiValue : null,
+    conversion: periodConversion,
     spendToday: todayInsights.payload.summary.spend,
     cpaToday: todayKpiValue > 0 ? todayInsights.payload.summary.spend / todayKpiValue : null,
+    conversionToday: todayConversion,
   } satisfies MetaSummaryPayload["metrics"];
 
   const summaryEntry = createMetaCacheEntry<MetaSummaryPayload>(
@@ -426,6 +440,7 @@ export interface CampaignRow {
   registrations: number;
   engagement: number;
   cpa: number | null;
+  conversion: number | null;
 }
 
 export const mapCampaignRows = (raw: MetaInsightsRawResponse): CampaignRow[] => {
@@ -461,8 +476,34 @@ export const mapCampaignRows = (raw: MetaInsightsRawResponse): CampaignRow[] => 
       registrations,
       engagement,
       cpa,
+      conversion: null,
     } satisfies CampaignRow;
   });
+};
+
+const resolveCampaignKpiValue = (campaign: CampaignRow, type: KpiType): number => {
+  switch (type) {
+    case "MESSAGE":
+      return campaign.messages;
+    case "CLICK":
+      return campaign.clicks;
+    case "VIEW":
+      return campaign.impressions;
+    case "PURCHASE":
+      return campaign.leads;
+    case "LEAD":
+    default:
+      return campaign.leads;
+  }
+};
+
+const computeCampaignConversion = (campaign: CampaignRow, kpiType: KpiType): number | null => {
+  const kpiValue = resolveCampaignKpiValue(campaign, kpiType);
+  const denominator = campaign.clicks > 0 ? campaign.clicks : campaign.impressions;
+  if (kpiValue <= 0 || denominator <= 0) {
+    return null;
+  }
+  return (kpiValue / denominator) * 100;
 };
 
 const determineKpiType = (objective: string | null, fallback: KpiType): KpiType => {
@@ -505,18 +546,24 @@ export const syncProjectCampaignDocument = async (
   const projectRecord = options?.projectRecord ?? (await requireProjectRecord(kv, projectId));
   const kpiConfig = projectRecord.settings.kpi;
   const rows = mapCampaignRows(entry.payload);
-  const campaigns = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    objective: row.objective ?? kpiConfig.label,
-    kpiType:
-      kpiConfig.mode === "manual" ? kpiConfig.type : determineKpiType(row.objective, kpiConfig.type),
-    spend: row.spend,
-    impressions: row.impressions,
-    clicks: row.clicks,
-    leads: row.leads,
-    messages: row.messages,
-  }));
+  const campaigns = rows.map((row) => {
+    const resolvedKpiType =
+      kpiConfig.mode === "manual" ? kpiConfig.type : determineKpiType(row.objective, kpiConfig.type);
+    const conversion = computeCampaignConversion(row, resolvedKpiType);
+
+    return {
+      id: row.id,
+      name: row.name,
+      objective: row.objective ?? kpiConfig.label,
+      kpiType: resolvedKpiType,
+      spend: row.spend,
+      impressions: row.impressions,
+      clicks: row.clicks,
+      leads: row.leads,
+      messages: row.messages,
+      conversion,
+    } satisfies MetaCampaignRecord;
+  });
   const summary = campaigns.reduce(
     (acc, campaign) => ({
       spend: acc.spend + (campaign.spend ?? 0),
