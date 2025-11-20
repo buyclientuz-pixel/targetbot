@@ -4,6 +4,7 @@ import test from "node:test";
 const {
   resolveDatePreset,
   fetchMetaLeads,
+  fetchMetaInsightsRaw,
   summariseMetaInsights,
   countMessagesFromActions,
   fetchMetaAdAccount,
@@ -23,6 +24,40 @@ test("resolveDatePreset clamps all-period window and supports legacy max alias",
     assert.deepEqual(resolveDatePreset("max"), period);
   } finally {
     Date.now = realNow;
+  }
+});
+
+test("fetchMetaInsightsRaw requests 1d attribution windows for consistent day-level results", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedUrls: URL[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const target =
+      typeof input === "string"
+        ? input
+        : input instanceof Request
+          ? input.url
+          : input instanceof URL
+            ? input.toString()
+            : String(input);
+    const url = new URL(target);
+    requestedUrls.push(url);
+    return new Response(JSON.stringify({ data: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    await fetchMetaInsightsRaw({
+      accountId: "act_123", 
+      accessToken: "token",
+      period: { preset: "today" },
+    });
+    assert.equal(requestedUrls.length, 1);
+    const url = requestedUrls[0];
+    assert.equal(url.searchParams.get("action_attribution_windows"), "1d_click,1d_view");
+    assert.equal(url.searchParams.get("action_report_time"), "conversion");
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

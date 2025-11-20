@@ -321,6 +321,8 @@ const buildInsightsUrl = (options: MetaFetchOptions): URL => {
   url.searchParams.set("access_token", accessToken);
   url.searchParams.set("fields", fields);
   url.searchParams.set("level", level);
+  url.searchParams.set("action_attribution_windows", "1d_click,1d_view");
+  url.searchParams.set("action_report_time", "conversion");
   if (period.preset === "time_range" && period.from && period.to) {
     url.searchParams.set("time_range", JSON.stringify({ since: period.from, until: period.to }));
   } else {
