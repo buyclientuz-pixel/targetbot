@@ -144,7 +144,7 @@ test(
     );
 
     const now = new Date("2025-01-01T07:02:00.000Z");
-    const reportDate = shiftDateByDays(now, -1);
+    const reportDate = now;
     const timezone = "Asia/Tashkent";
     const summaryEntry = createScopedSummaryEntry(
       "proj-auto",
@@ -313,7 +313,7 @@ test(
     } satisfies MetaSummaryMetrics;
 
     const now = new Date("2025-01-01T09:01:00.000Z");
-    const reportDate = shiftDateByDays(now, -1);
+    const reportDate = now;
     const timezone = "Asia/Tashkent";
     const summaryEntry = createScopedSummaryEntry(
       "proj-auto-msg",
@@ -424,7 +424,7 @@ test(
     };
 
     const now = new Date("2025-01-01T10:02:00.000Z");
-    const reportDate = shiftDateByDays(now, -1);
+    const reportDate = now;
     const timezone = "Asia/Tashkent";
     for (const periodKey of ["today", "yesterday", "week", "month"]) {
       const entry = createScopedSummaryEntry(
@@ -525,7 +525,7 @@ test(
     };
 
     const now = new Date("2025-01-01T10:02:00.000Z");
-    const reportDate = shiftDateByDays(now, -1);
+    const reportDate = now;
     const timezone = "Asia/Tashkent";
     for (const periodKey of ["today", "yesterday", "week", "month"]) {
       const entry = createScopedSummaryEntry(
@@ -607,7 +607,7 @@ test(
     );
 
     const now = new Date("2025-01-01T08:16:00.000Z");
-    const reportDate = shiftDateByDays(now, -1);
+    const reportDate = now;
     const timezone = "Asia/Tashkent";
     const summaryEntry = createScopedSummaryEntry(
       "proj-auto-both",
@@ -743,7 +743,7 @@ test(
     );
 
     const now = new Date("2025-01-01T14:31:00.000Z");
-    const reportDate = shiftDateByDays(now, -1);
+    const reportDate = now;
     const timezone = "America/New_York";
     for (const periodKey of ["today", "yesterday", "week", "month"]) {
       const entry = createScopedSummaryEntry(

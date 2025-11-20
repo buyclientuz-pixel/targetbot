@@ -1207,6 +1207,22 @@ test("Telegram bot controller updates chat bindings via selection and manual inp
 
 
 test("auto_send_now dispatches manual auto-report", async () => {
+  const RealDate = Date;
+  const fixedNow = new RealDate("2025-11-20T12:00:00Z");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).Date = class extends RealDate {
+    constructor(value?: unknown) {
+      if (arguments.length === 0) {
+        super(fixedNow.getTime());
+      } else {
+        super(value as any);
+      }
+    }
+    static now() {
+      return fixedNow.getTime();
+    }
+  } as DateConstructor;
+
   const kv = new KvClient(new MemoryKVNamespace());
   const r2 = new R2Client(new MemoryR2Bucket());
   await seedProject(kv, r2);
@@ -1235,7 +1251,7 @@ test("auto_send_now dispatches manual auto-report", async () => {
   } satisfies MetaSummaryMetrics;
 
   const timezone = "Asia/Tashkent";
-  const reportDate = shiftDateByDays(new Date(), -1);
+  const reportDate = new Date();
   for (const periodKey of ["today", "yesterday", "week", "month"]) {
     await saveMetaCache(
       kv,
@@ -1278,7 +1294,12 @@ test("auto_send_now dispatches manual auto-report", async () => {
   );
 
   const controller = createController(kv, r2);
-  const stub = installFetchStub();
+  const stub = installFetchStub((url) => {
+    if (url.includes("graph.facebook.com")) {
+      throw new Error(`unexpected graph request: ${url}`);
+    }
+    return undefined;
+  });
 
   try {
     await controller.handleUpdate({
@@ -1305,6 +1326,8 @@ test("auto_send_now dispatches manual auto-report", async () => {
     assert.ok(ownerDelivery, "expected owner delivery for auto report");
   } finally {
     stub.restore();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (globalThis as any).Date = RealDate;
   }
 });
 

@@ -797,7 +797,7 @@ const loadAutoReportTemplate = async (options: {
   const reportDate = shiftDateByDays(now, -REPORT_DAY_OFFSET_DAYS);
   const periodRanges = new Map<string, PeriodRange>();
   for (const period of periodKeys) {
-    periodRanges.set(period, resolvePeriodRange(period, timezone, { now: reportDate }));
+    periodRanges.set(period, resolvePeriodRange(period, timezone, { now }));
   }
   const metricsContext = await loadMetricsForPeriods(kv, projectId, periodKeys, initialContext, {
     periodRanges,
