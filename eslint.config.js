@@ -1,7 +1,4 @@
-import prettierPlugin from "eslint-plugin-prettier";
-
 const commonRules = {
-  "prettier/prettier": "error",
   quotes: ["error", "double", { avoidEscape: true }],
   "no-var": "error",
   "prefer-const": "error",
@@ -22,9 +19,6 @@ export default [
     },
     linterOptions: {
       reportUnusedDisableDirectives: true,
-    },
-    plugins: {
-      prettier: prettierPlugin,
     },
     rules: commonRules,
   },
