@@ -149,6 +149,11 @@ export const resolvePeriodRange = (
       const to = startOfDayWithZone(todayStart, tz);
       return buildPeriodRange(normalised, from, to, tz);
     }
+    case "previous": {
+      const from = startOfDayWithZone(addDays(todayStart, -2), tz);
+      const to = startOfDayWithZone(addDays(todayStart, -1), tz);
+      return buildPeriodRange(normalised, from, to, tz);
+    }
     case "week": {
       const from = startOfDayWithZone(addDays(todayStart, -6), tz);
       const to = startOfDayWithZone(addDays(todayStart, 1), tz);
