@@ -565,6 +565,14 @@ const normaliseAdAccountId = (value: string): string => {
   if (!trimmed) {
     return trimmed;
   }
+  const actMatch = /act[_-]?(\d+)/i.exec(trimmed);
+  const numericMatch = actMatch ?? /([0-9]{5,})/.exec(trimmed);
+  if (numericMatch && numericMatch[1]) {
+    return `act_${numericMatch[1]}`;
+  }
+  if (numericMatch && numericMatch[0]) {
+    return `act_${numericMatch[0]}`;
+  }
   if (/^act_\w+/i.test(trimmed)) {
     return trimmed.startsWith("act_") ? trimmed : `act_${trimmed.slice(4)}`;
   }
