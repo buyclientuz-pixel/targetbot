@@ -9,7 +9,7 @@ const { createDefaultProjectSettings, upsertProjectSettings } = await import(
   "../../src/domain/project-settings.ts"
 );
 const { createMetaToken, upsertMetaToken } = await import("../../src/domain/meta-tokens.ts");
-const { loadProjectCampaigns, resolvePeriodRange } = await import(
+const { loadProjectCampaigns, resolvePeriodRange, resolveDatePresetForProject } = await import(
   "../../src/services/project-insights.ts"
 );
 
@@ -51,4 +51,17 @@ test("loadProjectCampaigns requests custom time range when explicit period is pr
   assert.ok(insightsRequest, "insights request should be issued");
   const timeRange = insightsRequest?.searchParams.get("time_range") ?? "";
   assert.equal(timeRange, JSON.stringify({ since: periodRange.period.from, until: periodRange.period.to }));
+});
+
+test("resolveDatePresetForProject anchors yesterday to the prior calendar day in project timezone", () => {
+  const now = new Date("2025-11-20T10:00:00.000Z");
+  const project = {
+    settings: { timezone: "Asia/Tashkent" },
+  } as const;
+
+  const { fromUtc, toUtc, period } = resolveDatePresetForProject(project, "yesterday", { now });
+
+  assert.equal(fromUtc.toISOString(), "2025-11-18T19:00:00.000Z");
+  assert.equal(toUtc.toISOString(), "2025-11-19T19:00:00.000Z");
+  assert.deepEqual(period, { from: "2025-11-19", to: "2025-11-20" });
 });

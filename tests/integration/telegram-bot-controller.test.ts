@@ -1231,28 +1231,53 @@ test("auto_send_now dispatches manual auto-report", async () => {
     createProject({ id: "proj_a", name: "BirLash", adsAccountId: "act_123", ownerTelegramId: 100 }),
   );
 
-  const summaryMetrics = {
-    spend: 30,
-    impressions: 2000,
-    clicks: 220,
-    leads: 8,
-    messages: 4,
+  const timezone = "Asia/Tashkent";
+  const reportDate = shiftDateByDays(new Date(), -1);
+  const todayMetrics = {
+    spend: 44.94,
+    impressions: 3000,
+    clicks: 280,
+    leads: 21,
+    messages: 12,
     purchases: 1,
     addToCart: 0,
     calls: 0,
     registrations: 0,
     engagement: 0,
-    leadsToday: 8,
+    leadsToday: 21,
+    messagesToday: 12,
+    leadsTotal: 300,
+    cpa: 2.14,
+    spendToday: 44.94,
+    cpaToday: 2.14,
+  } satisfies MetaSummaryMetrics;
+  const yesterdayMetrics = {
+    spend: 12,
+    impressions: 1800,
+    clicks: 150,
+    leads: 9,
+    messages: 4,
+    purchases: 0,
+    addToCart: 0,
+    calls: 0,
+    registrations: 0,
+    engagement: 0,
+    leadsToday: 9,
     messagesToday: 4,
-    leadsTotal: 180,
-    cpa: 3.75,
-    spendToday: 30,
-    cpaToday: 3.75,
+    leadsTotal: 200,
+    cpa: 1.33,
+    spendToday: 12,
+    cpaToday: 1.33,
   } satisfies MetaSummaryMetrics;
 
-  const timezone = "Asia/Tashkent";
-  const reportDate = new Date();
-  for (const periodKey of ["today", "yesterday", "week", "month"]) {
+  const summaryByPeriod: Record<string, MetaSummaryMetrics> = {
+    today: todayMetrics,
+    yesterday: yesterdayMetrics,
+    week: todayMetrics,
+    month: todayMetrics,
+  };
+
+  for (const periodKey of Object.keys(summaryByPeriod)) {
     await saveMetaCache(
       kv,
       createScopedSummaryEntry(
@@ -1260,7 +1285,7 @@ test("auto_send_now dispatches manual auto-report", async () => {
         periodKey,
         timezone,
         reportDate,
-        { periodKey, metrics: summaryMetrics, source: {} } as MetaSummaryPayload,
+        { periodKey, metrics: summaryByPeriod[periodKey], source: {} } as MetaSummaryPayload,
         3600,
       ),
     );
@@ -1268,28 +1293,28 @@ test("auto_send_now dispatches manual auto-report", async () => {
 
   await saveMetaCache(
     kv,
-    createScopedCampaignEntry(
-      "proj_a",
-      "today",
-      timezone,
-      reportDate,
-      {
-        data: [
-          {
-            campaign_id: "cmp1",
-            campaign_name: "Lead Ads",
-            objective: "LEAD_GENERATION",
-            spend: 30,
-            impressions: 2000,
-            clicks: 220,
-            actions: [
-              { action_type: "lead", value: 8 },
-              { action_type: "onsite_conversion.messaging_conversation_started_7d", value: 4 },
-            ],
-          },
-        ],
-      },
-      3600,
+      createScopedCampaignEntry(
+        "proj_a",
+        "today",
+        timezone,
+        reportDate,
+        {
+          data: [
+            {
+              campaign_id: "cmp1",
+              campaign_name: "Lead Ads",
+              objective: "LEAD_GENERATION",
+              spend: 44.94,
+              impressions: 3000,
+              clicks: 280,
+              actions: [
+                { action_type: "lead", value: 21 },
+                { action_type: "onsite_conversion.messaging_conversation_started_7d", value: 12 },
+              ],
+            },
+          ],
+        },
+        3600,
     ),
   );
 
@@ -1321,6 +1346,10 @@ test("auto_send_now dispatches manual auto-report", async () => {
     assert.ok(chatDelivery, "expected chat delivery for auto report");
     assert.match(String(chatDelivery?.body?.text ?? ""), /ручной запуск/);
     assert.match(JSON.stringify(chatDelivery?.body?.reply_markup ?? {}), /Открыть портал/);
+
+    const normalised = String(chatDelivery?.body?.text ?? "").replace(/\u00a0/g, " ");
+    assert.match(normalised, /Вчера: 21 лидов · расход 44,94 \$ · цена 2,14 \$/);
+    assert.match(normalised, /Позавчера: 9 лидов · цена 1,33 \$/);
 
     const ownerDelivery = reportRequests.find((entry) => entry.body.chat_id === 100);
     assert.ok(ownerDelivery, "expected owner delivery for auto report");

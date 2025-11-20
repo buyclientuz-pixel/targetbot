@@ -41,12 +41,6 @@ const startOfDay = (date: Date): Date => {
   return copy;
 };
 
-const endOfDay = (date: Date): Date => {
-  const copy = new Date(date);
-  copy.setUTCHours(23, 59, 59, 999);
-  return copy;
-};
-
 const addDays = (date: Date, days: number): Date => {
   const copy = new Date(date);
   copy.setUTCDate(copy.getUTCDate() + days);
@@ -124,15 +118,6 @@ const startOfDayWithZone = (date: Date, timeZone: string | null): Date => {
   return new Date(utcTime);
 };
 
-const endOfDayWithZone = (date: Date, timeZone: string | null): Date => {
-  if (!timeZone) {
-    return endOfDay(date);
-  }
-  const { parts, offsetMs } = resolveZoneOffset(date, timeZone);
-  const utcTime = Date.UTC(parts.year, parts.month - 1, parts.day, 23, 59, 59, 999) - offsetMs;
-  return new Date(utcTime);
-};
-
 const buildPeriodRange = (
   key: string,
   from: Date,
@@ -153,35 +138,45 @@ export const resolvePeriodRange = (
   const normalised = periodKey === "max" ? "all" : periodKey;
   const tz = normaliseTimeZone(timeZone);
   const now = options?.now ?? new Date();
-  const today = startOfDayWithZone(now, tz);
+  const todayStart = startOfDayWithZone(now, tz);
   switch (normalised) {
     case "today": {
-      const to = endOfDayWithZone(today, tz);
-      return buildPeriodRange(normalised, today, to, tz);
+      const to = startOfDayWithZone(addDays(todayStart, 1), tz);
+      return buildPeriodRange(normalised, todayStart, to, tz);
     }
     case "yesterday": {
-      const from = startOfDayWithZone(addDays(today, -1), tz);
-      const to = endOfDayWithZone(from, tz);
+      const from = startOfDayWithZone(addDays(todayStart, -1), tz);
+      const to = startOfDayWithZone(todayStart, tz);
       return buildPeriodRange(normalised, from, to, tz);
     }
     case "week": {
-      const from = startOfDayWithZone(addDays(today, -6), tz);
-      const to = endOfDayWithZone(today, tz);
+      const from = startOfDayWithZone(addDays(todayStart, -6), tz);
+      const to = startOfDayWithZone(addDays(todayStart, 1), tz);
       return buildPeriodRange(normalised, from, to, tz);
     }
     case "month": {
-      const from = startOfDayWithZone(addDays(today, -29), tz);
-      const to = endOfDayWithZone(today, tz);
+      const from = startOfDayWithZone(addDays(todayStart, -29), tz);
+      const to = startOfDayWithZone(addDays(todayStart, 1), tz);
       return buildPeriodRange(normalised, from, to, tz);
     }
     case "all": {
       const from = startOfDayWithZone(new Date(0), tz);
-      const to = endOfDayWithZone(today, tz);
+      const to = startOfDayWithZone(addDays(todayStart, 1), tz);
       return buildPeriodRange(normalised, from, to, tz);
     }
     default:
       return resolvePeriodRange("today", tz);
   }
+};
+
+export const resolveDatePresetForProject = (
+  project: { settings: { timezone?: string | null } },
+  preset: string,
+  options?: { now?: Date },
+): { fromUtc: Date; toUtc: Date; label: string; period: PeriodRange["period"] } => {
+  const timezone = project.settings.timezone ?? null;
+  const range = resolvePeriodRange(preset, timezone, options);
+  return { fromUtc: range.from, toUtc: range.to, label: preset, period: range.period };
 };
 
 const resolveFacebookUserId = (settings: ProjectSettings, provided?: string | null): string => {

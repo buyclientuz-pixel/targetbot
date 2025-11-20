@@ -133,10 +133,7 @@ const buildSummaryPayload = (
   const kpiValue = resolveKpiValue(summary, kpiType);
   const kpiToday = includeTodayMetrics ? resolveKpiToday(summaryMetrics, leadsToday, kpiType) : 0;
   const period = options?.summaryEntry?.period ?? options?.periodRange?.period ?? campaignsDoc.period;
-  const normalisedPeriod =
-    (effectivePeriodKey === "today" || effectivePeriodKey === "yesterday") && period?.from && period?.to
-      ? { from: period.from, to: period.from }
-      : period;
+  const normalisedPeriod = period;
 
   return {
     project: {
