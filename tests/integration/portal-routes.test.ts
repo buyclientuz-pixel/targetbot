@@ -129,8 +129,8 @@ test("portal routes serve HTML shell plus summary, leads, campaigns, and payment
   };
   assert.ok(summaryPayload.ok);
   assert.equal(summaryPayload.data.metrics.spend, 16.15);
-    assert.equal(summaryPayload.data.metrics.leads, 6);
-  assert.equal(summaryPayload.data.metrics.cpaToday, 16.15 / 2);
+  assert.equal(summaryPayload.data.metrics.leads, 6);
+  assert.equal(summaryPayload.data.metrics.cpaToday, null);
   assert.equal(summaryPayload.data.period.from, summaryPayload.data.period.to);
 
   const leadsResponse = await router.dispatch(

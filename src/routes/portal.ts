@@ -125,10 +125,11 @@ const buildSummaryPayload = (
   const spend = summary.spend ?? campaignSummary.spend ?? 0;
   const leads = campaignSummary.leads ?? summary.leads ?? 0;
   const messages = campaignSummary.messages ?? summary.messages ?? 0;
-  const leadsToday = bundle.leads.stats.today ?? 0;
+  const includeTodayMetrics = requestedPeriod === "today";
+  const leadsToday = includeTodayMetrics ? bundle.leads.stats.today ?? 0 : 0;
   const kpiType = bundle.project.settings.kpi.type;
   const kpiValue = resolveKpiValue(summary, kpiType);
-  const kpiToday = resolveKpiToday(summaryMetrics, leadsToday, kpiType);
+  const kpiToday = includeTodayMetrics ? resolveKpiToday(summaryMetrics, leadsToday, kpiType) : 0;
   return {
     project: {
       id: bundle.project.id,
@@ -146,8 +147,12 @@ const buildSummaryPayload = (
       cpa: computeCpa(spend, kpiValue),
       leadsTotal: bundle.leads.stats.total ?? 0,
       leadsToday,
-      cpaToday: summaryMetrics?.cpaToday ?? computeCpa(summaryMetrics?.spendToday ?? spend, kpiToday),
-      spendToday: summaryMetrics?.spendToday ?? (requestedPeriod === "today" ? spend : summaryMetrics?.spendToday ?? 0),
+      cpaToday: includeTodayMetrics
+        ? summaryMetrics?.cpaToday ?? computeCpa(summaryMetrics?.spendToday ?? spend, kpiToday)
+        : null,
+      spendToday: includeTodayMetrics
+        ? summaryMetrics?.spendToday ?? (requestedPeriod === "today" ? spend : summaryMetrics?.spendToday ?? 0)
+        : 0,
       currency: bundle.project.settings.currency,
       kpiLabel: bundle.project.settings.kpi.label,
       kpiType,
